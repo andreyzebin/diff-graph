@@ -1,0 +1,108 @@
+id: SCEN-007
+name: "Off-by-one в пагинации Python"
+tags: [python, bug, pagination, severity:medium]
+
+input:
+  bitbucket:
+    base_provider: fixture
+    data:
+      pull_request:
+        id: 111
+        title: "PROJ-700: Add pagination to products list"
+        description: "Implements page-based pagination for /products endpoint"
+        author: { name: "evan.miller", display_name: "Evan Miller" }
+        from_branch: "feature/PROJ-700-pagination"
+        to_branch: "main"
+        status: "OPEN"
+        head_commit: "334455667788"
+
+      diff:
+        - path: "app/api/products.py"
+          change_type: MODIFY
+          hunks:
+            - old_start: 10
+              new_start: 10
+              lines:
+                - "+PAGE_SIZE = 20"
+                - "+"
+                - "+@router.get('/products')"
+                - "+def list_products(page: int = 1, db: Session = Depends(get_db)):"
+                - "+    total = db.query(Product).count()"
+                - "+    offset = (page - 1) * PAGE_SIZE"
+                - "+    items = db.query(Product).offset(offset).limit(PAGE_SIZE).all()"
+                - "+    total_pages = total // PAGE_SIZE"
+                - "+    return {"
+                - "+        'items': items,"
+                - "+        'page': page,"
+                - "+        'total_pages': total_pages,"
+                - "+        'total': total"
+                - "+    }"
+
+      codebase_context:
+        - path: "app/models/product.py"
+          content: |
+            class Product(Base):
+                __tablename__ = 'products'
+                id = Column(Integer, primary_key=True)
+                name = Column(String, nullable=False)
+                price = Column(Numeric(10, 2), nullable=False)
+
+  jira:
+    base_provider: fixture
+    data:
+      issue:
+        key: "PROJ-700"
+        summary: "Пагинация для списка продуктов"
+        description: |
+          Добавить пагинацию к endpoint /products.
+          Параметр page начинается с 1. Возвращать total_pages.
+        issuetype: "Task"
+        status: "In Progress"
+        labels: [backend, python, api]
+      comments: []
+
+expected_output:
+  required_comments:
+    - id: EXP-1
+      type: inline
+      severity: major
+      location:
+        file: "app/api/products.py"
+        line: 17
+      description_keywords:
+        - ["off-by-one", "total_pages", "math.ceil", "ceil", "округление вверх"]
+        - ["остаток", "remainder", "21 элемент", "последняя страница"]
+      rationale: |
+        total_pages = total // PAGE_SIZE — целочисленное деление без округления вверх.
+        При 21 элементе и PAGE_SIZE=20 получим 1 страницу вместо 2.
+        Нужно math.ceil(total / PAGE_SIZE).
+
+    - id: EXP-2
+      type: inline
+      severity: minor
+      location:
+        file: "app/api/products.py"
+        line: 13
+      description_keywords:
+        - ["валидация", "validation", "page < 1", "отрицательный", "negative"]
+      rationale: |
+        Нет валидации параметра page — при page=0 или отрицательном значении
+        offset будет отрицательным что вызовет ошибку БД.
+
+  forbidden_comments:
+    - description: "Замечание к значению PAGE_SIZE=20 — константа разумная"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.70
+    min_required_found: 1
+    max_false_positives: 3
+
+metadata:
+  difficulty: medium
+  language: python
+  pr_size: small
+  scenario_type: bug
+  author: "team"
+  created: "2024-01-15"

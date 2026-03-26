@@ -1,0 +1,104 @@
+id: SCEN-002
+name: "SQL injection через f-string в Python"
+tags: [python, security, severity:critical]
+
+input:
+  bitbucket:
+    base_provider: fixture
+    data:
+      pull_request:
+        id: 55
+        title: "PROJ-200: Add user search endpoint"
+        description: "Adds /search endpoint to find users by name"
+        author: { name: "jane.smith", display_name: "Jane Smith" }
+        from_branch: "feature/PROJ-200-user-search"
+        to_branch: "main"
+        status: "OPEN"
+        head_commit: "def789abc012"
+
+      diff:
+        - path: "app/api/users.py"
+          change_type: MODIFY
+          hunks:
+            - old_start: 28
+              new_start: 28
+              lines:
+                - "+@router.get('/search')"
+                - "+def search_users(name: str, db: Session = Depends(get_db)):"
+                - "+    query = f\"SELECT * FROM users WHERE name LIKE '%{name}%'\""
+                - "+    results = db.execute(query)"
+                - "+    return results.fetchall()"
+
+      codebase_context:
+        - path: "app/database.py"
+          content: |
+            from sqlalchemy import create_engine
+            from sqlalchemy.orm import sessionmaker
+
+            engine = create_engine(DATABASE_URL)
+            SessionLocal = sessionmaker(bind=engine)
+
+            def get_db():
+                db = SessionLocal()
+                try:
+                    yield db
+                finally:
+                    db.close()
+
+  jira:
+    base_provider: fixture
+    data:
+      issue:
+        key: "PROJ-200"
+        summary: "Добавить поиск пользователей по имени"
+        description: |
+          Реализовать REST endpoint для поиска пользователей.
+          Endpoint должен принимать строку поиска и возвращать список пользователей.
+        issuetype: "Task"
+        status: "In Progress"
+        labels: [backend, python, api]
+      comments: []
+
+expected_output:
+  required_comments:
+    - id: EXP-1
+      type: inline
+      severity: critical
+      location:
+        file: "app/api/users.py"
+        line: 30
+      description_keywords:
+        - ["SQL injection", "инъекция", "injection"]
+        - ["f-string", "параметризованный", "parameterized", "bind"]
+      rationale: |
+        Прямая подстановка пользовательских данных в SQL-запрос через f-string —
+        классическая SQL-инъекция. Нужно использовать параметризованные запросы.
+
+    - id: EXP-2
+      type: inline
+      severity: major
+      location:
+        file: "app/api/users.py"
+        line: 28
+      description_keywords:
+        - ["ORM", "SQLAlchemy", "filter", "параметр", "query"]
+      rationale: |
+        Следует использовать ORM-методы SQLAlchemy вместо сырого SQL.
+
+  forbidden_comments:
+    - description: "Замечание к названию endpoint — имя /search корректное"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.75
+    min_required_found: 1
+    max_false_positives: 2
+
+metadata:
+  difficulty: easy
+  language: python
+  pr_size: small
+  scenario_type: security
+  author: "team"
+  created: "2024-01-15"

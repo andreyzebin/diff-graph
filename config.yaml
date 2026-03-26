@@ -1,0 +1,27 @@
+agent:
+  base_url: "http://localhost:8080"
+  api_key: "${AGENT_API_KEY}"
+  timeout_seconds: 120
+  url_injection:
+    mode: env
+    bitbucket_key: "BITBUCKET_URL"
+    jira_key: "JIRA_URL"
+
+fake_servers:
+  host: "127.0.0.1"
+  port: 0
+
+judge:
+  model: "claude-opus-4-6"
+  temperature: 0
+  prompt_template: "prompts/judge.txt"
+
+results:
+  store_path: "results"
+  db_path: "results/benchmark.db"
+  keep_runs: 50
+  regression_threshold: 0.05
+
+report:
+  output_dir: "reports"
+  format: html

@@ -1,0 +1,94 @@
+id: SCEN-001
+name: "Null pointer без проверки в Java сервисе"
+tags: [java, null-safety, severity:high]
+
+input:
+  bitbucket:
+    base_provider: fixture
+    data:
+      pull_request:
+        id: 42
+        title: "PROJ-123: Add getUserByEmail method"
+        description: "Implements user lookup by email"
+        author: { name: "john.doe", display_name: "John Doe" }
+        from_branch: "feature/PROJ-123-get-user-by-email"
+        to_branch: "main"
+        status: "OPEN"
+        head_commit: "abc123def456"
+
+      diff:
+        - path: "src/main/java/com/example/UserService.java"
+          change_type: MODIFY
+          hunks:
+            - old_start: 45
+              new_start: 45
+              lines:
+                - "+    public User getUserByEmail(String email) {"
+                - "+        User user = userRepository.findByEmail(email);"
+                - "+        return user.getId();  // NPE если user == null"
+                - "+    }"
+
+      codebase_context:
+        - path: "src/main/java/com/example/UserRepository.java"
+          content: |
+            public interface UserRepository extends JpaRepository<User, Long> {
+                Optional<User> findByEmail(String email);
+            }
+
+  jira:
+    base_provider: fixture
+    data:
+      issue:
+        key: "PROJ-123"
+        summary: "Добавить метод получения пользователя по email"
+        description: |
+          Нужно реализовать поиск пользователя по email в UserService.
+        issuetype: "Story"
+        status: "In Progress"
+        labels: [backend, java]
+      comments: []
+
+expected_output:
+  required_comments:
+    - id: EXP-1
+      type: inline
+      severity: critical
+      location:
+        file: "src/main/java/com/example/UserService.java"
+        line: 47
+      description_keywords:
+        - ["null", "NPE", "NullPointerException"]
+        - ["Optional", "проверка", "check"]
+      rationale: |
+        userRepository.findByEmail возвращает Optional<User>,
+        но код делает user.getId() без проверки — гарантированный NPE.
+
+    - id: EXP-2
+      type: inline
+      severity: major
+      location:
+        file: "src/main/java/com/example/UserService.java"
+        line: 45
+      description_keywords:
+        - ["Optional", "возвращаемый тип", "return type"]
+      rationale: |
+        Метод должен возвращать Optional<User> — следует из контракта репозитория.
+
+  forbidden_comments:
+    - description: "Замечание к названию метода — имя корректное"
+    - description: "Замечание к аннотации @GetMapping — маппинг правильный"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.70
+    min_required_found: 1
+    max_false_positives: 3
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: small
+  scenario_type: bug
+  author: "team"
+  created: "2024-01-15"

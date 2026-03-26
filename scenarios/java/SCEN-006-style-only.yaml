@@ -1,0 +1,102 @@
+id: SCEN-006
+name: "Только стилевые замечания, чистый Java код"
+tags: [java, style, severity:low]
+
+input:
+  bitbucket:
+    base_provider: fixture
+    data:
+      pull_request:
+        id: 100
+        title: "PROJ-600: Add ProductMapper utility"
+        description: "Adds mapper for converting Product entity to DTO"
+        author: { name: "diana.prince", display_name: "Diana Prince" }
+        from_branch: "feature/PROJ-600-product-mapper"
+        to_branch: "main"
+        status: "OPEN"
+        head_commit: "aabbccdd1122"
+
+      diff:
+        - path: "src/main/java/com/example/ProductMapper.java"
+          change_type: ADD
+          hunks:
+            - old_start: 0
+              new_start: 1
+              lines:
+                - "+@Component"
+                - "+public class ProductMapper {"
+                - "+"
+                - "+    public ProductDto toDto(Product product) {"
+                - "+        ProductDto dto = new ProductDto();"
+                - "+        dto.setId(product.getId());"
+                - "+        dto.setName(product.getName());"
+                - "+        dto.setPrice(product.getPrice());"
+                - "+        dto.setCategory(product.getCategory().getName());"
+                - "+        return dto;"
+                - "+    }"
+                - "+"
+                - "+    public List<ProductDto> toDtoList(List<Product> products) {"
+                - "+        return products.stream()"
+                - "+            .map(this::toDto)"
+                - "+            .collect(Collectors.toList());"
+                - "+    }"
+                - "+}"
+
+      codebase_context:
+        - path: "src/main/java/com/example/ProductDto.java"
+          content: |
+            public class ProductDto {
+                private Long id;
+                private String name;
+                private BigDecimal price;
+                private String category;
+                // getters and setters
+            }
+        - path: "src/main/java/com/example/Product.java"
+          content: |
+            @Entity
+            public class Product {
+                @Id
+                private Long id;
+                private String name;
+                private BigDecimal price;
+                @ManyToOne(fetch = FetchType.EAGER)
+                private Category category;
+                // getters and setters
+            }
+
+  jira:
+    base_provider: fixture
+    data:
+      issue:
+        key: "PROJ-600"
+        summary: "Mapper для конвертации Product в ProductDto"
+        description: |
+          Нужен компонент для маппинга Product entity в ProductDto.
+          Должен поддерживать конвертацию одного объекта и списка.
+        issuetype: "Task"
+        status: "In Progress"
+        labels: [backend, java, dto]
+      comments: []
+
+expected_output:
+  required_comments: []
+
+  forbidden_comments:
+    - description: "Замечание о неправильной логике маппинга"
+    - description: "Замечание о безопасности или производительности"
+
+  expected_status_change: "APPROVED"
+
+  thresholds:
+    min_score: 0.80
+    min_required_found: 0
+    max_false_positives: 1
+
+metadata:
+  difficulty: easy
+  language: java
+  pr_size: small
+  scenario_type: style
+  author: "team"
+  created: "2024-01-15"

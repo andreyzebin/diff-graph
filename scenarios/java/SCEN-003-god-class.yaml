@@ -1,0 +1,105 @@
+id: SCEN-003
+name: "God class, нарушение SRP в Java"
+tags: [java, design, srp, severity:medium]
+
+input:
+  bitbucket:
+    base_provider: fixture
+    data:
+      pull_request:
+        id: 67
+        title: "PROJ-300: Add order management"
+        description: "Implements full order management in OrderService"
+        author: { name: "bob.wilson", display_name: "Bob Wilson" }
+        from_branch: "feature/PROJ-300-order-management"
+        to_branch: "main"
+        status: "OPEN"
+        head_commit: "111aaa222bbb"
+
+      diff:
+        - path: "src/main/java/com/example/OrderService.java"
+          change_type: ADD
+          hunks:
+            - old_start: 0
+              new_start: 1
+              lines:
+                - "+@Service"
+                - "+public class OrderService {"
+                - "+"
+                - "+    // Order CRUD"
+                - "+    public Order createOrder(OrderRequest req) { ... }"
+                - "+    public Order getOrder(Long id) { ... }"
+                - "+    public void deleteOrder(Long id) { ... }"
+                - "+"
+                - "+    // Payment processing"
+                - "+    public PaymentResult processPayment(Order order, Card card) { ... }"
+                - "+    public void refundPayment(Long orderId) { ... }"
+                - "+    public PaymentStatus checkPaymentStatus(Long orderId) { ... }"
+                - "+"
+                - "+    // Email notifications"
+                - "+    public void sendOrderConfirmation(Order order) { ... }"
+                - "+    public void sendShippingNotification(Order order) { ... }"
+                - "+    public void sendRefundNotification(Order order) { ... }"
+                - "+"
+                - "+    // Inventory management"
+                - "+    public void reserveStock(List<OrderItem> items) { ... }"
+                - "+    public void releaseStock(List<OrderItem> items) { ... }"
+                - "+    public boolean checkAvailability(Long productId, int qty) { ... }"
+                - "+"
+                - "+    // Reporting"
+                - "+    public OrderReport generateMonthlyReport(YearMonth month) { ... }"
+                - "+    public List<Order> getOrdersByStatus(String status) { ... }"
+                - "+}"
+
+      codebase_context:
+        - path: "src/main/java/com/example/PaymentService.java"
+          content: |
+            // This file was removed in a previous commit
+            // Payment logic was consolidated into OrderService
+
+  jira:
+    base_provider: fixture
+    data:
+      issue:
+        key: "PROJ-300"
+        summary: "Реализовать управление заказами"
+        description: |
+          Реализовать полный цикл работы с заказами: создание, оплата,
+          уведомления, управление складом и отчётность.
+        issuetype: "Epic"
+        status: "In Progress"
+        labels: [backend, java, orders]
+      comments: []
+
+expected_output:
+  required_comments:
+    - id: EXP-1
+      type: general
+      severity: major
+      location: null
+      description_keywords:
+        - ["SRP", "Single Responsibility", "единственная ответственность", "God class", "god object"]
+        - ["разделить", "split", "отдельный сервис", "PaymentService", "NotificationService"]
+      rationale: |
+        OrderService выполняет 5 несвязанных обязанностей: CRUD заказов, оплата,
+        email-уведомления, управление складом, отчётность.
+        Нарушает SRP — нужно выделить отдельные сервисы.
+
+  forbidden_comments:
+    - description: "Замечание к аннотации @Service — она корректна"
+    - description: "Замечание к названиям методов — они понятные"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.60
+    min_required_found: 1
+    max_false_positives: 4
+
+metadata:
+  difficulty: hard
+  language: java
+  pr_size: medium
+  scenario_type: design
+  author: "team"
+  created: "2024-01-15"

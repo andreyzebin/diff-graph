@@ -1,0 +1,69 @@
+Ты — эксперт по код-ревью. Оцени качество ревью выполненного AI-агентом.
+
+## Контекст задачи
+Jira: {jira_key} — {jira_summary}
+{jira_description}
+
+## Изменения в PR (diff)
+{diff}
+
+## Контекст кодовой базы (файлы запрошенные агентом)
+{codebase_context}
+
+## Что агент написал в PR
+{agent_comments}
+
+## Задание
+
+1. Для каждого ОБЯЗАТЕЛЬНОГО замечания определи:
+   - Нашёл ли агент его (семантически, не текстуально)?
+   - Указал ли на правильный файл и строку (±2 строки допустимо)?
+   - Уверенность совпадения (0.0–1.0)
+
+2. Найди ЛИШНИЕ замечания — не связанные с задачей или diff.
+
+3. Оцени корректность смены статуса PR.
+
+4. Поставь общий балл 0.0–1.0.
+
+Обязательные замечания:
+{required_comments}
+
+Запрещённые темы:
+{forbidden_comments}
+
+Ожидаемый статус PR: {expected_status_change}
+Фактический статус PR: {actual_status_change}
+
+Отвечай строго в JSON по следующей схеме. Без текста вне JSON.
+
+{{
+  "overall_score": 0.85,
+  "required_comments": [
+    {{
+      "expected_id": "EXP-1",
+      "found": true,
+      "matched_comment_id": 2,
+      "location_accurate": true,
+      "match_confidence": 0.92,
+      "reasoning": "Агент нашёл NPE в строке 47, упомянул Optional"
+    }},
+    {{
+      "expected_id": "EXP-2",
+      "found": false,
+      "matched_comment_id": null,
+      "location_accurate": false,
+      "match_confidence": 0.0,
+      "reasoning": "Агент не предложил изменить возвращаемый тип на Optional<User>"
+    }}
+  ],
+  "false_positives": [
+    {{
+      "comment_id": 5,
+      "reasoning": "Замечание про стиль именования не связано с задачей"
+    }}
+  ],
+  "status_change_verdict": "ok",
+  "verdict": "pass",
+  "summary": "Нашёл критический баг, пропустил архитектурное замечание"
+}}

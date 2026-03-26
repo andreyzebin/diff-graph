@@ -1,0 +1,109 @@
+id: SCEN-004
+name: "N+1 запросов в цикле Python"
+tags: [python, performance, database, severity:high]
+
+input:
+  bitbucket:
+    base_provider: fixture
+    data:
+      pull_request:
+        id: 78
+        title: "PROJ-400: Add team dashboard API"
+        description: "Returns all teams with their members and recent activity"
+        author: { name: "alice.jones", display_name: "Alice Jones" }
+        from_branch: "feature/PROJ-400-team-dashboard"
+        to_branch: "main"
+        status: "OPEN"
+        head_commit: "999ccc888ddd"
+
+      diff:
+        - path: "app/api/teams.py"
+          change_type: MODIFY
+          hunks:
+            - old_start: 15
+              new_start: 15
+              lines:
+                - "+@router.get('/dashboard')"
+                - "+def get_team_dashboard(db: Session = Depends(get_db)):"
+                - "+    teams = db.query(Team).all()"
+                - "+    result = []"
+                - "+    for team in teams:"
+                - "+        members = db.query(User).filter(User.team_id == team.id).all()"
+                - "+        last_activity = db.query(Activity)"
+                - "+                          .filter(Activity.team_id == team.id)"
+                - "+                          .order_by(Activity.created_at.desc())"
+                - "+                          .first()"
+                - "+        result.append({"
+                - "+            'team': team,"
+                - "+            'members': members,"
+                - "+            'last_activity': last_activity"
+                - "+        })"
+                - "+    return result"
+
+      codebase_context:
+        - path: "app/models/team.py"
+          content: |
+            class Team(Base):
+                __tablename__ = 'teams'
+                id = Column(Integer, primary_key=True)
+                name = Column(String)
+                members = relationship('User', back_populates='team', lazy='select')
+                activities = relationship('Activity', back_populates='team', lazy='select')
+
+  jira:
+    base_provider: fixture
+    data:
+      issue:
+        key: "PROJ-400"
+        summary: "Dashboard API для команд"
+        description: |
+          Нужен endpoint который возвращает список всех команд,
+          участников каждой команды и последнюю активность.
+        issuetype: "Task"
+        status: "In Progress"
+        labels: [backend, python, performance]
+      comments: []
+
+expected_output:
+  required_comments:
+    - id: EXP-1
+      type: inline
+      severity: major
+      location:
+        file: "app/api/teams.py"
+        line: 20
+      description_keywords:
+        - ["N+1", "n+1", "запрос в цикле", "query in loop"]
+        - ["joinedload", "selectinload", "eager", "один запрос"]
+      rationale: |
+        Для каждой команды выполняется 2 дополнительных запроса в БД.
+        При 100 командах это 201 запрос. Нужно использовать eager loading.
+
+    - id: EXP-2
+      type: inline
+      severity: minor
+      location:
+        file: "app/api/teams.py"
+        line: 17
+      description_keywords:
+        - ["пагинация", "pagination", "limit", "offset", "all()"]
+      rationale: |
+        db.query(Team).all() загружает все команды без пагинации.
+
+  forbidden_comments:
+    - description: "Замечание к структуре response — формат корректный"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.70
+    min_required_found: 1
+    max_false_positives: 3
+
+metadata:
+  difficulty: medium
+  language: python
+  pr_size: small
+  scenario_type: performance
+  author: "team"
+  created: "2024-01-15"
