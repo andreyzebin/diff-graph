@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from bitbucket.base import BitbucketPRProxy, CommentAnchor, CommentThread, ReviewStatus
+from bitbucket.base import (
+    BitbucketPRProxy, CommentAnchor, CommentThread, ReviewStatus,
+    FileDiff, DiffHunk, FileContent,
+)
 from runner.judge import (
     Judge, JudgeOutput, LLMClient, LLMJudge,
     CommentJudgement, FalsePositive,
@@ -51,6 +54,58 @@ class MockProxy(BitbucketPRProxy):
         return self._review_status
 
 
+# ── Shared fixture data ────────────────────────────────────────────
+
+# A realistic diff: UserService.java, method that dereferences a
+# potentially-null result from repository.findById() at line 42.
+DIFF = [
+    FileDiff(
+        path="src/main/java/com/example/UserService.java",
+        change_type="MODIFY",
+        hunks=[
+            DiffHunk(
+                old_start=38,
+                new_start=38,
+                lines=[
+                    "     public User getUser(Long id) {",
+                    "-        return repository.findById(id);",
+                    "+        User user = repository.findById(id);",
+                    "+        String name = user.getName();   // user may be null",
+                    "+        return user;",
+                    "     }",
+                ],
+            )
+        ],
+    )
+]
+
+# Surrounding file context so the judge understands the class shape.
+CODEBASE_CONTEXT = [
+    FileContent(
+        path="src/main/java/com/example/UserService.java",
+        content="""\
+public class UserService {
+    private final UserRepository repository;
+
+    public UserService(UserRepository repository) {
+        this.repository = repository;
+    }
+
+    // repository.findById() returns null when user is not found
+    public User getUser(Long id) {
+        User user = repository.findById(id);
+        String name = user.getName();   // user may be null
+        return user;
+    }
+}
+""",
+    )
+]
+
+JIRA_SUMMARY = "Add getUser endpoint to UserService"
+JIRA_DESCRIPTION = "Expose user lookup via REST. repository.findById may return null."
+
+
 # ── Helpers ────────────────────────────────────────────────────────
 
 def _make_scenario(
@@ -84,17 +139,21 @@ async def test_judge_found_comment_passes():
             id="EXP-1",
             type="inline",
             severity="critical",
-            location={"file": "Foo.java", "line": 42},
-            description_keywords=[["null", "pointer"]],
-            rationale="Agent should catch NPE risk",
+            location={"file": "src/main/java/com/example/UserService.java", "line": 42},
+            description_keywords=[["null", "pointer"], ["findById", "null"]],
+            rationale="Agent should catch that findById may return null and user.getName() will NPE",
         )
     ])
 
     comments = [
         CommentThread(
             id=1,
-            text="This can cause a NullPointerException on line 42",
-            anchor=CommentAnchor(path="Foo.java", line=42, line_type="ADDED"),
+            text="This can cause a NullPointerException: user may be null after findById()",
+            anchor=CommentAnchor(
+                path="src/main/java/com/example/UserService.java",
+                line=42,
+                line_type="ADDED",
+            ),
         )
     ]
     review_status = ReviewStatus(status="NEEDS_WORK")
@@ -118,7 +177,13 @@ async def test_judge_found_comment_passes():
     })
 
     judge = LLMJudge(llm)
-    output = await judge.evaluate(scenario, comments, review_status)
+    output = await judge.evaluate(
+        scenario, comments, review_status,
+        diff=DIFF,
+        codebase_context=CODEBASE_CONTEXT,
+        jira_summary=JIRA_SUMMARY,
+        jira_description=JIRA_DESCRIPTION,
+    )
 
     print(f"\n{'─' * 60}\nPROMPT SENT TO LLM:\n{'─' * 60}\n{llm.last_prompt}\n{'─' * 60}")
 
@@ -134,7 +199,8 @@ async def test_judge_found_comment_passes():
     assert result.false_positives == 0
     assert llm.last_prompt is not None
     assert "EXP-1" in llm.last_prompt
-    assert "NullPointerException" in llm.last_prompt
+    assert "findById" in llm.last_prompt
+    assert "UserService.java" in llm.last_prompt
 
 
 async def test_judge_missed_comment_fails():
@@ -143,9 +209,9 @@ async def test_judge_missed_comment_fails():
             id="EXP-1",
             type="inline",
             severity="critical",
-            location={"file": "Foo.java", "line": 42},
-            description_keywords=[["null", "pointer"]],
-            rationale="Agent should catch NPE risk",
+            location={"file": "src/main/java/com/example/UserService.java", "line": 42},
+            description_keywords=[["null", "pointer"], ["findById", "null"]],
+            rationale="Agent should catch that findById may return null and user.getName() will NPE",
         )
     ])
 
@@ -172,7 +238,13 @@ async def test_judge_missed_comment_fails():
     })
 
     judge = LLMJudge(llm)
-    output = await judge.evaluate(scenario, comments, review_status=None)
+    output = await judge.evaluate(
+        scenario, comments, review_status=None,
+        diff=DIFF,
+        codebase_context=CODEBASE_CONTEXT,
+        jira_summary=JIRA_SUMMARY,
+        jira_description=JIRA_DESCRIPTION,
+    )
 
     print(f"\n{'─' * 60}\nPROMPT SENT TO LLM:\n{'─' * 60}\n{llm.last_prompt}\n{'─' * 60}")
 
