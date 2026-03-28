@@ -16,20 +16,6 @@ input:
       to_branch: "main"
       title: "[BENCHMARK] SCEN-002: SQL injection через f-string"
 
-  jira:
-    base_provider: fixture
-    data:
-      issue:
-        key: "PROJ-200"
-        summary: "Добавить поиск пользователей по имени"
-        description: |
-          Реализовать REST endpoint для поиска пользователей.
-          Endpoint должен принимать строку поиска и возвращать список пользователей.
-        issuetype: "Task"
-        status: "In Progress"
-        labels: [backend, python, api]
-      comments: []
-
 expected_output:
   required_comments:
     - id: EXP-1

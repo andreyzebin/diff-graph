@@ -16,20 +16,6 @@ input:
       to_branch: "main"
       title: "[BENCHMARK] SCEN-003: God class в OrderService"
 
-  jira:
-    base_provider: fixture
-    data:
-      issue:
-        key: "PROJ-300"
-        summary: "Реализовать управление заказами"
-        description: |
-          Реализовать полный цикл работы с заказами: создание, оплата,
-          уведомления, управление складом и отчётность.
-        issuetype: "Epic"
-        status: "In Progress"
-        labels: [backend, java, orders]
-      comments: []
-
 expected_output:
   required_comments:
     - id: EXP-1

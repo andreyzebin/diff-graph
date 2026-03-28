@@ -16,19 +16,6 @@ input:
       to_branch: "main"
       title: "[BENCHMARK] SCEN-001: Null pointer без проверки"
 
-  jira:
-    base_provider: fixture
-    data:
-      issue:
-        key: "PROJ-123"
-        summary: "Добавить метод получения пользователя по email"
-        description: |
-          Нужно реализовать поиск пользователя по email в UserService.
-        issuetype: "Story"
-        status: "In Progress"
-        labels: [backend, java]
-      comments: []
-
 expected_output:
   required_comments:
     - id: EXP-1

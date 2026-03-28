@@ -16,20 +16,6 @@ input:
       to_branch: "main"
       title: "[BENCHMARK] SCEN-004: N+1 запросы в team dashboard"
 
-  jira:
-    base_provider: fixture
-    data:
-      issue:
-        key: "PROJ-400"
-        summary: "Dashboard API для команд"
-        description: |
-          Нужен endpoint который возвращает список всех команд,
-          участников каждой команды и последнюю активность.
-        issuetype: "Task"
-        status: "In Progress"
-        labels: [backend, python, performance]
-      comments: []
-
 expected_output:
   required_comments:
     - id: EXP-1

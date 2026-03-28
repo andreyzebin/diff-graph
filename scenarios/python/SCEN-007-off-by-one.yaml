@@ -16,20 +16,6 @@ input:
       to_branch: "main"
       title: "[BENCHMARK] SCEN-007: Off-by-one в пагинации"
 
-  jira:
-    base_provider: fixture
-    data:
-      issue:
-        key: "PROJ-700"
-        summary: "Пагинация для списка продуктов"
-        description: |
-          Добавить пагинацию к endpoint /products.
-          Параметр page начинается с 1. Возвращать total_pages.
-        issuetype: "Task"
-        status: "In Progress"
-        labels: [backend, python, api]
-      comments: []
-
 expected_output:
   required_comments:
     - id: EXP-1

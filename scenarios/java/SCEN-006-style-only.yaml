@@ -16,20 +16,6 @@ input:
       to_branch: "main"
       title: "[BENCHMARK] SCEN-006: Style-only замечания"
 
-  jira:
-    base_provider: fixture
-    data:
-      issue:
-        key: "PROJ-600"
-        summary: "Mapper для конвертации Product в ProductDto"
-        description: |
-          Нужен компонент для маппинга Product entity в ProductDto.
-          Должен поддерживать конвертацию одного объекта и списка.
-        issuetype: "Task"
-        status: "In Progress"
-        labels: [backend, java, dto]
-      comments: []
-
 expected_output:
   required_comments: []
 

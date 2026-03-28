@@ -16,20 +16,6 @@ input:
       to_branch: "main"
       title: "[BENCHMARK] SCEN-005: Отсутствие тестов"
 
-  jira:
-    base_provider: fixture
-    data:
-      issue:
-        key: "PROJ-500"
-        summary: "Утилита расчёта цены со скидкой и налогом"
-        description: |
-          Нужна функция которая принимает базовую цену, процент скидки и ставку налога,
-          и возвращает итоговую цену. Функция должна быть покрыта тестами.
-        issuetype: "Task"
-        status: "In Progress"
-        labels: [frontend, typescript, utils]
-      comments: []
-
 expected_output:
   required_comments:
     - id: EXP-1
