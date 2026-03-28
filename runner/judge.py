@@ -104,11 +104,7 @@ PROMPT_TEMPLATE_PATH = Path(__file__).parent.parent / "prompts" / "judge.txt"
 class LLMJudge(Judge):
     def __init__(self, llm_client: LLMClient):
         self._llm_client = llm_client
-        self._template = (
-            PROMPT_TEMPLATE_PATH.read_text()
-            if PROMPT_TEMPLATE_PATH.exists()
-            else _DEFAULT_PROMPT
-        )
+        self._template = PROMPT_TEMPLATE_PATH.read_text()
 
     async def evaluate(
         self,
@@ -208,58 +204,3 @@ def _format_comments(comments: list[CommentThread]) -> str:
             parts.append(f"[general] {c.text}")
     return "\n".join(parts) if parts else "(no comments)"
 
-
-_DEFAULT_PROMPT = """
-Ты — эксперт по код-ревью. Оцени качество ревью выполненного AI-агентом.
-
-## Что агент написал в PR
-{agent_comments}
-
-## Задание
-
-1. Для каждого ОБЯЗАТЕЛЬНОГО замечания определи:
-   - Нашёл ли агент его (семантически, не текстуально)?
-   - Указал ли на правильный файл и строку (±2 строки допустимо)?
-   - Уверенность совпадения (0.0–1.0)
-
-2. Найди ЛИШНИЕ замечания — не связанные с задачей.
-
-3. Оцени корректность смены статуса PR.
-
-4. Поставь общий балл 0.0–1.0.
-
-Обязательные замечания:
-{required_comments}
-
-Запрещённые темы:
-{forbidden_comments}
-
-Ожидаемый статус PR: {expected_status_change}
-Фактический статус PR: {actual_status_change}
-
-Отвечай строго в JSON по следующей схеме:
-{{
-  "overall_score": 0.85,
-  "required_comments": [
-    {{
-      "expected_id": "EXP-1",
-      "found": true,
-      "matched_comment_id": 2,
-      "location_accurate": true,
-      "match_confidence": 0.92,
-      "reasoning": "..."
-    }}
-  ],
-  "false_positives": [
-    {{
-      "comment_id": 5,
-      "reasoning": "..."
-    }}
-  ],
-  "status_change_verdict": "ok",
-  "verdict": "pass",
-  "summary": "..."
-}}
-
-Без текста вне JSON.
-"""
