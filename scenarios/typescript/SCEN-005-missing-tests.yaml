@@ -4,41 +4,17 @@ tags: [typescript, test_coverage, severity:medium]
 
 input:
   bitbucket:
-    base_provider: fixture
-    data:
-      pull_request:
-        id: 89
-        title: "PROJ-500: Add price calculation utility"
-        description: "Adds calculateDiscountedPrice utility function"
-        author: { name: "charlie.brown", display_name: "Charlie Brown" }
-        from_branch: "feature/PROJ-500-price-calc"
-        to_branch: "main"
-        status: "OPEN"
-        head_commit: "777eee666fff"
-
-      diff:
-        - path: "src/utils/pricing.ts"
-          change_type: ADD
-          hunks:
-            - old_start: 0
-              new_start: 1
-              lines:
-                - "+export function calculateDiscountedPrice("
-                - "+  originalPrice: number,"
-                - "+  discountPercent: number,"
-                - "+  taxRate: number"
-                - '+): number {'
-                - "+  if (discountPercent < 0 || discountPercent > 100) {"
-                - "+    throw new Error('Invalid discount percent');"
-                - "+  }"
-                - "+  const discounted = originalPrice * (1 - discountPercent / 100);"
-                - "+  return discounted * (1 + taxRate);"
-                - "+}"
-
-      codebase_context:
-        - path: "src/utils/pricing.test.ts"
-          content: |
-            // File does not exist yet — no tests written
+    provider: real
+    connection:
+      base_url: "${BITBUCKET_URL}"
+      project: "${BITBUCKET_PROJECT}"
+      repo: "${BITBUCKET_REPO}"
+      auth:
+        env: BITBUCKET_TOKEN
+    pull_request:
+      from_branch: "feature/PROJ-500-price-calc"
+      to_branch: "main"
+      title: "[BENCHMARK] SCEN-005: Отсутствие тестов"
 
   jira:
     base_provider: fixture

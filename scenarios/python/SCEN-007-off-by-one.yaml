@@ -4,48 +4,17 @@ tags: [python, bug, pagination, severity:medium]
 
 input:
   bitbucket:
-    base_provider: fixture
-    data:
-      pull_request:
-        id: 111
-        title: "PROJ-700: Add pagination to products list"
-        description: "Implements page-based pagination for /products endpoint"
-        author: { name: "evan.miller", display_name: "Evan Miller" }
-        from_branch: "feature/PROJ-700-pagination"
-        to_branch: "main"
-        status: "OPEN"
-        head_commit: "334455667788"
-
-      diff:
-        - path: "app/api/products.py"
-          change_type: MODIFY
-          hunks:
-            - old_start: 10
-              new_start: 10
-              lines:
-                - "+PAGE_SIZE = 20"
-                - "+"
-                - "+@router.get('/products')"
-                - "+def list_products(page: int = 1, db: Session = Depends(get_db)):"
-                - "+    total = db.query(Product).count()"
-                - "+    offset = (page - 1) * PAGE_SIZE"
-                - "+    items = db.query(Product).offset(offset).limit(PAGE_SIZE).all()"
-                - "+    total_pages = total // PAGE_SIZE"
-                - "+    return {"
-                - "+        'items': items,"
-                - "+        'page': page,"
-                - "+        'total_pages': total_pages,"
-                - "+        'total': total"
-                - "+    }"
-
-      codebase_context:
-        - path: "app/models/product.py"
-          content: |
-            class Product(Base):
-                __tablename__ = 'products'
-                id = Column(Integer, primary_key=True)
-                name = Column(String, nullable=False)
-                price = Column(Numeric(10, 2), nullable=False)
+    provider: real
+    connection:
+      base_url: "${BITBUCKET_URL}"
+      project: "${BITBUCKET_PROJECT}"
+      repo: "${BITBUCKET_REPO}"
+      auth:
+        env: BITBUCKET_TOKEN
+    pull_request:
+      from_branch: "feature/PROJ-700-pagination"
+      to_branch: "main"
+      title: "[BENCHMARK] SCEN-007: Off-by-one в пагинации"
 
   jira:
     base_provider: fixture

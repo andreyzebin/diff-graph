@@ -4,36 +4,17 @@ tags: [java, null-safety, severity:high]
 
 input:
   bitbucket:
-    base_provider: fixture
-    data:
-      pull_request:
-        id: 42
-        title: "PROJ-123: Add getUserByEmail method"
-        description: "Implements user lookup by email"
-        author: { name: "john.doe", display_name: "John Doe" }
-        from_branch: "feature/PROJ-123-get-user-by-email"
-        to_branch: "main"
-        status: "OPEN"
-        head_commit: "abc123def456"
-
-      diff:
-        - path: "src/main/java/com/example/UserService.java"
-          change_type: MODIFY
-          hunks:
-            - old_start: 45
-              new_start: 45
-              lines:
-                - "+    public User getUserByEmail(String email) {"
-                - "+        User user = userRepository.findByEmail(email);"
-                - "+        return user.getId();  // NPE если user == null"
-                - "+    }"
-
-      codebase_context:
-        - path: "src/main/java/com/example/UserRepository.java"
-          content: |
-            public interface UserRepository extends JpaRepository<User, Long> {
-                Optional<User> findByEmail(String email);
-            }
+    provider: real
+    connection:
+      base_url: "${BITBUCKET_URL}"
+      project: "${BITBUCKET_PROJECT}"
+      repo: "${BITBUCKET_REPO}"
+      auth:
+        env: BITBUCKET_TOKEN
+    pull_request:
+      from_branch: "feature/PROJ-123-get-user-by-email"
+      to_branch: "main"
+      title: "[BENCHMARK] SCEN-001: Null pointer без проверки"
 
   jira:
     base_provider: fixture

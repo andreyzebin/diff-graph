@@ -4,51 +4,17 @@ tags: [python, performance, database, severity:high]
 
 input:
   bitbucket:
-    base_provider: fixture
-    data:
-      pull_request:
-        id: 78
-        title: "PROJ-400: Add team dashboard API"
-        description: "Returns all teams with their members and recent activity"
-        author: { name: "alice.jones", display_name: "Alice Jones" }
-        from_branch: "feature/PROJ-400-team-dashboard"
-        to_branch: "main"
-        status: "OPEN"
-        head_commit: "999ccc888ddd"
-
-      diff:
-        - path: "app/api/teams.py"
-          change_type: MODIFY
-          hunks:
-            - old_start: 15
-              new_start: 15
-              lines:
-                - "+@router.get('/dashboard')"
-                - "+def get_team_dashboard(db: Session = Depends(get_db)):"
-                - "+    teams = db.query(Team).all()"
-                - "+    result = []"
-                - "+    for team in teams:"
-                - "+        members = db.query(User).filter(User.team_id == team.id).all()"
-                - "+        last_activity = db.query(Activity)"
-                - "+                          .filter(Activity.team_id == team.id)"
-                - "+                          .order_by(Activity.created_at.desc())"
-                - "+                          .first()"
-                - "+        result.append({"
-                - "+            'team': team,"
-                - "+            'members': members,"
-                - "+            'last_activity': last_activity"
-                - "+        })"
-                - "+    return result"
-
-      codebase_context:
-        - path: "app/models/team.py"
-          content: |
-            class Team(Base):
-                __tablename__ = 'teams'
-                id = Column(Integer, primary_key=True)
-                name = Column(String)
-                members = relationship('User', back_populates='team', lazy='select')
-                activities = relationship('Activity', back_populates='team', lazy='select')
+    provider: real
+    connection:
+      base_url: "${BITBUCKET_URL}"
+      project: "${BITBUCKET_PROJECT}"
+      repo: "${BITBUCKET_REPO}"
+      auth:
+        env: BITBUCKET_TOKEN
+    pull_request:
+      from_branch: "feature/PROJ-400-team-dashboard"
+      to_branch: "main"
+      title: "[BENCHMARK] SCEN-004: N+1 запросы в team dashboard"
 
   jira:
     base_provider: fixture

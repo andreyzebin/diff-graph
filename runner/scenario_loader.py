@@ -19,7 +19,7 @@ SCENARIO_SCHEMA = {
             "type": "object",
             "required": ["bitbucket", "jira"],
             "properties": {
-                "bitbucket": {"type": "object", "required": ["base_provider"]},
+                "bitbucket": {"type": "object", "required": ["provider"]},
                 "jira": {"type": "object", "required": ["base_provider"]},
             },
         },

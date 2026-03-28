@@ -8,7 +8,7 @@ from pathlib import Path
 
 import anthropic
 
-from bitbucket.base import CommentThread, FileDiff, FileContent, ReviewStatus
+from bitbucket.base import CommentThread, ReviewStatus
 from runner.scenario_loader import Scenario
 
 
@@ -74,8 +74,6 @@ class Judge(ABC):
         scenario: Scenario,
         comments: list[CommentThread],
         review_status: ReviewStatus | None,
-        diff: list[FileDiff] | None = None,
-        codebase_context: list[FileContent] | None = None,
         jira_summary: str = "",
         jira_description: str = "",
     ) -> JudgeOutput: ...
@@ -100,14 +98,12 @@ class LLMJudge(Judge):
         scenario: Scenario,
         comments: list[CommentThread],
         review_status: ReviewStatus | None,
-        diff: list[FileDiff] | None = None,
-        codebase_context: list[FileContent] | None = None,
         jira_summary: str = "",
         jira_description: str = "",
     ) -> JudgeOutput:
         prompt = _build_prompt(
             self._template, scenario, comments, review_status,
-            diff or [], codebase_context or [], jira_summary, jira_description,
+            jira_summary, jira_description,
         )
         data = self._llm_client.complete_json(prompt)
         return _interpret(data, scenario.expected_output.required_comments)
@@ -120,8 +116,6 @@ def _build_prompt(
     scenario: Scenario,
     comments: list[CommentThread],
     review_status: ReviewStatus | None,
-    diff: list[FileDiff],
-    codebase_context: list[FileContent],
     jira_summary: str,
     jira_description: str,
 ) -> str:
@@ -147,8 +141,6 @@ def _build_prompt(
         jira_key=scenario.id,
         jira_summary=jira_summary,
         jira_description=jira_description,
-        diff=_format_diff(diff),
-        codebase_context=_format_context(codebase_context),
         agent_comments=_format_comments(comments),
         required_comments=required_str,
         forbidden_comments=forbidden_str,
@@ -200,21 +192,6 @@ def _parse_raw(raw: str) -> dict:
         raise ValueError(f"Could not parse LLM response as JSON: {raw[:200]}")
 
 
-def _format_diff(diffs: list[FileDiff]) -> str:
-    parts = []
-    for fd in diffs:
-        parts.append(f"File: {fd.path} ({fd.change_type})")
-        for h in fd.hunks:
-            parts.append(f"  @@ -{h.old_start} +{h.new_start} @@")
-            for line in h.lines:
-                parts.append(f"  {line}")
-    return "\n".join(parts)
-
-
-def _format_context(files: list[FileContent]) -> str:
-    return "\n\n".join(f"=== {f.path} ===\n{f.content}" for f in files)
-
-
 def _format_comments(comments: list[CommentThread]) -> str:
     parts = []
     for c in comments:
@@ -232,12 +209,6 @@ _DEFAULT_PROMPT = """
 Jira: {jira_key} — {jira_summary}
 {jira_description}
 
-## Изменения в PR (diff)
-{diff}
-
-## Контекст кодовой базы (файлы запрошенные агентом)
-{codebase_context}
-
 ## Что агент написал в PR
 {agent_comments}
 
@@ -248,7 +219,7 @@ Jira: {jira_key} — {jira_summary}
    - Указал ли на правильный файл и строку (±2 строки допустимо)?
    - Уверенность совпадения (0.0–1.0)
 
-2. Найди ЛИШНИЕ замечания — не связанные с задачей или diff.
+2. Найди ЛИШНИЕ замечания — не связанные с задачей.
 
 3. Оцени корректность смены статуса PR.
 

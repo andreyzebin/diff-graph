@@ -2,30 +2,11 @@ from __future__ import annotations
 
 import time
 
-from bitbucket.base import BitbucketPRProxy, DiffHunk, FileDiff, FileContent
+from bitbucket.base import BitbucketPRProxy
 from runner.scenario_loader import Scenario
 from runner.agent_client import AgentClient
 from runner.judge import Judge
 from runner.scorer import ScenarioResult, score_scenario
-
-
-def _parse_diff(data: list[dict]) -> list[FileDiff]:
-    diffs = []
-    for fd in data:
-        hunks = [
-            DiffHunk(
-                old_start=h["old_start"],
-                new_start=h["new_start"],
-                lines=h["lines"],
-            )
-            for h in fd.get("hunks", [])
-        ]
-        diffs.append(FileDiff(
-            path=fd["path"],
-            change_type=fd.get("change_type", "MODIFY"),
-            hunks=hunks,
-        ))
-    return diffs
 
 
 async def run_scenario(
@@ -34,14 +15,7 @@ async def run_scenario(
     agent_client: AgentClient,
     judge: Judge,
 ) -> ScenarioResult:
-    bb_data = scenario.input.get("bitbucket", {}).get("data", {})
     jira_issue = scenario.input.get("jira", {}).get("data", {}).get("issue", {})
-
-    diff = _parse_diff(bb_data.get("diff", []))
-    codebase_context = [
-        FileContent(path=f["path"], content=f["content"])
-        for f in bb_data.get("codebase_context", [])
-    ]
     jira_key = jira_issue.get("key") or None
     jira_summary = jira_issue.get("summary", "")
     jira_description = jira_issue.get("description", "")
@@ -76,8 +50,6 @@ async def run_scenario(
         scenario=scenario,
         comments=comments,
         review_status=review_status,
-        diff=diff,
-        codebase_context=codebase_context,
         jira_summary=jira_summary,
         jira_description=jira_description,
     )

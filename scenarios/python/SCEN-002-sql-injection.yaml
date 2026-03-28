@@ -4,46 +4,17 @@ tags: [python, security, severity:critical]
 
 input:
   bitbucket:
-    base_provider: fixture
-    data:
-      pull_request:
-        id: 55
-        title: "PROJ-200: Add user search endpoint"
-        description: "Adds /search endpoint to find users by name"
-        author: { name: "jane.smith", display_name: "Jane Smith" }
-        from_branch: "feature/PROJ-200-user-search"
-        to_branch: "main"
-        status: "OPEN"
-        head_commit: "def789abc012"
-
-      diff:
-        - path: "app/api/users.py"
-          change_type: MODIFY
-          hunks:
-            - old_start: 28
-              new_start: 28
-              lines:
-                - "+@router.get('/search')"
-                - "+def search_users(name: str, db: Session = Depends(get_db)):"
-                - "+    query = f\"SELECT * FROM users WHERE name LIKE '%{name}%'\""
-                - "+    results = db.execute(query)"
-                - "+    return results.fetchall()"
-
-      codebase_context:
-        - path: "app/database.py"
-          content: |
-            from sqlalchemy import create_engine
-            from sqlalchemy.orm import sessionmaker
-
-            engine = create_engine(DATABASE_URL)
-            SessionLocal = sessionmaker(bind=engine)
-
-            def get_db():
-                db = SessionLocal()
-                try:
-                    yield db
-                finally:
-                    db.close()
+    provider: real
+    connection:
+      base_url: "${BITBUCKET_URL}"
+      project: "${BITBUCKET_PROJECT}"
+      repo: "${BITBUCKET_REPO}"
+      auth:
+        env: BITBUCKET_TOKEN
+    pull_request:
+      from_branch: "feature/PROJ-200-user-search"
+      to_branch: "main"
+      title: "[BENCHMARK] SCEN-002: SQL injection через f-string"
 
   jira:
     base_provider: fixture

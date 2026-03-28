@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from bitbucket.base import (
-    BitbucketPRProxy, CommentAnchor, CommentThread, ReviewStatus,
-    FileDiff, DiffHunk, FileContent,
-)
+from bitbucket.base import BitbucketPRProxy, CommentAnchor, CommentThread, ReviewStatus
 from runner.judge import (
     Judge, JudgeOutput, LLMClient, LLMJudge,
     CommentJudgement, FalsePositive,
@@ -53,54 +50,6 @@ class MockProxy(BitbucketPRProxy):
     async def get_review_status(self) -> ReviewStatus | None:
         return self._review_status
 
-
-# ── Shared fixture data ────────────────────────────────────────────
-
-# A realistic diff: UserService.java, method that dereferences a
-# potentially-null result from repository.findById() at line 42.
-DIFF = [
-    FileDiff(
-        path="src/main/java/com/example/UserService.java",
-        change_type="MODIFY",
-        hunks=[
-            DiffHunk(
-                old_start=38,
-                new_start=38,
-                lines=[
-                    "     public User getUser(Long id) {",
-                    "-        return repository.findById(id);",
-                    "+        User user = repository.findById(id);",
-                    "+        String name = user.getName();   // user may be null",
-                    "+        return user;",
-                    "     }",
-                ],
-            )
-        ],
-    )
-]
-
-# Surrounding file context so the judge understands the class shape.
-CODEBASE_CONTEXT = [
-    FileContent(
-        path="src/main/java/com/example/UserService.java",
-        content="""\
-public class UserService {
-    private final UserRepository repository;
-
-    public UserService(UserRepository repository) {
-        this.repository = repository;
-    }
-
-    // repository.findById() returns null when user is not found
-    public User getUser(Long id) {
-        User user = repository.findById(id);
-        String name = user.getName();   // user may be null
-        return user;
-    }
-}
-""",
-    )
-]
 
 JIRA_SUMMARY = "Add getUser endpoint to UserService"
 JIRA_DESCRIPTION = "Expose user lookup via REST. repository.findById may return null."
@@ -179,8 +128,6 @@ async def test_judge_found_comment_passes():
     judge = LLMJudge(llm)
     output = await judge.evaluate(
         scenario, comments, review_status,
-        diff=DIFF,
-        codebase_context=CODEBASE_CONTEXT,
         jira_summary=JIRA_SUMMARY,
         jira_description=JIRA_DESCRIPTION,
     )
@@ -200,7 +147,6 @@ async def test_judge_found_comment_passes():
     assert llm.last_prompt is not None
     assert "EXP-1" in llm.last_prompt
     assert "findById" in llm.last_prompt
-    assert "UserService.java" in llm.last_prompt
 
 
 async def test_judge_missed_comment_fails():
@@ -240,8 +186,6 @@ async def test_judge_missed_comment_fails():
     judge = LLMJudge(llm)
     output = await judge.evaluate(
         scenario, comments, review_status=None,
-        diff=DIFF,
-        codebase_context=CODEBASE_CONTEXT,
         jira_summary=JIRA_SUMMARY,
         jira_description=JIRA_DESCRIPTION,
     )

@@ -4,66 +4,17 @@ tags: [java, style, severity:low]
 
 input:
   bitbucket:
-    base_provider: fixture
-    data:
-      pull_request:
-        id: 100
-        title: "PROJ-600: Add ProductMapper utility"
-        description: "Adds mapper for converting Product entity to DTO"
-        author: { name: "diana.prince", display_name: "Diana Prince" }
-        from_branch: "feature/PROJ-600-product-mapper"
-        to_branch: "main"
-        status: "OPEN"
-        head_commit: "aabbccdd1122"
-
-      diff:
-        - path: "src/main/java/com/example/ProductMapper.java"
-          change_type: ADD
-          hunks:
-            - old_start: 0
-              new_start: 1
-              lines:
-                - "+@Component"
-                - "+public class ProductMapper {"
-                - "+"
-                - "+    public ProductDto toDto(Product product) {"
-                - "+        ProductDto dto = new ProductDto();"
-                - "+        dto.setId(product.getId());"
-                - "+        dto.setName(product.getName());"
-                - "+        dto.setPrice(product.getPrice());"
-                - "+        dto.setCategory(product.getCategory().getName());"
-                - "+        return dto;"
-                - "+    }"
-                - "+"
-                - "+    public List<ProductDto> toDtoList(List<Product> products) {"
-                - "+        return products.stream()"
-                - "+            .map(this::toDto)"
-                - "+            .collect(Collectors.toList());"
-                - "+    }"
-                - "+}"
-
-      codebase_context:
-        - path: "src/main/java/com/example/ProductDto.java"
-          content: |
-            public class ProductDto {
-                private Long id;
-                private String name;
-                private BigDecimal price;
-                private String category;
-                // getters and setters
-            }
-        - path: "src/main/java/com/example/Product.java"
-          content: |
-            @Entity
-            public class Product {
-                @Id
-                private Long id;
-                private String name;
-                private BigDecimal price;
-                @ManyToOne(fetch = FetchType.EAGER)
-                private Category category;
-                // getters and setters
-            }
+    provider: real
+    connection:
+      base_url: "${BITBUCKET_URL}"
+      project: "${BITBUCKET_PROJECT}"
+      repo: "${BITBUCKET_REPO}"
+      auth:
+        env: BITBUCKET_TOKEN
+    pull_request:
+      from_branch: "feature/PROJ-600-product-mapper"
+      to_branch: "main"
+      title: "[BENCHMARK] SCEN-006: Style-only замечания"
 
   jira:
     base_provider: fixture
