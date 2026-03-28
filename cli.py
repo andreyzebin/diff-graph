@@ -55,6 +55,7 @@ async def _run_async(
     compare_with: str | None,
     agent_url_override: str | None,
 ):
+    from bitbucket import build_proxy
     from runner.scenario_loader import load_scenarios
     from runner.agent_client import AgentClient
     from runner.judge import Judge
@@ -103,12 +104,14 @@ async def _run_async(
 
     results = []
     for s in scenarios:
-        result = await run_scenario(
-            scenario=s,
-            agent_url=agent_url,
-            agent_client=agent_client,
-            judge=judge,
-        )
+        proxy = await build_proxy(s.input["bitbucket"])
+        async with proxy:
+            result = await run_scenario(
+                scenario=s,
+                proxy=proxy,
+                agent_client=agent_client,
+                judge=judge,
+            )
         results.append(result)
 
         if result.verdict == "pass":
@@ -281,6 +284,7 @@ def ab(
 
 
 async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: str | None):
+    from bitbucket import build_proxy
     from runner.scenario_loader import load_scenarios
     from runner.agent_client import AgentClient
     from runner.judge import Judge
@@ -307,8 +311,12 @@ async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: st
     results_a, results_b = [], []
     for s in scenarios:
         console.print(f"Running {s.id}...")
-        ra = await run_scenario(s, agent_a, client_a, judge)
-        rb = await run_scenario(s, agent_b, client_b, judge)
+        proxy_a = await build_proxy(s.input["bitbucket"])
+        async with proxy_a:
+            ra = await run_scenario(s, proxy_a, client_a, judge)
+        proxy_b = await build_proxy(s.input["bitbucket"])
+        async with proxy_b:
+            rb = await run_scenario(s, proxy_b, client_b, judge)
         results_a.append(ra)
         results_b.append(rb)
 

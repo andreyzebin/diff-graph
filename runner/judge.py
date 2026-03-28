@@ -3,11 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import anthropic
 
-from fake_servers.providers.base import CapturedOutput, FileDiff, FileContent
+from bitbucket.base import CommentThread, FileDiff, FileContent, ReviewStatus
 from runner.scenario_loader import Scenario
 
 
@@ -59,9 +58,9 @@ def _format_context(files: list[FileContent]) -> str:
     return "\n\n".join(parts)
 
 
-def _format_comments(captured: CapturedOutput) -> str:
+def _format_comments(comments: list[CommentThread]) -> str:
     parts = []
-    for c in captured.comments:
+    for c in comments:
         if c.anchor:
             parts.append(f"[inline] {c.anchor.path}:{c.anchor.line} — {c.text}")
         else:
@@ -83,7 +82,8 @@ class Judge:
     async def evaluate(
         self,
         scenario: Scenario,
-        captured: CapturedOutput,
+        comments: list[CommentThread],
+        review_status: ReviewStatus | None,
         diff: list[FileDiff] | None = None,
         codebase_context: list[FileContent] | None = None,
         jira_summary: str = "",
@@ -108,7 +108,7 @@ class Judge:
             for fc in eo.forbidden_comments
         ], ensure_ascii=False, indent=2)
 
-        actual_status = captured.review_status.status if captured.review_status else "none"
+        actual_status = review_status.status if review_status else "none"
 
         prompt = self._template.format(
             jira_key=scenario.id,
@@ -116,7 +116,7 @@ class Judge:
             jira_description=jira_description,
             diff=_format_diff(diff or []),
             codebase_context=_format_context(codebase_context or []),
-            agent_comments=_format_comments(captured),
+            agent_comments=_format_comments(comments),
             required_comments=required_str,
             forbidden_comments=forbidden_str,
             expected_status_change=eo.expected_status_change or "none",
@@ -135,7 +135,6 @@ class Judge:
 
 
 def _parse_judge_output(raw: str, required_comments) -> JudgeOutput:
-    # Strip markdown code block if present
     text = raw.strip()
     if text.startswith("```"):
         lines = text.split("\n")
@@ -146,7 +145,6 @@ def _parse_judge_output(raw: str, required_comments) -> JudgeOutput:
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        # Attempt to extract JSON from text
         import re
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if match:
@@ -162,23 +160,25 @@ def _parse_judge_output(raw: str, required_comments) -> JudgeOutput:
                 raw_response=raw,
             )
 
-    rc_list = []
-    for rc in data.get("required_comments", []):
-        rc_list.append(CommentJudgement(
+    rc_list = [
+        CommentJudgement(
             expected_id=rc.get("expected_id", ""),
             found=rc.get("found", False),
             matched_comment_id=rc.get("matched_comment_id"),
             location_accurate=rc.get("location_accurate", False),
             match_confidence=rc.get("match_confidence", 0.0),
             reasoning=rc.get("reasoning", ""),
-        ))
+        )
+        for rc in data.get("required_comments", [])
+    ]
 
-    fp_list = []
-    for fp in data.get("false_positives", []):
-        fp_list.append(FalsePositive(
+    fp_list = [
+        FalsePositive(
             comment_id=fp.get("comment_id", 0),
             reasoning=fp.get("reasoning", ""),
-        ))
+        )
+        for fp in data.get("false_positives", [])
+    ]
 
     return JudgeOutput(
         overall_score=data.get("overall_score", 0.0),

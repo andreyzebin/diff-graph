@@ -7,16 +7,6 @@ import httpx
 
 
 @dataclass
-class AgentRequest:
-    pr_id: int
-    jira_key: str | None
-    bitbucket_url: str
-    jira_url: str
-    project: str = "BENCH"
-    repo: str = "test-repo"
-
-
-@dataclass
 class AgentResponse:
     success: bool
     raw: dict
@@ -30,11 +20,8 @@ class AgentClient:
 
     async def run(
         self,
-        agent_url: str,
         pr_id: int,
         jira_key: str | None,
-        bitbucket_url: str,
-        jira_url: str,
         project: str = "BENCH",
         repo: str = "test-repo",
     ) -> AgentResponse:
@@ -47,13 +34,11 @@ class AgentClient:
             "project": project,
             "repo": repo,
             "jira_key": jira_key,
-            "bitbucket_url": bitbucket_url,
-            "jira_url": jira_url,
         }
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
-                f"{agent_url}/review",
+                f"{self._base_url}/review",
                 json=payload,
                 headers=headers,
             )

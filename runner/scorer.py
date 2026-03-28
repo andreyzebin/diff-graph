@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from bitbucket.base import CommentThread, ReviewStatus
 from runner.judge import JudgeOutput
 from runner.scenario_loader import Scenario
-from fake_servers.providers.base import CapturedOutput
 
 
 @dataclass
@@ -34,7 +34,8 @@ class ScenarioResult:
 
 def score_scenario(
     scenario: Scenario,
-    captured: CapturedOutput,
+    comments: list[CommentThread],
+    review_status: ReviewStatus | None,
     judge_output: JudgeOutput,
     duration_seconds: float,
 ) -> ScenarioResult:
@@ -46,8 +47,8 @@ def score_scenario(
     accurate = [rc for rc in judge_output.required_comments if rc.found and rc.location_accurate]
     location_accuracy = len(accurate) / required_found if required_found > 0 else 0.0
 
-    inline_count = len(captured.inline_comments)
-    total_count = len(captured.comments)
+    inline_count = sum(1 for c in comments if c.anchor is not None)
+    total_count = len(comments)
     inline_ratio = inline_count / total_count if total_count > 0 else 0.0
 
     false_positives = len(judge_output.false_positives)
