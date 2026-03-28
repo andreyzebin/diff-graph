@@ -15,6 +15,10 @@ judge:
   model: "claude-opus-4-6"
   temperature: 0
   prompt_template: "prompts/judge.txt"
+  # For any OpenAI-compatible endpoint (DeepSeek, Ollama, vLLM, OpenAI, etc.)
+  # If api_url is set, OpenAI-compatible client is used instead of Anthropic.
+  # api_url: "https://api.deepseek.com/v1"
+  # api_key: "${DEEPSEEK_API_KEY}"
 
 results:
   store_path: "results"

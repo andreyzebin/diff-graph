@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import anthropic
+import openai
 
 from bitbucket.base import CommentThread, ReviewStatus
 from runner.scenario_loader import Scenario
@@ -62,6 +63,24 @@ class AnthropicLLMClient(LLMClient):
             messages=[{"role": "user", "content": prompt}],
         )
         raw = message.content[0].text
+        return _parse_raw(raw)
+
+
+class OpenAILLMClient(LLMClient):
+    """Any OpenAI-compatible endpoint (OpenAI, DeepSeek, Ollama, vLLM, etc.)."""
+
+    def __init__(self, model: str, api_url: str, api_key: str = "", temperature: float = 0):
+        self._model = model
+        self._temperature = temperature
+        self._client = openai.OpenAI(base_url=api_url, api_key=api_key or "none")
+
+    def complete_json(self, prompt: str) -> dict:
+        response = self._client.chat.completions.create(
+            model=self._model,
+            temperature=self._temperature,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.choices[0].message.content
         return _parse_raw(raw)
 
 
