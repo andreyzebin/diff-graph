@@ -1,15 +1,15 @@
+bitbucket:
+  connection:
+    base_url: "${BITBUCKET_URL}"
+    project: "${BITBUCKET_PROJECT}"
+    repo: "${BITBUCKET_REPO}"
+    auth:
+      env: BITBUCKET_TOKEN
+
 agent:
   base_url: "http://localhost:8080"
   api_key: "${AGENT_API_KEY}"
   timeout_seconds: 120
-  url_injection:
-    mode: env
-    bitbucket_key: "BITBUCKET_URL"
-    jira_key: "JIRA_URL"
-
-fake_servers:
-  host: "127.0.0.1"
-  port: 0
 
 judge:
   model: "claude-opus-4-6"

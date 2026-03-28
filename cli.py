@@ -67,6 +67,7 @@ async def _run_async(
     agent_url = agent_url_override or _expand_env(agent_cfg.get("base_url", "http://localhost:8080"))
     api_key = _expand_env(agent_cfg.get("api_key", ""))
 
+    bitbucket_connection = cfg.get("bitbucket", {}).get("connection", {})
     judge_cfg = cfg.get("judge", {})
     results_cfg = cfg.get("results", {})
 
@@ -104,7 +105,8 @@ async def _run_async(
 
     results = []
     for s in scenarios:
-        proxy = await build_proxy(s.input["bitbucket"])
+        bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection}
+        proxy = await build_proxy(bb_cfg)
         async with proxy:
             result = await run_scenario(
                 scenario=s,
@@ -294,6 +296,7 @@ async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: st
     judge_cfg = cfg.get("judge", {})
     agent_cfg = cfg.get("agent", {})
     api_key = _expand_env(agent_cfg.get("api_key", ""))
+    bitbucket_connection = cfg.get("bitbucket", {}).get("connection", {})
 
     scenarios = load_scenarios(SCENARIOS_DIR, tags=tags, scenario_id=scenario_id)
     if not scenarios:
@@ -311,10 +314,11 @@ async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: st
     results_a, results_b = [], []
     for s in scenarios:
         console.print(f"Running {s.id}...")
-        proxy_a = await build_proxy(s.input["bitbucket"])
+        bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection}
+        proxy_a = await build_proxy(bb_cfg)
         async with proxy_a:
             ra = await run_scenario(s, proxy_a, client_a, judge)
-        proxy_b = await build_proxy(s.input["bitbucket"])
+        proxy_b = await build_proxy(bb_cfg)
         async with proxy_b:
             rb = await run_scenario(s, proxy_b, client_b, judge)
         results_a.append(ra)

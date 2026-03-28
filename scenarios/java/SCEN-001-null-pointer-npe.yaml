@@ -5,12 +5,6 @@ tags: [java, null-safety, severity:high]
 input:
   bitbucket:
     provider: real
-    connection:
-      base_url: "${BITBUCKET_URL}"
-      project: "${BITBUCKET_PROJECT}"
-      repo: "${BITBUCKET_REPO}"
-      auth:
-        env: BITBUCKET_TOKEN
     pull_request:
       from_branch: "feature/PROJ-123-get-user-by-email"
       to_branch: "main"
