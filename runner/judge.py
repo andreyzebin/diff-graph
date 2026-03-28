@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +11,8 @@ import anthropic
 from bitbucket.base import CommentThread, FileDiff, FileContent, ReviewStatus
 from runner.scenario_loader import Scenario
 
+
+# ── Output types ───────────────────────────────────────────────────
 
 @dataclass
 class CommentJudgement:
@@ -37,7 +41,163 @@ class JudgeOutput:
     raw_response: str = ""
 
 
+# ── LLM client abstraction ─────────────────────────────────────────
+
+class LLMClient(ABC):
+    @abstractmethod
+    def complete_json(self, prompt: str) -> dict: ...
+
+
+class AnthropicLLMClient(LLMClient):
+    def __init__(self, model: str = "claude-opus-4-6", temperature: float = 0):
+        self._model = model
+        self._temperature = temperature
+        self._client = anthropic.Anthropic()
+
+    def complete_json(self, prompt: str) -> dict:
+        message = self._client.messages.create(
+            model=self._model,
+            max_tokens=4096,
+            temperature=self._temperature,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = message.content[0].text
+        return _parse_raw(raw)
+
+
+# ── Judge abstraction ──────────────────────────────────────────────
+
+class Judge(ABC):
+    @abstractmethod
+    async def evaluate(
+        self,
+        scenario: Scenario,
+        comments: list[CommentThread],
+        review_status: ReviewStatus | None,
+        diff: list[FileDiff] | None = None,
+        codebase_context: list[FileContent] | None = None,
+        jira_summary: str = "",
+        jira_description: str = "",
+    ) -> JudgeOutput: ...
+
+
+# ── Concrete judge ─────────────────────────────────────────────────
+
 PROMPT_TEMPLATE_PATH = Path(__file__).parent.parent / "prompts" / "judge.txt"
+
+
+class LLMJudge(Judge):
+    def __init__(self, llm_client: LLMClient):
+        self._llm_client = llm_client
+        self._template = (
+            PROMPT_TEMPLATE_PATH.read_text()
+            if PROMPT_TEMPLATE_PATH.exists()
+            else _DEFAULT_PROMPT
+        )
+
+    async def evaluate(
+        self,
+        scenario: Scenario,
+        comments: list[CommentThread],
+        review_status: ReviewStatus | None,
+        diff: list[FileDiff] | None = None,
+        codebase_context: list[FileContent] | None = None,
+        jira_summary: str = "",
+        jira_description: str = "",
+    ) -> JudgeOutput:
+        prompt = _build_prompt(
+            self._template, scenario, comments, review_status,
+            diff or [], codebase_context or [], jira_summary, jira_description,
+        )
+        data = self._llm_client.complete_json(prompt)
+        return _interpret(data, scenario.expected_output.required_comments)
+
+
+# ── Pure helpers ───────────────────────────────────────────────────
+
+def _build_prompt(
+    template: str,
+    scenario: Scenario,
+    comments: list[CommentThread],
+    review_status: ReviewStatus | None,
+    diff: list[FileDiff],
+    codebase_context: list[FileContent],
+    jira_summary: str,
+    jira_description: str,
+) -> str:
+    eo = scenario.expected_output
+    required_str = json.dumps([
+        {
+            "id": rc.id,
+            "type": rc.type,
+            "severity": rc.severity,
+            "location": rc.location,
+            "keywords": rc.description_keywords,
+            "rationale": rc.rationale,
+        }
+        for rc in eo.required_comments
+    ], ensure_ascii=False, indent=2)
+
+    forbidden_str = json.dumps([
+        {"description": fc.description}
+        for fc in eo.forbidden_comments
+    ], ensure_ascii=False, indent=2)
+
+    return template.format(
+        jira_key=scenario.id,
+        jira_summary=jira_summary,
+        jira_description=jira_description,
+        diff=_format_diff(diff),
+        codebase_context=_format_context(codebase_context),
+        agent_comments=_format_comments(comments),
+        required_comments=required_str,
+        forbidden_comments=forbidden_str,
+        expected_status_change=eo.expected_status_change or "none",
+        actual_status_change=review_status.status if review_status else "none",
+    )
+
+
+def _interpret(data: dict, required_comments) -> JudgeOutput:
+    return JudgeOutput(
+        overall_score=data.get("overall_score", 0.0),
+        required_comments=[
+            CommentJudgement(
+                expected_id=rc.get("expected_id", ""),
+                found=rc.get("found", False),
+                matched_comment_id=rc.get("matched_comment_id"),
+                location_accurate=rc.get("location_accurate", False),
+                match_confidence=rc.get("match_confidence", 0.0),
+                reasoning=rc.get("reasoning", ""),
+            )
+            for rc in data.get("required_comments", [])
+        ],
+        false_positives=[
+            FalsePositive(
+                comment_id=fp.get("comment_id", 0),
+                reasoning=fp.get("reasoning", ""),
+            )
+            for fp in data.get("false_positives", [])
+        ],
+        status_change_verdict=data.get("status_change_verdict", "unknown"),
+        verdict=data.get("verdict", "fail"),
+        summary=data.get("summary", ""),
+    )
+
+
+def _parse_raw(raw: str) -> dict:
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:])
+        if text.endswith("```"):
+            text = text[:-3]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+        raise ValueError(f"Could not parse LLM response as JSON: {raw[:200]}")
 
 
 def _format_diff(diffs: list[FileDiff]) -> str:
@@ -52,10 +212,7 @@ def _format_diff(diffs: list[FileDiff]) -> str:
 
 
 def _format_context(files: list[FileContent]) -> str:
-    parts = []
-    for f in files:
-        parts.append(f"=== {f.path} ===\n{f.content}")
-    return "\n\n".join(parts)
+    return "\n\n".join(f"=== {f.path} ===\n{f.content}" for f in files)
 
 
 def _format_comments(comments: list[CommentThread]) -> str:
@@ -66,129 +223,6 @@ def _format_comments(comments: list[CommentThread]) -> str:
         else:
             parts.append(f"[general] {c.text}")
     return "\n".join(parts) if parts else "(no comments)"
-
-
-class Judge:
-    def __init__(self, model: str = "claude-opus-4-6", temperature: float = 0):
-        self._model = model
-        self._temperature = temperature
-        self._client = anthropic.Anthropic()
-
-        if PROMPT_TEMPLATE_PATH.exists():
-            self._template = PROMPT_TEMPLATE_PATH.read_text()
-        else:
-            self._template = _DEFAULT_PROMPT
-
-    async def evaluate(
-        self,
-        scenario: Scenario,
-        comments: list[CommentThread],
-        review_status: ReviewStatus | None,
-        diff: list[FileDiff] | None = None,
-        codebase_context: list[FileContent] | None = None,
-        jira_summary: str = "",
-        jira_description: str = "",
-    ) -> JudgeOutput:
-        eo = scenario.expected_output
-
-        required_str = json.dumps([
-            {
-                "id": rc.id,
-                "type": rc.type,
-                "severity": rc.severity,
-                "location": rc.location,
-                "keywords": rc.description_keywords,
-                "rationale": rc.rationale,
-            }
-            for rc in eo.required_comments
-        ], ensure_ascii=False, indent=2)
-
-        forbidden_str = json.dumps([
-            {"description": fc.description}
-            for fc in eo.forbidden_comments
-        ], ensure_ascii=False, indent=2)
-
-        actual_status = review_status.status if review_status else "none"
-
-        prompt = self._template.format(
-            jira_key=scenario.id,
-            jira_summary=jira_summary,
-            jira_description=jira_description,
-            diff=_format_diff(diff or []),
-            codebase_context=_format_context(codebase_context or []),
-            agent_comments=_format_comments(comments),
-            required_comments=required_str,
-            forbidden_comments=forbidden_str,
-            expected_status_change=eo.expected_status_change or "none",
-            actual_status_change=actual_status,
-        )
-
-        message = self._client.messages.create(
-            model=self._model,
-            max_tokens=4096,
-            temperature=self._temperature,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        raw = message.content[0].text
-        return _parse_judge_output(raw, eo.required_comments)
-
-
-def _parse_judge_output(raw: str, required_comments) -> JudgeOutput:
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        text = "\n".join(lines[1:])
-        if text.endswith("```"):
-            text = text[:-3]
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        import re
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        if match:
-            data = json.loads(match.group())
-        else:
-            return JudgeOutput(
-                overall_score=0.0,
-                required_comments=[],
-                false_positives=[],
-                status_change_verdict="unknown",
-                verdict="fail",
-                summary=f"Failed to parse judge output: {raw[:200]}",
-                raw_response=raw,
-            )
-
-    rc_list = [
-        CommentJudgement(
-            expected_id=rc.get("expected_id", ""),
-            found=rc.get("found", False),
-            matched_comment_id=rc.get("matched_comment_id"),
-            location_accurate=rc.get("location_accurate", False),
-            match_confidence=rc.get("match_confidence", 0.0),
-            reasoning=rc.get("reasoning", ""),
-        )
-        for rc in data.get("required_comments", [])
-    ]
-
-    fp_list = [
-        FalsePositive(
-            comment_id=fp.get("comment_id", 0),
-            reasoning=fp.get("reasoning", ""),
-        )
-        for fp in data.get("false_positives", [])
-    ]
-
-    return JudgeOutput(
-        overall_score=data.get("overall_score", 0.0),
-        required_comments=rc_list,
-        false_positives=fp_list,
-        status_change_verdict=data.get("status_change_verdict", "unknown"),
-        verdict=data.get("verdict", "fail"),
-        summary=data.get("summary", ""),
-        raw_response=raw,
-    )
 
 
 _DEFAULT_PROMPT = """

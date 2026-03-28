@@ -58,7 +58,7 @@ async def _run_async(
     from bitbucket import build_proxy
     from runner.scenario_loader import load_scenarios
     from runner.agent_client import AgentClient
-    from runner.judge import Judge
+    from runner.judge import LLMJudge, AnthropicLLMClient
     from runner.results_store import ResultsStore
     from runner.run import run_scenario
 
@@ -91,10 +91,10 @@ async def _run_async(
         api_key=api_key,
         timeout=agent_cfg.get("timeout_seconds", 120),
     )
-    judge = Judge(
+    judge = LLMJudge(AnthropicLLMClient(
         model=judge_cfg.get("model", "claude-opus-4-6"),
         temperature=judge_cfg.get("temperature", 0),
-    )
+    ))
     store = ResultsStore(
         store_path=Path(results_cfg.get("store_path", str(RESULTS_DIR))),
         db_path=Path(results_cfg.get("db_path", str(RESULTS_DIR / "benchmark.db"))),
@@ -287,7 +287,7 @@ async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: st
     from bitbucket import build_proxy
     from runner.scenario_loader import load_scenarios
     from runner.agent_client import AgentClient
-    from runner.judge import Judge
+    from runner.judge import LLMJudge, AnthropicLLMClient
     from runner.run import run_scenario
 
     cfg = _load_config()
@@ -302,7 +302,7 @@ async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: st
 
     client_a = AgentClient(agent_a, api_key)
     client_b = AgentClient(agent_b, api_key)
-    judge = Judge(model=judge_cfg.get("model", "claude-opus-4-6"))
+    judge = LLMJudge(AnthropicLLMClient(model=judge_cfg.get("model", "claude-opus-4-6")))
 
     console.print(f"\n[bold]A/B test: {len(scenarios)} scenario(s)[/bold]")
     console.print(f"  Agent A: {agent_a}")
