@@ -21,7 +21,6 @@ class AgentClient:
     async def run(
         self,
         pr_id: int,
-        jira_key: str | None,
         project: str = "BENCH",
         repo: str = "test-repo",
     ) -> AgentResponse:
@@ -33,7 +32,6 @@ class AgentClient:
             "pr_id": pr_id,
             "project": project,
             "repo": repo,
-            "jira_key": jira_key,
         }
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:

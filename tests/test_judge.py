@@ -51,10 +51,6 @@ class MockProxy(BitbucketPRProxy):
         return self._review_status
 
 
-JIRA_SUMMARY = "Add getUser endpoint to UserService"
-JIRA_DESCRIPTION = "Expose user lookup via REST. repository.findById may return null."
-
-
 # ── Helpers ────────────────────────────────────────────────────────
 
 def _make_scenario(
@@ -126,11 +122,7 @@ async def test_judge_found_comment_passes():
     })
 
     judge = LLMJudge(llm)
-    output = await judge.evaluate(
-        scenario, comments, review_status,
-        jira_summary=JIRA_SUMMARY,
-        jira_description=JIRA_DESCRIPTION,
-    )
+    output = await judge.evaluate(scenario, comments, review_status)
 
     print(f"\n{'─' * 60}\nPROMPT SENT TO LLM:\n{'─' * 60}\n{llm.last_prompt}\n{'─' * 60}")
 
@@ -184,11 +176,7 @@ async def test_judge_missed_comment_fails():
     })
 
     judge = LLMJudge(llm)
-    output = await judge.evaluate(
-        scenario, comments, review_status=None,
-        jira_summary=JIRA_SUMMARY,
-        jira_description=JIRA_DESCRIPTION,
-    )
+    output = await judge.evaluate(scenario, comments, review_status=None)
 
     print(f"\n{'─' * 60}\nPROMPT SENT TO LLM:\n{'─' * 60}\n{llm.last_prompt}\n{'─' * 60}")
 

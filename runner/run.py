@@ -15,15 +15,10 @@ async def run_scenario(
     agent_client: AgentClient,
     judge: Judge,
 ) -> ScenarioResult:
-    jira_issue = scenario.input.get("jira", {}).get("data", {}).get("issue", {})
-    jira_key = jira_issue.get("key") or None
-    jira_summary = jira_issue.get("summary", "")
-    jira_description = jira_issue.get("description", "")
-
     start = time.monotonic()
 
     try:
-        await agent_client.run(pr_id=proxy.pr_id, jira_key=jira_key)
+        await agent_client.run(pr_id=proxy.pr_id)
     except Exception as e:
         return ScenarioResult(
             scenario_id=scenario.id,
@@ -50,8 +45,6 @@ async def run_scenario(
         scenario=scenario,
         comments=comments,
         review_status=review_status,
-        jira_summary=jira_summary,
-        jira_description=jira_description,
     )
 
     return score_scenario(scenario, comments, review_status, judge_output, duration)

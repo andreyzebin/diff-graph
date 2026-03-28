@@ -17,10 +17,9 @@ SCENARIO_SCHEMA = {
         "tags": {"type": "array", "items": {"type": "string"}},
         "input": {
             "type": "object",
-            "required": ["bitbucket", "jira"],
+            "required": ["bitbucket"],
             "properties": {
                 "bitbucket": {"type": "object", "required": ["provider"]},
-                "jira": {"type": "object", "required": ["base_provider"]},
             },
         },
         "expected_output": {

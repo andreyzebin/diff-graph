@@ -74,8 +74,6 @@ class Judge(ABC):
         scenario: Scenario,
         comments: list[CommentThread],
         review_status: ReviewStatus | None,
-        jira_summary: str = "",
-        jira_description: str = "",
     ) -> JudgeOutput: ...
 
 
@@ -98,13 +96,8 @@ class LLMJudge(Judge):
         scenario: Scenario,
         comments: list[CommentThread],
         review_status: ReviewStatus | None,
-        jira_summary: str = "",
-        jira_description: str = "",
     ) -> JudgeOutput:
-        prompt = _build_prompt(
-            self._template, scenario, comments, review_status,
-            jira_summary, jira_description,
-        )
+        prompt = _build_prompt(self._template, scenario, comments, review_status)
         data = self._llm_client.complete_json(prompt)
         return _interpret(data, scenario.expected_output.required_comments)
 
@@ -116,8 +109,6 @@ def _build_prompt(
     scenario: Scenario,
     comments: list[CommentThread],
     review_status: ReviewStatus | None,
-    jira_summary: str,
-    jira_description: str,
 ) -> str:
     eo = scenario.expected_output
     required_str = json.dumps([
@@ -138,9 +129,6 @@ def _build_prompt(
     ], ensure_ascii=False, indent=2)
 
     return template.format(
-        jira_key=scenario.id,
-        jira_summary=jira_summary,
-        jira_description=jira_description,
         agent_comments=_format_comments(comments),
         required_comments=required_str,
         forbidden_comments=forbidden_str,
@@ -204,10 +192,6 @@ def _format_comments(comments: list[CommentThread]) -> str:
 
 _DEFAULT_PROMPT = """
 Ты — эксперт по код-ревью. Оцени качество ревью выполненного AI-агентом.
-
-## Контекст задачи
-Jira: {jira_key} — {jira_summary}
-{jira_description}
 
 ## Что агент написал в PR
 {agent_comments}
