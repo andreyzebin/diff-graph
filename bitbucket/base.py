@@ -100,18 +100,5 @@ class AgentPRViewFactory(ABC):
     async def build(cls, cfg: dict) -> AgentPRView: ...
 
 
-# Keep old names as aliases so existing code continues to work during migration.
-BitbucketPRProxy = AgentPRView
-BitbucketFactory = AgentPRViewFactory
-
-
 class ProviderError(Exception):
-    pass
-
-
-class ProviderNotFoundError(ProviderError):
-    pass
-
-
-class ProviderAuthError(ProviderError):
     pass

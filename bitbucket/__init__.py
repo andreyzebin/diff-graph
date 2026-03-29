@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 from .base import AgentPRView, AgentPRViewFactory, ProviderError
-# Legacy aliases kept for backward compatibility
-BitbucketPRProxy = AgentPRView
-BitbucketFactory = AgentPRViewFactory
 
 
 async def build_proxy(cfg: dict) -> AgentPRView:
