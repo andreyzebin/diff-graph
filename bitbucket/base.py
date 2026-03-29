@@ -6,44 +6,6 @@ from datetime import datetime
 
 
 @dataclass
-class Author:
-    name: str
-    display_name: str
-
-
-@dataclass
-class PullRequestData:
-    id: int
-    title: str
-    description: str
-    author: Author
-    from_branch: str
-    to_branch: str
-    status: str        # OPEN | MERGED | DECLINED
-    head_commit: str
-
-
-@dataclass
-class DiffHunk:
-    old_start: int
-    new_start: int
-    lines: list[str]
-
-
-@dataclass
-class FileDiff:
-    path: str
-    change_type: str   # MODIFY | ADD | DELETE | RENAME
-    hunks: list[DiffHunk]
-
-
-@dataclass
-class FileContent:
-    path: str
-    content: str
-
-
-@dataclass
 class CommentAnchor:
     path: str
     line: int
