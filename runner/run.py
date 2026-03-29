@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from bitbucket.base import BitbucketPRProxy
+from bitbucket.base import AgentPRView
 from runner.scenario_loader import Scenario
 from runner.agent_client import AgentClient
 from runner.judge import Judge
@@ -11,7 +11,7 @@ from runner.scorer import ScenarioResult, score_scenario
 
 async def run_scenario(
     scenario: Scenario,
-    proxy: BitbucketPRProxy,
+    proxy: AgentPRView,
     agent_client: AgentClient,
     judge: Judge,
 ) -> ScenarioResult:
@@ -37,14 +37,13 @@ async def run_scenario(
             error=str(e),
         )
 
-    comments = await proxy.get_comments()
-    review_status = await proxy.get_review_status()
+    judge_output = await judge.evaluate(scenario=scenario)
     duration = time.monotonic() - start
 
-    judge_output = await judge.evaluate(
-        scenario=scenario,
-        comments=comments,
-        review_status=review_status,
+    return score_scenario(
+        scenario,
+        judge_output.comments,
+        judge_output.review_status,
+        judge_output,
+        duration,
     )
-
-    return score_scenario(scenario, comments, review_status, judge_output, duration)

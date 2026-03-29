@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from bitbucket.base import BitbucketPRProxy, CommentAnchor, CommentThread, ReviewStatus
+from bitbucket.base import AgentPRView, CommentAnchor, CommentThread, ReviewStatus
 from runner.judge import (
     Judge, JudgeOutput, LLMClient, LLMJudge,
     CommentJudgement, FalsePositive,
@@ -26,7 +26,7 @@ class CapturingLLMClient(LLMClient):
         return self._response
 
 
-class MockProxy(BitbucketPRProxy):
+class MockProxy(AgentPRView):
     def __init__(
         self,
         pr_id: int,
@@ -121,12 +121,12 @@ async def test_judge_found_comment_passes():
         "summary": "Agent found the critical issue",
     })
 
-    judge = LLMJudge(llm)
-    output = await judge.evaluate(scenario, comments, review_status)
+    judge = LLMJudge(llm, MockProxy(1, comments, review_status))
+    output = await judge.evaluate(scenario)
 
     print(f"\n{'─' * 60}\nPROMPT SENT TO LLM:\n{'─' * 60}\n{llm.last_prompt}\n{'─' * 60}")
 
-    result = score_scenario(scenario, comments, review_status, output, duration_seconds=1.0)
+    result = score_scenario(scenario, output.comments, output.review_status, output, duration_seconds=1.0)
 
     assert output.verdict == "pass"
     assert output.overall_score == 0.9
@@ -175,12 +175,12 @@ async def test_judge_missed_comment_fails():
         "summary": "Agent missed the critical issue",
     })
 
-    judge = LLMJudge(llm)
-    output = await judge.evaluate(scenario, comments, review_status=None)
+    judge = LLMJudge(llm, MockProxy(1, comments))
+    output = await judge.evaluate(scenario)
 
     print(f"\n{'─' * 60}\nPROMPT SENT TO LLM:\n{'─' * 60}\n{llm.last_prompt}\n{'─' * 60}")
 
-    result = score_scenario(scenario, comments, None, output, duration_seconds=1.0)
+    result = score_scenario(scenario, output.comments, output.review_status, output, duration_seconds=1.0)
 
     assert output.verdict == "fail"
     assert output.required_comments[0].found is False

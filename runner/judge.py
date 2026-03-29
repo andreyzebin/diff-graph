@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import anthropic
 import openai
 
-from bitbucket.base import CommentThread, ReviewStatus
+from bitbucket.base import AgentPRView, CommentThread, ReviewStatus
 from runner.scenario_loader import Scenario
 
 
@@ -40,6 +40,10 @@ class JudgeOutput:
     verdict: str                 # pass | fail
     summary: str
     raw_response: str = ""
+    # Agent outputs captured during evaluation — available for scoring and reporting
+    # without needing to re-fetch from Bitbucket.
+    comments: list[CommentThread] = field(default_factory=list)
+    review_status: ReviewStatus | None = None
 
 
 # ── LLM client abstraction ─────────────────────────────────────────
@@ -88,12 +92,7 @@ class OpenAILLMClient(LLMClient):
 
 class Judge(ABC):
     @abstractmethod
-    async def evaluate(
-        self,
-        scenario: Scenario,
-        comments: list[CommentThread],
-        review_status: ReviewStatus | None,
-    ) -> JudgeOutput: ...
+    async def evaluate(self, scenario: Scenario) -> JudgeOutput: ...
 
 
 # ── Concrete judge ─────────────────────────────────────────────────
@@ -102,19 +101,30 @@ PROMPT_TEMPLATE_PATH = Path(__file__).parent.parent / "prompts" / "judge.txt"
 
 
 class LLMJudge(Judge):
-    def __init__(self, llm_client: LLMClient):
+    """
+    Evaluates agent output against a scenario using an LLM.
+
+    The view is injected at construction time so that evaluate() has a
+    stable signature regardless of what new capabilities AgentPRView gains.
+    Adding e.g. get_diff() to AgentPRView only requires changes here, not
+    at every call site.
+    """
+
+    def __init__(self, llm_client: LLMClient, view: AgentPRView):
         self._llm_client = llm_client
+        self._view = view
         self._template = PROMPT_TEMPLATE_PATH.read_text()
 
-    async def evaluate(
-        self,
-        scenario: Scenario,
-        comments: list[CommentThread],
-        review_status: ReviewStatus | None,
-    ) -> JudgeOutput:
+    async def evaluate(self, scenario: Scenario) -> JudgeOutput:
+        comments = await self._view.get_comments()
+        review_status = await self._view.get_review_status()
+
         prompt = _build_prompt(self._template, scenario, comments, review_status)
         data = self._llm_client.complete_json(prompt)
-        return _interpret(data, scenario.expected_output.required_comments)
+        output = _interpret(data, scenario.expected_output.required_comments)
+        output.comments = comments
+        output.review_status = review_status
+        return output
 
 
 # ── Pure helpers ───────────────────────────────────────────────────
@@ -203,4 +213,3 @@ def _format_comments(comments: list[CommentThread]) -> str:
         else:
             parts.append(f"[general] {c.text}")
     return "\n".join(parts) if parts else "(no comments)"
-

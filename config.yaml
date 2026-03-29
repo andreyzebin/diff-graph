@@ -3,6 +3,7 @@ bitbucket:
     base_url: "${BITBUCKET_URL}"
     project: "${BITBUCKET_PROJECT}"
     repo: "${BITBUCKET_REPO}"
+    agent_account: "${BITBUCKET_AGENT_ACCOUNT}"
     auth:
       env: BITBUCKET_TOKEN
 

@@ -1,61 +1,75 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
-import httpx
+from atlassian import Bitbucket
 
 from .base import (
-    BitbucketFactory, BitbucketPRProxy, CommentAnchor, CommentThread, ReviewStatus,
+    AgentPRViewFactory, AgentPRView, CommentAnchor, CommentThread, ReviewStatus,
     ProviderError,
 )
 
 
-class RealBitbucketPRProxy(BitbucketPRProxy):
+class RealBitbucketPRProxy(AgentPRView):
     """
     Verification proxy for a real Bitbucket Server PR.
 
-    Fetches comments and review status from the real API.
-    close() declines the PR and releases the HTTP session.
+    Fetches comments and review status from the real API, filtered to the
+    configured agent account.  close() declines the PR.
     """
 
     def __init__(
         self,
-        base_url: str,
-        headers: dict,
+        client: Bitbucket,
         project: str,
         repo: str,
         _pr_id: int,
+        agent_username: str,
     ):
-        self._base_url = base_url
-        self._headers = headers
+        self._client = client
         self._project = project
         self._repo = repo
         self._pr_id = _pr_id
+        self._agent_username = agent_username
 
     @property
     def pr_id(self) -> int:
         return self._pr_id
 
-    def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(headers=self._headers, timeout=30)
+    # ── internal helpers ───────────────────────────────────────────────
 
-    def _pr_base(self) -> str:
-        return (
-            f"{self._base_url}/rest/api/1.0"
-            f"/projects/{self._project}/repos/{self._repo}"
-            f"/pull-requests/{self._pr_id}"
-        )
+    async def _run(self, fn, *args, **kwargs):
+        """Run a synchronous atlassian-client call in a thread pool."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+
+    # ── AgentPRView interface ──────────────────────────────────────────
 
     async def close(self) -> None:
-        async with self._client() as c:
-            await c.post(f"{self._pr_base()}/decline", json={})
+        pr = await self._run(
+            self._client.get_pull_request, self._project, self._repo, self._pr_id
+        )
+        version = (pr or {}).get("version", 0)
+        await self._run(
+            self._client.decline_pull_request,
+            self._project, self._repo, self._pr_id, version,
+        )
 
     async def get_comments(self) -> list[CommentThread]:
-        async with self._client() as c:
-            resp = await c.get(f"{self._pr_base()}/comments")
-        resp.raise_for_status()
+        """Return comments posted by the agent account only."""
+        raw = await self._run(
+            lambda: list(
+                self._client.get_pull_requests_comments(
+                    self._project, self._repo, self._pr_id
+                )
+            )
+        )
         comments = []
-        for item in resp.json().get("values", []):
+        for item in (raw or []):
+            author = item.get("author", {})
+            if author.get("slug") != self._agent_username:
+                continue
             anchor_data = item.get("anchor")
             anchor = None
             if anchor_data:
@@ -73,35 +87,42 @@ class RealBitbucketPRProxy(BitbucketPRProxy):
         return comments
 
     async def get_review_status(self) -> ReviewStatus | None:
-        async with self._client() as c:
-            resp = await c.get(f"{self._pr_base()}/participants")
-        resp.raise_for_status()
-        for p in resp.json().get("values", []):
+        """Return the review status set by the agent account, or None."""
+        url = (
+            f"rest/api/1.0/projects/{self._project}/repos/{self._repo}"
+            f"/pull-requests/{self._pr_id}/participants"
+        )
+        data = await self._run(self._client.get, url)
+        for p in (data or {}).get("values", []):
+            user = p.get("user", {})
+            if user.get("slug") != self._agent_username:
+                continue
             status = p.get("status", "")
             if status in ("APPROVED", "NEEDS_WORK"):
                 return ReviewStatus(status=status)
         return None
 
 
-class RealBitbucketFactory(BitbucketFactory):
+class RealBitbucketFactory(AgentPRViewFactory):
     """
     Builds a RealBitbucketPRProxy from config.
 
     Config keys:
       connection:
-        base_url:  str
-        project:   str
-        repo:      str
-        auth.env:  env var name holding the bearer token (default: BITBUCKET_TOKEN)
+        base_url:      str
+        project:       str
+        repo:          str
+        agent_account: str   (slug of the agent Bitbucket account)
+        auth.env:      env var name holding the bearer token (default: BITBUCKET_TOKEN)
       pull_request:
-        from_branch: str
-        to_branch:   str
-        title:       str  (optional)
-        description: str  (optional)
+        from_branch:   str
+        to_branch:     str
+        title:         str  (optional)
+        description:   str  (optional)
     """
 
     @classmethod
-    async def build(cls, cfg: dict) -> BitbucketPRProxy:
+    async def build(cls, cfg: dict) -> AgentPRView:
         conn = cfg["connection"]
         pr_cfg = cfg.get("pull_request", {})
 
@@ -109,7 +130,9 @@ class RealBitbucketFactory(BitbucketFactory):
         project = conn["project"]
         repo = conn["repo"]
         token = os.environ.get(conn.get("auth", {}).get("env", "BITBUCKET_TOKEN"), "")
-        headers = {"Authorization": f"Bearer {token}"}
+        agent_username = conn.get("agent_account", "")
+
+        client = Bitbucket(url=base_url, token=token)
 
         payload = {
             "title": pr_cfg.get("title", "[BENCHMARK]"),
@@ -119,11 +142,17 @@ class RealBitbucketFactory(BitbucketFactory):
             "toRef": {"id": f"refs/heads/{pr_cfg['to_branch']}"},
             "reviewers": [],
         }
-        url = f"{base_url}/rest/api/1.0/projects/{project}/repos/{repo}/pull-requests"
-        async with httpx.AsyncClient(headers=headers, timeout=30) as c:
-            resp = await c.post(url, json=payload)
-        if resp.status_code not in (200, 201):
-            raise ProviderError(f"Failed to create PR: {resp.status_code} {resp.text}")
 
-        pr_id = resp.json()["id"]
-        return RealBitbucketPRProxy(base_url, headers, project, repo, pr_id)
+        loop = asyncio.get_running_loop()
+        try:
+            resp = await loop.run_in_executor(
+                None,
+                lambda: client.create_pull_request(project, repo, payload),
+            )
+        except Exception as exc:
+            raise ProviderError(f"Failed to create PR: {exc}") from exc
+
+        if not resp or "id" not in resp:
+            raise ProviderError(f"Unexpected response when creating PR: {resp!r}")
+
+        return RealBitbucketPRProxy(client, project, repo, resp["id"], agent_username)

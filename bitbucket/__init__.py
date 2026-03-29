@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from .base import BitbucketPRProxy, BitbucketFactory, ProviderError
+from .base import AgentPRView, AgentPRViewFactory, ProviderError
+# Legacy aliases kept for backward compatibility
+BitbucketPRProxy = AgentPRView
+BitbucketFactory = AgentPRViewFactory
 
 
-async def build_proxy(cfg: dict) -> BitbucketPRProxy:
-    """Build and start a proxy based on cfg['provider']: real (default)."""
+async def build_proxy(cfg: dict) -> AgentPRView:
+    """Build and start an AgentPRView based on cfg['provider']: real (default)."""
     provider_type = cfg.get("provider", "real")
     if provider_type == "real":
         from .real_factory import RealBitbucketFactory
