@@ -1,0 +1,83 @@
+id: SCEN-010
+name: "Customer store credit redemption — IDOR + wrong calculation"
+tags: [java, security, correctness, severity:critical]
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "feature/ORD-301-store-credit"
+      to_branch: "main"
+      title: "[BENCHMARK] SCEN-010: Customer store credit redemption (ORD-301)"
+      description: |
+        ## ORD-301: Customer store credit redemption
+
+        **As a** customer
+        **I want to** apply my store credit balance to an open order
+        **So that** I can use credits earned from returns or promotions
+
+        ### Acceptance criteria
+        - Customer can see their available (non-expired, non-redeemed) credits
+        - Customer can apply a single credit to an OPEN order they own
+        - Credit amount is deducted from the order **subtotal** before tax
+          is recalculated — not from the final total
+        - A credit cannot be applied more than once
+        - Expired credits cannot be applied
+
+        ### Notes
+        - Store credit is a pre-tax deduction per AGENTS.md pricing rules
+        - Follow ownership-check patterns from `OrderController`
+
+expected_output:
+  required_comments:
+
+    - id: EXP-1
+      type: inline
+      severity: critical
+      location:
+        file: "src/main/java/com/flowmart/orders/service/StoreCreditService.java"
+        line: 31
+      description_keywords:
+        - ["ownership", "IDOR", "belongs", "customer", "authorization"]
+        - ["credit", "verify", "check", "redeemed by another"]
+      rationale: |
+        redeemCredit() accepts any creditId without verifying the credit
+        belongs to the authenticated customer. Any customer can redeem
+        another customer's store credit against their own order.
+        The controller (CustomerController) also passes creditId blindly
+        without this check, making the IDOR end-to-end.
+
+    - id: EXP-2
+      type: inline
+      severity: critical
+      location:
+        file: "src/main/java/com/flowmart/orders/service/StoreCreditService.java"
+        line: 49
+      description_keywords:
+        - ["subtotal", "pre-tax", "total", "tax", "recalculate", "wrong"]
+        - ["credit", "deduction", "before tax", "after tax"]
+      rationale: |
+        Credit is subtracted from order.getTotal() (post-tax amount) and
+        taxAmount is never recalculated. AGENTS.md states: "Store credit is a
+        pre-discount deduction — applied to subtotal before tax." The correct
+        flow: deduct from subtotal, then recompute tax = discounted_subtotal × TAX_RATE,
+        then set total = discounted_subtotal + new_tax.
+
+  forbidden_comments:
+    - description: "Comments about the StoreCredit entity design or field naming"
+    - description: "Suggestions to support applying multiple credits at once — not in scope"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.70
+    min_required_found: 1
+    max_false_positives: 3
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: small
+  scenario_type: security
+  author: "team"
+  created: "2026-03-30"

@@ -1,0 +1,63 @@
+id: SCEN-011
+name: "Hotfix cancel NPE — null guard hides root cause"
+tags: [java, correctness, failure-handling, severity:major]
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "hotfix/ORD-287-cancel-npe"
+      to_branch: "main"
+      title: "[BENCHMARK] SCEN-011: Fix NPE on order cancellation (ORD-287)"
+      description: |
+        ## ORD-287: NPE on order cancellation when items list is null
+
+        **Incident:** Production NPE reported in `cancelOrder()` when iterating
+        `order.getItems()`. Occurred on 3 orders created via the legacy import
+        script that sets items to null instead of empty list.
+
+        ### Fix
+        Added null guard before iterating items in `cancelOrder()`.
+
+        ### Acceptance criteria
+        - `cancelOrder()` no longer throws NPE when items is null
+        - Existing cancellation behaviour is unchanged for normal orders
+
+expected_output:
+  required_comments:
+
+    - id: EXP-1
+      type: inline
+      severity: major
+      location:
+        file: "src/main/java/com/flowmart/orders/service/OrderService.java"
+        line: 59
+      description_keywords:
+        - ["null", "@OneToMany", "Hibernate", "empty collection", "never null", "mapping"]
+        - ["inventory", "not released", "silent", "root cause", "guard hides"]
+      rationale: |
+        Hibernate always initialises @OneToMany collections as empty lists, never
+        null (per AGENTS.md). A null getItems() means a mapping error or object
+        constructed outside JPA. The null guard silently skips inventory release
+        when items is null, which is a data-integrity failure worse than the
+        original NPE. The fix should address the root cause (correct the legacy
+        import script or add @NotNull enforcement) not hide the symptom.
+
+  forbidden_comments:
+    - description: "Suggestions to add logging inside the null guard — the guard itself is the problem"
+    - description: "Comments about the releaseInventory stub being empty"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.70
+    min_required_found: 1
+    max_false_positives: 3
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: small
+  scenario_type: bug
+  author: "team"
+  created: "2026-03-30"

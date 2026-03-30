@@ -1,0 +1,126 @@
+id: SCEN-009
+name: "Buy-3-get-1-free promotion — multi-bug feature PR"
+tags: [java, correctness, security, integrity, performance, style, severity:critical]
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "feature/ORD-234-buy-3-get-1-free"
+      to_branch: "main"
+      title: "[BENCHMARK] SCEN-009: Buy-3-get-1-free promotion (ORD-234)"
+      description: |
+        ## ORD-234: Implement buy-3-get-1-free promotions
+
+        **As a** marketing manager
+        **I want to** configure buy-N-get-1-free promotions per product category
+        **So that** we can run campaigns without a deploy
+
+        ### Acceptance criteria
+        - When a customer has 4+ items from a promoted category, the **cheapest**
+          item is free
+        - Discount is shown as a line item labelled with the promotion name
+        - Only one promotion applies per category — no stacking
+        - Promotion respects `startDate` and `endDate`
+        - Applies to OPEN orders only
+
+        ### Notes
+        - See `PricingService` for existing discount patterns
+        - Follow the same ownership-check pattern as `OrderController`
+
+expected_output:
+  required_comments:
+
+    - id: EXP-1
+      type: inline
+      severity: critical
+      location:
+        file: "src/main/java/com/flowmart/orders/service/PricingService.java"
+        line: 107
+      description_keywords:
+        - ["cheapest", "minimum", "min", "lowest price", "lowest unitPrice"]
+        - ["get(0)", "first", "free item", "wrong item"]
+      rationale: |
+        selectFreeItem() returns group.get(0) — the first item in the list.
+        AGENTS.md and the ticket AC both state the free item must be the
+        cheapest (lowest unitPrice) in the qualifying group. Any ordering
+        change silently gives the wrong discount.
+
+    - id: EXP-2
+      type: inline
+      severity: critical
+      location:
+        file: "src/main/java/com/flowmart/orders/controller/PromotionController.java"
+        line: 42
+      description_keywords:
+        - ["ownership", "authorization", "IDOR", "belongs", "customer"]
+        - ["order", "check", "verify", "currentUser"]
+      rationale: |
+        applyPromotion() fetches the order by ID but never verifies it belongs
+        to the authenticated user. Any logged-in customer can apply a promotion
+        to any other customer's order. OrderController shows the required check:
+        order.getCustomer().getEmail().equals(currentUser.getUsername()).
+
+    - id: EXP-3
+      type: inline
+      severity: major
+      location:
+        file: "src/main/java/com/flowmart/orders/service/PricingService.java"
+        line: 62
+      description_keywords:
+        - ["@Transactional", "transaction", "atomic", "atomicity"]
+        - ["partial", "inconsistent", "corrupt", "two writes", "saveAll"]
+      rationale: |
+        applyBulkDiscount() performs two writes (orderItemRepository.saveAll +
+        orderRepository.save) without @Transactional. A failure between them
+        leaves items discounted but the order total unchanged — silent data
+        corruption. Every other multi-write method in the codebase is
+        @Transactional.
+
+    - id: EXP-4
+      type: inline
+      severity: minor
+      location:
+        file: "src/main/java/com/flowmart/orders/service/PricingService.java"
+        line: 94
+      description_keywords:
+        - ["N+1", "loop", "per category", "batch", "findActiveByCategoryIn", "IN query"]
+      rationale: |
+        findApplicablePromotions() calls promotionRepository.findActiveByCategory()
+        inside a for-each over categories — one SQL query per category. Should
+        use a single findActiveByCategoryIn(categories, today) call.
+
+    - id: EXP-5
+      type: inline
+      severity: minor
+      location:
+        file: "src/main/java/com/flowmart/orders/model/Promotion.java"
+        line: 9
+      description_keywords:
+        - ["Lombok", "@Data", "@Builder", "getter", "setter", "boilerplate"]
+        - ["inconsistent", "convention", "other entities", "pattern"]
+      rationale: |
+        Promotion.java has manual getters/setters. Every other entity in the
+        codebase uses @Data @Builder @NoArgsConstructor @AllArgsConstructor
+        (AGENTS.md code style section). Inconsistency increases maintenance
+        burden and signals the author is unfamiliar with the project conventions.
+
+  forbidden_comments:
+    - description: "Performance concerns about the promotion lookup on a small promotions table"
+    - description: "Comments about PromotionRepository query correctness — the JPQL is fine"
+    - description: "Suggestions to add pagination to getActivePromotions — out of scope"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.70
+    min_required_found: 2
+    max_false_positives: 3
+
+metadata:
+  difficulty: hard
+  language: java
+  pr_size: medium
+  scenario_type: bug
+  author: "team"
+  created: "2026-03-30"
