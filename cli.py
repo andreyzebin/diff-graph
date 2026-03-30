@@ -54,9 +54,10 @@ def run(
     dry_run: bool = typer.Option(False, "--dry-run", help="Load scenarios without calling agent"),
     compare_with: Optional[str] = typer.Option(None, "--compare-with", help="Compare with run ID or 'last'"),
     agent_url: Optional[str] = typer.Option(None, "--agent-url", help="Override agent URL from config"),
+    no_verify_ssl: bool = typer.Option(False, "--no-verify-ssl", help="Skip TLS certificate verification (corporate self-signed certs)"),
 ):
     """Run benchmark scenarios."""
-    asyncio.run(_run_async(scenario, tag or [], dry_run, compare_with, agent_url))
+    asyncio.run(_run_async(scenario, tag or [], dry_run, compare_with, agent_url, no_verify_ssl))
 
 
 async def _run_async(
@@ -65,6 +66,7 @@ async def _run_async(
     dry_run: bool,
     compare_with: str | None,
     agent_url_override: str | None,
+    no_verify_ssl: bool = False,
 ):
     from bitbucket import build_proxy
     from runner.scenario_loader import load_scenarios
@@ -113,7 +115,7 @@ async def _run_async(
 
     results = []
     for s in scenarios:
-        bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection}
+        bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
         proxy = await build_proxy(bb_cfg)
         async with proxy:
             judge = LLMJudge(llm_client, proxy)
@@ -289,12 +291,13 @@ def ab(
     agent_b: str = typer.Option(..., "--agent-b", help="URL of agent B"),
     tag: Optional[list[str]] = typer.Option(None, "--tag", "-t", help="Filter by tag"),
     scenario: Optional[str] = typer.Option(None, "--scenario", "-s", help="Specific scenario ID"),
+    no_verify_ssl: bool = typer.Option(False, "--no-verify-ssl", help="Skip TLS certificate verification (corporate self-signed certs)"),
 ):
     """A/B comparison of two agent versions."""
-    asyncio.run(_ab_async(agent_a, agent_b, tag or [], scenario))
+    asyncio.run(_ab_async(agent_a, agent_b, tag or [], scenario, no_verify_ssl))
 
 
-async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: str | None):
+async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: str | None, no_verify_ssl: bool = False):
     from bitbucket import build_proxy
     from runner.scenario_loader import load_scenarios
     from runner.agent_client import AgentClient
@@ -323,7 +326,7 @@ async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: st
     results_a, results_b = [], []
     for s in scenarios:
         console.print(f"Running {s.id}...")
-        bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection}
+        bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
         proxy_a = await build_proxy(bb_cfg)
         async with proxy_a:
             ra = await run_scenario(s, proxy_a, client_a, LLMJudge(llm_client, proxy_a))

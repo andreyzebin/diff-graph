@@ -131,8 +131,9 @@ class RealBitbucketFactory(AgentPRViewFactory):
         repo = conn["repo"]
         token = os.environ.get(conn.get("auth", {}).get("env", "BITBUCKET_TOKEN"), "")
         agent_username = conn.get("agent_account", "")
+        verify_ssl = cfg.get("verify_ssl", True)
 
-        client = Bitbucket(url=base_url, token=token)
+        client = Bitbucket(url=base_url, token=token, verify_ssl=verify_ssl)
 
         payload = {
             "title": pr_cfg.get("title", "[BENCHMARK]"),
