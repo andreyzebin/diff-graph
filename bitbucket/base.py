@@ -85,6 +85,16 @@ class AgentPRView(ABC):
         """
         ...
 
+    async def add_reviewer(self, username: str) -> None:
+        """
+        Add *username* as a reviewer on the pull request.
+
+        Used by the webhook trigger strategy to notify the agent via
+        Bitbucket's built-in reviewer webhook rather than an HTTP call.
+        Implementations that do not support this may raise ``NotImplementedError``.
+        """
+        raise NotImplementedError
+
     async def __aenter__(self) -> "AgentPRView":
         return self
 

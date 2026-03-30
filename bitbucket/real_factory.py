@@ -86,6 +86,15 @@ class RealBitbucketPRProxy(AgentPRView):
             ))
         return comments
 
+    async def add_reviewer(self, username: str) -> None:
+        """Add *username* as a reviewer, triggering any configured Bitbucket webhooks."""
+        url = (
+            f"rest/api/1.0/projects/{self._project}/repos/{self._repo}"
+            f"/pull-requests/{self._pr_id}/participants"
+        )
+        payload = {"user": {"name": username}, "role": "REVIEWER"}
+        await self._run(self._client.post, url, data=payload)
+
     async def get_review_status(self) -> ReviewStatus | None:
         """Return the review status set by the agent account, or None."""
         url = (

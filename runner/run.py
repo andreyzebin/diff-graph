@@ -4,7 +4,7 @@ import time
 
 from bitbucket.base import AgentPRView
 from runner.scenario_loader import Scenario
-from runner.agent_client import AgentClient
+from runner.trigger import Trigger
 from runner.judge import Judge
 from runner.scorer import ScenarioResult, score_scenario
 
@@ -12,13 +12,13 @@ from runner.scorer import ScenarioResult, score_scenario
 async def run_scenario(
     scenario: Scenario,
     proxy: AgentPRView,
-    agent_client: AgentClient,
+    trigger: Trigger,
     judge: Judge,
 ) -> ScenarioResult:
     start = time.monotonic()
 
     try:
-        await agent_client.run(pr_id=proxy.pr_id)
+        await trigger.activate(proxy)
     except Exception as e:
         return ScenarioResult(
             scenario_id=scenario.id,

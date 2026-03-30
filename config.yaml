@@ -8,9 +8,18 @@ bitbucket:
       env: BITBUCKET_TOKEN
 
 agent:
-  base_url: "http://localhost:8080"
-  api_key: "${AGENT_API_KEY}"
-  timeout_seconds: 120
+  # trigger: how to activate the agent on each benchmark PR.
+  #
+  # http (default) — POST to base_url/review with the PR id.
+  #   Use when the agent exposes an HTTP endpoint.
+  #
+  # webhook — add agent_account as a reviewer on the PR, then wait
+  #   timeout_seconds.  Use when the agent is already wired to Bitbucket
+  #   via PR_REVIEWER_UPDATED webhooks and no direct HTTP call is needed.
+  trigger: "http"
+  base_url: "http://localhost:8080"   # used only when trigger=http
+  api_key: "${AGENT_API_KEY}"         # used only when trigger=http
+  timeout_seconds: 120                # http: request timeout / webhook: wait time
 
 judge:
   model: "claude-opus-4-6"

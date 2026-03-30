@@ -23,6 +23,20 @@ CONFIG_FILE = BASE_DIR / "config.yaml"
 sys.path.insert(0, str(BASE_DIR))
 
 
+def _make_trigger(agent_cfg: dict, bitbucket_connection: dict):
+    from runner.trigger import HttpTrigger, WebhookTrigger
+    mode = agent_cfg.get("trigger", "http")
+    timeout = agent_cfg.get("timeout_seconds", 120)
+    if mode == "webhook":
+        agent_account = _expand_env(bitbucket_connection.get("agent_account", ""))
+        return WebhookTrigger(agent_account=agent_account, timeout_seconds=timeout)
+    # default: http
+    from runner.agent_client import AgentClient
+    base_url = _expand_env(agent_cfg.get("base_url", "http://localhost:8080"))
+    api_key = _expand_env(agent_cfg.get("api_key", ""))
+    return HttpTrigger(AgentClient(base_url=base_url, api_key=api_key, timeout=timeout))
+
+
 def _make_llm_client(judge_cfg: dict):
     from runner.judge import AnthropicLLMClient, OpenAILLMClient
     model = judge_cfg.get("model", "claude-opus-4-6")
@@ -70,15 +84,14 @@ async def _run_async(
 ):
     from bitbucket import build_proxy
     from runner.scenario_loader import load_scenarios
-    from runner.agent_client import AgentClient
     from runner.judge import LLMJudge
     from runner.results_store import ResultsStore
     from runner.run import run_scenario
 
     cfg = _load_config()
     agent_cfg = cfg.get("agent", {})
-    agent_url = agent_url_override or _expand_env(agent_cfg.get("base_url", "http://localhost:8080"))
-    api_key = _expand_env(agent_cfg.get("api_key", ""))
+    if agent_url_override:
+        agent_cfg = {**agent_cfg, "base_url": agent_url_override}
 
     bitbucket_connection = cfg.get("bitbucket", {}).get("connection", {})
     judge_cfg = cfg.get("judge", {})
@@ -100,11 +113,7 @@ async def _run_async(
             )
         raise typer.Exit(0)
 
-    agent_client = AgentClient(
-        base_url=agent_url,
-        api_key=api_key,
-        timeout=agent_cfg.get("timeout_seconds", 120),
-    )
+    trigger = _make_trigger(agent_cfg, bitbucket_connection)
     llm_client = _make_llm_client(judge_cfg)
     store = ResultsStore(
         store_path=Path(results_cfg.get("store_path", str(RESULTS_DIR))),
@@ -122,7 +131,7 @@ async def _run_async(
             result = await run_scenario(
                 scenario=s,
                 proxy=proxy,
-                agent_client=agent_client,
+                trigger=trigger,
                 judge=judge,
             )
         results.append(result)
@@ -300,14 +309,12 @@ def ab(
 async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: str | None, no_verify_ssl: bool = False):
     from bitbucket import build_proxy
     from runner.scenario_loader import load_scenarios
-    from runner.agent_client import AgentClient
     from runner.judge import LLMJudge
     from runner.run import run_scenario
 
     cfg = _load_config()
     judge_cfg = cfg.get("judge", {})
     agent_cfg = cfg.get("agent", {})
-    api_key = _expand_env(agent_cfg.get("api_key", ""))
     bitbucket_connection = cfg.get("bitbucket", {}).get("connection", {})
 
     scenarios = load_scenarios(SCENARIOS_DIR, tags=tags, scenario_id=scenario_id)
@@ -315,8 +322,8 @@ async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: st
         console.print("[yellow]No scenarios found.[/yellow]")
         raise typer.Exit(1)
 
-    client_a = AgentClient(agent_a, api_key)
-    client_b = AgentClient(agent_b, api_key)
+    trigger_a = _make_trigger({**agent_cfg, "base_url": agent_a}, bitbucket_connection)
+    trigger_b = _make_trigger({**agent_cfg, "base_url": agent_b}, bitbucket_connection)
     llm_client = _make_llm_client(judge_cfg)
 
     console.print(f"\n[bold]A/B test: {len(scenarios)} scenario(s)[/bold]")
@@ -329,10 +336,10 @@ async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: st
         bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
         proxy_a = await build_proxy(bb_cfg)
         async with proxy_a:
-            ra = await run_scenario(s, proxy_a, client_a, LLMJudge(llm_client, proxy_a))
+            ra = await run_scenario(s, proxy_a, trigger_a, LLMJudge(llm_client, proxy_a))
         proxy_b = await build_proxy(bb_cfg)
         async with proxy_b:
-            rb = await run_scenario(s, proxy_b, client_b, LLMJudge(llm_client, proxy_b))
+            rb = await run_scenario(s, proxy_b, trigger_b, LLMJudge(llm_client, proxy_b))
         results_a.append(ra)
         results_b.append(rb)
 
