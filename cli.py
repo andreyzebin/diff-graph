@@ -50,10 +50,28 @@ def _make_llm_client(judge_cfg: dict):
 
 def _load_config() -> dict:
     import yaml
+
+    def _deep_merge(base: dict, override: dict) -> dict:
+        result = dict(base)
+        for k, v in override.items():
+            if isinstance(v, dict) and isinstance(result.get(k), dict):
+                result[k] = _deep_merge(result[k], v)
+            else:
+                result[k] = v
+        return result
+
+    cfg = {}
     if CONFIG_FILE.exists():
         with open(CONFIG_FILE) as f:
-            return yaml.safe_load(f) or {}
-    return {}
+            cfg = yaml.safe_load(f) or {}
+
+    local_file = CONFIG_FILE.with_name("config.local.yaml")
+    if local_file.exists():
+        with open(local_file) as f:
+            local = yaml.safe_load(f) or {}
+        cfg = _deep_merge(cfg, local)
+
+    return cfg
 
 
 def _expand_env(s: str) -> str:
