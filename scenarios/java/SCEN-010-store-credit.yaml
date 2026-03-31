@@ -7,7 +7,7 @@ input:
     provider: real
     pull_request:
       from_branch: "feature/ORD-301-store-credit"
-      to_branch: "main"
+      to_branch: "master"
       title: "[BENCHMARK] SCEN-010: Customer store credit redemption (ORD-301)"
       description: |
         ## ORD-301: Customer store credit redemption

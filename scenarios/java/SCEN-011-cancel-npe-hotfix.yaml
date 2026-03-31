@@ -7,7 +7,7 @@ input:
     provider: real
     pull_request:
       from_branch: "hotfix/ORD-287-cancel-npe"
-      to_branch: "main"
+      to_branch: "master"
       title: "[BENCHMARK] SCEN-011: Fix NPE on order cancellation (ORD-287)"
       description: |
         ## ORD-287: NPE on order cancellation when items list is null
