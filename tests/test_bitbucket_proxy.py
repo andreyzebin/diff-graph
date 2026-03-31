@@ -33,8 +33,14 @@ def proxy(client):
 
 # ── get_comments ─────────────────────────────────────────────────────────────
 
+def _setup_comments(client, items):
+    """Wire client to return *items* from the paged comments endpoint."""
+    client._url_pull_request_comments.return_value = "/fake/comments/url"
+    client._get_paged.return_value = iter(items)
+
+
 async def test_get_comments_returns_only_agent_comments(proxy, client):
-    client.get_pull_requests_comments.return_value = [
+    _setup_comments(client, [
         {
             "id": 1,
             "text": "NPE risk on line 10",
@@ -49,7 +55,7 @@ async def test_get_comments_returns_only_agent_comments(proxy, client):
             "anchor": None,
             "severity": "NORMAL",
         },
-    ]
+    ])
 
     comments = await proxy.get_comments()
 
@@ -63,7 +69,7 @@ async def test_get_comments_returns_only_agent_comments(proxy, client):
 
 
 async def test_get_comments_general_comment_has_no_anchor(proxy, client):
-    client.get_pull_requests_comments.return_value = [
+    _setup_comments(client, [
         {
             "id": 5,
             "text": "Overall LGTM",
@@ -71,7 +77,7 @@ async def test_get_comments_general_comment_has_no_anchor(proxy, client):
             "anchor": None,
             "severity": "BLOCKER",
         }
-    ]
+    ])
 
     comments = await proxy.get_comments()
 
@@ -81,10 +87,10 @@ async def test_get_comments_general_comment_has_no_anchor(proxy, client):
 
 
 async def test_get_comments_empty_when_no_agent_comments(proxy, client):
-    client.get_pull_requests_comments.return_value = [
+    _setup_comments(client, [
         {"id": 1, "text": "Human comment", "author": {"slug": "alice"}, "anchor": None, "severity": "NORMAL"},
         {"id": 2, "text": "Another human", "author": {"slug": "bob"}, "anchor": None, "severity": "NORMAL"},
-    ]
+    ])
 
     comments = await proxy.get_comments()
 
@@ -92,7 +98,7 @@ async def test_get_comments_empty_when_no_agent_comments(proxy, client):
 
 
 async def test_get_comments_empty_list_from_api(proxy, client):
-    client.get_pull_requests_comments.return_value = []
+    _setup_comments(client, [])
 
     comments = await proxy.get_comments()
 
@@ -100,11 +106,12 @@ async def test_get_comments_empty_list_from_api(proxy, client):
 
 
 async def test_get_comments_calls_api_with_correct_args(proxy, client):
-    client.get_pull_requests_comments.return_value = []
+    _setup_comments(client, [])
 
     await proxy.get_comments()
 
-    client.get_pull_requests_comments.assert_called_once_with("PROJ", "myrepo", 42)
+    client._url_pull_request_comments.assert_called_once_with("PROJ", "myrepo", 42)
+    client._get_paged.assert_called_once_with("/fake/comments/url")
 
 
 # ── get_review_status ────────────────────────────────────────────────────────
