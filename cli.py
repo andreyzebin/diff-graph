@@ -79,6 +79,17 @@ def _expand_env(s: str) -> str:
     return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), s)
 
 
+def _expand_config(obj):
+    """Recursively expand ${VAR} placeholders in all string values of a config dict."""
+    if isinstance(obj, dict):
+        return {k: _expand_config(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_config(v) for v in obj]
+    if isinstance(obj, str):
+        return _expand_env(obj)
+    return obj
+
+
 @app.command()
 def run(
     scenario: Optional[str] = typer.Option(None, "--scenario", "-s", help="Run specific scenario by ID"),
@@ -106,10 +117,11 @@ async def _run_async(
     from runner.results_store import ResultsStore
     from runner.run import run_scenario
 
-    cfg = _load_config()
+    cfg = _expand_config(_load_config())
     agent_cfg = cfg.get("agent", {})
     if agent_url_override:
         agent_cfg = {**agent_cfg, "base_url": agent_url_override}
+    agent_url = agent_cfg.get("base_url", "http://localhost:8080")
 
     bitbucket_connection = cfg.get("bitbucket", {}).get("connection", {})
     judge_cfg = cfg.get("judge", {})
@@ -237,18 +249,25 @@ def _print_regression_table(current: list, previous: list):
 @app.command()
 def report(
     run_id: str = typer.Argument("last", help="Run ID or 'last'"),
+    html: bool = typer.Option(False, "--html", help="Generate HTML report and open it"),
 ):
     """Show report for a run."""
     from runner.results_store import ResultsStore
 
-    cfg = _load_config()
+    cfg = _expand_config(_load_config())
     results_cfg = cfg.get("results", {})
+    report_cfg = cfg.get("report", {})
     store = ResultsStore(
         store_path=Path(results_cfg.get("store_path", str(RESULTS_DIR))),
         db_path=Path(results_cfg.get("db_path", str(RESULTS_DIR / "benchmark.db"))),
     )
 
     if run_id == "last":
+        run_list = store.list_runs(1)
+        if not run_list:
+            console.print("[red]No runs found.[/red]")
+            raise typer.Exit(1)
+        run_id = run_list[0]["run_id"]
         results = store.get_last_run()
     else:
         results = store.get_run_by_id(run_id)
@@ -256,6 +275,15 @@ def report(
     if not results:
         console.print("[red]Run not found.[/red]")
         raise typer.Exit(1)
+
+    if html:
+        from runner.html_report import generate
+        import webbrowser
+        output_dir = Path(report_cfg.get("output_dir", str(BASE_DIR / "reports"))).resolve()
+        path = generate(run_id, results, output_dir)
+        console.print(f"Report: [bold]{path}[/bold]")
+        webbrowser.open(path.as_uri())
+        return
 
     table = Table(title=f"Run: {run_id}")
     table.add_column("Scenario")
@@ -285,7 +313,7 @@ def history(limit: int = typer.Option(20, "--limit", "-n", help="Number of runs 
     """Show run history."""
     from runner.results_store import ResultsStore
 
-    cfg = _load_config()
+    cfg = _expand_config(_load_config())
     results_cfg = cfg.get("results", {})
     store = ResultsStore(
         store_path=Path(results_cfg.get("store_path", str(RESULTS_DIR))),
@@ -330,7 +358,7 @@ async def _ab_async(agent_a: str, agent_b: str, tags: list[str], scenario_id: st
     from runner.judge import LLMJudge
     from runner.run import run_scenario
 
-    cfg = _load_config()
+    cfg = _expand_config(_load_config())
     judge_cfg = cfg.get("judge", {})
     agent_cfg = cfg.get("agent", {})
     bitbucket_connection = cfg.get("bitbucket", {}).get("connection", {})
