@@ -34,9 +34,10 @@ def proxy(client):
 # ── get_comments ─────────────────────────────────────────────────────────────
 
 def _setup_comments(client, items):
-    """Wire client to return *items* from the paged comments endpoint."""
-    client._url_pull_request_comments.return_value = "/fake/comments/url"
-    client._get_paged.return_value = iter(items)
+    """Wire client to return *items* via the activities endpoint."""
+    client.get_pull_requests_activities.return_value = iter(
+        [{"action": "COMMENTED", "comment": item} for item in items]
+    )
 
 
 async def test_get_comments_returns_only_agent_comments(proxy, client):
@@ -110,8 +111,7 @@ async def test_get_comments_calls_api_with_correct_args(proxy, client):
 
     await proxy.get_comments()
 
-    client._url_pull_request_comments.assert_called_once_with("PROJ", "myrepo", 42)
-    client._get_paged.assert_called_once_with("/fake/comments/url")
+    client.get_pull_requests_activities.assert_called_once_with("PROJ", "myrepo", 42)
 
 
 # ── get_review_status ────────────────────────────────────────────────────────

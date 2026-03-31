@@ -58,12 +58,17 @@ class RealBitbucketPRProxy(AgentPRView):
 
     async def get_comments(self) -> list[CommentThread]:
         """Return comments posted by the agent account only."""
-        url = self._client._url_pull_request_comments(
-            self._project, self._repo, self._pr_id
+        activities = await self._run(
+            lambda: list(self._client.get_pull_requests_activities(
+                self._project, self._repo, self._pr_id
+            ))
         )
-        raw = await self._run(lambda: list(self._client._get_paged(url)))
+        raw = [
+            a["comment"] for a in (activities or [])
+            if a.get("action") == "COMMENTED" and "comment" in a
+        ]
         comments = []
-        for item in (raw or []):
+        for item in raw:
             author = item.get("author", {})
             if author.get("slug") != self._agent_username:
                 continue
