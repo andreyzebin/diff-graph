@@ -138,8 +138,16 @@ class RealBitbucketFactory(AgentPRViewFactory):
         token = os.environ.get(conn.get("auth", {}).get("env", "BITBUCKET_TOKEN"), "")
         agent_username = conn.get("agent_account", "")
         verify_ssl = cfg.get("verify_ssl", True)
+        ssl_cfg = conn.get("ssl", {})
 
         client = Bitbucket(url=base_url, token=token, verify_ssl=verify_ssl)
+
+        # Mutual TLS: client certificate (PEM) and/or custom CA bundle
+        if ssl_cfg.get("ca_cert"):
+            client._session.verify = ssl_cfg["ca_cert"]
+        if ssl_cfg.get("client_cert"):
+            key = ssl_cfg.get("client_key")
+            client._session.cert = (ssl_cfg["client_cert"], key) if key else ssl_cfg["client_cert"]
 
         payload = {
             "title": pr_cfg.get("title", "[BENCHMARK]"),
