@@ -1,8 +1,9 @@
 from __future__ import annotations
-from typing import Optional
+from typing import Callable, Optional
 
 from .diff_parser import DiffResult, parse_diff
 from .explorer import explore
+from .extractor import OnEvent
 from .model import MetaModel, Symbol
 from .renderer import render
 from .tools import read_file
@@ -37,13 +38,19 @@ class DiffGraph:
 
     # ── public API ────────────────────────────────────────────────────────
 
-    def build(self, diff_text: str, depth: int = 2) -> tuple[MetaModel, DiffResult]:
+    def build(
+        self,
+        diff_text: str,
+        depth: int = 2,
+        on_event: Optional[OnEvent] = None,
+    ) -> tuple[MetaModel, DiffResult]:
         """
         Full pipeline:
           1. parse_diff  → DiffResult
           2. explore     → MetaModel (after-versions, BFS up to `depth`)
           3. mark_changed_symbols → annotate changed symbols with before/after code
 
+        on_event(event, **kwargs) is called throughout for progress reporting.
         Returns (MetaModel, DiffResult) so callers can pass both to render().
         """
         diff_result = parse_diff(diff_text)
@@ -53,6 +60,7 @@ class DiffGraph:
             llm=self.llm,
             model=self.model,
             max_depth=depth,
+            on_event=on_event,
         )
         mark_changed_symbols(meta, diff_result, self.repo_path)
         return meta, diff_result

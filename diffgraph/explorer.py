@@ -1,9 +1,9 @@
 from __future__ import annotations
 import logging
 from collections import deque
-from typing import Optional
+from typing import Callable, Optional
 
-from .extractor import extract_module
+from .extractor import OnEvent, extract_module
 from .lang import detect_lang, get_extensions, get_search_patterns
 from .model import MetaModel
 from .tools import list_files, read_file, search_text
@@ -17,11 +17,13 @@ def explore(
     llm,
     model: str = "gpt-4o-mini",
     max_depth: int = 2,
+    on_event: Optional[OnEvent] = None,
 ) -> MetaModel:
     """
     BFS over dependencies starting from start_files.
     Reads after-versions of files from repo_path.
     """
+    _emit = on_event or (lambda *_, **__: None)
     meta = MetaModel()
     queue: deque[tuple[str, int]] = deque((f, 0) for f in start_files)
     visited: set[str] = set()
@@ -32,13 +34,15 @@ def explore(
             continue
         visited.add(file_path)
 
+        _emit("reading", path=file_path, depth=depth)
         content = read_file(file_path, repo_path)
         if not content:
             log.warning("explore: could not read %s, skipping", file_path)
+            _emit("read_failed", path=file_path)
             continue
 
         lang = detect_lang(file_path)
-        module = extract_module(file_path, content, lang, llm, model)
+        module = extract_module(file_path, content, lang, llm, model, on_event=on_event)
         if module is None:
             continue
 
@@ -47,9 +51,14 @@ def explore(
 
         if depth < max_depth:
             for dep_name in module.dependencies:
+                _emit("resolving", name=dep_name)
                 dep_file = resolve_dependency(dep_name, lang, repo_path)
-                if dep_file and dep_file not in visited:
-                    queue.append((dep_file, depth + 1))
+                if dep_file:
+                    _emit("resolved", name=dep_name, path=dep_file)
+                    if dep_file not in visited:
+                        queue.append((dep_file, depth + 1))
+                else:
+                    _emit("not_resolved", name=dep_name)
 
     return meta
 

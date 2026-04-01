@@ -140,14 +140,19 @@ def run(
     diff_result = parse_diff(diff_text)
     _print_diff_summary(diff_result)
 
-    with console.status("Building metamodel…"):
-        dg = DiffGraph(
-            repo_path=repo_path,
-            llm_client=llm_client,
-            llm_model=effective_model,
-            max_tokens_in_prompt=max_tokens,
-        )
-        meta, diff_result = dg.build(diff_text, depth=effective_depth)
+    dg = DiffGraph(
+        repo_path=repo_path,
+        llm_client=llm_client,
+        llm_model=effective_model,
+        max_tokens_in_prompt=max_tokens,
+    )
+    console.print("")
+    meta, diff_result = dg.build(
+        diff_text,
+        depth=effective_depth,
+        on_event=_make_event_handler(effective_model),
+    )
+    console.print("")
 
     _print_model_summary(meta)
 
@@ -226,6 +231,54 @@ def _print_diff_summary(diff_result, verbose: bool = False) -> None:
                     f"  hunk {i}: before_start={hunk.before_start}  after_start={hunk.after_start}"
                     f"  -{len(hunk.before_lines)} lines  +{len(hunk.after_lines)} lines"
                 )
+
+
+def _make_event_handler(model: str):
+    """Returns an on_event callback that logs progress to the console."""
+    depth_colors = ["bold cyan", "cyan", "dim cyan"]
+
+    def on_event(event: str, **kw) -> None:
+        depth = kw.get("depth", 0)
+        path = kw.get("path", "")
+        name = kw.get("name", "")
+        color = depth_colors[min(depth, len(depth_colors) - 1)]
+
+        if event == "reading":
+            console.log(
+                f"[{color}]read[/{color}]      [bold]{path}[/bold]"
+                f"  [dim]depth={depth}[/dim]"
+            )
+        elif event == "extracting":
+            attempt = kw.get("attempt", 0)
+            suffix = f"  [dim]retry {attempt}[/dim]" if attempt else f"  [dim]{model}[/dim]"
+            console.log(
+                f"[{color}]extract[/{color}]   [bold]{path}[/bold]{suffix}"
+            )
+        elif event == "extracted":
+            deps = kw.get("deps", [])
+            dep_str = ", ".join(deps[:5]) + ("…" if len(deps) > 5 else "")
+            console.log(
+                f"[green]done[/green]      [bold]{path}[/bold]"
+                f"  [dim]{kw.get('symbols', 0)} symbols"
+                + (f"  deps: [{dep_str}]" if deps else "") + "[/dim]"
+            )
+        elif event == "retry":
+            console.log(
+                f"[yellow]retry {kw.get('attempt')}[/yellow]  [bold]{path}[/bold]"
+                f"  [dim]{kw.get('reason', '')}[/dim]"
+            )
+        elif event == "failed":
+            console.log(f"[red]failed[/red]    [bold]{path}[/bold]  [dim]skipped after 3 attempts[/dim]")
+        elif event == "read_failed":
+            console.log(f"[red]missing[/red]   [bold]{path}[/bold]  [dim]file not found[/dim]")
+        elif event == "resolving":
+            console.log(f"[dim]resolve   {name}…[/dim]")
+        elif event == "resolved":
+            console.log(f"[dim]→[/dim]         [dim]{name}[/dim]  [dim]→ {kw.get('path', '')}[/dim]")
+        elif event == "not_resolved":
+            console.log(f"[dim]→[/dim]         [dim]{name}[/dim]  [dim]→ external, skip[/dim]")
+
+    return on_event
 
 
 def _print_model_summary(meta) -> None:

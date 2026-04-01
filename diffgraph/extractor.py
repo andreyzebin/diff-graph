@@ -2,20 +2,22 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .model import Module, Symbol
+
+OnEvent = Callable[..., None]  # on_event(event: str, **kwargs)
 
 log = logging.getLogger(__name__)
 
 EXTRACT_PROMPT = """\
 Analyze this source file and return ONLY valid JSON, no markdown, no explanation.
 
-{
+{{
   "name": "ClassName or module name",
   "summary": "1 sentence what this file does",
   "symbols": [
-    {
+    {{
       "name": "symbolName",
       "kind": "METHOD|CLASS|FIELD|INTERFACE|ENUM|FUNCTION|MODULE",
       "signature": "full signature with types",
@@ -23,10 +25,10 @@ Analyze this source file and return ONLY valid JSON, no markdown, no explanation
       "annotations": ["@Transactional"],
       "start_line": 42,
       "end_line": 67
-    }
+    }}
   ],
   "dependencies": ["ClassName", "InterfaceName"]
-}
+}}
 
 Rules for "dependencies":
 - Only external names this file imports, injects, instantiates, or references by type
@@ -53,25 +55,36 @@ def extract_module(
     lang: str,
     llm,
     model: str = "gpt-4o-mini",
+    on_event: Optional[OnEvent] = None,
 ) -> Optional[Module]:
     """
     One LLM call → Module with symbols and dependencies.
     Retries up to 2 times on invalid JSON; returns None after 3 failures.
     """
+    _emit = on_event or _noop
     base_prompt = EXTRACT_PROMPT.format(path=path, lang=lang, content=content)
     prompt = base_prompt
 
     for attempt in range(3):
+        _emit("extracting", path=path, model=model, attempt=attempt)
         try:
             raw = _call_llm(prompt, llm, model)
             data = _parse_llm_json(raw)
-            return _build_module(path, lang, data)
+            module = _build_module(path, lang, data)
+            _emit("extracted", path=path, symbols=len(module.symbols), deps=module.dependencies)
+            return module
         except (ValueError, KeyError, TypeError) as exc:
             log.warning("extract_module attempt %d/%d failed for %s: %s", attempt + 1, 3, path, exc)
+            _emit("retry", path=path, attempt=attempt + 1, reason=str(exc))
             prompt = base_prompt + RETRY_SUFFIX
 
     log.warning("extract_module gave up after 3 attempts for %s", path)
+    _emit("failed", path=path)
     return None
+
+
+def _noop(*_, **__) -> None:
+    pass
 
 
 # ── internals ───────────────────────────────────────────────────────────────
