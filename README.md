@@ -3,30 +3,30 @@
 Lightweight dependency metamodel for code-review agents.
 
 Starts from a `git diff`, extracts entities with an LLM, and recursively walks
-dependencies through the repository — producing a compact, structured context
-that describes exactly the part of the codebase touched by a PR.
+dependencies through the repository — producing a compact, structured prompt context
+that covers exactly the part of the codebase touched by a PR.
 
 ```
 raw git diff
      │
      ▼
-parse_diff() ──► changed files + changed lines + before snippets
+parse_diff() ──► changed files + changed lines + before-snippets from hunks
      │
      ▼
-explore()    ──► BFS: read file → LLM extract → resolve deps
+explore()    ──► BFS: read file → LLM extract → resolve deps → repeat
      │
      ▼
-MetaModel    ──► mark_changed_symbols() → before/after code
+MetaModel    ──► mark_changed_symbols() → before/after code per symbol
      │
      ▼
-render()     ──► prompt context for a review agent
+render()     ──► structured text context for a review agent prompt
 ```
+
+No pre-indexing. No database. One session, one diff, one metamodel in memory.
 
 ---
 
 ## Quickstart
-
-### 1 — Install dependencies
 
 ```bash
 python3 -m venv .venv
@@ -34,71 +34,80 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2 — Configure
-
-Copy the config and set your API key:
+Copy the config and add your API key to `.env`:
 
 ```bash
 cp config.yaml config.local.yaml
-export OPENAI_API_KEY=sk-...
+echo 'export OPENAI_API_KEY=sk-...' > .env
 ```
 
-`config.local.yaml` is gitignored. Edit it to point at any OpenAI-compatible
-endpoint (DeepSeek, Ollama, vLLM, etc.):
-
-```yaml
-llm:
-  api_url: "https://api.deepseek.com/v1"
-  api_key: "${DEEPSEEK_API_KEY}"
-  model: "deepseek-chat"
-```
-
-### 3 — Run
+Run:
 
 ```bash
-# From a diff file
-python cli.py run --repo ./my-service --diff changes.diff
-
-# Pipe directly from git
+source .env
 git diff HEAD~1 | python cli.py run --repo . --diff -
-
-# Save context to file instead of stdout
-python cli.py run --repo . --diff my.diff --output context.txt
-
-# Check what the diff parser sees (no LLM needed)
-python cli.py inspect changes.diff
-git diff HEAD~1 | python cli.py inspect -
 ```
 
 ---
 
 ## Configuration
 
-Settings are loaded from `config.yaml`, with `config.local.yaml` merged on top.
-All string values support `${ENV_VAR}` expansion.
+`config.yaml` holds committed defaults with `${VAR}` placeholders.
+`config.local.yaml` is deep-merged on top at runtime — gitignored, never committed.
+Secrets go in `.env` (also gitignored), sourced before running.
 
 ```yaml
+# config.local.yaml
 llm:
-  api_url: ""               # empty = OpenAI directly
-  api_key: "${OPENAI_API_KEY}"
-  model: "gpt-4o-mini"
+  api_url: "https://api.deepseek.com/v1"   # empty = OpenAI directly
+  api_key: "${DEEPSEEK_API_KEY}"
+  model: "deepseek-chat"
 
 render:
-  max_tokens: 8000          # rough token budget for the rendered context
+  max_tokens: 8000   # token budget for rendered context
 
 explore:
-  depth: 2                  # BFS depth: 0=changed files only, 1=+direct deps, 2=+transitive
+  depth: 2           # 0 = changed files only, 1 = +direct deps, 2 = +transitive
 ```
 
-Any option can also be overridden via CLI flags:
+Any setting can be overridden per-run via CLI flags.
+
+---
+
+## CLI
+
+```bash
+# Full pipeline — diff file
+python cli.py run --repo ./my-service --diff changes.diff
+
+# Full pipeline — pipe from git
+git diff HEAD~1 | python cli.py run --repo . --diff -
+
+# Write context to file instead of stdout
+python cli.py run --repo . --diff my.diff --output context.txt
+
+# Override model and depth for this run
+python cli.py run --repo . --diff my.diff --model gpt-4o --depth 1
+
+# Parse-only — no LLM, verify the diff parser
+python cli.py inspect changes.diff
+git diff HEAD~1 | python cli.py inspect -
+```
+
+**`run` flags:**
 
 | Flag | Description |
 |------|-------------|
-| `--model` | LLM model name |
-| `--depth` | BFS depth |
-| `--api-url` | API base URL |
+| `--repo` / `-r` | Path to the repository (after-version checkout) |
+| `--diff` / `-d` | Diff file path, or `-` for stdin |
+| `--depth` | BFS depth (default: from config) |
+| `--model` / `-m` | LLM model name |
+| `--api-url` | OpenAI-compatible base URL |
 | `--api-key` | API key |
-| `--output` | Write context to file |
+| `--output` / `-o` | Write context to file |
+
+During `run` the CLI streams LLM tokens live: each file being extracted shows a
+rolling preview of the token stream so you can see the model thinking in real time.
 
 ---
 
@@ -111,12 +120,19 @@ from diffgraph import DiffGraph
 client = OpenAI()  # or any OpenAI-compatible client
 dg = DiffGraph(repo_path="./my-service", llm_client=client)
 
-# Full pipeline: diff text → prompt context string
+# One-shot: diff → prompt context string
 context = dg.build_and_render(open("my.diff").read(), depth=2)
 
-# Step by step
-meta, diff_result = dg.build(open("my.diff").read())
+# Step-by-step
+meta, diff_result = dg.build(open("my.diff").read(), depth=2)
 context = dg.render(meta, diff_result)
+
+# With progress callback
+def on_event(event, **kw):
+    if event == "extracted":
+        print(f"{kw['path']}: {kw['symbols']} symbols")
+
+meta, diff_result = dg.build(diff_text, on_event=on_event)
 ```
 
 ---
@@ -135,19 +151,15 @@ Modified symbols:
 
   BEFORE:
   ```java
-  public Order processPayment(OrderDTO dto) {
       cardValidator.validate(dto.getCard());
       return orderRepository.save(new Order(dto));
-  }
   ```
 
   AFTER:
   ```java
-  public Order processPayment(OrderDTO dto) {
       cardValidator.validate(dto.getCard());
-      auditLog.record(dto);
+      auditLog.record(dto);                    ← new line
       return orderRepository.save(new Order(dto));
-  }
   ```
 
 Other symbols:
@@ -161,13 +173,25 @@ Other symbols:
 ### CardValidator.java
 > "Validates cards using Luhn algorithm"
 - [METHOD] public boolean validate(CardDTO card)
+- [METHOD] public ValidationResult check(String pan)
 
 ---
 
 ## Transitive Dependencies (depth 2)
 
 ### CardDTO.java — "DTO for card data" [summary only]
+### LuhnAlgorithm.java — "Checksum utility" [summary only]
 ```
+
+Detail degrades by depth: changed symbols get full before/after code; depth-1 modules
+list all signatures; depth-2 shows summary only. If the token budget is exceeded, depth-2
+degrades to names, then depth-1 to summaries — changed modules are never truncated.
+
+---
+
+## Supported languages
+
+Java · Python · TypeScript / TSX · Go · Kotlin · Ruby · C#
 
 ---
 
@@ -175,19 +199,17 @@ Other symbols:
 
 ```
 diffgraph/
-├── model.py        # Symbol, Module, MetaModel dataclasses
-├── lang.py         # language detection, search patterns, file extensions
+├── model.py        # Symbol, Module, MetaModel — in-memory graph
+├── lang.py         # language detection, declaration search patterns, file extensions
 ├── tools.py        # list_files, read_file, search_text
-├── diff_parser.py  # git diff → DiffResult (hunks, changed lines)
-├── extractor.py    # LLM extraction with 3-attempt retry
-├── explorer.py     # BFS over dependencies
+├── diff_parser.py  # git diff → DiffResult (hunks, changed lines, before-snippets)
+├── extractor.py    # LLM extraction with streaming + 3-attempt JSON retry
+├── explorer.py     # BFS over dependency graph
 ├── renderer.py     # text render with token-budget degradation
 └── diffgraph.py    # DiffGraph public API + mark_changed_symbols
 ```
 
-**Supported languages:** Java, Python, TypeScript/TSX, Go, Kotlin, Ruby, C#.
-
-**Protections:**
+**Protections against runaway cost and loops:**
 
 | Mechanism | Behaviour |
 |-----------|-----------|
@@ -195,4 +217,5 @@ diffgraph/
 | Max files | `list_files` > 50 results → first 10 |
 | Visited set | Prevents cycles and duplicate LLM calls |
 | LLM retry | Invalid JSON → up to 2 retries, then skip module |
-| Token budget | `render()` degrades depth 2 → depth 1 → names only |
+| Token budget | `render()` degrades depth-2 → depth-1 → names only |
+| Skip externals | Unresolved deps (stdlib, third-party) are silently ignored |
