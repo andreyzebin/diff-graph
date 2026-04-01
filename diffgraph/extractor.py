@@ -68,7 +68,7 @@ def extract_module(
     for attempt in range(3):
         _emit("extracting", path=path, model=model, attempt=attempt)
         try:
-            raw = _call_llm(prompt, llm, model)
+            raw = _call_llm(prompt, llm, model, on_event=on_event)
             data = _parse_llm_json(raw)
             module = _build_module(path, lang, data)
             _emit("extracted", path=path, symbols=len(module.symbols), deps=module.dependencies)
@@ -89,13 +89,26 @@ def _noop(*_, **__) -> None:
 
 # ── internals ───────────────────────────────────────────────────────────────
 
-def _call_llm(prompt: str, llm, model: str) -> str:
-    response = llm.chat.completions.create(
+def _call_llm(
+    prompt: str,
+    llm,
+    model: str,
+    on_event: Optional[OnEvent] = None,
+) -> str:
+    _emit = on_event or _noop
+    stream = llm.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
+        stream=True,
     )
-    return response.choices[0].message.content or ""
+    chunks: list[str] = []
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content or ""
+        if delta:
+            chunks.append(delta)
+            _emit("token", text="".join(chunks))
+    return "".join(chunks)
 
 
 def _parse_llm_json(raw: str) -> dict[str, Any]:

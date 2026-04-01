@@ -9,9 +9,9 @@ from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.panel import Panel
-from rich.syntax import Syntax
+from rich.live import Live
 from rich.table import Table
+from rich.text import Text
 
 app = typer.Typer(help="DiffGraph — build a dependency metamodel from a git diff.", add_completion=False)
 console = Console()
@@ -147,11 +147,12 @@ def run(
         max_tokens_in_prompt=max_tokens,
     )
     console.print("")
-    meta, diff_result = dg.build(
-        diff_text,
-        depth=effective_depth,
-        on_event=_make_event_handler(effective_model),
-    )
+    with Live("", console=console, refresh_per_second=8, vertical_overflow="visible") as live:
+        meta, diff_result = dg.build(
+            diff_text,
+            depth=effective_depth,
+            on_event=_make_event_handler(effective_model, live),
+        )
     console.print("")
 
     _print_model_summary(meta)
@@ -163,8 +164,7 @@ def run(
         console.print(f"\n[green]Context written to {output}[/green]  ({len(context)} chars, ~{len(context)//4} tokens)")
     else:
         console.print("\n" + "─" * 70)
-        # Print as plain text (not syntax-highlighted) so it's easy to copy
-        console.print(context)
+        console.print(context, markup=False, highlight=False)
         console.print("─" * 70)
         console.print(f"[dim]{len(context)} chars, ~{len(context)//4} tokens[/dim]")
 
@@ -233,9 +233,13 @@ def _print_diff_summary(diff_result, verbose: bool = False) -> None:
                 )
 
 
-def _make_event_handler(model: str):
-    """Returns an on_event callback that logs progress to the console."""
+def _make_event_handler(model: str, live: Live):
+    """Returns an on_event callback that logs progress via a Rich Live display."""
     depth_colors = ["bold cyan", "cyan", "dim cyan"]
+    state: dict = {"path": "", "tok": 0}
+
+    def _log(msg: str) -> None:
+        live.console.log(msg)
 
     def on_event(event: str, **kw) -> None:
         depth = kw.get("depth", 0)
@@ -244,39 +248,62 @@ def _make_event_handler(model: str):
         color = depth_colors[min(depth, len(depth_colors) - 1)]
 
         if event == "reading":
-            console.log(
-                f"[{color}]read[/{color}]      [bold]{path}[/bold]"
-                f"  [dim]depth={depth}[/dim]"
-            )
+            state["path"] = path
+            _log(f"[{color}]read[/{color}]      [bold]{path}[/bold]  [dim]depth={depth}[/dim]")
+
         elif event == "extracting":
+            state["path"] = path
+            state["tok"] = 0
             attempt = kw.get("attempt", 0)
-            suffix = f"  [dim]retry {attempt}[/dim]" if attempt else f"  [dim]{model}[/dim]"
-            console.log(
-                f"[{color}]extract[/{color}]   [bold]{path}[/bold]{suffix}"
+            suffix = f"  [yellow]retry {attempt}[/yellow]" if attempt else f"  [dim]{model}[/dim]"
+            _log(f"[{color}]extract[/{color}]   [bold]{path}[/bold]{suffix}")
+
+        elif event == "token":
+            text = kw.get("text", "")
+            state["tok"] += 1
+            # Collapse whitespace and show a rolling tail of the stream
+            preview = " ".join(text.split())[-100:]
+            live.update(
+                Text.assemble(
+                    ("  ↳ ", "dim"),
+                    (f"{state['path']}  ", "bold"),
+                    (f"{state['tok']} tok  ", "dim"),
+                    (preview, "dim cyan"),
+                )
             )
+
         elif event == "extracted":
+            live.update("")  # clear the streaming line
             deps = kw.get("deps", [])
-            dep_str = ", ".join(deps[:5]) + ("…" if len(deps) > 5 else "")
-            console.log(
+            dep_str = ", ".join(deps[:6]) + ("…" if len(deps) > 6 else "")
+            _log(
                 f"[green]done[/green]      [bold]{path}[/bold]"
                 f"  [dim]{kw.get('symbols', 0)} symbols"
                 + (f"  deps: [{dep_str}]" if deps else "") + "[/dim]"
             )
+
         elif event == "retry":
-            console.log(
-                f"[yellow]retry {kw.get('attempt')}[/yellow]  [bold]{path}[/bold]"
+            live.update("")
+            _log(
+                f"[yellow]retry {kw.get('attempt')}[/yellow]   [bold]{path}[/bold]"
                 f"  [dim]{kw.get('reason', '')}[/dim]"
             )
+
         elif event == "failed":
-            console.log(f"[red]failed[/red]    [bold]{path}[/bold]  [dim]skipped after 3 attempts[/dim]")
+            live.update("")
+            _log(f"[red]failed[/red]    [bold]{path}[/bold]  [dim]skipped after 3 attempts[/dim]")
+
         elif event == "read_failed":
-            console.log(f"[red]missing[/red]   [bold]{path}[/bold]  [dim]file not found[/dim]")
+            _log(f"[red]missing[/red]   [bold]{path}[/bold]  [dim]file not found[/dim]")
+
         elif event == "resolving":
-            console.log(f"[dim]resolve   {name}…[/dim]")
+            pass  # too noisy — only log when resolved or skipped
+
         elif event == "resolved":
-            console.log(f"[dim]→[/dim]         [dim]{name}[/dim]  [dim]→ {kw.get('path', '')}[/dim]")
+            _log(f"[dim]  resolve   {name}  →  {kw.get('path', '')}[/dim]")
+
         elif event == "not_resolved":
-            console.log(f"[dim]→[/dim]         [dim]{name}[/dim]  [dim]→ external, skip[/dim]")
+            _log(f"[dim]  resolve   {name}  →  external, skip[/dim]")
 
     return on_event
 

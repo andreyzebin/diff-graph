@@ -1,5 +1,6 @@
 .venv/
 config.local.yaml
+.env
 __pycache__/
 *.pyc
 *.pyo
