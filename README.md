@@ -137,58 +137,6 @@ meta, diff_result = dg.build(diff_text, on_event=on_event)
 
 ---
 
-## Output format
-
-```
-## Changed Modules
-
-### PaymentService.java [MODIFIED]
-> "Handles payment transactions"
-
-Modified symbols:
-- [METHOD] public Order processPayment(OrderDTO dto) @Transactional
-  > "Creates transaction, calls CardValidator"
-
-  BEFORE:
-  ```java
-      cardValidator.validate(dto.getCard());
-      return orderRepository.save(new Order(dto));
-  ```
-
-  AFTER:
-  ```java
-      cardValidator.validate(dto.getCard());
-      auditLog.record(dto);                    ← new line
-      return orderRepository.save(new Order(dto));
-  ```
-
-Other symbols:
-- [METHOD] private void validateAmount(BigDecimal amount)
-  > "Checks amount limits"
-
----
-
-## Direct Dependencies (depth 1)
-
-### CardValidator.java
-> "Validates cards using Luhn algorithm"
-- [METHOD] public boolean validate(CardDTO card)
-- [METHOD] public ValidationResult check(String pan)
-
----
-
-## Transitive Dependencies (depth 2)
-
-### CardDTO.java — "DTO for card data" [summary only]
-### LuhnAlgorithm.java — "Checksum utility" [summary only]
-```
-
-Detail degrades by depth: changed symbols get full before/after code; depth-1 modules
-list all signatures; depth-2 shows summary only. If the token budget is exceeded, depth-2
-degrades to names, then depth-1 to summaries — changed modules are never truncated.
-
----
-
 ## Supported languages
 
 Java · Python · TypeScript / TSX · Go · Kotlin · Ruby · C#
