@@ -1,0 +1,12 @@
+llm:
+  # Any OpenAI-compatible endpoint.
+  # Leave api_url empty to use OpenAI directly.
+  api_url: ""
+  api_key: "${OPENAI_API_KEY}"
+  model: "gpt-4o-mini"
+
+render:
+  max_tokens: 8000
+
+explore:
+  depth: 2
