@@ -54,8 +54,6 @@ class MetaModel:
                     "end_line": s.end_line,
                     "is_changed": s.is_changed,
                 }
-                if s.before_code is not None:
-                    sym["before_code"] = s.before_code
                 symbols.append(sym)
             result.append({
                 "id": module.id,
