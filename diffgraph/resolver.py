@@ -109,13 +109,22 @@ def resolve_dep(
     on_event: Optional[OnEvent] = None,
 ) -> tuple[str, str]:
     """
-    Agent that resolves dep.fqn → actual file_path in the repo and produces
-    a usage_summary for the graph edge.
+    Resolve dep.fqn → file_path + usage_summary.
 
-    Returns (file_path, usage_summary). file_path is "" if external or not found.
+    Fast path: derive file path from FQN via filesystem glob (no LLM).
+    Fallback: ReAct agent for non-standard layouts or ambiguous matches.
+
+    Returns (file_path, usage_summary). file_path is "" if not found.
     """
     _emit = on_event or (lambda *_, **__: None)
 
+    # Fast path: deterministic FQN → path derivation
+    fast_path = _fast_resolve(dep, repo_path)
+    if fast_path:
+        _emit("resolved", name=dep.name, path=fast_path)
+        return fast_path, dep.usage  # dep.usage from extractor is already good
+
+    # Agent fallback for non-standard layouts
     user_message = (
         f"Find the source file that defines: {dep.name}\n"
         f"Fully qualified name: {dep.fqn}\n"
@@ -166,7 +175,7 @@ def resolve_dep(
                 return file_path, usage_summary
 
             result = _dispatch(tool, args, repo_path)
-            result_str = json.dumps(result) if not isinstance(result, str) else result
+            result_str = _serialize(result)
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
@@ -193,6 +202,58 @@ def _dispatch(tool: str, args: dict, repo_path: str) -> object:
             end = min(end, (start or 1) + 59)
         return read_file(args["path"], repo_path, start, end)
     return f"unknown tool: {tool}"
+
+
+def _fast_resolve(dep: Dependency, repo_path: str) -> str:
+    """
+    Deterministic FQN → file path without any LLM call.
+
+    Strategy:
+      1. FQN "com.example.foo.Bar" → try glob "**/foo/Bar.java" (parent package as dir hint)
+      2. If ambiguous or not found → try plain "**/Bar.java"
+      3. If multiple matches → pick shortest path (closest to repo root)
+      4. Return "" if nothing found (caller will use agent fallback)
+    """
+    fqn = dep.fqn or dep.name
+    name = dep.name
+    parts = fqn.split(".")
+
+    candidates: list[str] = []
+
+    # Step 1: use parent package segment as directory hint
+    if len(parts) >= 2:
+        parent_dir = parts[-2]
+        for ext in (".java", ".kt", ".py", ".go", ".ts", ".tsx", ".cs", ".rb"):
+            hits = list_files(f"**/{parent_dir}/{name}{ext}", repo_path)
+            if hits:
+                candidates.extend(hits)
+                break  # found something with this ext, no need to try others
+
+    # Step 2: plain name-based glob as fallback
+    if not candidates:
+        for ext in (".java", ".kt", ".py", ".go", ".ts", ".tsx", ".cs", ".rb"):
+            hits = list_files(f"**/{name}{ext}", repo_path)
+            if hits:
+                candidates.extend(hits)
+                break
+
+    if not candidates:
+        return ""
+    return min(candidates, key=len)  # shortest path = closest to root
+
+
+def _serialize(result: object) -> str:
+    """Convert tool result to a JSON string safe for LLM message content."""
+    from .tools import SearchResult
+    if isinstance(result, list) and result and isinstance(result[0], SearchResult):
+        items = [
+            {"file": r.file, "line": r.line, "text": r.text, "context": r.context}
+            for r in result
+        ]
+        return json.dumps(items)
+    if isinstance(result, str):
+        return result
+    return json.dumps(result)
 
 
 def _extract_cached(usage) -> int:
