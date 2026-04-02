@@ -4,40 +4,43 @@ from diffgraph.model import Dependency, MetaModel, Module, Symbol
 from diffgraph.renderer import render, _token_estimate
 
 
-def make_module(id_, name, depth, symbols=None, summary="does stuff"):
+def make_module(id_, name, symbols=None, summary="does stuff"):
     return Module(
         id=id_, name=name, lang="java", summary=summary,
-        symbols=symbols or [], dependencies=[], depth=depth,
+        symbols=symbols or [], dependencies=[],
     )
 
 
-def make_changed_symbol(name, before=None, after=None):
+def make_dep(name, file_path):
+    return Dependency(name=name, fqn=f"com.example.{name}", usage="used", file_path=file_path)
+
+
+def make_changed_symbol(name, after=None):
     sym = Symbol(
         name=name, kind="METHOD", signature=f"void {name}()",
         summary="does something", annotations=["@Transactional"],
         start_line=10, end_line=20, is_changed=True,
-        full_code=after, before_code=before,
+        full_code=after,
     )
     return sym
 
 
 class TestBasicRender:
     def _build_meta(self):
-        sym = make_changed_symbol(
-            "processPayment",
-            before="old code",
-            after="new code",
-        )
-        changed_mod = make_module("PaymentService.java", "PaymentService", 0, [sym])
-        dep_mod = make_module("CardValidator.java", "CardValidator", 1)
-        trans_mod = make_module("LuhnAlgorithm.java", "LuhnAlgorithm", 2)
+        sym = make_changed_symbol("processPayment", after="new code")
+        changed_mod = make_module("PaymentService.java", "PaymentService", [sym])
+        dep_mod = make_module("CardValidator.java", "CardValidator")
+        trans_mod = make_module("LuhnAlgorithm.java", "LuhnAlgorithm")
+
+        # Wire dependency edges so compute_depths() works
+        changed_mod.dependencies = [make_dep("CardValidator", "CardValidator.java")]
+        dep_mod.dependencies = [make_dep("LuhnAlgorithm", "LuhnAlgorithm.java")]
 
         meta = MetaModel()
         meta.add(changed_mod)
         meta.add(dep_mod)
         meta.add(trans_mod)
         meta.changed_module_ids = ["PaymentService.java"]
-        meta.changed_symbol_names = ["processPayment"]
         return meta
 
     def test_changed_modules_section_present(self):
@@ -58,8 +61,8 @@ class TestBasicRender:
 
     def test_changed_symbol_shows_full_code(self):
         # when is_changed=True, full_code appears in fallback renderer
-        sym = make_changed_symbol("processPayment", before="old code", after="new code")
-        mod = make_module("PaymentService.java", "PaymentService", 0, [sym])
+        sym = make_changed_symbol("processPayment", after="new code")
+        mod = make_module("PaymentService.java", "PaymentService", [sym])
         meta = MetaModel()
         meta.add(mod)
         meta.changed_module_ids = ["PaymentService.java"]
@@ -84,21 +87,20 @@ class TestBasicRender:
         assert "@Transactional" in out
 
     def test_dep_usage_annotation(self):
-        # dep with usage_summary shows in direct deps section
+        # dep usage shows in direct deps section
         sym = make_changed_symbol("processPayment")
         changed_mod = Module(
             id="PaymentService.java", name="PaymentService", lang="java",
-            summary="handles payments", depth=0, symbols=[sym],
+            summary="handles payments", symbols=[sym],
             dependencies=[
                 Dependency(
                     name="CardValidator", fqn="com.example.CardValidator",
-                    usage="validates card numbers",
+                    usage="validates credit card numbers before charging",
                     file_path="CardValidator.java",
-                    usage_summary="validates credit card numbers before charging",
                 )
             ],
         )
-        dep_mod = make_module("CardValidator.java", "CardValidator", 1)
+        dep_mod = make_module("CardValidator.java", "CardValidator")
         meta = MetaModel()
         meta.add(changed_mod)
         meta.add(dep_mod)
@@ -112,12 +114,18 @@ class TestTokenBudget:
         assert _token_estimate("a" * 400) == 100
 
     def test_exceeds_budget_degrades_depth2(self):
-        sym = make_changed_symbol("foo", before="x", after="y")
-        changed = make_module("Changed.java", "Changed", 0, [sym], summary="main")
-        trans = make_module("Trans.java", "Trans", 2, summary="transitive detail " * 20)
+        sym = make_changed_symbol("foo", after="y")
+        changed = make_module("Changed.java", "Changed", [sym], summary="main")
+        direct = make_module("Direct.java", "Direct", summary="direct dep")
+        trans = make_module("Trans.java", "Trans", summary="transitive detail " * 20)
+
+        # Changed → Direct → Trans (depth 2)
+        changed.dependencies = [make_dep("Direct", "Direct.java")]
+        direct.dependencies = [make_dep("Trans", "Trans.java")]
 
         meta = MetaModel()
         meta.add(changed)
+        meta.add(direct)
         meta.add(trans)
         meta.changed_module_ids = ["Changed.java"]
 
@@ -132,8 +140,8 @@ class TestTokenBudget:
         assert "Trans" in small
 
     def test_changed_module_never_truncated(self):
-        sym = make_changed_symbol("critical", before="old", after="new")
-        changed = make_module("Core.java", "Core", 0, [sym])
+        sym = make_changed_symbol("critical", after="new")
+        changed = make_module("Core.java", "Core", [sym])
         meta = MetaModel()
         meta.add(changed)
         meta.changed_module_ids = ["Core.java"]

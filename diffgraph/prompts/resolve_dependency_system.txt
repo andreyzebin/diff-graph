@@ -22,4 +22,3 @@ Step-by-step strategy:
 
 Call done() with:
 - file_path: relative path to the defining file (null only if confirmed external or not found after searching)
-- usage_summary: 1-2 sentences — what this class does and its role relative to the calling module

@@ -289,7 +289,8 @@ def _make_event_handler(model: str, live: Live):
         elif event == "extracted":
             live.update("")  # clear the streaming line
             deps = kw.get("deps", [])
-            dep_str = ", ".join(deps[:6]) + ("…" if len(deps) > 6 else "")
+            dep_names = [d.name if hasattr(d, "name") else str(d) for d in deps]
+            dep_str = ", ".join(dep_names[:6]) + ("…" if len(dep_names) > 6 else "")
             _log(
                 f"[green]done[/green]      [bold]{path}[/bold]"
                 f"  [dim]{kw.get('symbols', 0)} symbols"
@@ -310,14 +311,27 @@ def _make_event_handler(model: str, live: Live):
         elif event == "read_failed":
             _log(f"[red]missing[/red]   [bold]{path}[/bold]  [dim]file not found[/dim]")
 
+        elif event == "skipped":
+            _log(f"[dim]  skip      {path}  not a source file[/dim]")
+
         elif event == "resolving":
             pass  # too noisy — only log when resolved or skipped
 
+        elif event == "resolving_agent":
+            live.update("")
+            _log(f"[cyan]resolve[/cyan]   agent resolving [bold]{name}[/bold]  [dim]{kw.get('fqn', '')}[/dim]")
+
         elif event == "resolved":
-            _log(f"[dim]  resolve   {name}  →  {kw.get('path', '')}[/dim]")
+            live.update("")
+            tok_str = _fmt_tok(kw)
+            suffix = f"  [dim cyan]{tok_str}[/dim cyan]" if tok_str else ""
+            _log(f"[dim]  resolve   {name}  →  {kw.get('path', '')}[/dim]{suffix}")
 
         elif event == "not_resolved":
-            _log(f"[dim]  resolve   {name}  →  external, skip[/dim]")
+            live.update("")
+            tok_str = _fmt_tok(kw)
+            suffix = f"  [dim cyan]{tok_str}[/dim cyan]" if tok_str else ""
+            _log(f"[dim]  resolve   {name}  →  external, skip[/dim]{suffix}")
 
         elif event == "searching_callers":
             _log(f"[magenta]impact[/magenta]    agent analyzing impact of [bold]{name}[/bold]")
@@ -379,20 +393,20 @@ def _fmt_tok(kw: dict) -> str:
 
 def _print_model_summary(meta) -> None:
     changed = len(meta.changed_module_ids)
-    callers = len(meta.caller_module_ids)
     total = len(meta.modules)
-    sym_changed = len(meta.changed_symbol_names)
+    sym_changed = sum(1 for mod in meta.modules.values() for s in mod.symbols if s.is_changed)
 
+    depths = meta.compute_depths()
     by_depth: dict[int, int] = {}
-    for mod in meta.modules.values():
-        by_depth[mod.depth] = by_depth.get(mod.depth, 0) + 1
+    for d in depths.values():
+        by_depth[d] = by_depth.get(d, 0) + 1
 
     depth_str = "  ".join(
         (f"callers: {n}" if d == -1 else f"depth {d}: {n}")
         for d, n in sorted(by_depth.items())
     )
     console.print(
-        f"[bold]MetaModel[/bold]  {total} modules ({changed} changed, {callers} callers, {sym_changed} changed symbols)  {depth_str}"
+        f"[bold]MetaModel[/bold]  {total} modules ({changed} changed, {sym_changed} changed symbols)  {depth_str}"
     )
 
 

@@ -381,18 +381,11 @@ def _format_changed_symbols(module: Module) -> str:
         lines.append(f"[{sym.kind}] {sym.signature}")
         if sym.summary:
             lines.append(f"  Summary: {sym.summary}")
-        if sym.before_code is not None:
-            before_lines = sym.before_code.splitlines()
-            if len(before_lines) > 30:
-                before_lines = before_lines[:30] + ["    ... (truncated)"]
-            lines.append("  BEFORE:")
-            for line in before_lines:
-                lines.append(f"    {line}")
         if sym.full_code is not None:
             code_lines = sym.full_code.splitlines()
             if len(code_lines) > 30:
                 code_lines = code_lines[:30] + ["    ... (truncated)"]
-            lines.append("  AFTER:")
+            lines.append("  Code:")
             for line in code_lines:
                 lines.append(f"    {line}")
         lines.append("")

@@ -125,7 +125,6 @@ def _build_module(path: str, lang: str, data: dict[str, Any]) -> Module:
         summary=data.get("summary", ""),
         symbols=symbols,
         dependencies=dependencies,
-        depth=0,
     )
 
 

@@ -74,7 +74,7 @@ def _build(
     trunc1: bool,
 ) -> str:
     parts: list[str] = []
-    changed_ids = set(model.changed_module_ids)
+    depths = model.compute_depths()
 
     # 1. Raw diff
     if diff_result and diff_result.raw_text.strip():
@@ -99,14 +99,11 @@ def _build(
                 parts.append(_render_fallback(mod))
 
     # 3. Callers / impact
-    callers = [model.modules[mid] for mid in model.caller_module_ids if mid in model.modules]
+    callers = [mod for mid, mod in model.modules.items() if depths.get(mid) == -1]
     if callers:
         parts.append("## Callers — Impact Analysis\n")
         for mod in callers:
-            reason = model.caller_reasons.get(mod.id, "")
             parts.append(f"### {mod.id}")
-            if reason:
-                parts.append(f"> {reason}")
             parts.append("")
             compressed = _render_compressed(mod, repo_path)
             if compressed:
@@ -116,7 +113,7 @@ def _build(
 
     # 4. Direct dependencies (depth 1)
     dep_usage = _build_dep_usage_index(model)
-    depth1 = [m for m in model.modules.values() if m.depth == 1 and m.id not in changed_ids]
+    depth1 = [mod for mid, mod in model.modules.items() if depths.get(mid) == 1]
     if depth1:
         parts.append("## Direct Dependencies\n")
         for mod in depth1:
@@ -135,7 +132,7 @@ def _build(
                     parts.append("```\n")
 
     # 5. Transitive dependencies (depth 2+)
-    depth2 = [m for m in model.modules.values() if m.depth >= 2 and m.id not in changed_ids]
+    depth2 = [mod for mid, mod in model.modules.items() if depths.get(mid, 0) >= 2]
     if depth2:
         parts.append("## Transitive Dependencies\n")
         for mod in depth2:
@@ -255,7 +252,6 @@ def _render_fallback(mod: Module) -> str:
 def _build_dep_usage_index(model: MetaModel) -> dict[str, str]:
     """
     Build a map from dep file_path → usage annotation for rendering.
-    Uses usage_summary if available, falls back to usage.
     """
     index: dict[str, str] = {}
     for mid in model.changed_module_ids:
@@ -264,7 +260,7 @@ def _build_dep_usage_index(model: MetaModel) -> dict[str, str]:
             continue
         for dep in mod.dependencies:
             if dep.file_path:
-                index[dep.file_path] = dep.usage_summary or dep.usage
+                index[dep.file_path] = dep.usage
     return index
 
 

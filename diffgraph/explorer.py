@@ -24,7 +24,7 @@ def explore(
     """
     BFS over dependencies starting from start_files.
     Non-source files are skipped. Each dependency is resolved via the
-    resolver agent which also produces a usage_summary for the graph edge.
+    resolver agent to find its source file path.
     """
     _emit = on_event or (lambda *_, **__: None)
     meta = MetaModel()
@@ -54,7 +54,6 @@ def explore(
         if module is None:
             continue
 
-        module.depth = depth
         meta.add(module)
 
         if depth < max_depth:
@@ -64,13 +63,11 @@ def explore(
                     _emit("not_resolved", name=dep.name)
                     continue
 
-                # Agent resolves fqn → file_path + usage_summary
-                resolved_path, usage_summary = resolve_dep(
+                resolved_path = resolve_dep(
                     dep, module.name, repo_path, llm, model, on_event=on_event,
                 )
                 if resolved_path:
                     dep.file_path = resolved_path
-                    dep.usage_summary = usage_summary
                     if resolved_path not in visited:
                         queue.append((resolved_path, depth + 1))
 
@@ -138,11 +135,18 @@ def explore_callers(
             if caller_mod is None:
                 continue
 
-            caller_mod.depth = -1
             model.add(caller_mod)
-            model.caller_module_ids.append(hit.file)
-            model.caller_reasons[hit.file] = hit.reason
             _emit("caller_found", path=hit.file, referenced=module.name, reason=hit.reason, confidence=hit.confidence)
+
+            for dep in caller_mod.dependencies:
+                if is_likely_external(dep.fqn or dep.name):
+                    continue
+                resolved_path = resolve_dep(
+                    dep, caller_mod.name, repo_path, llm, llm_model, on_event=on_event,
+                )
+                if resolved_path:
+                    dep.file_path = resolved_path
+
             count += 1
 
 

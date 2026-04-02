@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -10,7 +11,6 @@ class Dependency:
     fqn: str            # fully qualified name from imports: "com.flowmart.orders.model.Order"
     usage: str          # how this dep is used (extracted by LLM from source)
     file_path: str = "" # resolved by agent; empty until resolved or if external
-    usage_summary: str = ""  # richer summary produced by resolver agent
 
 
 @dataclass
@@ -24,7 +24,6 @@ class Symbol:
     end_line: int
     is_changed: bool = False
     full_code: Optional[str] = None
-    before_code: Optional[str] = None
 
 
 @dataclass
@@ -35,24 +34,48 @@ class Module:
     summary: str
     symbols: list[Symbol]
     dependencies: list[Dependency]  # annotated edges to direct deps
-    depth: int = 0    # BFS depth from changed files
 
 
 @dataclass
 class MetaModel:
     modules: dict[str, Module] = field(default_factory=dict)
     changed_module_ids: list[str] = field(default_factory=list)
-    changed_symbol_names: list[str] = field(default_factory=list)
-    caller_module_ids: list[str] = field(default_factory=list)
-    caller_reasons: dict[str, str] = field(default_factory=dict)  # caller file → usage summary
 
     def add(self, module: Module) -> None:
         self.modules[module.id] = module
 
+    def compute_depths(self) -> dict[str, int]:
+        """
+        BFS from changed modules through dependency edges.
+        Returns {module_id: depth} where depth=0 is changed, depth>0 is deps,
+        depth=-1 is callers (modules with a dep pointing to a changed module).
+        """
+        changed_ids = set(self.changed_module_ids)
+        depths: dict[str, int] = {mid: 0 for mid in changed_ids if mid in self.modules}
+
+        queue: deque[str] = deque(depths.keys())
+        while queue:
+            mid = queue.popleft()
+            mod = self.modules.get(mid)
+            if not mod:
+                continue
+            for dep in mod.dependencies:
+                if dep.file_path and dep.file_path in self.modules and dep.file_path not in depths:
+                    depths[dep.file_path] = depths[mid] + 1
+                    queue.append(dep.file_path)
+
+        # Callers: in graph but not reachable via forward edges, yet depend on a changed module
+        for mid, mod in self.modules.items():
+            if mid not in depths:
+                for dep in mod.dependencies:
+                    if dep.file_path in changed_ids:
+                        depths[mid] = -1
+                        break
+
+        return depths
+
     def to_json(self) -> list[dict]:
         """Serialize the graph to a JSON-serializable list of module dicts."""
-        changed_ids = set(self.changed_module_ids)
-        caller_ids = set(self.caller_module_ids)
         result = []
         for module in self.modules.values():
             symbols = []
@@ -67,8 +90,6 @@ class MetaModel:
                     "end_line": s.end_line,
                     "is_changed": s.is_changed,
                 }
-                if s.before_code is not None:
-                    sym["before_code"] = s.before_code
                 symbols.append(sym)
             deps = [
                 {
@@ -76,7 +97,6 @@ class MetaModel:
                     "fqn": d.fqn,
                     "usage": d.usage,
                     "file_path": d.file_path,
-                    "usage_summary": d.usage_summary,
                 }
                 for d in module.dependencies
             ]
@@ -85,9 +105,6 @@ class MetaModel:
                 "name": module.name,
                 "lang": module.lang,
                 "summary": module.summary,
-                "depth": module.depth,
-                "is_changed": module.id in changed_ids,
-                "is_caller": module.id in caller_ids,
                 "dependencies": deps,
                 "symbols": symbols,
             })

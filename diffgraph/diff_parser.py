@@ -3,6 +3,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .lang import detect_lang
+
 
 @dataclass
 class HunkSnippet:
@@ -46,12 +48,15 @@ def parse_diff(diff_text: str) -> DiffResult:
     # Split on each "diff --git" header (keep the delimiter via lookahead)
     sections = re.split(r"(?=^diff --git )", diff_text, flags=re.MULTILINE)
 
+    source_sections: list[str] = []
     for section in sections:
         if not section.startswith("diff --git"):
             continue
         file_diff = _parse_file_section(section)
         if file_diff is not None:
             files[file_diff.path] = file_diff
+            if detect_lang(file_diff.path) != "unknown":
+                source_sections.append(section)
 
     changed_files = [fd.path for fd in files.values() if fd.status != "deleted"]
     changed_lines = {
@@ -64,7 +69,7 @@ def parse_diff(diff_text: str) -> DiffResult:
         files=files,
         changed_files=changed_files,
         changed_lines=changed_lines,
-        raw_text=diff_text,
+        raw_text="".join(source_sections),
     )
 
 

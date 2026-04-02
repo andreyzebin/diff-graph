@@ -12,13 +12,19 @@ log = logging.getLogger(__name__)
 
 # Known external package prefixes — skip agent call entirely for these
 _EXTERNAL_PREFIXES = (
+    # JVM
     "java.", "javax.", "jakarta.",
     "org.springframework.", "org.junit.", "org.mockito.", "org.assertj.",
     "lombok.", "org.slf4j.", "org.apache.", "org.hibernate.",
     "com.fasterxml.", "io.swagger.", "io.micrometer.",
     "kotlin.", "android.", "androidx.",
     "reactor.", "io.reactivex.",
+    # Python stdlib / popular libs
     "pytest.", "unittest.", "typing.",
+    "rich.", "typer.", "click.", "fastapi.", "pydantic.", "sqlalchemy.",
+    "openai.", "anthropic.", "httpx.", "requests.", "flask.", "django.",
+    # Go / TS / C# ecosystem
+    "github.com/", "golang.org/", "k8s.io/",
 )
 
 _SYSTEM_PROMPT = _load_prompt("resolve_dependency_system.txt")
@@ -74,7 +80,7 @@ _TOOLS = [
         "type": "function",
         "function": {
             "name": "done",
-            "description": "Report the resolved file and usage summary.",
+            "description": "Report the resolved file path.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -82,12 +88,8 @@ _TOOLS = [
                         "type": ["string", "null"],
                         "description": "Relative path to the defining file, or null if external/not found.",
                     },
-                    "usage_summary": {
-                        "type": "string",
-                        "description": "1-2 sentences: what this class does and its role relative to the calling module.",
-                    },
                 },
-                "required": ["file_path", "usage_summary"],
+                "required": ["file_path"],
             },
         },
     },
@@ -107,14 +109,14 @@ def resolve_dep(
     model: str,
     max_steps: int = 6,
     on_event: Optional[OnEvent] = None,
-) -> tuple[str, str]:
+) -> str:
     """
-    Resolve dep.fqn → file_path + usage_summary.
+    Resolve dep.fqn → file_path.
 
     Fast path: derive file path from FQN via filesystem glob (no LLM).
     Fallback: ReAct agent for non-standard layouts or ambiguous matches.
 
-    Returns (file_path, usage_summary). file_path is "" if not found.
+    Returns file_path, or "" if not found.
     """
     _emit = on_event or (lambda *_, **__: None)
 
@@ -122,9 +124,11 @@ def resolve_dep(
     fast_path = _fast_resolve(dep, repo_path)
     if fast_path:
         _emit("resolved", name=dep.name, path=fast_path)
-        return fast_path, dep.usage  # dep.usage from extractor is already good
+        return fast_path
 
     # Agent fallback for non-standard layouts
+    _emit("resolving_agent", name=dep.name, fqn=dep.fqn, source=source_name)
+
     user_message = (
         f"Find the source file that defines: {dep.name}\n"
         f"Fully qualified name: {dep.fqn}\n"
@@ -163,27 +167,31 @@ def resolve_dep(
             tool = tc.function.name
             args = json.loads(tc.function.arguments)
 
+            _emit("agent_step", step=step, tool=tool, args=args, path=dep.name,
+                  tok_in=tok_in, tok_out=tok_out, tok_cached=tok_cached)
+
             if tool == "done":
                 file_path = args.get("file_path") or ""
-                usage_summary = args.get("usage_summary", "")
                 if file_path:
                     _emit("resolved", name=dep.name, path=file_path,
-                          in_=tok_in, out=tok_out, cached=tok_cached)
+                          tok_in=tok_in, tok_out=tok_out, tok_cached=tok_cached)
                 else:
                     _emit("not_resolved", name=dep.name,
-                          in_=tok_in, out=tok_out, cached=tok_cached)
-                return file_path, usage_summary
+                          tok_in=tok_in, tok_out=tok_out, tok_cached=tok_cached)
+                return file_path
 
             result = _dispatch(tool, args, repo_path)
             result_str = _serialize(result)
+            _emit("agent_result", step=step, tool=tool,
+                  result_len=len(result_str), path=dep.name)
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
                 "content": result_str,
             })
 
-    _emit("not_resolved", name=dep.name, in_=tok_in, out=tok_out, cached=tok_cached)
-    return "", ""
+    _emit("not_resolved", name=dep.name, tok_in=tok_in, tok_out=tok_out, tok_cached=tok_cached)
+    return ""
 
 
 def _dispatch(tool: str, args: dict, repo_path: str) -> object:
@@ -209,10 +217,12 @@ def _fast_resolve(dep: Dependency, repo_path: str) -> str:
     Deterministic FQN → file path without any LLM call.
 
     Strategy:
-      1. FQN "com.example.foo.Bar" → try glob "**/foo/Bar.java" (parent package as dir hint)
-      2. If ambiguous or not found → try plain "**/Bar.java"
-      3. If multiple matches → pick shortest path (closest to repo root)
-      4. Return "" if nothing found (caller will use agent fallback)
+      1. Python: FQN "pkg.module.ClassName" → try glob "**/pkg/module.py"
+                 also try "**/pkg/module/__init__.py"
+      2. Java/Kotlin: FQN "com.example.foo.Bar" → try glob "**/foo/Bar.java"
+      3. Fallback: plain "**/Bar.java" / "**/bar.py" name search
+      4. Multiple matches → pick shortest path (closest to repo root)
+      5. Return "" if nothing found (caller will use agent fallback)
     """
     fqn = dep.fqn or dep.name
     name = dep.name
@@ -220,16 +230,25 @@ def _fast_resolve(dep: Dependency, repo_path: str) -> str:
 
     candidates: list[str] = []
 
-    # Step 1: use parent package segment as directory hint
+    # Step 1: Python module path — all parts except last form the file path
     if len(parts) >= 2:
+        module_path = "/".join(parts[:-1])
+        for pattern in (f"**/{module_path}.py", f"**/{module_path}/__init__.py"):
+            hits = list_files(pattern, repo_path)
+            if hits:
+                candidates.extend(hits)
+                break
+
+    # Step 2: Java/Kotlin — parent package segment as directory hint
+    if not candidates and len(parts) >= 2:
         parent_dir = parts[-2]
-        for ext in (".java", ".kt", ".py", ".go", ".ts", ".tsx", ".cs", ".rb"):
+        for ext in (".java", ".kt", ".ts", ".tsx", ".cs", ".rb", ".go"):
             hits = list_files(f"**/{parent_dir}/{name}{ext}", repo_path)
             if hits:
                 candidates.extend(hits)
-                break  # found something with this ext, no need to try others
+                break
 
-    # Step 2: plain name-based glob as fallback
+    # Step 3: plain name-based glob as fallback
     if not candidates:
         for ext in (".java", ".kt", ".py", ".go", ".ts", ".tsx", ".cs", ".rb"):
             hits = list_files(f"**/{name}{ext}", repo_path)

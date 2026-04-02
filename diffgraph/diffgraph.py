@@ -4,7 +4,7 @@ from typing import Callable, Optional
 from .diff_parser import DiffResult, parse_diff
 from .explorer import explore, explore_callers
 from .extractor import OnEvent
-from .model import MetaModel, Symbol, Dependency
+from .model import MetaModel
 from .renderer import render
 from .tools import read_file
 
@@ -111,7 +111,6 @@ def mark_changed_symbols(
     For every changed file that is present in the MetaModel:
       - Mark symbols whose line ranges overlap with after_changed_lines.
       - Populate symbol.full_code  (read from after-version file).
-      - Populate symbol.before_code (extracted from diff hunks).
     """
     for file_path, file_diff in diff_result.files.items():
         if file_path not in model.modules:
@@ -132,34 +131,3 @@ def mark_changed_symbols(
                 sym.full_code = read_file(
                     module.id, repo_path, sym.start_line, sym.end_line
                 )
-                sym.before_code = _extract_before_code(sym, file_diff)
-
-        model.changed_symbol_names.extend(
-            s.name for s in module.symbols if s.is_changed
-        )
-
-
-
-def _extract_before_code(sym: Symbol, file_diff) -> Optional[str]:
-    """
-    Collect before-lines from all hunks whose after-range overlaps the symbol.
-    Returns None if no before-lines found (new symbol).
-    """
-    from .diff_parser import FileDiff  # avoid circular at module level
-
-    collected: list[str] = []
-    for hunk in file_diff.hunks:
-        hunk_after_end = hunk.after_start + max(len(hunk.after_lines) - 1, 0)
-        # Additions: check [hunk.after_start, hunk_after_end] ∩ [sym.start_line, sym.end_line]
-        additions_overlap = hunk.after_start <= sym.end_line and hunk_after_end >= sym.start_line
-        # Deletions: check if any deletion position falls inside the symbol
-        deletions_overlap = any(
-            sym.start_line <= p <= sym.end_line
-            for p in hunk.deletion_positions
-        )
-        if (additions_overlap or deletions_overlap) and hunk.before_lines:
-            collected.extend(hunk.before_lines)
-
-    if not collected:
-        return None
-    return "\n".join(collected)
