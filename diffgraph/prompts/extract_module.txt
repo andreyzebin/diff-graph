@@ -24,10 +24,12 @@ Analyze this source file and return ONLY valid JSON, no markdown, no explanation
 }}
 
 Rules for "dependencies":
-- Only external names this file imports, injects, instantiates, or references by type
-- Only class/interface/type names — no primitives, no builtins, no standard library
-- For Python: names from import statements and type hints only
-- For Go: struct/interface names from other packages
+- Only types used as: method parameters, return types, field types, constructor injections, or generic type arguments
+- EXCLUDE annotation types — if a name only appears with "@" prefix (e.g. @Entity, @Transactional, @GetMapping), do NOT include it
+- EXCLUDE primitives, builtins, and standard library (java.lang.*, java.util.*, java.io.*, etc.)
+- EXCLUDE framework infrastructure annotations (Spring MVC mappings, JPA annotations, Lombok, etc.)
+- For Python: names used as function parameters, return types, or field types only
+- For Go: struct/interface names used as parameter or return types
 
 Rules for "fqn" (fully qualified name):
 - For Java/Kotlin: copy the full import statement path (e.g. "com.flowmart.orders.model.Order")
