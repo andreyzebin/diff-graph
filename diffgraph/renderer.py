@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .diff_parser import DiffResult
-from .model import Dependency, MetaModel, Module, Symbol
+from .model import MetaModel, Module, Symbol
 from .tools import read_file
 
 # Language-specific body omission marker (used inline in compressed files)
@@ -178,6 +178,8 @@ def _render_compressed(mod: Module, repo_path: str) -> str:
     replacements: dict[int, str | None] = {}
 
     for sym in top:
+        if sym.is_expanded or sym.is_changed:
+            continue  # show full body
         sig_0 = sym.start_line - 1  # 0-based
         end_0 = sym.end_line - 1    # 0-based
         # Only compress symbols that actually have a body
@@ -188,7 +190,9 @@ def _render_compressed(mod: Module, repo_path: str) -> str:
             for i in range(body_0 + 1, end_0 + 1):
                 replacements[i] = None
 
-    out: list[str] = [_compressed_header(mod.lang)]
+    has_expanded = any(s.is_expanded for s in top)
+    header = "" if has_expanded else _compressed_header(mod.lang)
+    out: list[str] = [header] if header else []
     for i, line in enumerate(lines):
         if i not in replacements:
             out.append(line)
@@ -275,6 +279,8 @@ def _file_status(path: str, diff_result: Optional[DiffResult]) -> str:
 
 def _token_estimate(text: str) -> int:
     return len(text) // 4
+
+
 
 
 _tok = _token_estimate

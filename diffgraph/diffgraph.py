@@ -6,6 +6,7 @@ from .explorer import explore, explore_callers
 from .extractor import OnEvent
 from .model import MetaModel
 from .renderer import render
+from .review_agent import apply_selections, find_review_context
 from .tools import read_file
 
 
@@ -34,6 +35,9 @@ class DiffGraph:
         exclude_tests: bool = True,
         max_agent_steps: int = 12,
         max_agent_tokens: int = 20000,
+        review_agent_steps: int = 20,
+        review_agent_tokens: int = 30000,
+        review_context_budget: int = 6000,
     ) -> None:
         self.repo_path = repo_path
         self.llm = llm_client
@@ -43,6 +47,9 @@ class DiffGraph:
         self.exclude_tests = exclude_tests
         self.max_agent_steps = max_agent_steps
         self.max_agent_tokens = max_agent_tokens
+        self.review_agent_steps = review_agent_steps
+        self.review_agent_tokens = review_agent_tokens
+        self.review_context_budget = review_context_budget
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -89,7 +96,30 @@ class DiffGraph:
         model: MetaModel,
         diff_result: Optional[DiffResult] = None,
     ) -> str:
-        """MetaModel → text prompt context."""
+        """MetaModel → text prompt context (mechanical BFS renderer)."""
+        return render(model, diff_result, repo_path=self.repo_path, max_tokens=self.max_tokens)
+
+    def review(
+        self,
+        model: MetaModel,
+        diff_result: Optional[DiffResult] = None,
+        on_event: Optional[OnEvent] = None,
+    ) -> str:
+        """
+        Run the review agent over the MetaModel to produce a curated
+        code-review context. Returns the rendered string.
+        """
+        selections = find_review_context(
+            meta=model,
+            repo_path=self.repo_path,
+            llm=self.llm,
+            model=self.model,
+            max_steps=self.review_agent_steps,
+            max_agent_tokens=self.review_agent_tokens,
+            context_budget=self.review_context_budget,
+            on_event=on_event,
+        )
+        apply_selections(model, selections)
         return render(model, diff_result, repo_path=self.repo_path, max_tokens=self.max_tokens)
 
     def build_and_render(self, diff_text: str, depth: int = 2) -> str:

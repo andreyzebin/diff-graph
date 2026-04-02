@@ -23,6 +23,7 @@ class Symbol:
     start_line: int
     end_line: int
     is_changed: bool = False
+    is_expanded: bool = False  # marked by review agent as important — show full body
     full_code: Optional[str] = None
 
 

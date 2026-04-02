@@ -61,14 +61,15 @@ def search_text(
     repo_path: str,
     glob: str = "**/*",
     regex: bool = False,
+    include_context: bool = True,
 ) -> list[SearchResult]:
     """
     Search for a string (literal or regex) in files matching glob.
-    Returns matches with up to 2 lines of context on each side.
 
-    query:  literal string, or a regex pattern when regex=True.
-            Wildcards: use regex=True and '.*' for any characters.
-    glob:   file filter, e.g. '**/*.py' or 'src/**/*.java'. Default: all files.
+    include_context: when True (default) returns ±2 surrounding lines and full
+                     matched line. When False returns only file+line+snippet
+                     (first 120 chars of matched line) — useful for quick
+                     relevance scanning before committing to read_file.
     """
     pattern = os.path.join(repo_path, glob)
     files = [f for f in _glob_mod.glob(pattern, recursive=True) if os.path.isfile(f)]
@@ -93,19 +94,21 @@ def search_text(
         for i, line_content in enumerate(file_lines):
             hit = match_fn(line_content) if match_fn else (query in line_content)
             if hit:
-                ctx_before = [
-                    file_lines[j].rstrip("\n")
-                    for j in range(max(0, i - 2), i)
-                ]
-                ctx_after = [
-                    file_lines[j].rstrip("\n")
-                    for j in range(i + 1, min(len(file_lines), i + 3))
-                ]
+                text = line_content.rstrip("\n")
+                if include_context:
+                    ctx = [
+                        file_lines[j].rstrip("\n")
+                        for j in range(max(0, i - 2), min(len(file_lines), i + 3))
+                        if j != i
+                    ]
+                else:
+                    ctx = []
+                    text = text[:120]
                 results.append(SearchResult(
                     file=os.path.relpath(filepath, repo_path),
                     line=i + 1,
-                    text=line_content.rstrip("\n"),
-                    context=ctx_before + ctx_after,
+                    text=text,
+                    context=ctx,
                 ))
 
     return results

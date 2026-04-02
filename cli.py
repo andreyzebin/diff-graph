@@ -95,6 +95,7 @@ def run(
     dump_graph: Optional[str] = typer.Option(None, "--dump-graph", help="Write MetaModel as JSON array to file"),
     api_url: Optional[str] = typer.Option(None, "--api-url", help="OpenAI-compatible API base URL override"),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="API key override"),
+    review: bool = typer.Option(False, "--review", help="Run review agent for curated context instead of BFS renderer"),
 ):
     """
     Build a dependency graph from a diff and render a prompt context.
@@ -166,7 +167,12 @@ def run(
 
     _print_model_summary(meta)
 
-    context = dg.render(meta, diff_result)
+    if review:
+        console.print("\n[bold]Review Agent[/bold]  curating context...\n")
+        with Live("", console=console, refresh_per_second=8, vertical_overflow="visible") as live2:
+            context = dg.review(meta, diff_result, on_event=_make_event_handler(effective_model, live2))
+    else:
+        context = dg.render(meta, diff_result)
 
     if dump_graph:
         import json
@@ -365,6 +371,37 @@ def _make_event_handler(model: str, live: Live):
             reason = kw.get("reason", "limit reached")
             tok_str = _fmt_tok(kw)
             _log(f"[yellow]impact[/yellow]    [bold]{path}[/bold]  [dim]{reason}[/dim]  [dim cyan]{tok_str}[/dim cyan]")
+
+        elif event == "review_start":
+            _log(f"[bold cyan]review[/bold cyan]    agent starting  [dim]{kw.get('changed', 0)} changed module(s)[/dim]")
+
+        elif event == "review_step":
+            tool = kw.get("tool", "")
+            args = kw.get("args", {})
+            arg_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])
+            tok_suffix = _fmt_tok(kw)
+            _log(f"[dim]  review  step {kw.get('step', 0)}  [cyan]{tool}[/cyan]({arg_str})  {tok_suffix}[/dim]")
+
+        elif event == "review_result":
+            pass  # step line already logged
+
+        elif event == "review_selected":
+            _log(
+                f"[green]select[/green]    [bold]{kw.get('symbol_name', kw.get('name', ''))}[/bold]"
+                f"  [dim]{kw.get('file', '')}[/dim]"
+                f"  [{kw.get('detail', '')}]"
+                f"  [dim]{kw.get('reason', '')[:80]}[/dim]"
+            )
+
+        elif event == "review_done":
+            live.update("")
+            tok_str = _fmt_tok(kw)
+            _log(f"[bold cyan]review[/bold cyan]    done  [dim]{kw.get('count', 0)} symbols selected[/dim]  [dim cyan]{tok_str}[/dim cyan]")
+
+        elif event == "review_forced_done":
+            live.update("")
+            tok_str = _fmt_tok(kw)
+            _log(f"[yellow]review[/yellow]    {kw.get('reason', 'limit')}  [dim cyan]{tok_str}[/dim cyan]")
 
         elif event == "caller_found":
             conf = kw.get("confidence", "")
