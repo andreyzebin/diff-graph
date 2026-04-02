@@ -82,6 +82,7 @@ class DiffGraph:
             max_agent_tokens=self.max_agent_tokens,
             on_event=on_event,
         )
+        compute_trace(meta)
         return meta, diff_result
 
     def render(
@@ -90,7 +91,7 @@ class DiffGraph:
         diff_result: Optional[DiffResult] = None,
     ) -> str:
         """MetaModel → text prompt context."""
-        return render(model, diff_result, max_tokens=self.max_tokens)
+        return render(model, diff_result, repo_path=self.repo_path, max_tokens=self.max_tokens)
 
     def build_and_render(self, diff_text: str, depth: int = 2) -> str:
         """Shortcut: raw diff → ready-to-use prompt context string."""
@@ -137,6 +138,39 @@ def mark_changed_symbols(
         model.changed_symbol_names.extend(
             s.name for s in module.symbols if s.is_changed
         )
+
+
+def compute_trace(model: MetaModel) -> None:
+    """
+    Mark Symbol.is_on_trace for symbols that lie on the call path from/to changed symbols.
+
+    Forward (changed → deps):
+      A dep symbol is on-trace if any changed symbol lists it in .calls.
+
+    Backward (callers → changed):
+      A caller symbol is on-trace if it calls any changed symbol by name.
+    """
+    changed_names = set(model.changed_symbol_names)
+
+    # Collect all names called by changed symbols
+    changed_calls: set[str] = set()
+    for mid in model.changed_module_ids:
+        for sym in model.modules[mid].symbols:
+            if sym.is_changed:
+                changed_calls.update(sym.calls)
+
+    # Forward: mark dep symbols called by changed code
+    for mod in model.modules.values():
+        if mod.depth > 0:
+            for sym in mod.symbols:
+                if sym.name in changed_calls:
+                    sym.is_on_trace = True
+
+    # Backward: mark caller symbols that call into changed code
+    for mid in model.caller_module_ids:
+        for sym in model.modules[mid].symbols:
+            if any(name in changed_names for name in sym.calls):
+                sym.is_on_trace = True
 
 
 def _extract_before_code(sym: Symbol, file_diff) -> Optional[str]:

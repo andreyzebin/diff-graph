@@ -31,6 +31,7 @@ class DiffResult:
     files: dict[str, FileDiff]           # path → FileDiff
     changed_files: list[str]             # after-paths for BFS (excludes deleted)
     changed_lines: dict[str, list[int]]  # path → after_changed_lines
+    raw_text: str = ""                   # original diff text
 
 
 # ── public ──────────────────────────────────────────────────────────────────
@@ -63,6 +64,7 @@ def parse_diff(diff_text: str) -> DiffResult:
         files=files,
         changed_files=changed_files,
         changed_lines=changed_lines,
+        raw_text=diff_text,
     )
 
 

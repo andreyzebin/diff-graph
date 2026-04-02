@@ -1,6 +1,7 @@
 from __future__ import annotations
 import glob as _glob_mod
 import os
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -59,13 +60,27 @@ def search_text(
     query: str,
     repo_path: str,
     glob: str = "**/*",
+    regex: bool = False,
 ) -> list[SearchResult]:
     """
-    Search for a literal string in files matching glob.
+    Search for a string (literal or regex) in files matching glob.
     Returns matches with up to 2 lines of context on each side.
+
+    query:  literal string, or a regex pattern when regex=True.
+            Wildcards: use regex=True and '.*' for any characters.
+    glob:   file filter, e.g. '**/*.py' or 'src/**/*.java'. Default: all files.
     """
     pattern = os.path.join(repo_path, glob)
     files = [f for f in _glob_mod.glob(pattern, recursive=True) if os.path.isfile(f)]
+
+    if regex:
+        try:
+            compiled = re.compile(query)
+        except re.error:
+            compiled = re.compile(re.escape(query))
+        match_fn = compiled.search
+    else:
+        match_fn = None  # plain substring check
 
     results: list[SearchResult] = []
     for filepath in files:
@@ -76,7 +91,8 @@ def search_text(
             continue
 
         for i, line_content in enumerate(file_lines):
-            if query in line_content:
+            hit = match_fn(line_content) if match_fn else (query in line_content)
+            if hit:
                 ctx_before = [
                     file_lines[j].rstrip("\n")
                     for j in range(max(0, i - 2), i)

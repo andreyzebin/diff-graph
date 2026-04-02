@@ -11,7 +11,8 @@ Analyze this source file and return ONLY valid JSON, no markdown, no explanation
       "summary": "1 sentence",
       "annotations": ["@Transactional"],
       "start_line": 42,
-      "end_line": 67
+      "end_line": 67,
+      "calls": ["otherMethod", "HelperClass"]
     }}
   ],
   "dependencies": ["ClassName", "InterfaceName"]
@@ -23,11 +24,17 @@ Rules for "dependencies":
 - For Python: names from import statements and type hints only
 - For Go: struct/interface names from other packages
 
+Rules for "calls" (per symbol):
+- Names of methods, functions, or classes directly invoked inside this symbol's body
+- Include calls to symbols defined in other files AND in this same file
+- Exclude: builtins, stdlib, language keywords, operators
+- Use simple name only (e.g. "processPayment", not "service.processPayment")
+
 For files with no class structure (Python modules, Go files with only functions):
 - Use "MODULE" as kind for top-level symbols
 - Use filename without extension as "name"
 
 File: {path}
 Language: {lang}
-Content:
+Content (each line prefixed with its 1-based line number):
 {content}

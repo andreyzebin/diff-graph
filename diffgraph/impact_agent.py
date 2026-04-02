@@ -52,7 +52,7 @@ _TOOLS = [
         "function": {
             "name": "search",
             "description": (
-                "Full-text search for a literal string across repo files. "
+                "Search for a string or regex pattern across repo files. "
                 "Returns matching lines with up to 2 lines of surrounding context."
             ),
             "parameters": {
@@ -60,8 +60,22 @@ _TOOLS = [
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Literal string or identifier to find",
-                    }
+                        "description": (
+                            "String to find. Literal by default. "
+                            "Set regex=true to use regex syntax (e.g. 'def .*Service' or 'import.*model')."
+                        ),
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": (
+                            "Optional file filter glob, e.g. '**/*.py', 'src/**/*.java'. "
+                            "Defaults to all files."
+                        ),
+                    },
+                    "regex": {
+                        "type": "boolean",
+                        "description": "Set true to treat query as a regular expression.",
+                    },
                 },
                 "required": ["query"],
             },
@@ -260,7 +274,9 @@ def _dispatch(tool: str, args: dict, repo_path: str, skip_file: str) -> object:
 
     if tool == "search":
         query = args.get("query", "")
-        results = search_text(query, repo_path)
+        glob = args.get("glob", "**/*")
+        regex = bool(args.get("regex", False))
+        results = search_text(query, repo_path, glob=glob, regex=regex)
         filtered = [
             {
                 "file": r.file,

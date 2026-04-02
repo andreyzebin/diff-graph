@@ -15,6 +15,8 @@ class Symbol:
     is_changed: bool = False
     full_code: Optional[str] = None
     before_code: Optional[str] = None
+    calls: list[str] = field(default_factory=list)  # names of symbols this symbol calls
+    is_on_trace: bool = False  # lies on the call path from/to a changed symbol
 
 
 @dataclass
@@ -34,6 +36,7 @@ class MetaModel:
     changed_module_ids: list[str] = field(default_factory=list)
     changed_symbol_names: list[str] = field(default_factory=list)
     caller_module_ids: list[str] = field(default_factory=list)
+    caller_reasons: dict[str, str] = field(default_factory=dict)  # module_id → agent reason
 
     def add(self, module: Module) -> None:
         self.modules[module.id] = module

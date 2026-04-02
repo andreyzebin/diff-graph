@@ -128,6 +128,7 @@ def explore_callers(
             caller_mod.depth = -1
             model.add(caller_mod)
             model.caller_module_ids.append(hit.file)
+            model.caller_reasons[hit.file] = hit.reason
             _emit("caller_found", path=hit.file, referenced=module.name, reason=hit.reason, confidence=hit.confidence)
             count += 1
 

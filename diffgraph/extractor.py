@@ -15,6 +15,13 @@ EXTRACT_PROMPT = _load_prompt("extract_module.txt")
 RETRY_SUFFIX = _load_prompt("extract_module_retry.txt")
 
 
+def _numbered(content: str) -> str:
+    """Prefix each line with its 1-based line number, e.g. '   1  import ...'."""
+    lines = content.splitlines()
+    width = len(str(len(lines)))
+    return "\n".join(f"{i + 1:{width}}  {line}" for i, line in enumerate(lines))
+
+
 def extract_module(
     path: str,
     content: str,
@@ -28,7 +35,7 @@ def extract_module(
     Retries up to 2 times on invalid JSON; returns None after 3 failures.
     """
     _emit = on_event or _noop
-    base_prompt = EXTRACT_PROMPT.format(path=path, lang=lang, content=content)
+    base_prompt = EXTRACT_PROMPT.format(path=path, lang=lang, content=_numbered(content))
     prompt = base_prompt
 
     for attempt in range(3):
@@ -97,6 +104,7 @@ def _build_module(path: str, lang: str, data: dict[str, Any]) -> Module:
             annotations=s.get("annotations", []),
             start_line=int(s.get("start_line", 1)),
             end_line=int(s.get("end_line", 1)),
+            calls=s.get("calls", []),
         )
         for s in data.get("symbols", [])
     ]

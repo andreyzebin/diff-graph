@@ -43,23 +43,28 @@ class TestBasicRender:
     def test_changed_modules_section_present(self):
         meta = self._build_meta()
         out = render(meta)
-        assert "## Changed Modules" in out
+        assert "## Changed Files" in out
 
     def test_changed_module_filename_present(self):
         meta = self._build_meta()
         out = render(meta)
         assert "PaymentService.java" in out
 
-    def test_before_code_present(self):
+    def test_changed_symbol_signature_present(self):
+        # fallback (no repo_path): signature appears in pseudocode block
         meta = self._build_meta()
         out = render(meta)
-        assert "BEFORE:" in out
-        assert "old code" in out
+        assert "processPayment" in out
 
-    def test_after_code_present(self):
-        meta = self._build_meta()
+    def test_on_trace_symbol_shows_code(self):
+        # when is_on_trace=True, full_code appears in fallback renderer
+        sym = make_changed_symbol("processPayment", before="old code", after="new code")
+        sym.is_on_trace = True
+        mod = make_module("PaymentService.java", "PaymentService", 0, [sym])
+        meta = MetaModel()
+        meta.add(mod)
+        meta.caller_module_ids = ["PaymentService.java"]
         out = render(meta)
-        assert "AFTER:" in out
         assert "new code" in out
 
     def test_direct_deps_section(self):
@@ -79,13 +84,11 @@ class TestBasicRender:
         out = render(meta)
         assert "@Transactional" in out
 
-
 class TestTokenBudget:
     def test_token_estimate(self):
         assert _token_estimate("a" * 400) == 100
 
     def test_exceeds_budget_degrades_depth2(self):
-        # Build a model that renders large; restrict budget to force degradation
         sym = make_changed_symbol("foo", before="x", after="y")
         changed = make_module("Changed.java", "Changed", 0, [sym], summary="main")
         trans = make_module("Trans.java", "Trans", 2, summary="transitive detail " * 20)
@@ -98,9 +101,12 @@ class TestTokenBudget:
         full = render(meta, max_tokens=99999)
         small = render(meta, max_tokens=10)
 
-        # Depth-2 module should appear differently when degraded
-        assert "summary only" in full
-        assert "name only" in small
+        # Full render: depth-2 shows id + summary
+        assert "Trans.java" in full
+        assert "transitive detail" in full
+        # Degraded render: depth-2 shows name only (short form)
+        assert "Trans.java" not in small
+        assert "Trans" in small
 
     def test_changed_module_never_truncated(self):
         sym = make_changed_symbol("critical", before="old", after="new")
