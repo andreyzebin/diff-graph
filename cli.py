@@ -92,6 +92,7 @@ def run(
     depth: Optional[int] = typer.Option(None, "--depth", help="BFS depth (default: from config, usually 2)"),
     model: Optional[str] = typer.Option(None, "--model", "-m", help="LLM model override"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write rendered context to file instead of stdout"),
+    dump_graph: Optional[str] = typer.Option(None, "--dump-graph", help="Write MetaModel as JSON array to file"),
     api_url: Optional[str] = typer.Option(None, "--api-url", help="OpenAI-compatible API base URL override"),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="API key override"),
 ):
@@ -158,6 +159,11 @@ def run(
     _print_model_summary(meta)
 
     context = dg.render(meta, diff_result)
+
+    if dump_graph:
+        import json
+        Path(dump_graph).write_text(json.dumps(meta.to_json(), ensure_ascii=False, indent=2))
+        console.print(f"[green]Graph written to {dump_graph}[/green]  ({len(meta.modules)} modules)")
 
     if output:
         Path(output).write_text(context)
