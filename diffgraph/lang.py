@@ -47,3 +47,20 @@ def get_search_patterns(name: str, lang: str) -> list[str]:
 
 def get_extensions(lang: str) -> list[str]:
     return FILE_EXTENSIONS.get(lang, [])
+
+
+# Glob patterns for searching source files by language
+_LANG_GLOBS: dict[str, list[str]] = {
+    "java":       ["**/*.java"],
+    "python":     ["**/*.py"],
+    "typescript": ["**/*.ts", "**/*.tsx"],
+    "go":         ["**/*.go"],
+    "kotlin":     ["**/*.kt"],
+    "ruby":       ["**/*.rb"],
+    "csharp":     ["**/*.cs"],
+}
+
+
+def get_globs_for_lang(lang: str) -> list[str]:
+    """Return glob patterns for all source files of the given language."""
+    return _LANG_GLOBS.get(lang, ["**/*"])

@@ -10,3 +10,7 @@ render:
 
 explore:
   depth: 2
+  max_callers: 5        # max impacted files to extract per changed module
+  exclude_tests: true   # skip test files in impact results
+  max_agent_steps: 12     # max tool calls per impact agent run
+  max_agent_tokens: 20000 # stop agent if cumulative token usage exceeds this

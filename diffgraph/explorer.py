@@ -4,7 +4,8 @@ from collections import deque
 from typing import Callable, Optional
 
 from .extractor import OnEvent, extract_module
-from .lang import detect_lang, get_extensions, get_search_patterns
+from .impact_agent import ImpactHit, find_impact
+from .lang import detect_lang, get_extensions, get_globs_for_lang, get_search_patterns
 from .model import MetaModel
 from .tools import list_files, read_file, search_text
 
@@ -61,6 +62,87 @@ def explore(
                     _emit("not_resolved", name=dep_name)
 
     return meta
+
+
+def explore_callers(
+    model: MetaModel,
+    repo_path: str,
+    llm,
+    llm_model: str = "gpt-4o-mini",
+    max_callers: int = 5,
+    exclude_tests: bool = True,
+    max_agent_steps: int = 12,
+    max_agent_tokens: int = 20000,
+    on_event: Optional[OnEvent] = None,
+) -> None:
+    """
+    Agentic impact analysis: for each changed module, run a ReAct agent that
+    uses list_files / search / read_file to find files impacted by the change.
+
+    High- and medium-confidence hits are extracted and added to the MetaModel
+    with depth=-1 (callers / impacted files).
+    """
+    _emit = on_event or (lambda *_, **__: None)
+    visited = set(model.modules.keys())
+
+    for module_id in list(model.changed_module_ids):
+        module = model.modules[module_id]
+
+        # Skip if no symbols were actually marked changed
+        if not any(s.is_changed for s in module.symbols):
+            continue
+
+        _emit("searching_callers", name=module.name, path=module_id)
+
+        hits = find_impact(
+            module=module,
+            repo_path=repo_path,
+            llm=llm,
+            model=llm_model,
+            max_steps=max_agent_steps,
+            max_tokens=max_agent_tokens,
+            on_event=on_event,
+        )
+
+        count = 0
+        for hit in hits:
+            if hit.confidence == "low":
+                continue
+            if exclude_tests and _is_test_file(hit.file):
+                continue
+            if hit.file in visited:
+                continue
+            if count >= max_callers:
+                break
+
+            visited.add(hit.file)
+            content = read_file(hit.file, repo_path)
+            if not content:
+                continue
+
+            lang = detect_lang(hit.file)
+            caller_mod = extract_module(hit.file, content, lang, llm, llm_model, on_event=on_event)
+            if caller_mod is None:
+                continue
+
+            caller_mod.depth = -1
+            model.add(caller_mod)
+            model.caller_module_ids.append(hit.file)
+            _emit("caller_found", path=hit.file, referenced=module.name, reason=hit.reason, confidence=hit.confidence)
+            count += 1
+
+
+def _is_test_file(path: str) -> bool:
+    lower = path.lower()
+    return (
+        "/test" in lower
+        or "/tests/" in lower
+        or lower.endswith("_test.py")
+        or lower.endswith("_test.go")
+        or lower.endswith("test.java")
+        or lower.endswith("spec.ts")
+        or lower.endswith("spec.js")
+    )
 
 
 def resolve_dependency(name: str, lang: str, repo_path: str) -> Optional[str]:

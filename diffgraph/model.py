@@ -33,6 +33,7 @@ class MetaModel:
     modules: dict[str, Module] = field(default_factory=dict)
     changed_module_ids: list[str] = field(default_factory=list)
     changed_symbol_names: list[str] = field(default_factory=list)
+    caller_module_ids: list[str] = field(default_factory=list)
 
     def add(self, module: Module) -> None:
         self.modules[module.id] = module
@@ -55,6 +56,7 @@ class MetaModel:
                     "is_changed": s.is_changed,
                 }
                 symbols.append(sym)
+            caller_ids = set(self.caller_module_ids)
             result.append({
                 "id": module.id,
                 "name": module.name,
@@ -62,6 +64,7 @@ class MetaModel:
                 "summary": module.summary,
                 "depth": module.depth,
                 "is_changed": module.id in changed_ids,
+                "is_caller": module.id in caller_ids,
                 "dependencies": module.dependencies,
                 "symbols": symbols,
             })

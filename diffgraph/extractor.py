@@ -5,48 +5,14 @@ import re
 from typing import Any, Callable, Optional
 
 from .model import Module, Symbol
+from .prompts import load as _load_prompt
 
 OnEvent = Callable[..., None]  # on_event(event: str, **kwargs)
 
 log = logging.getLogger(__name__)
 
-EXTRACT_PROMPT = """\
-Analyze this source file and return ONLY valid JSON, no markdown, no explanation.
-
-{{
-  "name": "ClassName or module name",
-  "summary": "1 sentence what this file does",
-  "symbols": [
-    {{
-      "name": "symbolName",
-      "kind": "METHOD|CLASS|FIELD|INTERFACE|ENUM|FUNCTION|MODULE",
-      "signature": "full signature with types",
-      "summary": "1 sentence",
-      "annotations": ["@Transactional"],
-      "start_line": 42,
-      "end_line": 67
-    }}
-  ],
-  "dependencies": ["ClassName", "InterfaceName"]
-}}
-
-Rules for "dependencies":
-- Only external names this file imports, injects, instantiates, or references by type
-- Only class/interface/type names — no primitives, no builtins, no standard library
-- For Python: names from import statements and type hints only
-- For Go: struct/interface names from other packages
-
-For files with no class structure (Python modules, Go files with only functions):
-- Use "MODULE" as kind for top-level symbols
-- Use filename without extension as "name"
-
-File: {path}
-Language: {lang}
-Content:
-{content}
-"""
-
-RETRY_SUFFIX = "\n\nIMPORTANT: Your previous response was not valid JSON. Return ONLY a raw JSON object, no markdown fences, no prose."
+EXTRACT_PROMPT = _load_prompt("extract_module.txt")
+RETRY_SUFFIX = _load_prompt("extract_module_retry.txt")
 
 
 def extract_module(

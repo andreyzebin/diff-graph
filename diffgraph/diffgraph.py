@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from .diff_parser import DiffResult, parse_diff
-from .explorer import explore
+from .explorer import explore, explore_callers
 from .extractor import OnEvent
 from .model import MetaModel, Symbol
 from .renderer import render
@@ -30,11 +30,19 @@ class DiffGraph:
         llm_client,
         llm_model: str = "gpt-4o-mini",
         max_tokens_in_prompt: int = 8000,
+        max_callers: int = 5,
+        exclude_tests: bool = True,
+        max_agent_steps: int = 12,
+        max_agent_tokens: int = 20000,
     ) -> None:
         self.repo_path = repo_path
         self.llm = llm_client
         self.model = llm_model
         self.max_tokens = max_tokens_in_prompt
+        self.max_callers = max_callers
+        self.exclude_tests = exclude_tests
+        self.max_agent_steps = max_agent_steps
+        self.max_agent_tokens = max_agent_tokens
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -63,6 +71,17 @@ class DiffGraph:
             on_event=on_event,
         )
         mark_changed_symbols(meta, diff_result, self.repo_path)
+        explore_callers(
+            meta,
+            self.repo_path,
+            self.llm,
+            self.model,
+            max_callers=self.max_callers,
+            exclude_tests=self.exclude_tests,
+            max_agent_steps=self.max_agent_steps,
+            max_agent_tokens=self.max_agent_tokens,
+            on_event=on_event,
+        )
         return meta, diff_result
 
     def render(

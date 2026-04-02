@@ -121,6 +121,10 @@ def run(
     effective_depth = depth if depth is not None else explore_cfg.get("depth", 2)
     effective_model = llm_cfg.get("model", "gpt-4o-mini")
     max_tokens = render_cfg.get("max_tokens", 8000)
+    max_callers = explore_cfg.get("max_callers", 5)
+    exclude_tests = explore_cfg.get("exclude_tests", True)
+    max_agent_steps = explore_cfg.get("max_agent_steps", 12)
+    max_agent_tokens = explore_cfg.get("max_agent_tokens", 20000)
 
     diff_text = _read_diff(diff)
     if not diff_text.strip():
@@ -146,6 +150,10 @@ def run(
         llm_client=llm_client,
         llm_model=effective_model,
         max_tokens_in_prompt=max_tokens,
+        max_callers=max_callers,
+        exclude_tests=exclude_tests,
+        max_agent_steps=max_agent_steps,
+        max_agent_tokens=max_agent_tokens,
     )
     console.print("")
     with Live("", console=console, refresh_per_second=8, vertical_overflow="visible") as live:
@@ -311,11 +319,67 @@ def _make_event_handler(model: str, live: Live):
         elif event == "not_resolved":
             _log(f"[dim]  resolve   {name}  →  external, skip[/dim]")
 
+        elif event == "searching_callers":
+            _log(f"[magenta]impact[/magenta]    agent analyzing impact of [bold]{name}[/bold]")
+
+        elif event == "agent_step":
+            tool = kw.get("tool", "")
+            args = kw.get("args", {})
+            arg_str = ", ".join(f"{k}={v!r}" for k, v in args.items())
+            tok_suffix = _fmt_tok(kw)
+            live.update(
+                Text.assemble(
+                    ("  ↳ ", "dim"),
+                    (f"step {kw.get('step', 0)}  ", "dim"),
+                    (tool, "magenta"),
+                    (f"({arg_str})", "dim"),
+                    (tok_suffix, "dim cyan"),
+                )
+            )
+
+        elif event == "agent_result":
+            pass  # live line already shows current step
+
+        elif event == "agent_done":
+            live.update("")
+            hits = kw.get("hits", 0)
+            tok_str = _fmt_tok(kw)
+            _log(f"[magenta]impact[/magenta]    [bold]{path}[/bold]  [dim]{hits} impacted file(s) found[/dim]  [dim cyan]{tok_str}[/dim cyan]")
+
+        elif event == "agent_forced_done":
+            live.update("")
+            reason = kw.get("reason", "limit reached")
+            tok_str = _fmt_tok(kw)
+            _log(f"[yellow]impact[/yellow]    [bold]{path}[/bold]  [dim]{reason}[/dim]  [dim cyan]{tok_str}[/dim cyan]")
+
+        elif event == "caller_found":
+            conf = kw.get("confidence", "")
+            reason = kw.get("reason", "")
+            _log(
+                f"[magenta]caller[/magenta]    [bold]{path}[/bold]"
+                f"  [{conf}]  [dim]{reason[:80]}[/dim]"
+            )
+
     return on_event
+
+
+def _fmt_tok(kw: dict) -> str:
+    """Format token breakdown from an agent event's keyword args."""
+    tok_in = kw.get("tok_in", 0)
+    tok_out = kw.get("tok_out", 0)
+    tok_cached = kw.get("tok_cached", 0)
+    if not (tok_in or tok_out):
+        total = kw.get("total_tokens", 0)
+        return f"{total} tok" if total else ""
+    parts = [f"in={tok_in}", f"out={tok_out}"]
+    if tok_cached:
+        parts.append(f"cached={tok_cached}")
+    return "  ".join(parts)
 
 
 def _print_model_summary(meta) -> None:
     changed = len(meta.changed_module_ids)
+    callers = len(meta.caller_module_ids)
     total = len(meta.modules)
     sym_changed = len(meta.changed_symbol_names)
 
@@ -323,9 +387,12 @@ def _print_model_summary(meta) -> None:
     for mod in meta.modules.values():
         by_depth[mod.depth] = by_depth.get(mod.depth, 0) + 1
 
-    depth_str = "  ".join(f"depth {d}: {n}" for d, n in sorted(by_depth.items()))
+    depth_str = "  ".join(
+        (f"callers: {n}" if d == -1 else f"depth {d}: {n}")
+        for d, n in sorted(by_depth.items())
+    )
     console.print(
-        f"[bold]MetaModel[/bold]  {total} modules ({changed} changed, {sym_changed} changed symbols)  {depth_str}"
+        f"[bold]MetaModel[/bold]  {total} modules ({changed} changed, {callers} callers, {sym_changed} changed symbols)  {depth_str}"
     )
 
 

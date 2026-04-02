@@ -25,8 +25,10 @@ def render(
     """
     # Separate modules by role
     changed_ids = set(model.changed_module_ids)
+    caller_ids = set(model.caller_module_ids)
     depth1 = [m for m in model.modules.values() if m.depth == 1]
     depth2 = [m for m in model.modules.values() if m.depth >= 2]
+    callers = [m for m in model.modules.values() if m.depth == -1]
 
     def _try_render(trunc_depth2: bool, trunc_depth1: bool) -> str:
         parts: list[str] = []
@@ -42,6 +44,19 @@ def render(
                 parts.append("")
                 _render_changed_module(mod, parts)
                 parts.append("---\n")
+
+        # ── Callers / impact (depth -1) ───────────────────────────────
+        if callers:
+            parts.append("## Callers — Impact Analysis\n")
+            for mod in callers:
+                parts.append(f"### {mod.id}")
+                parts.append(f'> "{mod.summary}"')
+                parts.append("")
+                for sym in mod.symbols:
+                    parts.append(f"- [{sym.kind}] {sym.signature}")
+                    if sym.summary:
+                        parts.append(f"  > \"{sym.summary}\"")
+                parts.append("")
 
         # ── Direct dependencies (depth 1) ─────────────────────────────
         direct_deps = [m for m in depth1 if m.id not in changed_ids]
