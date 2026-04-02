@@ -54,8 +54,6 @@ class MetaModel:
                     "end_line": s.end_line,
                     "is_changed": s.is_changed,
                 }
-                if s.full_code is not None:
-                    sym["full_code"] = s.full_code
                 if s.before_code is not None:
                     sym["before_code"] = s.before_code
                 symbols.append(sym)
