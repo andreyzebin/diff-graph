@@ -53,6 +53,32 @@ class TestExtractBeforeCode:
         result = _extract_before_code(sym, fd)
         assert result is None
 
+    def test_pure_deletion_inside_symbol_returns_before_lines(self):
+        # Hunk that starts before the symbol (context), deletion is inside
+        sym = make_symbol("toJson", 41, 67)
+        hunk = HunkSnippet(
+            before_lines=["    if s.full_code is not None:", "        sym['full_code'] = s.full_code"],
+            after_lines=[],
+            before_start=53, after_start=51,
+            deletion_positions=[53, 54],  # deletions at lines 53-54 inside sym
+        )
+        fd = make_file_diff("model.py", [hunk], [53, 54])
+        result = _extract_before_code(sym, fd)
+        assert result is not None
+        assert "full_code" in result
+
+    def test_pure_deletion_outside_symbol_returns_none(self):
+        sym = make_symbol("add", 38, 40)
+        hunk = HunkSnippet(
+            before_lines=["    old line"],
+            after_lines=[],
+            before_start=53, after_start=51,
+            deletion_positions=[53],  # deletion at line 53, outside sym (38-40)
+        )
+        fd = make_file_diff("model.py", [hunk], [53])
+        result = _extract_before_code(sym, fd)
+        assert result is None
+
     def test_multiple_hunks_collects_all(self):
         sym = make_symbol("foo", 5, 25)
         h1 = HunkSnippet(

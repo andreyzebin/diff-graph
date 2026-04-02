@@ -11,6 +11,9 @@ class HunkSnippet:
     after_lines: list[str]    # added lines (without '+' prefix)
     before_start: int         # starting line in the before version
     after_start: int          # starting line in the after version
+    deletion_positions: list[int] = field(default_factory=list)
+    # after-line number where each '-' line was removed (after_no at time of deletion).
+    # Used to detect pure-deletion changes inside a symbol.
 
 
 @dataclass
@@ -103,7 +106,7 @@ def _parse_file_section(section: str) -> Optional[FileDiff]:
             before_path = None
 
     hunks: list[HunkSnippet] = []
-    after_changed_lines: list[int] = []
+    after_changed_lines_set: set[int] = set()
 
     i = 0
     while i < len(lines):
@@ -113,6 +116,7 @@ def _parse_file_section(section: str) -> Optional[FileDiff]:
             after_start = int(hunk_m.group(2))
             before_lines: list[str] = []
             after_lines_buf: list[str] = []
+            deletion_positions_buf: list[int] = []
             before_no = before_start
             after_no = after_start
             i += 1
@@ -123,10 +127,13 @@ def _parse_file_section(section: str) -> Optional[FileDiff]:
                     break
                 if hl.startswith("-"):
                     before_lines.append(hl[1:])
+                    if after_no > 0:  # after_no=0 means deleted file — skip
+                        deletion_positions_buf.append(after_no)
+                        after_changed_lines_set.add(after_no)
                     before_no += 1
                 elif hl.startswith("+"):
                     after_lines_buf.append(hl[1:])
-                    after_changed_lines.append(after_no)
+                    after_changed_lines_set.add(after_no)
                     after_no += 1
                 elif hl.startswith("\\"):
                     pass  # "No newline at end of file"
@@ -141,6 +148,7 @@ def _parse_file_section(section: str) -> Optional[FileDiff]:
                 after_lines=after_lines_buf,
                 before_start=before_start,
                 after_start=after_start,
+                deletion_positions=deletion_positions_buf,
             ))
         else:
             i += 1
@@ -150,5 +158,5 @@ def _parse_file_section(section: str) -> Optional[FileDiff]:
         before_path=before_path,
         status=status,
         hunks=hunks,
-        after_changed_lines=after_changed_lines,
+        after_changed_lines=sorted(after_changed_lines_set),
     )

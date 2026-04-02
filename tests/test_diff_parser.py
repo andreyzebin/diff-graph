@@ -187,6 +187,14 @@ class TestMultiHunk:
         # hunk2: after_start=19, context(20), then +new_line(20)
         assert 20 in self.fd.after_changed_lines
 
+    def test_hunk1_deletion_position_tracked(self):
+        # hunk1: context line5 (after_no=5→6), then -line6 at after_no=6
+        assert self.fd.hunks[0].deletion_positions == [6]
+
+    def test_hunk1_deletion_in_after_changed_lines(self):
+        # pure deletion should also appear in after_changed_lines
+        assert 6 in self.fd.after_changed_lines
+
 
 class TestEmptyDiff:
     def test_empty_string(self):

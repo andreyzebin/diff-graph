@@ -130,8 +130,14 @@ def _extract_before_code(sym: Symbol, file_diff) -> Optional[str]:
     collected: list[str] = []
     for hunk in file_diff.hunks:
         hunk_after_end = hunk.after_start + max(len(hunk.after_lines) - 1, 0)
-        # Intersection check: [hunk.after_start, hunk_after_end] ∩ [sym.start_line, sym.end_line]
-        if hunk.after_start <= sym.end_line and hunk_after_end >= sym.start_line:
+        # Additions: check [hunk.after_start, hunk_after_end] ∩ [sym.start_line, sym.end_line]
+        additions_overlap = hunk.after_start <= sym.end_line and hunk_after_end >= sym.start_line
+        # Deletions: check if any deletion position falls inside the symbol
+        deletions_overlap = any(
+            sym.start_line <= p <= sym.end_line
+            for p in hunk.deletion_positions
+        )
+        if (additions_overlap or deletions_overlap) and hunk.before_lines:
             collected.extend(hunk.before_lines)
 
     if not collected:
