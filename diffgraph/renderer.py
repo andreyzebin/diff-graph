@@ -2,18 +2,18 @@ from __future__ import annotations
 from typing import Optional
 
 from .diff_parser import DiffResult
-from .model import MetaModel, Module, Symbol
+from .model import Dependency, MetaModel, Module, Symbol
 from .tools import read_file
 
 # Language-specific body omission marker (used inline in compressed files)
 _OMIT: dict[str, str] = {
-    "python":     "...  # [omitted — not on call trace]",
-    "java":       "// [omitted — not on call trace]",
-    "go":         "// [omitted — not on call trace]",
-    "typescript": "// [omitted — not on call trace]",
-    "kotlin":     "// [omitted — not on call trace]",
-    "ruby":       "# [omitted — not on call trace]",
-    "csharp":     "// [omitted — not on call trace]",
+    "python":     "...  # [omitted]",
+    "java":       "// [omitted]",
+    "go":         "// [omitted]",
+    "typescript": "// [omitted]",
+    "kotlin":     "// [omitted]",
+    "ruby":       "# [omitted]",
+    "csharp":     "// [omitted]",
 }
 
 _COMMENT_CHAR: dict[str, str] = {
@@ -26,8 +26,7 @@ def _compressed_header(lang: str) -> str:
     c = _COMMENT_CHAR.get(lang, "//")
     return (
         f"{c} NOTE: This file is shown in compressed form for code review context.\n"
-        f"{c} Symbols on the call trace are shown in full.\n"
-        f"{c} All other symbol bodies are replaced with an [omitted] marker.\n"
+        f"{c} Symbol bodies are replaced with an [omitted] marker.\n"
     )
 
 
@@ -116,11 +115,16 @@ def _build(
                 parts.append("```\n")
 
     # 4. Direct dependencies (depth 1)
+    dep_usage = _build_dep_usage_index(model)
     depth1 = [m for m in model.modules.values() if m.depth == 1 and m.id not in changed_ids]
     if depth1:
         parts.append("## Direct Dependencies\n")
         for mod in depth1:
-            parts.append(f"### {mod.id}\n")
+            usage = dep_usage.get(mod.id, "")
+            parts.append(f"### {mod.id}")
+            if usage:
+                parts.append(f"> {usage}")
+            parts.append("")
             if trunc1:
                 parts.append(f'> "{mod.summary}"\n')
             else:
@@ -177,8 +181,6 @@ def _render_compressed(mod: Module, repo_path: str) -> str:
     replacements: dict[int, str | None] = {}
 
     for sym in top:
-        if sym.is_on_trace:
-            continue
         sig_0 = sym.start_line - 1  # 0-based
         end_0 = sym.end_line - 1    # 0-based
         # Only compress symbols that actually have a body
@@ -241,13 +243,29 @@ def _render_fallback(mod: Module) -> str:
     for sym in mod.symbols:
         ann = (" " + " ".join(sym.annotations)) if sym.annotations else ""
         lines.append(f"{sym.signature}{ann}")
-        if sym.is_on_trace and sym.full_code:
+        if sym.is_changed and sym.full_code:
             for cl in sym.full_code.splitlines():
                 lines.append(f"    {cl}")
         else:
             lines.append(f"    {omit_token}")
         lines.append("")
     return "\n".join(lines)
+
+
+def _build_dep_usage_index(model: MetaModel) -> dict[str, str]:
+    """
+    Build a map from dep file_path → usage annotation for rendering.
+    Uses usage_summary if available, falls back to usage.
+    """
+    index: dict[str, str] = {}
+    for mid in model.changed_module_ids:
+        mod = model.modules.get(mid)
+        if not mod:
+            continue
+        for dep in mod.dependencies:
+            if dep.file_path:
+                index[dep.file_path] = dep.usage_summary or dep.usage
+    return index
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

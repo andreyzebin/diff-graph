@@ -1,12 +1,13 @@
 from __future__ import annotations
 import logging
 from collections import deque
-from typing import Callable, Optional
+from typing import Optional
 
 from .extractor import OnEvent, extract_module
 from .impact_agent import ImpactHit, find_impact
-from .lang import detect_lang, get_extensions, get_globs_for_lang, get_search_patterns
+from .lang import detect_lang, get_globs_for_lang
 from .model import MetaModel
+from .resolver import is_likely_external, resolve_dep
 from .tools import list_files, read_file, search_text
 
 log = logging.getLogger(__name__)
@@ -22,11 +23,17 @@ def explore(
 ) -> MetaModel:
     """
     BFS over dependencies starting from start_files.
-    Reads after-versions of files from repo_path.
+    Non-source files are skipped. Each dependency is resolved via the
+    resolver agent which also produces a usage_summary for the graph edge.
     """
     _emit = on_event or (lambda *_, **__: None)
     meta = MetaModel()
-    queue: deque[tuple[str, int]] = deque((f, 0) for f in start_files)
+
+    source_files = [f for f in start_files if detect_lang(f) != "unknown"]
+    for f in set(start_files) - set(source_files):
+        _emit("skipped", path=f, reason="not a source file")
+
+    queue: deque[tuple[str, int]] = deque((f, 0) for f in source_files)
     visited: set[str] = set()
 
     while queue:
@@ -51,15 +58,21 @@ def explore(
         meta.add(module)
 
         if depth < max_depth:
-            for dep_name in module.dependencies:
-                _emit("resolving", name=dep_name)
-                dep_file = resolve_dependency(dep_name, lang, repo_path)
-                if dep_file:
-                    _emit("resolved", name=dep_name, path=dep_file)
-                    if dep_file not in visited:
-                        queue.append((dep_file, depth + 1))
-                else:
-                    _emit("not_resolved", name=dep_name)
+            for dep in module.dependencies:
+                # Fast pre-filter for known external libraries
+                if is_likely_external(dep.fqn or dep.name):
+                    _emit("not_resolved", name=dep.name)
+                    continue
+
+                # Agent resolves fqn → file_path + usage_summary
+                resolved_path, usage_summary = resolve_dep(
+                    dep, module.name, repo_path, llm, model, on_event=on_event,
+                )
+                if resolved_path:
+                    dep.file_path = resolved_path
+                    dep.usage_summary = usage_summary
+                    if resolved_path not in visited:
+                        queue.append((resolved_path, depth + 1))
 
     return meta
 
@@ -144,40 +157,3 @@ def _is_test_file(path: str) -> bool:
         or lower.endswith("spec.ts")
         or lower.endswith("spec.js")
     )
-
-
-def resolve_dependency(name: str, lang: str, repo_path: str) -> Optional[str]:
-    """
-    Find the file that defines a dependency by name.
-
-    Step 1: Direct file lookup by name + extension.
-    Step 2: Text search for class/interface declaration.
-    Step 3: Return None (external library / stdlib).
-    """
-    # Step 1: file by name
-    for ext in get_extensions(lang):
-        files = list_files(f"**/{name}{ext}", repo_path)
-        if files:
-            return _best_match(files, name)
-
-    # Step 2: declaration search
-    for pattern in get_search_patterns(name, lang):
-        results = search_text(pattern, repo_path)
-        if results:
-            return results[0].file
-
-    return None
-
-
-def _best_match(files: list[str], dep_name: str) -> str:
-    """
-    Pick the best file from a list of candidates.
-    Prefers the shortest path (closest to repo root).
-    Warns if >10 candidates.
-    """
-    if len(files) == 1:
-        return files[0]
-    if len(files) > 10:
-        log.warning("_best_match: >10 candidates for '%s', using top 3", dep_name)
-        files = files[:3]
-    return min(files, key=lambda p: len(p))

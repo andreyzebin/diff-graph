@@ -11,11 +11,16 @@ Analyze this source file and return ONLY valid JSON, no markdown, no explanation
       "summary": "1 sentence",
       "annotations": ["@Transactional"],
       "start_line": 42,
-      "end_line": 67,
-      "calls": ["otherMethod", "HelperClass"]
+      "end_line": 67
     }}
   ],
-  "dependencies": ["ClassName", "InterfaceName"]
+  "dependencies": [
+    {{
+      "name": "ClassName",
+      "fqn": "com.example.package.ClassName",
+      "usage": "1 sentence how this dependency is used in this file"
+    }}
+  ]
 }}
 
 Rules for "dependencies":
@@ -24,11 +29,17 @@ Rules for "dependencies":
 - For Python: names from import statements and type hints only
 - For Go: struct/interface names from other packages
 
-Rules for "calls" (per symbol):
-- Names of methods, functions, or classes directly invoked inside this symbol's body
-- Include calls to symbols defined in other files AND in this same file
-- Exclude: builtins, stdlib, language keywords, operators
-- Use simple name only (e.g. "processPayment", not "service.processPayment")
+Rules for "fqn" (fully qualified name):
+- For Java/Kotlin: copy the full import statement path (e.g. "com.flowmart.orders.model.Order")
+- For Python: use "module.ClassName" from the import (e.g. "orders.model.Order")
+- For Go: use "package.TypeName"
+- If no import found for this name, use just the name as fqn
+
+Rules for "usage" (per dependency):
+- One sentence describing how this dependency is used in this file
+- Examples: "injected via constructor, used to persist orders to DB",
+            "return type of calculateTotal() and applyDiscount()",
+            "thrown when the requested resource does not exist"
 
 For files with no class structure (Python modules, Go files with only functions):
 - Use "MODULE" as kind for top-level symbols

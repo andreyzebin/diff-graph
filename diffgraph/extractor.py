@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Any, Callable, Optional
 
-from .model import Module, Symbol
+from .model import Dependency, Module, Symbol
 from .prompts import load as _load_prompt
 
 OnEvent = Callable[..., None]  # on_event(event: str, **kwargs)
@@ -104,17 +104,27 @@ def _build_module(path: str, lang: str, data: dict[str, Any]) -> Module:
             annotations=s.get("annotations", []),
             start_line=int(s.get("start_line", 1)),
             end_line=int(s.get("end_line", 1)),
-            calls=s.get("calls", []),
         )
         for s in data.get("symbols", [])
     ]
+    dependencies = []
+    for d in data.get("dependencies", []):
+        if isinstance(d, dict):
+            dependencies.append(Dependency(
+                name=d.get("name", ""),
+                fqn=d.get("fqn", d.get("name", "")),
+                usage=d.get("usage", ""),
+            ))
+        else:
+            # backward compat: plain string
+            dependencies.append(Dependency(name=str(d), fqn=str(d), usage=""))
     return Module(
         id=path,
         name=data.get("name", _stem(path)),
         lang=lang,
         summary=data.get("summary", ""),
         symbols=symbols,
-        dependencies=data.get("dependencies", []),
+        dependencies=dependencies,
         depth=0,
     )
 

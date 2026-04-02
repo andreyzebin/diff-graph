@@ -1,6 +1,6 @@
 """Tests for the renderer."""
 import pytest
-from diffgraph.model import MetaModel, Module, Symbol
+from diffgraph.model import Dependency, MetaModel, Module, Symbol
 from diffgraph.renderer import render, _token_estimate
 
 
@@ -56,14 +56,13 @@ class TestBasicRender:
         out = render(meta)
         assert "processPayment" in out
 
-    def test_on_trace_symbol_shows_code(self):
-        # when is_on_trace=True, full_code appears in fallback renderer
+    def test_changed_symbol_shows_full_code(self):
+        # when is_changed=True, full_code appears in fallback renderer
         sym = make_changed_symbol("processPayment", before="old code", after="new code")
-        sym.is_on_trace = True
         mod = make_module("PaymentService.java", "PaymentService", 0, [sym])
         meta = MetaModel()
         meta.add(mod)
-        meta.caller_module_ids = ["PaymentService.java"]
+        meta.changed_module_ids = ["PaymentService.java"]
         out = render(meta)
         assert "new code" in out
 
@@ -83,6 +82,30 @@ class TestBasicRender:
         meta = self._build_meta()
         out = render(meta)
         assert "@Transactional" in out
+
+    def test_dep_usage_annotation(self):
+        # dep with usage_summary shows in direct deps section
+        sym = make_changed_symbol("processPayment")
+        changed_mod = Module(
+            id="PaymentService.java", name="PaymentService", lang="java",
+            summary="handles payments", depth=0, symbols=[sym],
+            dependencies=[
+                Dependency(
+                    name="CardValidator", fqn="com.example.CardValidator",
+                    usage="validates card numbers",
+                    file_path="CardValidator.java",
+                    usage_summary="validates credit card numbers before charging",
+                )
+            ],
+        )
+        dep_mod = make_module("CardValidator.java", "CardValidator", 1)
+        meta = MetaModel()
+        meta.add(changed_mod)
+        meta.add(dep_mod)
+        meta.changed_module_ids = ["PaymentService.java"]
+        out = render(meta)
+        assert "validates credit card numbers before charging" in out
+
 
 class TestTokenBudget:
     def test_token_estimate(self):
