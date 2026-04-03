@@ -183,17 +183,19 @@ def fetch_pr(
         if client_cert:
             _run(["git", "config", "http.sslCert", client_cert], cwd=tmpdir)
 
-        # 4. Fetch base commit (depth=1, only the commit object + its tree for diff)
+        # 4. Fetch base branch history (no depth limit — only commits+trees,
+        #    no blobs, so still fast). Full history is needed to find the
+        #    merge-base for a correct three-dot diff matching the PR UI.
         emit(f"Fetching base commit {to_sha[:12]}…")
         _run([
-            "git", "fetch", "--depth=1", "--filter=blob:none",
+            "git", "fetch", "--filter=blob:none",
             "origin", to_sha,
         ], cwd=tmpdir)
 
-        # 5. Produce unified diff locally
+        # 5. Three-dot diff: changes from merge-base to fromRef — matches PR UI.
         emit("Computing diff…")
         diff_text = _run(
-            ["git", "diff", f"{to_sha}..{from_sha}"],
+            ["git", "diff", f"{to_sha}...{from_sha}"],
             cwd=tmpdir,
         )
 
