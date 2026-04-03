@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .extractor import OnEvent
+from .streaming import stream_llm
 from ..model import Module
 from .prompts import load as _load_prompt
 from ..tools import list_files, read_file, search_text
@@ -198,13 +199,14 @@ def find_impact(
                     "Token budget 75% used. Call done() soon with your findings."})
                 nudge_75 = True
 
+        def _on_token(tool_name: str, args_so_far: str, tok: int) -> None:
+            _emit("agent_stream", step=step, path=label,
+                  tool_name=tool_name, args_preview=args_so_far[:80], tok=tok)
+
         try:
-            response = llm.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=_TOOLS,
-                tool_choice="required",
-                temperature=0,
+            response = stream_llm(
+                llm, model, messages, _TOOLS,
+                tool_choice="required", on_token=_on_token,
             )
         except Exception as exc:
             log.warning("impact_agent step %d failed: %s", step, exc)
@@ -302,12 +304,9 @@ def find_impact(
         "content": "Step limit reached. Call done() now with what you have found so far.",
     })
     try:
-        response = llm.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=[_TOOLS[-1]],   # only done()
+        response = stream_llm(
+            llm, model, messages, [_TOOLS[-1]],  # only done()
             tool_choice="required",
-            temperature=0,
         )
         msg = response.choices[0].message
         if msg.tool_calls:

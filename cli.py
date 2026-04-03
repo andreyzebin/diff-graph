@@ -405,23 +405,29 @@ def _make_event_handler(model: str, live: Optional[Live]):
         elif event == "searching_callers":
             _log(f"[magenta]impact[/magenta]    agent analyzing impact of [bold]{name}[/bold]")
 
+        elif event == "agent_stream":
+            tool_name = kw.get("tool_name", "")
+            args_preview = kw.get("args_preview", "")
+            tok = kw.get("tok", 0)
+            _live_update(Text.assemble(
+                ("  ↳ ", "dim"),
+                (f"step {kw.get('step', 0)}  ", "dim"),
+                (tool_name or "…", "magenta"),
+                (f"({args_preview})", "dim"),
+                (f"  {tok} tok", "dim cyan"),
+            ))
+
         elif event == "agent_step":
+            _live_update("")
             tool = kw.get("tool", "")
             args = kw.get("args", {})
-            arg_str = ", ".join(f"{k}={v!r}" for k, v in args.items())
+            arg_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:3])
             tok_suffix = _fmt_tok(kw)
-            _live_update(
-                Text.assemble(
-                    ("  ↳ ", "dim"),
-                    (f"step {kw.get('step', 0)}  ", "dim"),
-                    (tool, "magenta"),
-                    (f"({arg_str})", "dim"),
-                    (tok_suffix, "dim cyan"),
-                )
-            )
+            suffix = f"  [dim cyan]{tok_suffix}[/dim cyan]" if tok_suffix else ""
+            _log(f"[dim]  step {kw.get('step', 0)}  [magenta]{tool}[/magenta]({arg_str}){suffix}[/dim]")
 
         elif event == "agent_result":
-            pass  # live line already shows current step
+            pass
 
         elif event == "agent_done":
             _live_update("")
@@ -448,7 +454,20 @@ def _make_event_handler(model: str, live: Optional[Live]):
         elif event == "review_start":
             _log(f"[bold cyan]review[/bold cyan]    agent starting  [dim]{kw.get('changed', 0)} changed module(s)[/dim]")
 
+        elif event == "review_stream":
+            tool_name = kw.get("tool_name", "")
+            args_preview = kw.get("args_preview", "")
+            tok = kw.get("tok", 0)
+            _live_update(Text.assemble(
+                ("  ↳ ", "dim"),
+                (f"step {kw.get('step', 0)}  ", "dim"),
+                (tool_name or "…", "cyan"),
+                (f"({args_preview})", "dim"),
+                (f"  {tok} tok", "dim cyan"),
+            ))
+
         elif event == "review_step":
+            _live_update("")
             tool = kw.get("tool", "")
             args = kw.get("args", {})
             arg_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])

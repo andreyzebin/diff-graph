@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .extractor import OnEvent
+from .streaming import stream_llm
 from ..model import MetaModel
 from .prompts import load as _load_prompt
 from ..tools import list_files, read_file, search_text
@@ -194,13 +195,14 @@ def find_review_context(
                     "Token budget 75% used. Wrap up and call done() soon."})
                 nudge_75 = True
 
+        def _on_token(tool_name: str, args_so_far: str, tok: int) -> None:
+            _emit("review_stream", step=step,
+                  tool_name=tool_name, args_preview=args_so_far[:80], tok=tok)
+
         try:
-            response = llm.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=_TOOLS,
-                tool_choice="required",
-                temperature=0,
+            response = stream_llm(
+                llm, model, messages, _TOOLS,
+                tool_choice="required", on_token=_on_token,
             )
         except Exception as exc:
             log.warning("review_agent step %d failed: %s", step, exc)
