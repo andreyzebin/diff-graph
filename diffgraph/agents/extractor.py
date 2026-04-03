@@ -4,6 +4,7 @@ import logging
 import re
 from typing import Any, Callable, Optional
 
+from ..cache import load as _cache_load, save as _cache_save
 from ..model import Dependency, Module, Symbol
 from .prompts import load as _load_prompt
 
@@ -35,6 +36,13 @@ def extract_module(
     Retries up to 2 times on invalid JSON; returns None after 3 failures.
     """
     _emit = on_event or _noop
+
+    cached = _cache_load(content, model)
+    if cached is not None:
+        cached.id = path  # path may differ across repos (same content, different location)
+        _emit("cache_hit", path=path, symbols=len(cached.symbols))
+        return cached
+
     base_prompt = EXTRACT_PROMPT.format(path=path, lang=lang, content=_numbered(content))
     prompt = base_prompt
 
@@ -45,6 +53,7 @@ def extract_module(
             data = _parse_llm_json(raw)
             module = _build_module(path, lang, data)
             _emit("extracted", path=path, symbols=len(module.symbols), deps=module.dependencies)
+            _cache_save(content, model, module)
             return module
         except (ValueError, KeyError, TypeError) as exc:
             log.warning("extract_module attempt %d/%d failed for %s: %s", attempt + 1, 3, path, exc)

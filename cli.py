@@ -316,6 +316,12 @@ def _make_event_handler(model: str, live: Live):
                 )
             )
 
+        elif event == "cache_hit":
+            _log(
+                f"[dim green]cached[/dim green]    [bold]{path}[/bold]"
+                f"  [dim]{kw.get('symbols', 0)} symbols[/dim]"
+            )
+
         elif event == "extracted":
             live.update("")  # clear the streaming line
             deps = kw.get("deps", [])
