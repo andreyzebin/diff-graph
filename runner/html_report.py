@@ -25,9 +25,13 @@ def _render(run_id: str, results: list[ScenarioResult]) -> str:
         bar_color = "#22c55e" if r.score >= 0.7 else ("#f59e0b" if r.score >= 0.4 else "#ef4444")
         summary = _esc(r.judge_summary)
         error = f'<div class="error-msg">{_esc(r.error)}</div>' if r.error else ""
+        pr_link = (
+            f' <a class="pr-link" href="{_esc(r.pr_url)}" target="_blank">↗ PR</a>'
+            if r.pr_url else ""
+        )
         rows += f"""
         <tr class="{verdict_class}">
-          <td><strong>{_esc(r.scenario_id)}</strong><br><span class="sub">{_esc(r.scenario_name)}</span></td>
+          <td><strong>{_esc(r.scenario_id)}</strong>{pr_link}<br><span class="sub">{_esc(r.scenario_name)}</span></td>
           <td class="center">{verdict_icon} {r.verdict}</td>
           <td class="center">
             <div class="score-bar-wrap">
@@ -79,6 +83,8 @@ def _render(run_id: str, results: list[ScenarioResult]) -> str:
   .score-num {{ font-weight: 600; }}
   .summary {{ max-width: 380px; line-height: 1.5; }}
   .error-msg {{ color: #dc2626; font-size: 0.8rem; margin-top: 0.4rem; }}
+  .pr-link {{ font-size: 0.75rem; font-weight: 400; color: #6366f1; text-decoration: none; margin-left: 0.4rem; }}
+  .pr-link:hover {{ text-decoration: underline; }}
 </style>
 </head>
 <body>

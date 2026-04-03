@@ -26,16 +26,27 @@ class RealBitbucketPRProxy(AgentPRView):
         repo: str,
         _pr_id: int,
         agent_username: str,
+        base_url: str = "",
     ):
         self._client = client
         self._project = project
         self._repo = repo
         self._pr_id = _pr_id
         self._agent_username = agent_username
+        self._base_url = base_url.rstrip("/")
 
     @property
     def pr_id(self) -> int:
         return self._pr_id
+
+    @property
+    def pr_url(self) -> str | None:
+        if not self._base_url:
+            return None
+        return (
+            f"{self._base_url}/projects/{self._project}"
+            f"/repos/{self._repo}/pull-requests/{self._pr_id}"
+        )
 
     # ── internal helpers ───────────────────────────────────────────────
 
@@ -175,4 +186,4 @@ class RealBitbucketFactory(AgentPRViewFactory):
         if not resp or "id" not in resp:
             raise ProviderError(f"Unexpected response when creating PR: {resp!r}")
 
-        return RealBitbucketPRProxy(client, project, repo, resp["id"], agent_username)
+        return RealBitbucketPRProxy(client, project, repo, resp["id"], agent_username, base_url)

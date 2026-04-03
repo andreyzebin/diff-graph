@@ -35,15 +35,18 @@ async def run_scenario(
             duration_seconds=time.monotonic() - start,
             judge_summary=f"Agent error: {e}",
             error=str(e),
+            pr_url=proxy.pr_url,
         )
 
     judge_output = await judge.evaluate(scenario=scenario)
     duration = time.monotonic() - start
 
-    return score_scenario(
+    result = score_scenario(
         scenario,
         judge_output.comments,
         judge_output.review_status,
         judge_output,
         duration,
     )
+    result.pr_url = proxy.pr_url
+    return result

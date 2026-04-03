@@ -44,6 +44,11 @@ class AgentPRView(ABC):
         """Identifier of the pull request this view is bound to."""
         ...
 
+    @property
+    def pr_url(self) -> str | None:
+        """Full web URL of the pull request, or None if not available."""
+        return None
+
     @abstractmethod
     async def close(self) -> None:
         """

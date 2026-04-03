@@ -16,15 +16,29 @@ agent:
   # webhook — add agent_account as a reviewer on the PR, then wait
   #   timeout_seconds.  Use when the agent is already wired to Bitbucket
   #   via PR_REVIEWER_UPDATED webhooks and no direct HTTP call is needed.
+  #
+  # cli — run a local shell command and wait for it to exit.
+  #   Use when the agent is invoked via CLI (e.g. pr-agent, custom scripts).
+  #   The command is executed via the shell so source, pipes, etc. work.
+  #   Placeholders available in the command string:
+  #     {pr_url}  — full Bitbucket PR URL
+  #     {pr_id}   — integer PR ID
+  #   Example:
+  #     trigger: "cli"
+  #     command: 'source .env && python pr_agent/cli.py --pr_url="{pr_url}" improve --extended'
+  #     cwd: "/path/to/pr-agent"
+  #     timeout_seconds: 300
+  #     output: "stream"   # stream — single updating line / log — one line per output (default)
   trigger: "http"
   base_url: "http://localhost:8080"   # used only when trigger=http
   api_key: "${AGENT_API_KEY}"         # used only when trigger=http
-  timeout_seconds: 120                # http: request timeout / webhook: wait time
+  timeout_seconds: 120                # http: request timeout / webhook: wait time / cli: process timeout
 
 judge:
   model: "claude-opus-4-6"
   temperature: 0
   prompt_template: "prompts/judge.txt"
+  output: "log"   # stream — single updating line while LLM generates / log — silent (default)
   # For any OpenAI-compatible endpoint (DeepSeek, Ollama, vLLM, OpenAI, etc.)
   # If api_url is set, OpenAI-compatible client is used instead of Anthropic.
   # api_url: "https://api.deepseek.com/v1"

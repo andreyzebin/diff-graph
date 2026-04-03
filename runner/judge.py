@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,44 +50,85 @@ class JudgeOutput:
 
 # ── LLM client abstraction ─────────────────────────────────────────
 
+def _stream_print(accumulated: str) -> None:
+    """Overwrite current terminal line with the tail of *accumulated* (newlines stripped)."""
+    width = shutil.get_terminal_size(fallback=(120, 24)).columns
+    max_len = max(width - 6, 20)
+    flat = accumulated.replace("\n", " ").replace("\r", "")
+    tail = flat[-max_len:]
+    sys.stdout.write(f"\r  ↻  {tail:<{max_len}}")
+    sys.stdout.flush()
+
+
 class LLMClient(ABC):
     @abstractmethod
     def complete_json(self, prompt: str) -> dict: ...
 
 
 class AnthropicLLMClient(LLMClient):
-    def __init__(self, model: str = "claude-opus-4-6", temperature: float = 0):
+    def __init__(self, model: str = "claude-opus-4-6", temperature: float = 0,
+                 stream_output: bool = False):
         self._model = model
         self._temperature = temperature
+        self._stream_output = stream_output
         self._client = anthropic.Anthropic()
 
     def complete_json(self, prompt: str) -> dict:
+        if self._stream_output:
+            accumulated = ""
+            with self._client.messages.stream(
+                model=self._model,
+                max_tokens=4096,
+                temperature=self._temperature,
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    accumulated += text
+                    _stream_print(accumulated)
+            print(flush=True)
+            return _parse_raw(accumulated)
+
         message = self._client.messages.create(
             model=self._model,
             max_tokens=4096,
             temperature=self._temperature,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = message.content[0].text
-        return _parse_raw(raw)
+        return _parse_raw(message.content[0].text)
 
 
 class OpenAILLMClient(LLMClient):
     """Any OpenAI-compatible endpoint (OpenAI, DeepSeek, Ollama, vLLM, etc.)."""
 
-    def __init__(self, model: str, api_url: str, api_key: str = "", temperature: float = 0):
+    def __init__(self, model: str, api_url: str, api_key: str = "", temperature: float = 0,
+                 stream_output: bool = False):
         self._model = model
         self._temperature = temperature
+        self._stream_output = stream_output
         self._client = openai.OpenAI(base_url=api_url, api_key=api_key or "none")
 
     def complete_json(self, prompt: str) -> dict:
+        if self._stream_output:
+            accumulated = ""
+            response = self._client.chat.completions.create(
+                model=self._model,
+                temperature=self._temperature,
+                messages=[{"role": "user", "content": prompt}],
+                stream=True,
+            )
+            for chunk in response:
+                text = chunk.choices[0].delta.content or ""
+                accumulated += text
+                _stream_print(accumulated)
+            print(flush=True)
+            return _parse_raw(accumulated)
+
         response = self._client.chat.completions.create(
             model=self._model,
             temperature=self._temperature,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = response.choices[0].message.content
-        return _parse_raw(raw)
+        return _parse_raw(response.choices[0].message.content)
 
 
 # ── Judge abstraction ──────────────────────────────────────────────

@@ -142,6 +142,7 @@ def _result_to_dict(r: ScenarioResult) -> dict:
         "judge_summary": r.judge_summary,
         "run_at": r.run_at.isoformat() if r.run_at else None,
         "error": r.error,
+        "pr_url": r.pr_url,
     }
 
 
@@ -162,4 +163,5 @@ def _dict_to_result(d: dict) -> ScenarioResult:
         judge_summary=d.get("judge_summary", ""),
         run_at=datetime.fromisoformat(d["run_at"]) if d.get("run_at") else datetime.utcnow(),
         error=d.get("error"),
+        pr_url=d.get("pr_url"),
     )

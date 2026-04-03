@@ -24,17 +24,50 @@ sys.path.insert(0, str(BASE_DIR))
 
 
 def _make_trigger(agent_cfg: dict, bitbucket_connection: dict):
-    from runner.trigger import HttpTrigger, WebhookTrigger
+    from runner.trigger import HttpTrigger, WebhookTrigger, CliTrigger
     mode = agent_cfg.get("trigger", "http")
     timeout = agent_cfg.get("timeout_seconds", 120)
     if mode == "webhook":
         agent_account = _expand_env(bitbucket_connection.get("agent_account", ""))
         return WebhookTrigger(agent_account=agent_account, timeout_seconds=timeout)
+    if mode == "cli":
+        command = agent_cfg.get("command", "")
+        cwd = agent_cfg.get("cwd") or None
+        output = agent_cfg.get("output", "log")
+        base_url = bitbucket_connection.get("base_url", "").rstrip("/")
+        project = bitbucket_connection.get("project", "")
+        repo = bitbucket_connection.get("repo", "")
+        pr_url_template = (
+            f"{base_url}/projects/{project}/repos/{repo}/pull-requests/{{pr_id}}"
+        )
+        return CliTrigger(
+            command_template=command,
+            pr_url_template=pr_url_template,
+            timeout_seconds=timeout,
+            cwd=cwd,
+            output=output,
+        )
     # default: http
     from runner.agent_client import AgentClient
     base_url = _expand_env(agent_cfg.get("base_url", "http://localhost:8080"))
     api_key = _expand_env(agent_cfg.get("api_key", ""))
     return HttpTrigger(AgentClient(base_url=base_url, api_key=api_key, timeout=timeout))
+
+
+def _print_trigger_summary(agent_cfg: dict, console) -> None:
+    mode = agent_cfg.get("trigger", "http")
+    timeout = agent_cfg.get("timeout_seconds", 120)
+    if mode == "cli":
+        cmd = agent_cfg.get("command", "")
+        cwd = agent_cfg.get("cwd", "")
+        output = agent_cfg.get("output", "log")
+        console.print(f"Trigger : [cyan]cli[/cyan]  timeout={timeout}s  cwd={cwd or '(current)'}  output={output}")
+        console.print(f"Command : [dim]{cmd}[/dim]")
+    elif mode == "webhook":
+        console.print(f"Trigger : [cyan]webhook[/cyan]  timeout={timeout}s")
+    else:
+        base_url = agent_cfg.get("base_url", "http://localhost:8080")
+        console.print(f"Trigger : [cyan]http[/cyan]  url={base_url}  timeout={timeout}s")
 
 
 def _make_llm_client(judge_cfg: dict):
@@ -43,9 +76,11 @@ def _make_llm_client(judge_cfg: dict):
     temperature = judge_cfg.get("temperature", 0)
     api_url = _expand_env(judge_cfg.get("api_url", ""))
     api_key = _expand_env(judge_cfg.get("api_key", ""))
+    stream_output = judge_cfg.get("output", "log") == "stream"
     if api_url:
-        return OpenAILLMClient(model=model, api_url=api_url, api_key=api_key, temperature=temperature)
-    return AnthropicLLMClient(model=model, temperature=temperature)
+        return OpenAILLMClient(model=model, api_url=api_url, api_key=api_key,
+                               temperature=temperature, stream_output=stream_output)
+    return AnthropicLLMClient(model=model, temperature=temperature, stream_output=stream_output)
 
 
 def _load_config() -> dict:
@@ -150,6 +185,7 @@ async def _run_async(
         db_path=Path(results_cfg.get("db_path", str(RESULTS_DIR / "benchmark.db"))),
     )
 
+    _print_trigger_summary(agent_cfg, console)
     console.print(f"\n[bold]Running {len(scenarios)} scenario(s)...[/bold]\n")
 
     results = []
@@ -184,6 +220,8 @@ async def _run_async(
             f"{result.duration_seconds:.1f}s"
             f"{fail_reason}"
         )
+        if result.verdict == "error" and result.error:
+            console.print(f"   [red dim]{result.error}[/red dim]")
 
     passed = sum(1 for r in results if r.passed)
     avg_score = sum(r.score for r in results) / len(results)

@@ -26,6 +26,7 @@ class ScenarioResult:
     judge_output: JudgeOutput | None = None
     run_at: datetime = field(default_factory=datetime.utcnow)
     error: str | None = None
+    pr_url: str | None = None
 
     @property
     def passed(self) -> bool:
