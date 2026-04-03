@@ -85,16 +85,26 @@ def _clone_url(server_url: str, project: str, repo: str) -> str:
 
 # ── git helpers ───────────────────────────────────────────────────────────────
 
-def _git_env(ca_bundle: str | None, client_cert: str | None) -> dict:
+def _git_base_env() -> dict:
+    """Base env: disable interactive prompts."""
     env = os.environ.copy()
-    if ca_bundle:
-        env["GIT_SSL_CAINFO"] = ca_bundle
-    if client_cert:
-        env["GIT_SSL_CERT"] = client_cert
+    env["GIT_TERMINAL_PROMPT"] = "0"   # never ask for credentials
+    env["GIT_ASKPASS"] = "echo"        # return empty string for any git password prompt
     return env
 
 
-def _run(args: list[str], env: dict, cwd: str | None = None) -> str:
+def _ssl_flags(ca_bundle: str | None, client_cert: str | None) -> list[str]:
+    """Return git -c flags for SSL CA and client cert."""
+    flags: list[str] = []
+    if ca_bundle:
+        flags += ["-c", f"http.sslCAInfo={ca_bundle}"]
+    if client_cert:
+        flags += ["-c", f"http.sslCert={client_cert}"]
+    return flags
+
+
+def _run(args: list[str], cwd: str | None = None) -> str:
+    env = _git_base_env()
     result = subprocess.run(
         args, env=env, cwd=cwd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -150,31 +160,33 @@ def fetch_pr(
 
     # 3. Clone: blobless + single branch → fast, full working tree
     tmpdir = tempfile.mkdtemp(prefix="diffgraph-")
-    env = _git_env(ca_bundle, client_cert)
 
-    auth_header = f"Authorization: Bearer {token}"
+    auth_flag = ["-c", f"http.extraHeader=Authorization: Bearer {token}"]
+    ssl_flags = _ssl_flags(ca_bundle, client_cert)
+    git_cfg = auth_flag + ssl_flags   # applied to every git call
+
     try:
         _run([
-            "git", "-c", f"http.extraHeader={auth_header}",
+            "git", *git_cfg,
             "clone",
             "--filter=blob:none",
             "--single-branch", "--branch", from_branch,
             clone_url, tmpdir,
-        ], env=env)
+        ])
 
         # 4. Fetch base commit (depth=1, only the commit object + its tree for diff)
         emit(f"Fetching base commit {to_sha[:12]}…")
         _run([
-            "git", "-c", f"http.extraHeader={auth_header}",
+            "git", *git_cfg,
             "fetch", "--depth=1", "--filter=blob:none",
             "origin", to_sha,
-        ], env=env, cwd=tmpdir)
+        ], cwd=tmpdir)
 
         # 5. Produce unified diff locally
         emit("Computing diff…")
         diff_text = _run(
             ["git", "diff", f"{to_sha}..{from_sha}"],
-            env=env, cwd=tmpdir,
+            cwd=tmpdir,
         )
 
     except Exception:
