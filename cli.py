@@ -87,8 +87,9 @@ def _read_diff(diff_path: Optional[str]) -> str:
 
 @app.command()
 def run(
-    repo: str = typer.Option(..., "--repo", "-r", help="Path to the repository (after-version checkout)"),
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Path to the repository (after-version checkout)"),
     diff: Optional[str] = typer.Option(None, "--diff", "-d", help="Path to .diff file, or '-' for stdin"),
+    pr_url: Optional[str] = typer.Option(None, "--pr-url", help="Bitbucket Server PR URL — clones repo and fetches diff automatically"),
     depth: Optional[int] = typer.Option(None, "--depth", help="BFS depth (default: from config, usually 2)"),
     model: Optional[str] = typer.Option(None, "--model", "-m", help="LLM model override"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write rendered context to file instead of stdout"),
@@ -105,7 +106,7 @@ def run(
     \b
       python cli.py run --repo ./my-service --diff changes.diff
       git diff HEAD~1 | python cli.py run --repo . --diff -
-      python cli.py run --repo . --diff my.diff --depth 1 --output context.txt
+      python cli.py run --pr-url https://bitbucket.example.com/projects/X/repos/Y/pull-requests/42 --review
     """
     cfg = _load_config()
     llm_cfg = cfg.get("llm", {})
@@ -127,12 +128,32 @@ def run(
     max_agent_steps = explore_cfg.get("max_agent_steps", 12)
     max_agent_tokens = explore_cfg.get("max_agent_tokens", 20000)
 
-    diff_text = _read_diff(diff)
+    cleanup_fn = None
+
+    if pr_url:
+        from diffgraph.providers.bitbucket_server import fetch_pr
+        console.print(f"[bold]PR[/bold]  [cyan]{pr_url}[/cyan]")
+        try:
+            diff_text, _tmpdir, cleanup_fn = fetch_pr(
+                pr_url,
+                on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+            )
+        except Exception as exc:
+            console.print(f"[red]Failed to fetch PR: {exc}[/red]")
+            raise typer.Exit(1)
+        repo_path = _tmpdir
+    else:
+        if not repo:
+            console.print("[red]Provide --repo or --pr-url.[/red]")
+            raise typer.Exit(1)
+        diff_text = _read_diff(diff)
+        repo_path = str(Path(repo).resolve())
+
     if not diff_text.strip():
         console.print("[yellow]Diff is empty — nothing to do.[/yellow]")
+        if cleanup_fn:
+            cleanup_fn()
         raise typer.Exit(0)
-
-    repo_path = str(Path(repo).resolve())
 
     console.print(f"[bold]DiffGraph[/bold]  repo=[cyan]{repo_path}[/cyan]  depth=[cyan]{effective_depth}[/cyan]  model=[cyan]{effective_model}[/cyan]")
 
@@ -187,6 +208,9 @@ def run(
         console.print(context, markup=False, highlight=False)
         console.print("─" * 70)
         console.print(f"[dim]{len(context)} chars, ~{len(context)//4} tokens[/dim]")
+
+    if cleanup_fn:
+        cleanup_fn()
 
 
 @app.command()
