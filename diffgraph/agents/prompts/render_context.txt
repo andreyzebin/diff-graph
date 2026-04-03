@@ -1,7 +1,49 @@
+SECTION:pr_header
 # PR: {pr_title}
 
 {pr_description}
 
 ---
 
-{body}
+SECTION:diff
+## Diff
+
+```diff
+{content}
+```
+
+SECTION:changed_files
+## Changed Files
+
+{content}
+SECTION:file_header
+### {file_id} [{status}]
+
+SECTION:callers
+## Callers — Impact Analysis
+
+{content}
+SECTION:caller_header
+### {file_id}
+
+SECTION:direct_deps
+## Direct Dependencies
+
+{content}
+SECTION:dep_header
+### {file_id}
+
+SECTION:dep_usage
+> {usage}
+
+SECTION:transitive_deps
+## Transitive Dependencies
+
+{content}
+SECTION:transitive_item_full
+- {file_id} — "{summary}"
+SECTION:transitive_item_short
+- {name}
+SECTION:compressed_note
+{comment_char} NOTE: This file is shown in compressed form for code review context.
+{comment_char} Symbol bodies are replaced with an [omitted] marker.

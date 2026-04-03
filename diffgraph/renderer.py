@@ -6,9 +6,34 @@ from .diff_parser import DiffResult
 from .model import MetaModel, Module, Symbol
 from .tools import read_file
 
-_CONTEXT_TEMPLATE = _load_prompt("render_context.txt")
 
-# Language-specific body omission marker (used inline in compressed files)
+# ── load section templates from prompt file ───────────────────────────────────
+
+def _parse_sections(text: str) -> dict[str, str]:
+    """Parse a template file with SECTION:name markers into a name→template dict."""
+    sections: dict[str, str] = {}
+    current: str | None = None
+    buf: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("SECTION:"):
+            if current is not None:
+                sections[current] = "\n".join(buf).strip("\n")
+            current = line[8:].strip()
+            buf = []
+        else:
+            buf.append(line)
+    if current is not None:
+        sections[current] = "\n".join(buf).strip("\n")
+    return sections
+
+
+_S = _parse_sections(_load_prompt("render_context.txt"))
+
+_COMMENT_CHAR: dict[str, str] = {
+    "python": "#", "ruby": "#",
+    "java": "//", "go": "//", "typescript": "//", "kotlin": "//", "csharp": "//",
+}
+
 _OMIT: dict[str, str] = {
     "python":     "...  # [omitted]",
     "java":       "// [omitted]",
@@ -19,19 +44,20 @@ _OMIT: dict[str, str] = {
     "csharp":     "// [omitted]",
 }
 
-_COMMENT_CHAR: dict[str, str] = {
-    "python": "#", "ruby": "#",
-    "java": "//", "go": "//", "typescript": "//", "kotlin": "//", "csharp": "//",
-}
-
 
 def _compressed_header(lang: str) -> str:
     c = _COMMENT_CHAR.get(lang, "//")
-    return (
-        f"{c} NOTE: This file is shown in compressed form for code review context.\n"
-        f"{c} Symbol bodies are replaced with an [omitted] marker.\n"
-    )
+    return _S["compressed_note"].format(comment_char=c)
 
+
+def _section(tmpl: str, content: str) -> str:
+    """Return section block if content is non-empty, else empty string."""
+    if not content.strip():
+        return ""
+    return tmpl.format(content=content) + "\n"
+
+
+# ── public API ────────────────────────────────────────────────────────────────
 
 def render(
     model: MetaModel,
@@ -44,16 +70,13 @@ def render(
     """
     Render a MetaModel as a text prompt context.
 
-    Structure:
-      1. Raw diff
-      2. Full after-version of each changed file (read from disk)
-      3. Callers — source file with trace-aware compression
-      4. Direct dependencies (depth 1) — source file with trace-aware compression
-      5. Transitive dependencies (depth 2+) — one-line summaries
-
-    Compression: symbols NOT on the call trace keep only their signature line;
-    their body is replaced by a language-appropriate '...' marker so the LLM
-    understands the omission is intentional.
+    Structure (defined in render_context.txt):
+      1. PR title + description (if provided)
+      2. Raw diff
+      3. Full after-version of each changed file
+      4. Callers — compressed with expanded symbols shown in full
+      5. Direct dependencies — compressed
+      6. Transitive dependencies — one-line summaries
 
     Token budget: if over limit, degrade depth-2 → names only,
     then depth-1 → summaries only. Changed files and callers are never cut.
@@ -61,11 +84,10 @@ def render(
     def _wrap(body: str) -> str:
         if not pr_title:
             return body
-        return _CONTEXT_TEMPLATE.format(
+        return _S["pr_header"].format(
             pr_title=pr_title,
-            pr_description=pr_description.strip() if pr_description else "_No description provided._",
-            body=body,
-        )
+            pr_description=pr_description.strip() or "_No description provided._",
+        ) + "\n" + body
 
     full = _build(model, diff_result, repo_path, trunc2=False, trunc1=False)
     if _tok(_wrap(full)) <= max_tokens:
@@ -92,68 +114,60 @@ def _build(
 
     # 1. Raw diff
     if diff_result and diff_result.raw_text.strip():
-        parts.append("## Diff\n")
-        parts.append("```diff")
-        parts.append(diff_result.raw_text.rstrip())
-        parts.append("```\n")
+        parts.append(_section(_S["diff"], diff_result.raw_text.rstrip()))
 
     # 2. Changed files — full content from disk
     changed_mods = [model.modules[mid] for mid in model.changed_module_ids if mid in model.modules]
     if changed_mods:
-        parts.append("## Changed Files\n")
+        files_parts: list[str] = []
         for mod in changed_mods:
             status = _file_status(mod.id, diff_result)
-            parts.append(f"### {mod.id} [{status}]\n")
+            header = _S["file_header"].format(file_id=mod.id, status=status.upper())
             content = read_file(mod.id, repo_path) if repo_path else ""
             if content:
-                parts.append(f"```{mod.lang}")
-                parts.append(content.rstrip())
-                parts.append("```\n")
+                body = f"```{mod.lang}\n{content.rstrip()}\n```"
             else:
-                parts.append(_render_fallback(mod))
+                body = _render_fallback(mod)
+            files_parts.append(f"{header}\n{body}\n")
+        parts.append(_section(_S["changed_files"], "\n".join(files_parts)))
 
     # 3. Callers / impact
     callers = [mod for mid, mod in model.modules.items() if depths.get(mid) == -1]
     if callers:
-        parts.append("## Callers — Impact Analysis\n")
+        caller_parts: list[str] = []
         for mod in callers:
-            parts.append(f"### {mod.id}")
-            parts.append("")
+            header = _S["caller_header"].format(file_id=mod.id)
             compressed = _render_compressed(mod, repo_path)
             if compressed:
-                parts.append(f"```{mod.lang}")
-                parts.append(compressed)
-                parts.append("```\n")
+                body = f"```{mod.lang}\n{compressed}\n```"
+                caller_parts.append(f"{header}\n\n{body}\n")
+        if caller_parts:
+            parts.append(_section(_S["callers"], "\n".join(caller_parts)))
 
     # 4. Direct dependencies (depth 1)
     dep_usage = _build_dep_usage_index(model)
     depth1 = [mod for mid, mod in model.modules.items() if depths.get(mid) == 1]
     if depth1:
-        parts.append("## Direct Dependencies\n")
+        dep_parts: list[str] = []
         for mod in depth1:
+            header = _S["dep_header"].format(file_id=mod.id)
             usage = dep_usage.get(mod.id, "")
-            parts.append(f"### {mod.id}")
-            if usage:
-                parts.append(f"> {usage}")
-            parts.append("")
+            usage_line = ("\n" + _S["dep_usage"].format(usage=usage)) if usage else ""
             if trunc1:
-                parts.append(f'> "{mod.summary}"\n')
+                body = f'> "{mod.summary}"'
             else:
                 compressed = _render_compressed(mod, repo_path)
-                if compressed:
-                    parts.append(f"```{mod.lang}")
-                    parts.append(compressed)
-                    parts.append("```\n")
+                body = f"```{mod.lang}\n{compressed}\n```" if compressed else f'> "{mod.summary}"'
+            dep_parts.append(f"{header}{usage_line}\n\n{body}\n")
+        parts.append(_section(_S["direct_deps"], "\n".join(dep_parts)))
 
     # 5. Transitive dependencies (depth 2+)
     depth2 = [mod for mid, mod in model.modules.items() if depths.get(mid, 0) >= 2]
     if depth2:
-        parts.append("## Transitive Dependencies\n")
-        for mod in depth2:
-            if trunc2:
-                parts.append(f"- {mod.name}")
-            else:
-                parts.append(f'- {mod.id} — "{mod.summary}"')
+        tmpl = _S["transitive_item_short"] if trunc2 else _S["transitive_item_full"]
+        lines = [tmpl.format(file_id=mod.id, name=mod.name, summary=mod.summary)
+                 for mod in depth2]
+        parts.append(_section(_S["transitive_deps"], "\n".join(lines)))
 
     return "\n".join(parts)
 
@@ -188,19 +202,17 @@ def _render_compressed(mod: Module, repo_path: str) -> str:
     if not top:
         return full
 
-    # replacements[i] = replacement string, or None to suppress the line entirely
     replacements: dict[int, str | None] = {}
 
     for sym in top:
         if sym.is_expanded or sym.is_changed:
-            continue  # show full body
+            continue
 
-        sig_0 = sym.start_line - 1  # 0-based
-        end_0 = sym.end_line - 1    # 0-based
+        sig_0 = sym.start_line - 1
+        end_0 = sym.end_line - 1
         if end_0 <= sig_0:
-            continue  # no body
+            continue
 
-        # Check for nested expanded/changed symbols within this top-level symbol
         nested_expanded = [
             s for s in sorted_syms
             if s is not sym
@@ -210,14 +222,12 @@ def _render_compressed(mod: Module, repo_path: str) -> str:
         ]
 
         if not nested_expanded:
-            # Simple case: compress entire body
             body_0 = _body_start(lines, sig_0, end_0)
             indent = _body_indent(lines, body_0 - 1, end_0)
             replacements[body_0] = " " * indent + omit_token
             for i in range(body_0 + 1, end_0 + 1):
                 replacements[i] = None
         else:
-            # Partial compression: compress only unexpanded nested symbols
             nested_syms = [
                 s for s in sorted_syms
                 if s is not sym
@@ -243,18 +253,11 @@ def _render_compressed(mod: Module, repo_path: str) -> str:
             out.append(line)
         elif replacements[i] is not None:
             out.append(replacements[i])
-        # else None → suppressed
 
     return "\n".join(out)
 
 
 def _body_start(lines: list[str], sig_0: int, end_0: int) -> int:
-    """Return 0-based index of the first body line.
-
-    Scans forward from sig_0 for the line that closes the signature
-    (ends with ':' for Python, or '{' for C-family languages), then
-    returns the next line.  Falls back to sig_0 + 1 if not found.
-    """
     for i in range(sig_0, end_0):
         stripped = lines[i].rstrip()
         if stripped.endswith(":") or stripped.endswith("{"):
@@ -263,7 +266,6 @@ def _body_start(lines: list[str], sig_0: int, end_0: int) -> int:
 
 
 def _body_indent(lines: list[str], sig_0: int, end_0: int) -> int:
-    """Return the indentation of the first non-blank body line."""
     for i in range(sig_0 + 1, end_0 + 1):
         stripped = lines[i].lstrip()
         if stripped:
@@ -272,7 +274,6 @@ def _body_indent(lines: list[str], sig_0: int, end_0: int) -> int:
 
 
 def _top_level_symbols(symbols: list[Symbol]) -> list[Symbol]:
-    """Return only symbols not nested inside another (determined by line ranges)."""
     result: list[Symbol] = []
     max_end = 0
     for sym in symbols:
@@ -283,7 +284,6 @@ def _top_level_symbols(symbols: list[Symbol]) -> list[Symbol]:
 
 
 def _render_fallback(mod: Module) -> str:
-    """No repo_path available: render as signature-only pseudocode."""
     omit_token = _OMIT.get(mod.lang, "// ...")
     lines: list[str] = [f'# {mod.summary}', ""]
     for sym in mod.symbols:
@@ -299,9 +299,6 @@ def _render_fallback(mod: Module) -> str:
 
 
 def _build_dep_usage_index(model: MetaModel) -> dict[str, str]:
-    """
-    Build a map from dep file_path → usage annotation for rendering.
-    """
     index: dict[str, str] = {}
     for mid in model.changed_module_ids:
         mod = model.modules.get(mid)
@@ -313,8 +310,6 @@ def _build_dep_usage_index(model: MetaModel) -> dict[str, str]:
     return index
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-
 def _file_status(path: str, diff_result: Optional[DiffResult]) -> str:
     if diff_result is None:
         return "MODIFIED"
@@ -324,8 +319,6 @@ def _file_status(path: str, diff_result: Optional[DiffResult]) -> str:
 
 def _token_estimate(text: str) -> int:
     return len(text) // 4
-
-
 
 
 _tok = _token_estimate
