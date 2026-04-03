@@ -5,6 +5,7 @@ from typing import Optional
 
 from .agents.extractor import OnEvent, extract_module
 from .agents.impact import ImpactHit, find_impact
+from .diff_parser import DiffResult
 from .lang import detect_lang, get_globs_for_lang
 from .model import MetaModel
 from .agents.resolver import is_likely_external, resolve_dep
@@ -81,8 +82,9 @@ def explore_callers(
     llm_model: str = "gpt-4o-mini",
     max_callers: int = 5,
     exclude_tests: bool = True,
-    max_agent_steps: int = 12,
+    max_agent_steps: int = 32,
     max_agent_tokens: int = 20000,
+    diff_result: Optional[DiffResult] = None,
     on_event: Optional[OnEvent] = None,
 ) -> None:
     """
@@ -109,6 +111,9 @@ def explore_callers(
     _emit("searching_callers", name=names,
           path=", ".join(m.id for m in changed_modules))
 
+    file_statuses = {path: fd.status for path, fd in diff_result.files.items()} \
+        if diff_result else {}
+
     hits = find_impact(
         modules=changed_modules,
         repo_path=repo_path,
@@ -116,6 +121,7 @@ def explore_callers(
         model=llm_model,
         max_steps=max_agent_steps,
         max_tokens=max_agent_tokens,
+        file_statuses=file_statuses,
         on_event=on_event,
     )
 

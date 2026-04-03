@@ -88,6 +88,7 @@ class DiffGraph:
             exclude_tests=self.exclude_tests,
             max_agent_steps=self.max_agent_steps,
             max_agent_tokens=self.max_agent_tokens,
+            diff_result=diff_result,
             on_event=on_event,
         )
         return meta, diff_result

@@ -146,13 +146,18 @@ def find_impact(
     repo_path: str,
     llm,
     model: str,
-    max_steps: int = 12,
+    max_steps: int = 32,
     max_tokens: int = 20000,
+    file_statuses: Optional[dict[str, str]] = None,
     on_event: Optional[OnEvent] = None,
 ) -> list[ImpactHit]:
     """
     ReAct loop: give the LLM tools (list_files, search, read_file, done)
     and let it reason about what files are impacted by changes across all modules.
+
+    file_statuses: optional dict mapping file path → "added"/"modified"/"deleted"/"renamed".
+    When provided, each module header in the system prompt gets a [ADDED]/[MODIFIED] label
+    so the agent knows which strategy to apply.
 
     Supports parallel tool calls (multiple tool_calls in one LLM response).
     Adaptive token budget: nudges at 50% and 75% of max_tokens.
@@ -160,8 +165,9 @@ def find_impact(
     Returns ImpactHit list sorted high → medium → low.
     """
     _emit = on_event or (lambda *_, **__: None)
+    _statuses = file_statuses or {}
 
-    changed_block = _format_changed_modules(modules)
+    changed_block = _format_changed_modules(modules, _statuses)
     if not changed_block:
         return []
 
@@ -345,6 +351,11 @@ def _dispatch(tool: str, args: dict, repo_path: str, excluded_files: set[str]) -
 
     if tool == "read_file":
         path = args.get("path", "")
+        if path in excluded_files:
+            return (
+                "This file is one of the changed files — its content is already provided "
+                "in the system prompt. Do not re-read it; use the information given there."
+            )
         start = args.get("start_line")
         end = args.get("end_line")
         if start is not None and end is not None and (end - start) > 100:
@@ -424,14 +435,17 @@ def _build_file_tree(repo_path: str) -> str:
     return "\n".join(lines)
 
 
-def _format_changed_modules(modules: list[Module]) -> str:
+def _format_changed_modules(modules: list[Module],
+                            file_statuses: dict[str, str] | None = None) -> str:
+    _statuses = file_statuses or {}
     parts: list[str] = []
     for module in modules:
         changed = _format_changed_symbols(module)
         if not changed:
             continue
+        status = _statuses.get(module.id, "modified").upper()
         unchanged = _format_unchanged_symbols(module)
-        parts.append(f"### {module.id}  ({module.summary})")
+        parts.append(f"### {module.id}  [{status}]  ({module.summary})")
         parts.append(f"#### Changed symbols\n{changed}")
         if unchanged != "(none)":
             parts.append(f"#### Other symbols in same file (unchanged)\n{unchanged}")
