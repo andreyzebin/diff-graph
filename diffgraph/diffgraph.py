@@ -7,6 +7,7 @@ from .agents.extractor import OnEvent
 from .model import MetaModel
 from .renderer import render
 from .agents.review import apply_selections, find_review_context
+from .agents.planner import plan_review
 from .tools import read_file
 
 
@@ -114,6 +115,13 @@ class DiffGraph:
         Run the review agent over the MetaModel to produce a curated
         code-review context. Returns the rendered string.
         """
+        from .agents.review import _format_changed_block
+        strategy = plan_review(
+            changed_block=_format_changed_block(model),
+            llm=self.llm,
+            model=self.model,
+            on_event=on_event,
+        )
         selections = find_review_context(
             meta=model,
             repo_path=self.repo_path,
@@ -122,6 +130,7 @@ class DiffGraph:
             max_steps=self.review_agent_steps,
             max_agent_tokens=self.review_agent_tokens,
             context_budget=self.review_context_budget,
+            strategy=strategy,
             on_event=on_event,
         )
         apply_selections(model, selections)

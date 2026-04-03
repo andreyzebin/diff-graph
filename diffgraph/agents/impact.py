@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Optional
 
@@ -24,7 +25,6 @@ _SOURCE_GLOBS = [
     "**/*.py", "**/*.java", "**/*.ts", "**/*.tsx",
     "**/*.go", "**/*.kt", "**/*.rb", "**/*.cs",
 ]
-_ROOT_GLOBS = ["*.yaml", "*.yml", "*.toml", "*.md"]
 
 _TOOLS = [
     {
@@ -141,7 +141,7 @@ class ImpactHit:
 
 
 def find_impact(
-    module: Module,
+    modules: list[Module],
     repo_path: str,
     llm,
     model: str,
@@ -151,37 +151,52 @@ def find_impact(
 ) -> list[ImpactHit]:
     """
     ReAct loop: give the LLM tools (list_files, search, read_file, done)
-    and let it reason about what files are impacted by changes in `module`.
+    and let it reason about what files are impacted by changes across all modules.
+
+    Supports parallel tool calls (multiple tool_calls in one LLM response).
+    Adaptive token budget: nudges at 50% and 75% of max_tokens.
 
     Returns ImpactHit list sorted high → medium → low.
     """
     _emit = on_event or (lambda *_, **__: None)
 
-    changed_block = _format_changed_symbols(module)
+    changed_block = _format_changed_modules(modules)
     if not changed_block:
-        return []  # nothing changed in this module — skip
+        return []
+
+    excluded_files = {m.id for m in modules}
+    excluded_str = ", ".join(sorted(excluded_files))
+    label = ", ".join(m.id for m in modules) if len(modules) <= 2 else f"{len(modules)} files"
 
     system_content = _SYSTEM_PROMPT.format(
         file_tree=_build_file_tree(repo_path),
-        module_id=module.id,
-        module_summary=module.summary,
-        changed_symbols=changed_block,
-        unchanged_symbols=_format_unchanged_symbols(module),
-        max_steps=max_steps,
+        changed_modules=changed_block,
+        excluded_files=excluded_str,
     )
 
     messages: list[dict] = [{"role": "system", "content": system_content}]
     total_tokens = 0
-    tok_in = 0
-    tok_out = 0
-    tok_cached = 0
+    tok_in = tok_out = tok_cached = 0
+    nudge_50 = nudge_75 = False
 
     for step in range(max_steps):
         if total_tokens >= max_tokens:
-            _emit("agent_forced_done", path=module.id, steps=step,
+            _emit("agent_forced_done", path=label, steps=step,
                   total_tokens=total_tokens, tok_in=tok_in, tok_out=tok_out,
                   tok_cached=tok_cached, reason="token limit")
             break
+
+        # Adaptive budget nudges based on token consumption ratio
+        if total_tokens > 0:
+            ratio = total_tokens / max_tokens
+            if not nudge_50 and ratio >= 0.5:
+                messages.append({"role": "user", "content":
+                    "Half your token budget is used. Prefer broad searches over reading full files."})
+                nudge_50 = True
+            elif not nudge_75 and ratio >= 0.75:
+                messages.append({"role": "user", "content":
+                    "Token budget 75% used. Call done() soon with your findings."})
+                nudge_75 = True
 
         try:
             response = llm.chat.completions.create(
@@ -205,41 +220,81 @@ def find_impact(
         if not msg.tool_calls:
             break
 
-        tc = msg.tool_calls[0]
-        tool_name = tc.function.name
-        try:
-            args = json.loads(tc.function.arguments)
-        except json.JSONDecodeError:
-            args = {}
+        # Separate done from dispatchable calls
+        done_tc = None
+        dispatch_tcs = []
+        for tc in msg.tool_calls:
+            if tc.function.name == "done":
+                done_tc = tc
+            else:
+                dispatch_tcs.append(tc)
 
-        _emit("agent_step", step=step, tool=tool_name, args=args, path=module.id,
-              total_tokens=total_tokens, tok_in=tok_in, tok_out=tok_out, tok_cached=tok_cached)
-
-        if tool_name == "done":
-            hits = _parse_hits(args.get("impact", []))
-            _emit("agent_done", path=module.id, hits=len(hits),
+        # Emit progress for all tool calls
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            _emit("agent_step", step=step, tool=tc.function.name, args=args, path=label,
                   total_tokens=total_tokens, tok_in=tok_in, tok_out=tok_out, tok_cached=tok_cached)
-            return hits
 
-        result = _dispatch(tool_name, args, repo_path, module.id)
-        _emit("agent_result", step=step, tool=tool_name, result_len=len(str(result)), path=module.id)
+        # Execute dispatchable calls in parallel
+        dispatch_results: dict[str, object] = {}
+        if dispatch_tcs:
+            def _run(tc):
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                return tc.id, _dispatch(tc.function.name, args, repo_path, excluded_files)
 
+            with ThreadPoolExecutor(max_workers=max(1, len(dispatch_tcs))) as executor:
+                futures = {executor.submit(_run, tc): tc for tc in dispatch_tcs}
+                for future in as_completed(futures):
+                    tc_id, result = future.result()
+                    dispatch_results[tc_id] = result
+
+        # Append assistant message (all tool calls)
         messages.append({
             "role": "assistant",
-            "tool_calls": [{
-                "id": tc.id,
-                "type": "function",
-                "function": {"name": tool_name, "arguments": tc.function.arguments},
-            }],
-        })
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tc.id,
-            "content": _format_result(result),
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in msg.tool_calls
+            ],
         })
 
+        # Append tool result messages
+        hits_from_done: list[ImpactHit] | None = None
+        for tc in msg.tool_calls:
+            if tc.function.name == "done":
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                hits_from_done = _parse_hits(args.get("impact", []))
+                content = "Done."
+            else:
+                result = dispatch_results.get(tc.id, "")
+                _emit("agent_result", step=step, tool=tc.function.name,
+                      result_len=len(str(result)), path=label)
+                content = _format_result(result)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": content,
+            })
+
+        if hits_from_done is not None:
+            _emit("agent_done", path=label, hits=len(hits_from_done),
+                  total_tokens=total_tokens, tok_in=tok_in, tok_out=tok_out, tok_cached=tok_cached)
+            return hits_from_done
+
     # Forced finish at step/token limit
-    _emit("agent_forced_done", path=module.id, steps=max_steps,
+    _emit("agent_forced_done", path=label, steps=max_steps,
           total_tokens=total_tokens, tok_in=tok_in, tok_out=tok_out,
           tok_cached=tok_cached, reason="step limit")
     messages.append({
@@ -256,7 +311,7 @@ def find_impact(
         )
         msg = response.choices[0].message
         if msg.tool_calls:
-            args = json.loads(msg.tool_calls[0].function.arguments)
+            args = json.loads(msg.tool_calls[0].function.arguments or "{}")
             return _parse_hits(args.get("impact", []))
     except Exception as exc:
         log.warning("impact_agent forced done() failed: %s", exc)
@@ -266,7 +321,7 @@ def find_impact(
 
 # ── tool dispatch ─────────────────────────────────────────────────────────────
 
-def _dispatch(tool: str, args: dict, repo_path: str, skip_file: str) -> object:
+def _dispatch(tool: str, args: dict, repo_path: str, excluded_files: set[str]) -> object:
     if tool == "list_files":
         pattern = args.get("pattern", "**/*")
         files = list_files(pattern, repo_path)
@@ -285,7 +340,7 @@ def _dispatch(tool: str, args: dict, repo_path: str, skip_file: str) -> object:
                 "context": r.context,
             }
             for r in results
-            if not _skip_dir(r.file) and not _skip_binary(r.file) and r.file != skip_file
+            if not _skip_dir(r.file) and not _skip_binary(r.file) and r.file not in excluded_files
         ]
         return filtered[:30]  # cap to avoid flooding context
 
@@ -313,15 +368,12 @@ def _skip_binary(path: str) -> bool:
 
 def _extract_cached_tokens(usage) -> int:
     """Extract cached input token count from usage — handles OpenAI and DeepSeek formats."""
-    # OpenAI: usage.prompt_tokens_details.cached_tokens
     details = getattr(usage, "prompt_tokens_details", None)
     if details is not None:
         cached = getattr(details, "cached_tokens", 0)
         if cached:
             return cached
-    # DeepSeek: usage has prompt_cache_hit_tokens as a top-level field
-    cached = getattr(usage, "prompt_cache_hit_tokens", 0)
-    return cached or 0
+    return getattr(usage, "prompt_cache_hit_tokens", 0) or 0
 
 
 def _parse_hits(raw: list) -> list[ImpactHit]:
@@ -371,6 +423,21 @@ def _build_file_tree(repo_path: str) -> str:
                 lines.append(f"  {fname}")
 
     return "\n".join(lines)
+
+
+def _format_changed_modules(modules: list[Module]) -> str:
+    parts: list[str] = []
+    for module in modules:
+        changed = _format_changed_symbols(module)
+        if not changed:
+            continue
+        unchanged = _format_unchanged_symbols(module)
+        parts.append(f"### {module.id}  ({module.summary})")
+        parts.append(f"#### Changed symbols\n{changed}")
+        if unchanged != "(none)":
+            parts.append(f"#### Other symbols in same file (unchanged)\n{unchanged}")
+        parts.append("")
+    return "\n".join(parts)
 
 
 def _format_changed_symbols(module: Module) -> str:

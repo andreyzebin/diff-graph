@@ -86,8 +86,8 @@ def explore_callers(
     on_event: Optional[OnEvent] = None,
 ) -> None:
     """
-    Agentic impact analysis: for each changed module, run a ReAct agent that
-    uses list_files / search / read_file to find files impacted by the change.
+    Agentic impact analysis: single ReAct agent run covering ALL changed modules at once.
+    Uses list_files / search / read_file to find files impacted by the changes.
 
     High- and medium-confidence hits are extracted and added to the MetaModel
     with depth=-1 (callers / impacted files).
@@ -95,59 +95,64 @@ def explore_callers(
     _emit = on_event or (lambda *_, **__: None)
     visited = set(model.modules.keys())
 
-    for module_id in list(model.changed_module_ids):
-        module = model.modules[module_id]
+    # Collect all changed modules that have changed symbols
+    changed_modules = [
+        model.modules[mid]
+        for mid in model.changed_module_ids
+        if mid in model.modules and any(s.is_changed for s in model.modules[mid].symbols)
+    ]
 
-        # Skip if no symbols were actually marked changed
-        if not any(s.is_changed for s in module.symbols):
+    if not changed_modules:
+        return
+
+    names = ", ".join(m.name for m in changed_modules)
+    _emit("searching_callers", name=names,
+          path=", ".join(m.id for m in changed_modules))
+
+    hits = find_impact(
+        modules=changed_modules,
+        repo_path=repo_path,
+        llm=llm,
+        model=llm_model,
+        max_steps=max_agent_steps,
+        max_tokens=max_agent_tokens,
+        on_event=on_event,
+    )
+
+    count = 0
+    for hit in hits:
+        if hit.confidence == "low":
+            continue
+        if exclude_tests and _is_test_file(hit.file):
+            continue
+        if hit.file in visited:
+            continue
+        if count >= max_callers:
+            break
+
+        visited.add(hit.file)
+        content = read_file(hit.file, repo_path)
+        if not content:
             continue
 
-        _emit("searching_callers", name=module.name, path=module_id)
+        lang = detect_lang(hit.file)
+        caller_mod = extract_module(hit.file, content, lang, llm, llm_model, on_event=on_event)
+        if caller_mod is None:
+            continue
 
-        hits = find_impact(
-            module=module,
-            repo_path=repo_path,
-            llm=llm,
-            model=llm_model,
-            max_steps=max_agent_steps,
-            max_tokens=max_agent_tokens,
-            on_event=on_event,
-        )
+        model.add(caller_mod)
+        _emit("caller_found", path=hit.file, reason=hit.reason, confidence=hit.confidence)
 
-        count = 0
-        for hit in hits:
-            if hit.confidence == "low":
+        for dep in caller_mod.dependencies:
+            if is_likely_external(dep.fqn or dep.name):
                 continue
-            if exclude_tests and _is_test_file(hit.file):
-                continue
-            if hit.file in visited:
-                continue
-            if count >= max_callers:
-                break
+            resolved_path = resolve_dep(
+                dep, caller_mod.name, repo_path, llm, llm_model, on_event=on_event,
+            )
+            if resolved_path:
+                dep.file_path = resolved_path
 
-            visited.add(hit.file)
-            content = read_file(hit.file, repo_path)
-            if not content:
-                continue
-
-            lang = detect_lang(hit.file)
-            caller_mod = extract_module(hit.file, content, lang, llm, llm_model, on_event=on_event)
-            if caller_mod is None:
-                continue
-
-            model.add(caller_mod)
-            _emit("caller_found", path=hit.file, referenced=module.name, reason=hit.reason, confidence=hit.confidence)
-
-            for dep in caller_mod.dependencies:
-                if is_likely_external(dep.fqn or dep.name):
-                    continue
-                resolved_path = resolve_dep(
-                    dep, caller_mod.name, repo_path, llm, llm_model, on_event=on_event,
-                )
-                if resolved_path:
-                    dep.file_path = resolved_path
-
-            count += 1
+        count += 1
 
 
 def _is_test_file(path: str) -> bool:

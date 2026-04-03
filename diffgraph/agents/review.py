@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Optional
 
@@ -132,9 +133,10 @@ def find_review_context(
     repo_path: str,
     llm,
     model: str,
-    max_steps: int = 20,
+    max_steps: int = 32,
     max_agent_tokens: int = 30000,
     context_budget: int = 6000,
+    strategy: str = "",
     on_event: Optional[OnEvent] = None,
 ) -> list[ReviewSelection]:
     """
@@ -159,6 +161,7 @@ def find_review_context(
     _emit("review_start", changed=len(meta.changed_module_ids))
 
     changed_files = ", ".join(meta.changed_module_ids)
+    strategy_hint = f"\n\nReview strategy: {strategy}" if strategy else ""
     messages: list[dict] = [
         {"role": "system", "content": system_content},
         {"role": "user", "content": (
@@ -166,10 +169,11 @@ def find_review_context(
             "Start with get_symbols on each changed file, then explore callers and deps. "
             "Call select() whenever you find a relevant symbol. "
             f"Call done() when finished (by step {max(1, max_steps - 2)} at the latest)."
+            f"{strategy_hint}"
         )},
     ]
     tok_in = tok_out = tok_cached = total_tokens = 0
-    nudge_sent = False
+    nudge_50 = nudge_75 = False
     selections: list[ReviewSelection] = []
 
     for step in range(max_steps):
@@ -178,10 +182,17 @@ def find_review_context(
                   tok_in=tok_in, tok_out=tok_out, tok_cached=tok_cached)
             break
 
-        if not nudge_sent and step >= max_steps * 0.6:
-            messages.append({"role": "user", "content":
-                f"{max_steps - step} steps left. Call done() soon."})
-            nudge_sent = True
+        # Adaptive budget nudges based on token consumption ratio
+        if total_tokens > 0:
+            ratio = total_tokens / max_agent_tokens
+            if not nudge_50 and ratio >= 0.5:
+                messages.append({"role": "user", "content":
+                    "Half your token budget is used. Prefer summary-level selections and broader searches."})
+                nudge_50 = True
+            elif not nudge_75 and ratio >= 0.75:
+                messages.append({"role": "user", "content":
+                    "Token budget 75% used. Wrap up and call done() soon."})
+                nudge_75 = True
 
         try:
             response = llm.chat.completions.create(
@@ -205,49 +216,94 @@ def find_review_context(
         if not msg.tool_calls:
             break
 
-        tc = msg.tool_calls[0]
-        tool_name = tc.function.name
-        try:
-            args = json.loads(tc.function.arguments)
-        except json.JSONDecodeError:
-            args = {}
+        # Separate done/select from dispatchable calls
+        done_tc = None
+        select_tcs = []
+        dispatch_tcs = []
+        for tc in msg.tool_calls:
+            name = tc.function.name
+            if name == "done":
+                done_tc = tc
+            elif name == "select":
+                select_tcs.append(tc)
+            else:
+                dispatch_tcs.append(tc)
 
-        _emit("review_step", step=step, tool=tool_name, args=args,
-              tok_in=tok_in, tok_out=tok_out, tok_cached=tok_cached)
-
-        if tool_name == "done":
-            _emit("review_done", count=len(selections),
+        # Emit step event for each tool call
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            _emit("review_step", step=step, tool=tc.function.name, args=args,
                   tok_in=tok_in, tok_out=tok_out, tok_cached=tok_cached)
-            return selections
 
-        if tool_name == "select":
+        # Execute dispatchable calls in parallel
+        dispatch_results: dict[str, str] = {}
+        if dispatch_tcs:
+            def _run(tc):
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                result = _dispatch(tc.function.name, args, meta, repo_path)
+                return tc.id, _serialize(result)
+
+            with ThreadPoolExecutor(max_workers=max(1, len(dispatch_tcs))) as executor:
+                futures = {executor.submit(_run, tc): tc for tc in dispatch_tcs}
+                for future in as_completed(futures):
+                    tc_id, result_str = future.result()
+                    dispatch_results[tc_id] = result_str
+
+        # Process selects (in-memory, sequential)
+        select_results: dict[str, str] = {}
+        for tc in select_tcs:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
             sel = _parse_selection(args)
             if sel:
                 selections.append(sel)
                 _apply_selection(meta, sel)
                 _emit("review_selected", name=sel.symbol_name, file=sel.file,
                       detail=sel.detail, reason=sel.reason)
-                result_str = f"Selected: {sel.symbol_name} ({sel.detail})"
+                select_results[tc.id] = f"Selected: {sel.symbol_name} ({sel.detail})"
             else:
-                result_str = "Invalid selection — missing required fields."
-        else:
-            result = _dispatch(tool_name, args, meta, repo_path)
-            result_str = _serialize(result)
-            _emit("review_result", step=step, tool=tool_name, result_len=len(result_str))
+                select_results[tc.id] = "Invalid selection — missing required fields."
 
+        # Append assistant message with all tool calls
         messages.append({
             "role": "assistant",
-            "tool_calls": [{
-                "id": tc.id,
-                "type": "function",
-                "function": {"name": tool_name, "arguments": tc.function.arguments},
-            }],
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in msg.tool_calls
+            ],
         })
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tc.id,
-            "content": result_str,
-        })
+
+        # Append individual tool result messages
+        for tc in msg.tool_calls:
+            if tc.function.name == "done":
+                content = "Done."
+            elif tc.function.name == "select":
+                content = select_results.get(tc.id, "")
+            else:
+                content = dispatch_results.get(tc.id, "")
+                _emit("review_result", step=step, tool=tc.function.name, result_len=len(content))
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": content,
+            })
+
+        if done_tc is not None:
+            _emit("review_done", count=len(selections),
+                  tok_in=tok_in, tok_out=tok_out, tok_cached=tok_cached)
+            return selections
 
     _emit("review_forced_done", reason="step limit",
           tok_in=tok_in, tok_out=tok_out, tok_cached=tok_cached)
