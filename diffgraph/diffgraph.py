@@ -35,7 +35,7 @@ class DiffGraph:
         exclude_tests: bool = True,
         max_agent_steps: int = 12,
         max_agent_tokens: int = 20000,
-        review_agent_steps: int = 20,
+        review_agent_steps: int = 32,
         review_agent_tokens: int = 30000,
         review_context_budget: int = 6000,
     ) -> None:
@@ -95,15 +95,20 @@ class DiffGraph:
         self,
         model: MetaModel,
         diff_result: Optional[DiffResult] = None,
+        pr_title: str = "",
+        pr_description: str = "",
     ) -> str:
         """MetaModel → text prompt context (mechanical BFS renderer)."""
-        return render(model, diff_result, repo_path=self.repo_path, max_tokens=self.max_tokens)
+        return render(model, diff_result, repo_path=self.repo_path, max_tokens=self.max_tokens,
+                      pr_title=pr_title, pr_description=pr_description)
 
     def review(
         self,
         model: MetaModel,
         diff_result: Optional[DiffResult] = None,
         on_event: Optional[OnEvent] = None,
+        pr_title: str = "",
+        pr_description: str = "",
     ) -> str:
         """
         Run the review agent over the MetaModel to produce a curated
@@ -120,7 +125,8 @@ class DiffGraph:
             on_event=on_event,
         )
         apply_selections(model, selections)
-        return render(model, diff_result, repo_path=self.repo_path, max_tokens=self.max_tokens)
+        return render(model, diff_result, repo_path=self.repo_path, max_tokens=self.max_tokens,
+                      pr_title=pr_title, pr_description=pr_description)
 
     def build_and_render(self, diff_text: str, depth: int = 2) -> str:
         """Shortcut: raw diff → ready-to-use prompt context string."""

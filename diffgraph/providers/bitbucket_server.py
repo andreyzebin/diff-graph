@@ -126,7 +126,7 @@ def fetch_pr(
     ca_bundle: str | None = None,
     client_cert: str | None = None,
     on_status: Callable[[str], None] | None = None,
-) -> tuple[str, str, Callable[[], None]]:
+) -> tuple[str, str, Callable[[], None], dict]:
     """
     Clone the PR source branch and produce a unified diff.
 
@@ -153,6 +153,14 @@ def fetch_pr(
     from_branch  = pr["fromRef"]["displayId"]
     from_sha     = pr["fromRef"]["latestCommit"]
     to_sha       = pr["toRef"]["latestCommit"]
+    pr_meta      = {
+        "title":       pr.get("title", ""),
+        "description": pr.get("description", "") or "",
+        "author":      pr.get("author", {}).get("user", {}).get("displayName", ""),
+        "from_branch": from_branch,
+        "to_branch":   pr["toRef"]["displayId"],
+        "pr_id":       pr_id,
+    }
     log.debug("fromRef=%s (%s)  toRef sha=%s", from_branch, from_sha, to_sha)
 
     clone_url = _clone_url(server_url, project, repo)
@@ -207,7 +215,7 @@ def fetch_pr(
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     emit(f"Ready  repo={tmpdir}  diff={len(diff_text)} chars")
-    return diff_text, tmpdir, cleanup
+    return diff_text, tmpdir, cleanup, pr_meta
 
 
 # ── posting review comments ───────────────────────────────────────────────────

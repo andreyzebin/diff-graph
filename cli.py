@@ -131,11 +131,14 @@ def run(
 
     cleanup_fn = None
 
+    pr_title = ""
+    pr_description = ""
+
     if pr_url:
         from diffgraph.providers.bitbucket_server import fetch_pr
         console.print(f"[bold]PR[/bold]  [cyan]{pr_url}[/cyan]")
         try:
-            diff_text, _tmpdir, cleanup_fn = fetch_pr(
+            diff_text, _tmpdir, cleanup_fn, pr_meta = fetch_pr(
                 pr_url,
                 on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
             )
@@ -143,6 +146,10 @@ def run(
             console.print(f"[red]Failed to fetch PR: {exc}[/red]")
             raise typer.Exit(1)
         repo_path = _tmpdir
+        pr_title = pr_meta.get("title", "")
+        pr_description = pr_meta.get("description", "")
+        if pr_title:
+            console.print(f"  [dim]title: {pr_title}[/dim]")
     else:
         if not repo:
             console.print("[red]Provide --repo or --pr-url.[/red]")
@@ -192,9 +199,11 @@ def run(
     if review:
         console.print("\n[bold]Review Agent[/bold]  curating context...\n")
         with Live("", console=console, refresh_per_second=8, vertical_overflow="visible") as live2:
-            context = dg.review(meta, diff_result, on_event=_make_event_handler(effective_model, live2))
+            context = dg.review(meta, diff_result,
+                                on_event=_make_event_handler(effective_model, live2),
+                                pr_title=pr_title, pr_description=pr_description)
     else:
-        context = dg.render(meta, diff_result)
+        context = dg.render(meta, diff_result, pr_title=pr_title, pr_description=pr_description)
 
     if post_comments and review and pr_url:
         from diffgraph.agents.reviewer import generate_review_comments

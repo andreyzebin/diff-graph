@@ -1,9 +1,12 @@
 from __future__ import annotations
 from typing import Optional
 
+from .agents.prompts import load as _load_prompt
 from .diff_parser import DiffResult
 from .model import MetaModel, Module, Symbol
 from .tools import read_file
+
+_CONTEXT_TEMPLATE = _load_prompt("render_context.txt")
 
 # Language-specific body omission marker (used inline in compressed files)
 _OMIT: dict[str, str] = {
@@ -35,6 +38,8 @@ def render(
     diff_result: Optional[DiffResult] = None,
     repo_path: str = "",
     max_tokens: int = 8000,
+    pr_title: str = "",
+    pr_description: str = "",
 ) -> str:
     """
     Render a MetaModel as a text prompt context.
@@ -53,15 +58,24 @@ def render(
     Token budget: if over limit, degrade depth-2 → names only,
     then depth-1 → summaries only. Changed files and callers are never cut.
     """
+    def _wrap(body: str) -> str:
+        if not pr_title:
+            return body
+        return _CONTEXT_TEMPLATE.format(
+            pr_title=pr_title,
+            pr_description=pr_description.strip() if pr_description else "_No description provided._",
+            body=body,
+        )
+
     full = _build(model, diff_result, repo_path, trunc2=False, trunc1=False)
-    if _tok(full) <= max_tokens:
-        return full
+    if _tok(_wrap(full)) <= max_tokens:
+        return _wrap(full)
 
     degraded = _build(model, diff_result, repo_path, trunc2=True, trunc1=False)
-    if _tok(degraded) <= max_tokens:
-        return degraded
+    if _tok(_wrap(degraded)) <= max_tokens:
+        return _wrap(degraded)
 
-    return _build(model, diff_result, repo_path, trunc2=True, trunc1=True)
+    return _wrap(_build(model, diff_result, repo_path, trunc2=True, trunc1=True))
 
 
 # ── build ─────────────────────────────────────────────────────────────────────

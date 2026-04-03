@@ -1,0 +1,7 @@
+# PR: {pr_title}
+
+{pr_description}
+
+---
+
+{body}
