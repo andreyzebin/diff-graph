@@ -1,7 +1,7 @@
 """Tests for the renderer."""
 import pytest
 from diffgraph.model import Dependency, MetaModel, Module, Symbol
-from diffgraph.renderer import render, _token_estimate
+from diffgraph.renderer import render, _render_compressed, _token_estimate
 
 
 def make_module(id_, name, symbols=None, summary="does stuff"):
@@ -149,3 +149,75 @@ class TestTokenBudget:
         out = render(meta, max_tokens=1)  # absurdly small
         assert "Core.java" in out
         assert "critical" in out
+
+
+class TestPartialCompression:
+    """_render_compressed should expand only selected nested symbols, compress the rest."""
+
+    JAVA_SOURCE = (
+        "public class OrderController {\n"          # line 1
+        "    private OrderService svc;\n"            # line 2
+        "    public void createOrder() {\n"          # line 3
+        "        svc.create();\n"                    # line 4
+        "    }\n"                                    # line 5
+        "    public void cancelOrder() {\n"          # line 6
+        "        svc.cancel();\n"                    # line 7
+        "    }\n"                                    # line 8
+        "    public void getOrder() {\n"             # line 9
+        "        svc.get();\n"                       # line 10
+        "    }\n"                                    # line 11
+        "}\n"                                        # line 12
+    )
+
+    def _make_mod(self, tmp_path):
+        src = tmp_path / "OrderController.java"
+        src.write_text(self.JAVA_SOURCE)
+        repo = str(tmp_path)
+
+        cls_sym = Symbol(
+            name="OrderController", kind="CLASS",
+            signature="public class OrderController",
+            summary="", annotations=[], start_line=1, end_line=12,
+        )
+        create_sym = Symbol(
+            name="createOrder", kind="METHOD",
+            signature="public void createOrder()",
+            summary="", annotations=[], start_line=3, end_line=5,
+        )
+        cancel_sym = Symbol(
+            name="cancelOrder", kind="METHOD",
+            signature="public void cancelOrder()",
+            summary="", annotations=[], start_line=6, end_line=8,
+        )
+        get_sym = Symbol(
+            name="getOrder", kind="METHOD",
+            signature="public void getOrder()",
+            summary="", annotations=[], start_line=9, end_line=11,
+        )
+        mod = Module(
+            id="OrderController.java", name="OrderController", lang="java",
+            summary="controller", symbols=[cls_sym, create_sym, cancel_sym, get_sym],
+            dependencies=[],
+        )
+        return mod, repo
+
+    def test_no_expansion_compresses_whole_class(self, tmp_path):
+        mod, repo = self._make_mod(tmp_path)
+        out = _render_compressed(mod, repo)
+        assert "svc.create()" not in out
+        assert "svc.cancel()" not in out
+        assert "svc.get()" not in out
+        assert "// [omitted]" in out
+
+    def test_expanded_method_shown_others_compressed(self, tmp_path):
+        mod, repo = self._make_mod(tmp_path)
+        # Mark only cancelOrder as expanded
+        for sym in mod.symbols:
+            if sym.name == "cancelOrder":
+                sym.is_expanded = True
+        out = _render_compressed(mod, repo)
+        # cancelOrder body visible
+        assert "svc.cancel()" in out
+        # other methods compressed
+        assert "svc.create()" not in out
+        assert "svc.get()" not in out

@@ -152,12 +152,11 @@ def _render_compressed(mod: Module, repo_path: str) -> str:
 
     Algorithm:
       1. Read the full file from disk once.
-      2. For each TOP-LEVEL symbol (nested symbols are skipped — they're part of
-         their parent):
-           - on-trace  → keep all lines unchanged
-           - off-trace → keep signature line; if the symbol has a body
-                         (end_line > start_line) replace first body line with the
-                         language-appropriate omit marker and suppress the rest
+      2. For each TOP-LEVEL symbol:
+           - expanded/changed → keep all lines unchanged
+           - has nested expanded symbols → partial compression: compress only the
+             unexpanded inner symbols, leave expanded ones fully visible
+           - otherwise → keep signature line only; replace body with omit marker
       3. All other lines (imports, module-level code, blank lines) are kept as-is.
     """
     if not repo_path:
@@ -169,7 +168,8 @@ def _render_compressed(mod: Module, repo_path: str) -> str:
 
     lines = full.splitlines()
     omit_token = _OMIT.get(mod.lang, "// ...")
-    top = _top_level_symbols(sorted(mod.symbols, key=lambda s: s.start_line))
+    sorted_syms = sorted(mod.symbols, key=lambda s: s.start_line)
+    top = _top_level_symbols(sorted_syms)
 
     if not top:
         return full
@@ -180,18 +180,49 @@ def _render_compressed(mod: Module, repo_path: str) -> str:
     for sym in top:
         if sym.is_expanded or sym.is_changed:
             continue  # show full body
+
         sig_0 = sym.start_line - 1  # 0-based
         end_0 = sym.end_line - 1    # 0-based
-        # Only compress symbols that actually have a body
-        if end_0 > sig_0:
+        if end_0 <= sig_0:
+            continue  # no body
+
+        # Check for nested expanded/changed symbols within this top-level symbol
+        nested_expanded = [
+            s for s in sorted_syms
+            if s is not sym
+            and s.start_line > sym.start_line
+            and s.end_line <= sym.end_line
+            and (s.is_expanded or s.is_changed)
+        ]
+
+        if not nested_expanded:
+            # Simple case: compress entire body
             body_0 = _body_start(lines, sig_0, end_0)
             indent = _body_indent(lines, body_0 - 1, end_0)
             replacements[body_0] = " " * indent + omit_token
             for i in range(body_0 + 1, end_0 + 1):
                 replacements[i] = None
+        else:
+            # Partial compression: compress only unexpanded nested symbols
+            nested_syms = [
+                s for s in sorted_syms
+                if s is not sym
+                and s.start_line > sym.start_line
+                and s.end_line <= sym.end_line
+            ]
+            for nested in _top_level_symbols(nested_syms):
+                if nested.is_expanded or nested.is_changed:
+                    continue
+                n_sig_0 = nested.start_line - 1
+                n_end_0 = nested.end_line - 1
+                if n_end_0 > n_sig_0:
+                    n_body_0 = _body_start(lines, n_sig_0, n_end_0)
+                    n_indent = _body_indent(lines, n_body_0 - 1, n_end_0)
+                    replacements[n_body_0] = " " * n_indent + omit_token
+                    for i in range(n_body_0 + 1, n_end_0 + 1):
+                        replacements[i] = None
 
-    has_expanded = any(s.is_expanded for s in top)
-    header = "" if has_expanded else _compressed_header(mod.lang)
+    header = _compressed_header(mod.lang) if replacements else ""
     out: list[str] = [header] if header else []
     for i, line in enumerate(lines):
         if i not in replacements:

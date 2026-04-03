@@ -386,10 +386,11 @@ def _make_event_handler(model: str, live: Live):
             pass  # step line already logged
 
         elif event == "review_selected":
+            detail = kw.get("detail", "")
             _log(
                 f"[green]select[/green]    [bold]{kw.get('symbol_name', kw.get('name', ''))}[/bold]"
                 f"  [dim]{kw.get('file', '')}[/dim]"
-                f"  [{kw.get('detail', '')}]"
+                f"  [yellow]{detail}[/yellow]"
                 f"  [dim]{kw.get('reason', '')[:80]}[/dim]"
             )
 
