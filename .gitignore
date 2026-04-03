@@ -1,4 +1,6 @@
 .venv/
+.idea/
+graph.json
 config.local.yaml
 .env
 __pycache__/
