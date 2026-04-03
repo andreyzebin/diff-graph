@@ -32,8 +32,8 @@ def parse_pr_url(pr_url: str) -> tuple[str, str, str, int]:
     Parse a Bitbucket Server PR URL into (server_url, project, repo, pr_id).
 
     Example:
-        https://sberworks.ru/bitbucket-ci/projects/SBLOOM/repos/code-review-example-orderflow/pull-requests/59
-        → ("https://sberworks.ru/bitbucket-ci", "SBLOOM", "code-review-example-orderflow", 59)
+        https://bitbucket.example.com/projects/MYPROJECT/repos/my-repo/pull-requests/42
+        → ("https://bitbucket.example.com", "MYPROJECT", "my-repo", 42)
     """
     parsed = urlparse(pr_url)
     path_parts = parsed.path.strip("/").split("/")
