@@ -97,6 +97,7 @@ def run(
     api_url: Optional[str] = typer.Option(None, "--api-url", help="OpenAI-compatible API base URL override"),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="API key override"),
     review: bool = typer.Option(False, "--review", help="Run review agent for curated context instead of BFS renderer"),
+    post_comments: bool = typer.Option(False, "--post-comments", help="Post review comments to the PR (requires --pr-url and --review)"),
 ):
     """
     Build a dependency graph from a diff and render a prompt context.
@@ -195,6 +196,25 @@ def run(
     else:
         context = dg.render(meta, diff_result)
 
+    if post_comments and review and pr_url:
+        from diffgraph.agents.reviewer import generate_review_comments
+        from diffgraph.providers.bitbucket_server import post_review_comments
+        console.print("\n[bold]Reviewer[/bold]  generating comments...\n")
+        comments = generate_review_comments(
+            context, llm_client, effective_model,
+            on_event=_make_event_handler(effective_model, None),
+        )
+        console.print(f"  [dim]{len(comments)} comment(s) generated[/dim]")
+        if comments:
+            console.print("[bold]Posting[/bold]  to PR...\n")
+            posted = post_review_comments(
+                pr_url, comments,
+                on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+            )
+            console.print(f"\n[green]Posted {posted}/{len(comments)} comments[/green]")
+    elif post_comments and not pr_url:
+        console.print("[yellow]--post-comments requires --pr-url[/yellow]")
+
     if dump_graph:
         import json
         Path(dump_graph).write_text(json.dumps(meta.to_json(), ensure_ascii=False, indent=2))
@@ -277,13 +297,17 @@ def _print_diff_summary(diff_result, verbose: bool = False) -> None:
                 )
 
 
-def _make_event_handler(model: str, live: Live):
+def _make_event_handler(model: str, live: Optional[Live]):
     """Returns an on_event callback that logs progress via a Rich Live display."""
     depth_colors = ["bold cyan", "cyan", "dim cyan"]
     state: dict = {"path": "", "tok": 0}
 
     def _log(msg: str) -> None:
-        live.console.log(msg)
+        (live.console if live else console).log(msg)
+
+    def _live_update(text: str) -> None:
+        if live:
+            _live_update(text)
 
     def on_event(event: str, **kw) -> None:
         depth = kw.get("depth", 0)
@@ -307,7 +331,7 @@ def _make_event_handler(model: str, live: Live):
             state["tok"] += 1
             # Collapse whitespace and show a rolling tail of the stream
             preview = " ".join(text.split())[-100:]
-            live.update(
+            _live_update(
                 Text.assemble(
                     ("  ↳ ", "dim"),
                     (f"{state['path']}  ", "bold"),
@@ -323,7 +347,7 @@ def _make_event_handler(model: str, live: Live):
             )
 
         elif event == "extracted":
-            live.update("")  # clear the streaming line
+            _live_update("")  # clear the streaming line
             deps = kw.get("deps", [])
             dep_names = [d.name if hasattr(d, "name") else str(d) for d in deps]
             dep_str = ", ".join(dep_names[:6]) + ("…" if len(dep_names) > 6 else "")
@@ -334,14 +358,14 @@ def _make_event_handler(model: str, live: Live):
             )
 
         elif event == "retry":
-            live.update("")
+            _live_update("")
             _log(
                 f"[yellow]retry {kw.get('attempt')}[/yellow]   [bold]{path}[/bold]"
                 f"  [dim]{kw.get('reason', '')}[/dim]"
             )
 
         elif event == "failed":
-            live.update("")
+            _live_update("")
             _log(f"[red]failed[/red]    [bold]{path}[/bold]  [dim]skipped after 3 attempts[/dim]")
 
         elif event == "read_failed":
@@ -354,17 +378,17 @@ def _make_event_handler(model: str, live: Live):
             pass  # too noisy — only log when resolved or skipped
 
         elif event == "resolving_agent":
-            live.update("")
+            _live_update("")
             _log(f"[cyan]resolve[/cyan]   agent resolving [bold]{name}[/bold]  [dim]{kw.get('fqn', '')}[/dim]")
 
         elif event == "resolved":
-            live.update("")
+            _live_update("")
             tok_str = _fmt_tok(kw)
             suffix = f"  [dim cyan]{tok_str}[/dim cyan]" if tok_str else ""
             _log(f"[dim]  resolve   {name}  →  {kw.get('path', '')}[/dim]{suffix}")
 
         elif event == "not_resolved":
-            live.update("")
+            _live_update("")
             tok_str = _fmt_tok(kw)
             suffix = f"  [dim cyan]{tok_str}[/dim cyan]" if tok_str else ""
             _log(f"[dim]  resolve   {name}  →  external, skip[/dim]{suffix}")
@@ -377,7 +401,7 @@ def _make_event_handler(model: str, live: Live):
             args = kw.get("args", {})
             arg_str = ", ".join(f"{k}={v!r}" for k, v in args.items())
             tok_suffix = _fmt_tok(kw)
-            live.update(
+            _live_update(
                 Text.assemble(
                     ("  ↳ ", "dim"),
                     (f"step {kw.get('step', 0)}  ", "dim"),
@@ -391,16 +415,26 @@ def _make_event_handler(model: str, live: Live):
             pass  # live line already shows current step
 
         elif event == "agent_done":
-            live.update("")
+            _live_update("")
             hits = kw.get("hits", 0)
             tok_str = _fmt_tok(kw)
             _log(f"[magenta]impact[/magenta]    [bold]{path}[/bold]  [dim]{hits} impacted file(s) found[/dim]  [dim cyan]{tok_str}[/dim cyan]")
 
         elif event == "agent_forced_done":
-            live.update("")
+            _live_update("")
             reason = kw.get("reason", "limit reached")
             tok_str = _fmt_tok(kw)
             _log(f"[yellow]impact[/yellow]    [bold]{path}[/bold]  [dim]{reason}[/dim]  [dim cyan]{tok_str}[/dim cyan]")
+
+        elif event == "reviewer_start":
+            _log("[bold cyan]reviewer[/bold cyan]  calling LLM…")
+
+        elif event == "reviewer_done":
+            tok_str = _fmt_tok(kw)
+            _log(f"[bold cyan]reviewer[/bold cyan]  done  [dim cyan]{tok_str}[/dim cyan]")
+
+        elif event == "reviewer_failed":
+            _log(f"[red]reviewer[/red]  failed: {kw.get('reason', '')}")
 
         elif event == "review_start":
             _log(f"[bold cyan]review[/bold cyan]    agent starting  [dim]{kw.get('changed', 0)} changed module(s)[/dim]")
@@ -425,12 +459,12 @@ def _make_event_handler(model: str, live: Live):
             )
 
         elif event == "review_done":
-            live.update("")
+            _live_update("")
             tok_str = _fmt_tok(kw)
             _log(f"[bold cyan]review[/bold cyan]    done  [dim]{kw.get('count', 0)} symbols selected[/dim]  [dim cyan]{tok_str}[/dim cyan]")
 
         elif event == "review_forced_done":
-            live.update("")
+            _live_update("")
             tok_str = _fmt_tok(kw)
             _log(f"[yellow]review[/yellow]    {kw.get('reason', 'limit')}  [dim cyan]{tok_str}[/dim cyan]")
 

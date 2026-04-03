@@ -208,3 +208,83 @@ def fetch_pr(
 
     emit(f"Ready  repo={tmpdir}  diff={len(diff_text)} chars")
     return diff_text, tmpdir, cleanup
+
+
+# ── posting review comments ───────────────────────────────────────────────────
+
+def post_review_comments(
+    pr_url: str,
+    comments: list,  # list[ReviewComment] — avoid circular import
+    token: str | None = None,
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+    on_status: Callable[[str], None] | None = None,
+) -> int:
+    """
+    Post review comments to a Bitbucket Server PR as inline anchored comments.
+    Returns the number of successfully posted comments.
+    """
+    token      = token      or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
+    ca_bundle  = ca_bundle  or os.environ.get("REQUESTS_CA_BUNDLE")
+    client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
+
+    if not token:
+        raise ValueError("BITBUCKET_SERVER_BEARER_TOKEN is required")
+
+    emit = on_status or (lambda msg: None)
+    server_url, project, repo, pr_id = parse_pr_url(pr_url)
+    endpoint = (
+        f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
+        f"/pull-requests/{pr_id}/comments"
+    )
+
+    posted = 0
+    for c in comments:
+        body = _build_comment_body(c)
+        payload = {
+            "text": body,
+            "severity": c.severity,
+            "anchor": {
+                "diffType": "EFFECTIVE",
+                "path": c.file,
+                "lineType": "ADDED",
+                "line": c.line,
+                "fileType": "TO",
+            },
+        }
+        try:
+            _api_post(endpoint, token, ca_bundle, client_cert, payload)
+            emit(f"posted [{c.severity}] {c.file}:{c.line}")
+            posted += 1
+        except Exception as exc:
+            log.warning("failed to post comment on %s:%s — %s", c.file, c.line, exc)
+            emit(f"FAILED {c.file}:{c.line} — {exc}")
+
+    return posted
+
+
+def _build_comment_body(c) -> str:
+    text = c.comment
+    if c.suggestion:
+        text += f"\n\n```suggestion\n{c.suggestion}\n```"
+    return text
+
+
+def _api_post(url: str, token: str, ca_bundle: str | None, client_cert: str | None, payload: dict) -> dict:
+    import ssl
+    from urllib.request import Request, urlopen
+    data = json.dumps(payload).encode()
+    req = Request(
+        url, data=data,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    ctx = ssl.create_default_context(cafile=ca_bundle)
+    if client_cert:
+        ctx.load_cert_chain(client_cert)
+    with urlopen(req, context=ctx, timeout=30) as resp:
+        return json.loads(resp.read())
