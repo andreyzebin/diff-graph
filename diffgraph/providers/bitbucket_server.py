@@ -163,7 +163,7 @@ def fetch_pr(
 
     auth_flag = ["-c", f"http.extraHeader=Authorization: Bearer {token}"]
     ssl_flags = _ssl_flags(ca_bundle, client_cert)
-    git_cfg = auth_flag + ssl_flags   # applied to every git call
+    git_cfg = auth_flag + ssl_flags   # used only for the initial clone
 
     try:
         _run([
@@ -174,11 +174,19 @@ def fetch_pr(
             clone_url, tmpdir,
         ])
 
+        # Bake auth + SSL into the repo config so all subsequent git ops
+        # (fetch, diff lazy-blob downloads) authenticate automatically.
+        _run(["git", "config", "http.extraHeader",
+              f"Authorization: Bearer {token}"], cwd=tmpdir)
+        if ca_bundle:
+            _run(["git", "config", "http.sslCAInfo", ca_bundle], cwd=tmpdir)
+        if client_cert:
+            _run(["git", "config", "http.sslCert", client_cert], cwd=tmpdir)
+
         # 4. Fetch base commit (depth=1, only the commit object + its tree for diff)
         emit(f"Fetching base commit {to_sha[:12]}…")
         _run([
-            "git", *git_cfg,
-            "fetch", "--depth=1", "--filter=blob:none",
+            "git", "fetch", "--depth=1", "--filter=blob:none",
             "origin", to_sha,
         ], cwd=tmpdir)
 
