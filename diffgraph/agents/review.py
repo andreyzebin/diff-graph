@@ -392,7 +392,7 @@ def _apply_selection(meta: MetaModel, sel: ReviewSelection) -> None:
 
 
 def _serialize(result: object) -> str:
-    from .tools import SearchResult
+    from ..tools import SearchResult
     if isinstance(result, list) and result and isinstance(result[0], SearchResult):
         items = [{"file": r.file, "line": r.line, "text": r.text, "context": r.context}
                  for r in result]
