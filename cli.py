@@ -307,7 +307,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
 
     def _live_update(text: str) -> None:
         if live:
-            _live_update(text)
+            live.update(text)
 
     def on_event(event: str, **kw) -> None:
         depth = kw.get("depth", 0)
