@@ -4,9 +4,9 @@ import logging
 from typing import Optional
 
 from .extractor import OnEvent
-from .model import Dependency
+from ..model import Dependency
 from .prompts import load as _load_prompt
-from .tools import list_files, read_file, search_text
+from ..tools import list_files, read_file, search_text
 
 log = logging.getLogger(__name__)
 

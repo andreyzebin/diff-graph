@@ -3,11 +3,11 @@ import logging
 from collections import deque
 from typing import Optional
 
-from .extractor import OnEvent, extract_module
-from .impact_agent import ImpactHit, find_impact
+from .agents.extractor import OnEvent, extract_module
+from .agents.impact import ImpactHit, find_impact
 from .lang import detect_lang, get_globs_for_lang
 from .model import MetaModel
-from .resolver import is_likely_external, resolve_dep
+from .agents.resolver import is_likely_external, resolve_dep
 from .tools import list_files, read_file, search_text
 
 log = logging.getLogger(__name__)

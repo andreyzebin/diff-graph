@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Any, Callable, Optional
 
-from .model import Dependency, Module, Symbol
+from ..model import Dependency, Module, Symbol
 from .prompts import load as _load_prompt
 
 OnEvent = Callable[..., None]  # on_event(event: str, **kwargs)

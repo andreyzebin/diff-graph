@@ -3,10 +3,10 @@ from typing import Callable, Optional
 
 from .diff_parser import DiffResult, parse_diff
 from .explorer import explore, explore_callers
-from .extractor import OnEvent
+from .agents.extractor import OnEvent
 from .model import MetaModel
 from .renderer import render
-from .review_agent import apply_selections, find_review_context
+from .agents.review import apply_selections, find_review_context
 from .tools import read_file
 
 

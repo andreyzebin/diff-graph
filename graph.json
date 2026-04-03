@@ -1,0 +1,385 @@
+[
+  {
+    "id": "diffgraph/model.py",
+    "name": "diffgraph.model",
+    "lang": "python",
+    "summary": "Defines data models for representing code modules, symbols, and dependencies in a dependency graph.",
+    "dependencies": [],
+    "symbols": [
+      {
+        "name": "Dependency",
+        "kind": "CLASS",
+        "signature": "class Dependency(name: str, fqn: str, usage: str, file_path: str = '')",
+        "summary": "Represents an annotated directed edge from a module to one of its dependencies.",
+        "annotations": [
+          "@dataclass"
+        ],
+        "start_line": 8,
+        "end_line": 14,
+        "is_changed": false
+      },
+      {
+        "name": "Symbol",
+        "kind": "CLASS",
+        "signature": "class Symbol(name: str, kind: str, signature: str, summary: str, annotations: list[str], start_line: int, end_line: int, is_changed: bool = False, full_code: Optional[str] = None)",
+        "summary": "Represents a code symbol (method, class, field, etc.) within a module.",
+        "annotations": [
+          "@dataclass"
+        ],
+        "start_line": 17,
+        "end_line": 27,
+        "is_changed": false
+      },
+      {
+        "name": "Module",
+        "kind": "CLASS",
+        "signature": "class Module(id: str, name: str, lang: str, summary: str, symbols: list[Symbol], dependencies: list[Dependency])",
+        "summary": "Represents a code module with its metadata, symbols, and dependencies.",
+        "annotations": [
+          "@dataclass"
+        ],
+        "start_line": 30,
+        "end_line": 37,
+        "is_changed": false
+      },
+      {
+        "name": "MetaModel",
+        "kind": "CLASS",
+        "signature": "class MetaModel(modules: dict[str, Module] = field(default_factory=dict), changed_module_ids: list[str] = field(default_factory=list))",
+        "summary": "Represents the complete dependency graph containing all modules and provides methods for analysis.",
+        "annotations": [
+          "@dataclass"
+        ],
+        "start_line": 40,
+        "end_line": 43,
+        "is_changed": false
+      },
+      {
+        "name": "add",
+        "kind": "METHOD",
+        "signature": "def add(self, module: Module) -> None",
+        "summary": "Adds a Module to the MetaModel's collection.",
+        "annotations": [],
+        "start_line": 44,
+        "end_line": 46,
+        "is_changed": false
+      },
+      {
+        "name": "compute_depths",
+        "kind": "METHOD",
+        "signature": "def compute_depths(self) -> dict[str, int]",
+        "summary": "Performs BFS from changed modules to compute dependency depths and identifies callers.",
+        "annotations": [],
+        "start_line": 47,
+        "end_line": 75,
+        "is_changed": true
+      },
+      {
+        "name": "to_json",
+        "kind": "METHOD",
+        "signature": "def to_json(self) -> list[dict]",
+        "summary": "Serializes the graph to a JSON-serializable list of module dictionaries.",
+        "annotations": [],
+        "start_line": 77,
+        "end_line": 111,
+        "is_changed": false
+      }
+    ]
+  },
+  {
+    "id": "cli.py",
+    "name": "cli",
+    "lang": "python",
+    "summary": "Provides a command-line interface for DiffGraph to build dependency metamodels from git diffs.",
+    "dependencies": [
+      {
+        "name": "DiffGraph",
+        "fqn": "diffgraph.DiffGraph",
+        "usage": "Instantiated to build the dependency metamodel from the diff and repository path.",
+        "file_path": "diffgraph/diffgraph.py"
+      },
+      {
+        "name": "DiffResult",
+        "fqn": "diffgraph.diff_parser.DiffResult",
+        "usage": "Return type of parse_diff and used to summarize and process diff information.",
+        "file_path": "diffgraph/diff_parser.py"
+      },
+      {
+        "name": "Live",
+        "fqn": "rich.live.Live",
+        "usage": "Used as a parameter type for _make_event_handler and to create a live progress display.",
+        "file_path": ""
+      }
+    ],
+    "symbols": [
+      {
+        "name": "_load_config",
+        "kind": "FUNCTION",
+        "signature": "_load_config() -> dict",
+        "summary": "Loads and merges configuration from YAML files, expanding environment variables.",
+        "annotations": [],
+        "start_line": 25,
+        "end_line": 47,
+        "is_changed": false
+      },
+      {
+        "name": "_expand_env",
+        "kind": "FUNCTION",
+        "signature": "_expand_env(s: str) -> str",
+        "summary": "Expands environment variable references in a string.",
+        "annotations": [],
+        "start_line": 50,
+        "end_line": 51,
+        "is_changed": false
+      },
+      {
+        "name": "_expand_config",
+        "kind": "FUNCTION",
+        "signature": "_expand_config(obj)",
+        "summary": "Recursively expands environment variables in configuration data structures.",
+        "annotations": [],
+        "start_line": 54,
+        "end_line": 61,
+        "is_changed": false
+      },
+      {
+        "name": "_make_llm_client",
+        "kind": "FUNCTION",
+        "signature": "_make_llm_client(llm_cfg: dict)",
+        "summary": "Creates and configures an OpenAI client from a configuration dictionary.",
+        "annotations": [],
+        "start_line": 64,
+        "end_line": 70,
+        "is_changed": false
+      },
+      {
+        "name": "_read_diff",
+        "kind": "FUNCTION",
+        "signature": "_read_diff(diff_path: Optional[str]) -> str",
+        "summary": "Reads diff text from a file path or standard input.",
+        "annotations": [],
+        "start_line": 73,
+        "end_line": 83,
+        "is_changed": false
+      },
+      {
+        "name": "run",
+        "kind": "FUNCTION",
+        "signature": "run(repo: str = typer.Option(..., \"--repo\", \"-r\", help=\"Path to the repository (after-version checkout)\"), diff: Optional[str] = typer.Option(None, \"--diff\", \"-d\", help=\"Path to .diff file, or '-' for stdin\"), depth: Optional[int] = typer.Option(None, \"--depth\", help=\"BFS depth (default: from config, usually 2)\"), model: Optional[str] = typer.Option(None, \"--model\", \"-m\", help=\"LLM model override\"), output: Optional[str] = typer.Option(None, \"--output\", \"-o\", help=\"Write rendered context to file instead of stdout\"), dump_graph: Optional[str] = typer.Option(None, \"--dump-graph\", help=\"Write MetaModel as JSON array to file\"), api_url: Optional[str] = typer.Option(None, \"--api-url\", help=\"OpenAI-compatible API base URL override\"), api_key: Optional[str] = typer.Option(None, \"--api-key\", help=\"API key override\"))",
+        "summary": "Main command to build a dependency graph from a diff and render a prompt context.",
+        "annotations": [
+          "@app.command()"
+        ],
+        "start_line": 89,
+        "end_line": 184,
+        "is_changed": false
+      },
+      {
+        "name": "inspect",
+        "kind": "FUNCTION",
+        "signature": "inspect(diff: Optional[str] = typer.Argument(None, help=\"Path to .diff file, or '-' for stdin\"))",
+        "summary": "Parses a diff and displays a summary without using an LLM.",
+        "annotations": [
+          "@app.command()"
+        ],
+        "start_line": 187,
+        "end_line": 209,
+        "is_changed": false
+      },
+      {
+        "name": "_print_diff_summary",
+        "kind": "FUNCTION",
+        "signature": "_print_diff_summary(diff_result, verbose: bool = False) -> None",
+        "summary": "Prints a formatted table summarizing the parsed diff results.",
+        "annotations": [],
+        "start_line": 213,
+        "end_line": 248,
+        "is_changed": false
+      },
+      {
+        "name": "_make_event_handler",
+        "kind": "FUNCTION",
+        "signature": "_make_event_handler(model: str, live: Live)",
+        "summary": "Creates a callback function to log progress events via a Rich Live display.",
+        "annotations": [],
+        "start_line": 250,
+        "end_line": 299,
+        "is_changed": false
+      }
+    ]
+  },
+  {
+    "id": "diffgraph/renderer.py",
+    "name": "renderer",
+    "lang": "python",
+    "summary": "Renders a MetaModel as a text prompt context for code review with compression and token budgeting.",
+    "dependencies": [
+      {
+        "name": "DiffResult",
+        "fqn": "diffgraph.diff_parser.DiffResult",
+        "usage": "Used as an optional parameter in render() and _build() to include raw diff text and file statuses.",
+        "file_path": "diffgraph/diff_parser.py"
+      },
+      {
+        "name": "MetaModel",
+        "fqn": "diffgraph.model.MetaModel",
+        "usage": "Primary input parameter for render() and _build(), used to access modules, symbols, and compute dependency depths.",
+        "file_path": "diffgraph/model.py"
+      },
+      {
+        "name": "Module",
+        "fqn": "diffgraph.model.Module",
+        "usage": "Used as a parameter type in _render_compressed() and _render_fallback() to access module properties like id, lang, and symbols.",
+        "file_path": "diffgraph/model.py"
+      },
+      {
+        "name": "Symbol",
+        "fqn": "diffgraph.model.Symbol",
+        "usage": "Used as a list element type in _top_level_symbols() to filter symbols based on line ranges.",
+        "file_path": "diffgraph/model.py"
+      }
+    ],
+    "symbols": [
+      {
+        "name": "_OMIT",
+        "kind": "FIELD",
+        "signature": "_OMIT: dict[str, str]",
+        "summary": "Maps language names to their respective body omission markers for compressed rendering.",
+        "annotations": [],
+        "start_line": 9,
+        "end_line": 17,
+        "is_changed": false
+      },
+      {
+        "name": "_COMMENT_CHAR",
+        "kind": "FIELD",
+        "signature": "_COMMENT_CHAR: dict[str, str]",
+        "summary": "Maps language names to their respective single-line comment characters.",
+        "annotations": [],
+        "start_line": 19,
+        "end_line": 22,
+        "is_changed": false
+      },
+      {
+        "name": "_compressed_header",
+        "kind": "FUNCTION",
+        "signature": "def _compressed_header(lang: str) -> str",
+        "summary": "Generates a header comment explaining the compressed file format for a given language.",
+        "annotations": [],
+        "start_line": 25,
+        "end_line": 31,
+        "is_changed": false
+      },
+      {
+        "name": "render",
+        "kind": "FUNCTION",
+        "signature": "def render(model: MetaModel, diff_result: Optional[DiffResult] = None, repo_path: str = \"\", max_tokens: int = 8000) -> str",
+        "summary": "Main entry point that renders a MetaModel as a text prompt, applying token budget degradation if necessary.",
+        "annotations": [],
+        "start_line": 33,
+        "end_line": 64,
+        "is_changed": false
+      },
+      {
+        "name": "_build",
+        "kind": "FUNCTION",
+        "signature": "def _build(model: MetaModel, diff_result: Optional[DiffResult], repo_path: str, trunc2: bool, trunc1: bool) -> str",
+        "summary": "Assembles the full prompt text from the model, diff, and file contents, applying compression based on flags.",
+        "annotations": [],
+        "start_line": 69,
+        "end_line": 144,
+        "is_changed": false
+      },
+      {
+        "name": "_render_compressed",
+        "kind": "FUNCTION",
+        "signature": "def _render_compressed(mod: Module, repo_path: str) -> str",
+        "summary": "Renders a compressed but readable view of a source file by omitting bodies of off-trace symbols.",
+        "annotations": [],
+        "start_line": 149,
+        "end_line": 199,
+        "is_changed": false
+      },
+      {
+        "name": "_body_start",
+        "kind": "FUNCTION",
+        "signature": "def _body_start(lines: list[str], sig_0: int, end_0: int) -> int",
+        "summary": "Finds the 0-based index of the first line of a symbol's body by scanning for signature closure.",
+        "annotations": [],
+        "start_line": 202,
+        "end_line": 213,
+        "is_changed": false
+      },
+      {
+        "name": "_body_indent",
+        "kind": "FUNCTION",
+        "signature": "def _body_indent(lines: list[str], sig_0: int, end_0: int) -> int",
+        "summary": "Determines the indentation level of the first non-blank line in a symbol's body.",
+        "annotations": [],
+        "start_line": 216,
+        "end_line": 222,
+        "is_changed": false
+      },
+      {
+        "name": "_top_level_symbols",
+        "kind": "FUNCTION",
+        "signature": "def _top_level_symbols(symbols: list[Symbol]) -> list[Symbol]",
+        "summary": "Filters a list of symbols to return only those not nested inside another symbol.",
+        "annotations": [],
+        "start_line": 225,
+        "end_line": 233,
+        "is_changed": false
+      },
+      {
+        "name": "_render_fallback",
+        "kind": "FUNCTION",
+        "signature": "def _render_fallback(mod: Module) -> str",
+        "summary": "Renders a module as pseudocode when the repository path is unavailable.",
+        "annotations": [],
+        "start_line": 236,
+        "end_line": 249,
+        "is_changed": false
+      },
+      {
+        "name": "_build_dep_usage_index",
+        "kind": "FUNCTION",
+        "signature": "def _build_dep_usage_index(model: MetaModel) -> dict[str, str]",
+        "summary": "Builds a map from dependency file paths to their usage annotations for rendering.",
+        "annotations": [],
+        "start_line": 252,
+        "end_line": 264,
+        "is_changed": false
+      },
+      {
+        "name": "_file_status",
+        "kind": "FUNCTION",
+        "signature": "def _file_status(path: str, diff_result: Optional[DiffResult]) -> str",
+        "summary": "Determines the status string for a file based on the diff result.",
+        "annotations": [],
+        "start_line": 269,
+        "end_line": 273,
+        "is_changed": false
+      },
+      {
+        "name": "_token_estimate",
+        "kind": "FUNCTION",
+        "signature": "def _token_estimate(text: str) -> int",
+        "summary": "Estimates token count for a text string using a simple character ratio.",
+        "annotations": [],
+        "start_line": 276,
+        "end_line": 277,
+        "is_changed": false
+      },
+      {
+        "name": "_tok",
+        "kind": "FIELD",
+        "signature": "_tok = _token_estimate",
+        "summary": "Alias for the _token_estimate function.",
+        "annotations": [],
+        "start_line": 280,
+        "end_line": 280,
+        "is_changed": false
+      }
+    ]
+  }
+]
