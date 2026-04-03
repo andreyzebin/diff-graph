@@ -1,51 +1,61 @@
 # DiffGraph
 
-Lightweight dependency metamodel for code-review agents.
-
-Starts from a `git diff`, extracts entities with an LLM, and recursively walks
-dependencies through the repository — producing a compact, structured prompt context
-that covers exactly the part of the codebase touched by a PR.
+Multi-agent code review assistant. Starts from a git diff (or a Bitbucket Server PR URL),
+builds a dependency metamodel with an LLM, finds impacted callers, and produces a
+structured prompt context — or posts inline review comments directly to the PR.
 
 ```
-raw git diff
-     │
-     ▼
-parse_diff() ──► changed files + changed lines + before-snippets from hunks
-     │
-     ▼
-explore()    ──► BFS: read file → LLM extract → resolve deps → repeat
-     │
-     ▼
-MetaModel    ──► mark_changed_symbols() → before/after code per symbol
-     │
-     ▼
-render()     ──► structured text context for a review agent prompt
+git diff / PR URL
+      │
+      ▼
+parse_diff()       changed files + changed lines
+      │
+      ▼
+explore()          BFS: read → LLM extract → resolve deps → repeat
+      │
+      ▼
+MetaModel          mark_changed_symbols() → before/after code per symbol
+      │
+      ├──► impact agent    ReAct loop: find files impacted by the change
+      │
+      ├──► planner         single LLM call: review strategy hint
+      │
+      ├──► review agent    ReAct loop: curate the most relevant context
+      │
+      ├──► render()        structured text context (token-budget aware)
+      │
+      └──► reviewer        generate + post inline PR comments
 ```
 
-No pre-indexing. No database. One session, one diff, one metamodel in memory.
+No pre-indexing. No database. One session per diff.
 
 ---
 
 ## Quickstart
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Copy the config and add your API key to `.env`:
+Copy config and add credentials:
 
 ```bash
 cp config.yaml config.local.yaml
-echo 'export OPENAI_API_KEY=sk-...' > .env
+# edit config.local.yaml — set api_url, api_key, model
 ```
 
-Run:
+Run against a local diff:
 
 ```bash
-source .env
 git diff HEAD~1 | python cli.py run --repo . --diff -
+```
+
+Run against a Bitbucket Server PR (clones automatically):
+
+```bash
+source .env   # exports BITBUCKET_SERVER_BEARER_TOKEN
+python cli.py run --pr-url https://bitbucket.example.com/projects/X/repos/Y/pull-requests/42 --review
 ```
 
 ---
@@ -53,8 +63,8 @@ git diff HEAD~1 | python cli.py run --repo . --diff -
 ## Configuration
 
 `config.yaml` holds committed defaults with `${VAR}` placeholders.
-`config.local.yaml` is deep-merged on top at runtime — gitignored, never committed.
-Secrets go in `.env` (also gitignored), sourced before running.
+`config.local.yaml` is deep-merged on top — gitignored, never committed.
+Secrets go in `.env`, sourced before running.
 
 ```yaml
 # config.local.yaml
@@ -64,32 +74,48 @@ llm:
   model: "deepseek-chat"
 
 render:
-  max_tokens: 8000   # token budget for rendered context
+  max_tokens: 8000        # token budget for rendered context
 
 explore:
-  depth: 2           # 0 = changed files only, 1 = +direct deps, 2 = +transitive
+  depth: 2                # 0 = changed files only, 1 = +direct deps, 2 = +transitive
+  max_callers: 5          # max impacted files to add to the graph
+  max_agent_steps: 32     # ReAct step budget for impact + review agents
+  max_agent_tokens: 20000 # token budget for impact + review agents
 ```
 
-Any setting can be overridden per-run via CLI flags.
+Environment variables for Bitbucket Server:
+
+```bash
+BITBUCKET_SERVER_BEARER_TOKEN=...   # required
+REQUESTS_CA_BUNDLE=/path/to/ca.pem  # optional, custom CA
+BITBUCKET_SERVER_CLIENT_CERT=...    # optional, mTLS client cert
+```
 
 ---
 
 ## CLI
 
 ```bash
-# Full pipeline — diff file
+# Local diff
 python cli.py run --repo ./my-service --diff changes.diff
-
-# Full pipeline — pipe from git
 git diff HEAD~1 | python cli.py run --repo . --diff -
 
-# Write context to file instead of stdout
+# Bitbucket Server PR — auto-clone + diff
+python cli.py run --pr-url https://bitbucket.example.com/.../pull-requests/42
+
+# With review agent (curated context instead of BFS render)
+python cli.py run --pr-url ... --review
+
+# Generate and post inline comments to the PR
+python cli.py run --pr-url ... --review --post-comments
+
+# Write context to file
 python cli.py run --repo . --diff my.diff --output context.txt
 
-# Override model and depth for this run
-python cli.py run --repo . --diff my.diff --model gpt-4o --depth 1
+# Dump the full MetaModel as JSON
+python cli.py run --repo . --diff my.diff --dump-graph graph.json
 
-# Parse-only — no LLM, verify the diff parser
+# Parse only — no LLM
 python cli.py inspect changes.diff
 git diff HEAD~1 | python cli.py inspect -
 ```
@@ -98,16 +124,20 @@ git diff HEAD~1 | python cli.py inspect -
 
 | Flag | Description |
 |------|-------------|
-| `--repo` / `-r` | Path to the repository (after-version checkout) |
+| `--repo` / `-r` | Path to repository (after-version checkout) |
 | `--diff` / `-d` | Diff file path, or `-` for stdin |
+| `--pr-url` | Bitbucket Server PR URL — clones repo and fetches diff automatically |
+| `--review` | Run review agent for curated context instead of BFS renderer |
+| `--post-comments` | Post review comments to the PR (requires `--pr-url` and `--review`) |
 | `--depth` | BFS depth (default: from config) |
-| `--model` / `-m` | LLM model name |
-| `--api-url` | OpenAI-compatible base URL |
-| `--api-key` | API key |
-| `--output` / `-o` | Write context to file |
+| `--model` / `-m` | LLM model override |
+| `--api-url` | OpenAI-compatible API base URL override |
+| `--api-key` | API key override |
+| `--output` / `-o` | Write rendered context to file |
+| `--dump-graph` | Write MetaModel as JSON to file |
 
-During `run` the CLI streams LLM tokens live: each file being extracted shows a
-rolling preview of the token stream so you can see the model thinking in real time.
+During `run`, each LLM call streams tokens live with a rolling preview. All agent steps
+are permanently logged so the full execution history is visible after completion.
 
 ---
 
@@ -127,10 +157,16 @@ context = dg.build_and_render(open("my.diff").read(), depth=2)
 meta, diff_result = dg.build(open("my.diff").read(), depth=2)
 context = dg.render(meta, diff_result)
 
+# With review agent
+meta, diff_result = dg.build(diff_text)
+context = dg.review(meta, diff_result, pr_title="...", pr_description="...")
+
 # With progress callback
 def on_event(event, **kw):
     if event == "extracted":
         print(f"{kw['path']}: {kw['symbols']} symbols")
+    elif event == "agent_step":
+        print(f"  step {kw['step']}  {kw['tool']}")
 
 meta, diff_result = dg.build(diff_text, on_event=on_event)
 ```
@@ -147,23 +183,35 @@ Java · Python · TypeScript / TSX · Go · Kotlin · Ruby · C#
 
 ```
 diffgraph/
-├── model.py        # Symbol, Module, MetaModel — in-memory graph
-├── lang.py         # language detection, declaration search patterns, file extensions
-├── tools.py        # list_files, read_file, search_text
-├── diff_parser.py  # git diff → DiffResult (hunks, changed lines, before-snippets)
-├── extractor.py    # LLM extraction with streaming + 3-attempt JSON retry
-├── explorer.py     # BFS over dependency graph
-├── renderer.py     # text render with token-budget degradation
-└── diffgraph.py    # DiffGraph public API + mark_changed_symbols
+├── model.py             # Symbol, Module, MetaModel — in-memory graph
+├── lang.py              # language detection, file extensions, declaration patterns
+├── tools.py             # list_files, read_file, search_text — filesystem primitives
+├── diff_parser.py       # git diff text → DiffResult (hunks, changed lines)
+├── cache.py             # content-addressed LLM extraction cache (~/.cache/diffgraph/)
+├── explorer.py          # explore() BFS + explore_callers() impact analysis
+├── renderer.py          # render() with token-budget degradation + partial compression
+├── diffgraph.py         # DiffGraph public API + mark_changed_symbols()
+├── agents/
+│   ├── extractor.py     # extract_module() — one streaming LLM call → Module
+│   ├── impact.py        # find_impact() — ReAct agent: find impacted callers
+│   ├── review.py        # find_review_context() — ReAct agent: curate context
+│   ├── planner.py       # plan_review() — single call: strategy hint for review agent
+│   ├── resolver.py      # resolve_dep() — agentic dependency path resolution
+│   ├── reviewer.py      # generate_review_comments() — inline comment generation
+│   ├── streaming.py     # stream_llm() — shared streaming helper for all agents
+│   └── prompts/         # all prompt text files (SECTION: blocks)
+└── providers/
+    └── bitbucket_server.py   # PR fetch (clone + diff) + comment posting
 ```
 
-**Protections against runaway cost and loops:**
+**Cost controls:**
 
 | Mechanism | Behaviour |
 |-----------|-----------|
-| Token guard | `read_file` without range → first 300 lines |
-| Max files | `list_files` > 50 results → first 10 |
-| Visited set | Prevents cycles and duplicate LLM calls |
+| Extraction cache | SHA256(content+model) → skip LLM if file unchanged |
+| `read_file` cap | Without range: first 300 lines; with range: max 100 lines |
+| BFS visited set | Prevents cycles and duplicate LLM calls |
 | LLM retry | Invalid JSON → up to 2 retries, then skip module |
-| Token budget | `render()` degrades depth-2 → depth-1 → names only |
-| Skip externals | Unresolved deps (stdlib, third-party) are silently ignored |
+| Adaptive budget | Agent nudged at 50% and 75% of token budget |
+| Token-budget render | Degrades depth-2 → depth-1 → names only if over limit |
+| Parallel tool calls | Multiple agent tool calls executed concurrently |

@@ -5,26 +5,43 @@ This document describes the codebase for AI agents and coding assistants.
 ## What this project does
 
 DiffGraph builds a lightweight in-memory metamodel of the code touched by a PR.
-It takes a raw `git diff`, extracts entities from the changed files using an LLM,
-then recursively resolves dependencies via BFS — reading only the files that are
-actually relevant to this diff. The result is a structured text context designed
-to be injected into a code-review agent's prompt.
+It takes a raw `git diff` (or fetches one from Bitbucket Server), extracts entities
+from the changed files using an LLM, recursively resolves dependencies via BFS,
+runs a ReAct impact-analysis agent to find impacted callers, then either renders
+a structured text context or runs a review curation agent to produce inline comments.
 
-No pre-indexing, no database, no persistent state. One `DiffGraph.build()` call
-per review session.
+No pre-indexing, no database, no persistent state. One `DiffGraph.build()` call per review.
 
 ## Repository layout
 
 ```
 diffgraph/
-├── model.py        # Symbol, Module, MetaModel dataclasses — the in-memory graph
-├── lang.py         # language detection + search patterns per language
-├── tools.py        # list_files, read_file, search_text — filesystem primitives
-├── diff_parser.py  # parse_diff() — git diff text → DiffResult
-├── extractor.py    # extract_module() — one LLM call → Module
-├── explorer.py     # explore() — BFS, resolve_dependency()
-├── renderer.py     # render() — MetaModel → text prompt context
-└── diffgraph.py    # DiffGraph class + mark_changed_symbols()
+├── model.py             # Symbol, Module, MetaModel dataclasses
+├── lang.py              # language detection + declaration patterns per language
+├── tools.py             # list_files, read_file, search_text — filesystem primitives
+├── diff_parser.py       # parse_diff() — git diff text → DiffResult
+├── cache.py             # content-addressed extraction cache (~/.cache/diffgraph/)
+├── explorer.py          # explore() BFS + explore_callers() impact agent orchestration
+├── renderer.py          # render() — MetaModel → text prompt context
+├── diffgraph.py         # DiffGraph public API + mark_changed_symbols()
+├── agents/
+│   ├── extractor.py     # extract_module() — LLM extraction with streaming + retry
+│   ├── impact.py        # find_impact() — ReAct agent for caller/impact analysis
+│   ├── review.py        # find_review_context() — ReAct agent for context curation
+│   ├── planner.py       # plan_review() — single LLM call: strategy hint
+│   ├── resolver.py      # resolve_dep() — agentic dependency path resolution
+│   ├── reviewer.py      # generate_review_comments() — inline PR comment generation
+│   ├── streaming.py     # stream_llm() — shared streaming helper, assembles StreamedResponse
+│   └── prompts/         # all prompt text as .txt files with SECTION: blocks
+│       ├── extract_system.txt
+│       ├── impact_agent_system.txt
+│       ├── review_agent_system.txt
+│       ├── planner_system.txt
+│       ├── reviewer_system.txt
+│       ├── resolver_system.txt
+│       └── render_context.txt
+├── providers/
+│   └── bitbucket_server.py  # fetch_pr() + post_review_comments()
 tests/
 ├── test_diff_parser.py
 ├── test_mark_changed.py
@@ -39,145 +56,177 @@ config.local.yaml   # Local overrides — gitignored
 ```
 parse_diff(diff_text)
   └─► DiffResult
-        ├─ changed_files       → start nodes for BFS
-        ├─ changed_lines       → which after-lines were touched
-        └─ files[*].hunks      → before_lines per hunk (for before_code)
+        ├─ changed_files         → BFS start nodes
+        ├─ files[path].status    → "added"/"modified"/"deleted"/"renamed"
+        └─ files[path].hunks     → before_lines / after_changed_lines
 
 explore(start_files, repo_path, llm, max_depth)
-  └─► MetaModel
+  └─► MetaModel (depth 0..max_depth)
         └─ modules: {path → Module}
-              └─ Module.symbols: [Symbol(start_line, end_line, ...)]
+              └─ symbols: [Symbol(start_line, end_line, kind, signature, summary)]
 
 mark_changed_symbols(model, diff_result, repo_path)
-  └─► for each changed file:
-        match Symbol.start_line..end_line against after_changed_lines
-        symbol.is_changed = True
-        symbol.full_code  = read_file(after-version)
-        symbol.before_code = collected from hunk.before_lines
+  └─► symbol.is_changed = True for symbols overlapping after_changed_lines
+      symbol.full_code  = read_file(after-version)
 
-render(model, diff_result)
-  └─► text context string
+explore_callers(model, repo_path, llm, …, diff_result)
+  └─► find_impact(modules, file_statuses, …)  ← single ReAct run for all changed files
+        └─► ImpactHit list → extract caller modules → add to MetaModel at depth=-1
+
+plan_review(changed_block, llm) → strategy string   ← single cheap LLM call
+
+find_review_context(meta, repo_path, llm, strategy)
+  └─► ReAct loop → list[ReviewSelection]
+
+apply_selections(meta, selections) → marks symbol.is_expanded = True
+
+render(model, diff_result, repo_path)
+  └─► text context string (token-budget aware, partial compression)
 ```
 
 ## Key abstractions
 
 ### `DiffResult` (`diff_parser.py`)
 
-Output of `parse_diff()`. Three things matter downstream:
-
-- `changed_files` — list of after-paths for BFS start nodes (excludes deleted files)
-- `changed_lines` — `{path: [line_numbers]}` of `+` lines in the after-version
+- `changed_files` — after-paths for BFS (excludes deleted)
+- `files[path].status` — `"added"` / `"modified"` / `"deleted"` / `"renamed"`
+- `files[path].after_changed_lines` — set of `+` line numbers
 - `files[path].hunks` — list of `HunkSnippet` with `before_lines` / `after_lines`
-
-`HunkSnippet.after_start` is the line number of the first hunk line (including context)
-in the after-version. `after_lines` contains only the `+` lines (no context).
 
 ### `MetaModel` (`model.py`)
 
-Single flat dict: `modules: {path → Module}`. No before/after split — the graph
-is always the after-version. Before-code lives only in `Symbol.before_code` for
-symbols that were changed.
+Flat dict `modules: {path → Module}`. Always the after-version.
+`compute_depths()` returns `{path → depth}`: 0 = changed, 1..N = dependencies, -1 = callers.
 
-`Module.depth` records at which BFS depth the module was found (0 = directly changed,
-1 = direct dependency, 2 = transitive).
+### `stream_llm` (`agents/streaming.py`)
 
-### `extract_module` (`extractor.py`)
+Shared helper for all tool-calling agents. Wraps `llm.chat.completions.create(stream=True)`
+and assembles a `StreamedResponse` compatible with the non-streaming OpenAI interface.
+Fires `on_token(tool_name, args_so_far, chunk_count)` per chunk for live display.
+Usage is extracted from the final chunk via `stream_options={"include_usage": True}`.
 
-One LLM call per file. Returns a `Module` with `symbols` (each has `start_line`,
-`end_line`, `kind`, `signature`, `summary`) and `dependencies` (names only — not paths).
+### `extract_module` (`agents/extractor.py`)
 
-Uses `stream=True`. Fires `on_event("token", text=accumulated)` for each chunk so
-callers can show a live preview. Retries up to 2 times on invalid JSON before
-returning `None` (graceful degradation — the BFS continues without this module).
+One LLM call per file. Checks the content-addressed cache (`cache.py`) first — key is
+SHA256(content + model). On miss: streams the LLM response, fires `on_event("token", …)`,
+retries up to 2 times on invalid JSON. Saves to cache on success.
 
-The prompt (`EXTRACT_PROMPT`) uses `str.format()` — all literal `{` / `}` in the
-template must be doubled as `{{` / `}}`.
+### `find_impact` (`agents/impact.py`)
 
-### `resolve_dependency` (`explorer.py`)
+ReAct loop for all changed modules at once. Tools: `list_files`, `search`, `read_file`, `done`.
 
-Two-step lookup:
-1. `list_files(f"**/{name}{ext}")` for each extension in the language's `FILE_EXTENSIONS`
-2. `search_text(pattern)` for each pattern in `DECLARATION_PATTERNS`
+Key behaviours:
+- File statuses (`[ADDED]`/`[MODIFIED]`) are shown in the system prompt so the agent
+  knows not to search for imports of brand-new classes.
+- `read_file` on any excluded (changed) file returns a message instead of re-reading —
+  the content is already in the system prompt.
+- Parallel tool calls: all tool_calls from one LLM response run concurrently via
+  `ThreadPoolExecutor`.
+- Adaptive budget: user-message nudges at 50% and 75% of `max_tokens`.
 
-Returns `None` for anything that looks like a third-party library or stdlib name.
-`_best_match()` picks the shortest path when multiple files match (monorepo heuristic).
+### `find_review_context` (`agents/review.py`)
 
-### `mark_changed_symbols` (`diffgraph.py`)
+ReAct loop for context curation. Tools: `get_symbols`, `search`, `read_file`, `select`, `done`.
 
-Runs after `explore()`. Matches `Symbol.start_line..end_line` against
-`diff_result.changed_lines[path]` (the set of `+` line numbers).
-
-`_extract_before_code()` collects `hunk.before_lines` from all hunks whose
-after-range intersects the symbol's line range. This gives a "what was removed/changed"
-view without needing a git checkout of the before-version.
-
-**Known limitation:** pure deletions (hunks with no `+` lines) produce no entries in
-`after_changed_lines`, so a symbol that only lost lines will not be marked as changed.
+- `select(file, symbol_name, detail="full"|"summary")` is processed immediately
+  (marks `symbol.is_expanded = True` on the MetaModel) and logged permanently.
+- Parallel tool calls for `get_symbols` / `search` / `read_file`.
+- Adaptive budget nudges at 50% / 75% of `max_agent_tokens`.
+- Strategy hint from `plan_review()` is injected into the first user message.
 
 ### `render` (`renderer.py`)
 
-Detail by depth:
+Prompt text is loaded from `agents/prompts/render_context.txt` via `SECTION:name` blocks.
+Partial compression: top-level symbols are compressed (body → `[omitted]`) unless
+`is_expanded` or `is_changed`; nested expanded symbols are preserved within a
+compressed outer class.
 
-| Scope | Content |
-|-------|---------|
-| Changed symbol | `before_code` + `full_code` (after) + signature + summary |
-| depth 0, unchanged | signature + summary |
-| depth 1 | all symbols: signature + summary |
-| depth 2 | module summary only |
+Token-budget degradation: full → depth-2 names only → depth-1 summaries only.
+Changed files and callers are never cut.
 
-Token budget (`len(text) // 4`): if over `max_tokens`, degrades depth-2 to names,
-then depth-1 to summary-only. Changed modules are never truncated.
+### `resolve_dep` (`agents/resolver.py`)
 
-### `on_event` callback
+Two-pass: fast glob lookup first, then agentic LLM search if ambiguous.
+`is_likely_external()` pre-filters stdlib/third-party names before any LLM call.
 
-`explore()`, `extract_module()`, and `DiffGraph.build()` all accept an optional
-`on_event(event: str, **kwargs)` callback. Events:
+### Bitbucket Server (`providers/bitbucket_server.py`)
 
-| Event | Key kwargs |
-|-------|-----------|
-| `reading` | `path`, `depth` |
-| `extracting` | `path`, `model`, `attempt` |
-| `token` | `text` (accumulated stream so far) |
-| `extracted` | `path`, `symbols` (count), `deps` (list of names) |
-| `retry` | `path`, `attempt`, `reason` |
-| `failed` | `path` |
-| `read_failed` | `path` |
-| `resolving` | `name` |
-| `resolved` | `name`, `path` |
-| `not_resolved` | `name` |
+`fetch_pr(pr_url)`:
+1. REST API call for PR metadata (title, description, fromRef, toRef SHAs)
+2. `git clone --filter=blob:none --single-branch` of the source branch
+3. Auth baked into repo config (`git config http.extraHeader`) for lazy blob fetches
+4. `git fetch --filter=blob:none origin <toRef_sha>` (full history for merge-base)
+5. `git diff toRef...fromRef` (three-dot = merge-base diff matching PR UI)
 
-## Configuration
+`post_review_comments(pr_url, comments)`: REST POST with anchor
+`{diffType: "EFFECTIVE", lineType: "ADDED", line: N}`.
 
-`config.yaml` holds committed defaults. `config.local.yaml` (gitignored) is
-deep-merged on top. All string values support `${ENV_VAR}` expansion via
-`_expand_config()` in `cli.py`.
+## Event system
 
-```yaml
-llm:
-  api_url: ""                    # empty = OpenAI; any OpenAI-compatible URL otherwise
-  api_key: "${OPENAI_API_KEY}"
-  model: "gpt-4o-mini"
+All agents fire `on_event(event: str, **kwargs)`. Unknown events are silently ignored.
 
-render:
-  max_tokens: 8000
+| Event | Emitter | Key kwargs |
+|-------|---------|-----------|
+| `reading` | explorer | `path`, `depth` |
+| `extracting` | extractor | `path`, `attempt` |
+| `token` | extractor | `text` (accumulated) |
+| `cache_hit` | extractor | `path`, `symbols` |
+| `extracted` | extractor | `path`, `symbols`, `deps` |
+| `retry` | extractor | `path`, `attempt`, `reason` |
+| `failed` | extractor | `path` |
+| `read_failed` | explorer | `path` |
+| `skipped` | explorer | `path` |
+| `resolving_agent` | resolver | `name`, `fqn` |
+| `resolved` | resolver | `name`, `path`, `tok_in`, `tok_out` |
+| `not_resolved` | resolver | `name` |
+| `searching_callers` | explorer | `name`, `path` |
+| `agent_stream` | impact | `step`, `path`, `tool_name`, `args_preview`, `tok` |
+| `agent_step` | impact | `step`, `path`, `tool`, `args`, `tok_in`, `tok_out` |
+| `agent_result` | impact | `step`, `tool`, `result_len` |
+| `agent_done` | impact | `path`, `hits`, `tok_in`, `tok_out`, `tok_cached` |
+| `agent_forced_done` | impact | `path`, `reason`, `tok_in`, `tok_out` |
+| `caller_found` | explorer | `path`, `reason`, `confidence` |
+| `review_start` | review | `changed` |
+| `review_stream` | review | `step`, `tool_name`, `args_preview`, `tok` |
+| `review_step` | review | `step`, `tool`, `args`, `tok_in`, `tok_out` |
+| `review_result` | review | `step`, `tool`, `result_len` |
+| `review_selected` | review | `name`, `file`, `detail`, `reason` |
+| `review_done` | review | `count`, `tok_in`, `tok_out` |
+| `review_forced_done` | review | `reason`, `tok_in`, `tok_out` |
+| `reviewer_start` | reviewer | — |
+| `reviewer_done` | reviewer | `tok_in`, `tok_out` |
+| `reviewer_failed` | reviewer | `reason` |
 
-explore:
-  depth: 2
-```
+## Cache
 
-Secrets go in `.env` (gitignored), sourced before running.
+`~/.cache/diffgraph/extractions/<model_slug>/<sha256>.json`
 
-## CLI commands
+Key: SHA256(file content + model name). Excludes runtime fields (`is_changed`,
+`full_code`, `is_expanded`). Written atomically via `.tmp` + rename.
+Cache hit emits `cache_hit` event and skips the LLM call entirely.
 
-```bash
-# Full pipeline — streams token output during extraction
-python cli.py run --repo ./my-service --diff changes.diff
-git diff HEAD~1 | python cli.py run --repo . --diff -
+## Common tasks
 
-# Parser only — no LLM, useful for debugging diff parsing
-python cli.py inspect changes.diff
-git diff HEAD~1 | python cli.py inspect -
-```
+**Add a language:**
+1. `lang.py`: add to `LANG_MAP`, `DECLARATION_PATTERNS`, `FILE_EXTENSIONS`
+2. `renderer.py`: add to `_COMMENT_CHAR` and `_OMIT`
+
+**Change what the LLM extracts:**
+Edit `agents/prompts/extract_system.txt`. All prompts use `str.format()` —
+escape literal braces as `{{` / `}}`.
+
+**Change agent behaviour:**
+Edit the corresponding `agents/prompts/*.txt` file. Prompts are loaded once at
+module import time via `agents/prompts/__init__.py:load()`.
+
+**Add a new event:**
+Emit `on_event("my_event", **kwargs)` anywhere. Handle it in `cli.py:_make_event_handler`.
+No schema — callers ignore unknown events.
+
+**Adjust rendering:**
+`renderer.py:_build()` — section structure, what appears per depth.
+`renderer.py:_render_compressed()` — partial compression algorithm.
+`agents/prompts/render_context.txt` — all section headers and structural text.
 
 ## Tests
 
@@ -186,24 +235,4 @@ source .venv/bin/activate
 pytest tests/
 ```
 
-Tests cover `diff_parser`, `mark_changed_symbols`, and `renderer` without an LLM.
-`extractor` and `explorer` are tested via simple fake LLM stubs in the test files.
-
-## Common tasks
-
-**Add a language:**
-1. Add extension → language mapping in `lang.py:LANG_MAP`
-2. Add declaration patterns in `DECLARATION_PATTERNS`
-3. Add file extensions in `FILE_EXTENSIONS`
-
-**Change what the LLM extracts:**
-Edit `EXTRACT_PROMPT` in `extractor.py`. Remember to escape all `{` / `}` not used
-for `.format()` substitution as `{{` / `}}`.
-
-**Add a new event type:**
-Emit `on_event("my_event", **kwargs)` anywhere in `explorer.py` or `extractor.py`.
-Handle it in `cli.py:_make_event_handler`. No schema — callers ignore unknown events.
-
-**Adjust rendering detail:**
-`renderer.py:render()` — the three-tier degradation logic is self-contained.
-`renderer.py:_render_changed_module()` — controls what appears for each changed symbol.
+Cover `diff_parser`, `mark_changed_symbols`, and `renderer` without an LLM.
