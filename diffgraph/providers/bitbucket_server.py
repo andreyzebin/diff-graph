@@ -59,22 +59,22 @@ def parse_pr_url(pr_url: str) -> tuple[str, str, str, int]:
 
 # ── API ───────────────────────────────────────────────────────────────────────
 
-def _api_get(url: str, token: str, ca_bundle: str | None) -> dict:
+def _api_get(url: str, token: str, ca_bundle: str | None, client_cert: str | None) -> dict:
+    import ssl
     req = Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
-    ctx = None
-    if ca_bundle:
-        import ssl
-        ctx = ssl.create_default_context(cafile=ca_bundle)
+    ctx = ssl.create_default_context(cafile=ca_bundle)
+    if client_cert:
+        ctx.load_cert_chain(client_cert)
     with urlopen(req, context=ctx, timeout=30) as resp:
         return json.loads(resp.read())
 
 
 def _get_pr_meta(
     server_url: str, project: str, repo: str, pr_id: int,
-    token: str, ca_bundle: str | None,
+    token: str, ca_bundle: str | None, client_cert: str | None,
 ) -> dict:
     url = f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}/pull-requests/{pr_id}"
-    return _api_get(url, token, ca_bundle)
+    return _api_get(url, token, ca_bundle, client_cert)
 
 
 def _clone_url(server_url: str, project: str, repo: str) -> str:
@@ -139,7 +139,7 @@ def fetch_pr(
     emit(f"Fetching PR metadata: {server_url} / {project} / {repo} #{pr_id}")
 
     # 2. Get PR metadata from API
-    pr = _get_pr_meta(server_url, project, repo, pr_id, token, ca_bundle)
+    pr = _get_pr_meta(server_url, project, repo, pr_id, token, ca_bundle, client_cert)
     from_branch  = pr["fromRef"]["displayId"]
     from_sha     = pr["fromRef"]["latestCommit"]
     to_sha       = pr["toRef"]["latestCommit"]
