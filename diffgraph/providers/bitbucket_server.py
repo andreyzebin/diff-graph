@@ -227,10 +227,17 @@ def post_review_comments(
     ca_bundle: str | None = None,
     client_cert: str | None = None,
     on_status: Callable[[str], None] | None = None,
+    changed_lines: dict | None = None,
 ) -> int:
     """
     Post review comments to a Bitbucket Server PR as inline anchored comments.
     Returns the number of successfully posted comments.
+
+    changed_lines: optional dict mapping file path → set of changed line numbers
+    (1-indexed, from diff_result.files[path].after_changed_lines).
+    When provided, each comment's line is snapped to the nearest changed line so
+    the Bitbucket anchor is valid. Comments whose file has no changed lines are
+    posted without an anchor (general PR comment).
     """
     token      = token      or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
     ca_bundle  = ca_bundle  or os.environ.get("REQUESTS_CA_BUNDLE")
@@ -249,26 +256,56 @@ def post_review_comments(
     posted = 0
     for c in comments:
         body = _build_comment_body(c)
-        payload = {
-            "text": body,
-            "severity": c.severity,
-            "anchor": {
-                "diffType": "EFFECTIVE",
-                "path": c.file,
-                "lineType": "ADDED",
-                "line": c.line,
-                "fileType": "TO",
-            },
-        }
+        anchor = _make_anchor(c.file, c.line, changed_lines)
+        payload: dict = {"text": body, "severity": c.severity}
+        if anchor:
+            payload["anchor"] = anchor
         try:
             _api_post(endpoint, token, ca_bundle, client_cert, payload)
-            emit(f"posted [{c.severity}] {c.file}:{c.line}")
+            loc = f"{c.file}:{anchor['line']}" if anchor else c.file
+            emit(f"posted [{c.severity}] {loc}")
             posted += 1
         except Exception as exc:
             log.warning("failed to post comment on %s:%s — %s", c.file, c.line, exc)
             emit(f"FAILED {c.file}:{c.line} — {exc}")
 
     return posted
+
+
+def _make_anchor(file: str, line: int, changed_lines: dict | None) -> dict | None:
+    """
+    Build a Bitbucket anchor dict for an inline comment.
+
+    If changed_lines is None, use the raw line (legacy behaviour).
+    Otherwise snap to the nearest changed line in the file.
+    Returns None when the file has no changed lines — caller should post
+    without an anchor.
+    """
+    if changed_lines is None:
+        return {
+            "diffType": "EFFECTIVE",
+            "path": file,
+            "lineType": "ADDED",
+            "line": line,
+            "fileType": "TO",
+        }
+
+    file_changed = changed_lines.get(file)
+    if not file_changed:
+        return None  # no diff lines for this file — post as general comment
+
+    if line in file_changed:
+        snapped = line
+    else:
+        snapped = min(file_changed, key=lambda l: abs(l - line))
+
+    return {
+        "diffType": "EFFECTIVE",
+        "path": file,
+        "lineType": "ADDED",
+        "line": snapped,
+        "fileType": "TO",
+    }
 
 
 def get_pr_comments(
@@ -340,11 +377,16 @@ def reply_to_pr_comment(
         raise ValueError("BITBUCKET_SERVER_BEARER_TOKEN is required")
 
     server_url, project, repo, pr_id = parse_pr_url(pr_url)
+    # Replies are posted to the base comments endpoint with a parent reference,
+    # not to /comments/{id} (that endpoint is for GET/PUT/DELETE on the comment itself).
     endpoint = (
         f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
-        f"/pull-requests/{pr_id}/comments/{comment_id}"
+        f"/pull-requests/{pr_id}/comments"
     )
-    _api_post(endpoint, token, ca_bundle, client_cert, {"text": text})
+    _api_post(endpoint, token, ca_bundle, client_cert, {
+        "text": text,
+        "parent": {"id": comment_id},
+    })
 
 
 def resolve_pr_comment(

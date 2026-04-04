@@ -193,10 +193,15 @@ def run(
     if post_comments and pr_url:
         from diffgraph.providers.bitbucket_server import post_review_comments
         comments_to_post = [_finding_to_comment(f) for f in findings]
+        changed_lines = {
+            path: set(fd.after_changed_lines)
+            for path, fd in diff_result.files.items()
+        }
         console.print(f"\n[bold]Posting[/bold]  {len(comments_to_post)} findings to PR...\n")
         posted = post_review_comments(
             pr_url, comments_to_post,
             on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+            changed_lines=changed_lines,
         )
         console.print(f"\n[green]Posted {posted}/{len(comments_to_post)} comments[/green]")
 
