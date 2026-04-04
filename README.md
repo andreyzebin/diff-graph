@@ -31,11 +31,15 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Copy config and add credentials:
+Set up credentials:
 
 ```bash
+cp .env.example .env
+# edit .env — fill in API keys
+source .env
+
 cp config.yaml config.local.yaml
-# edit config.local.yaml — set api_url, api_key, model
+# edit config.local.yaml — set api_url and model if not using OpenAI
 ```
 
 Run against a local diff:
@@ -47,11 +51,11 @@ git diff HEAD~1 | python cli.py run --repo . --diff -
 Run against a Bitbucket Server PR:
 
 ```bash
-source .env   # exports BITBUCKET_SERVER_BEARER_TOKEN
+source .env
 python cli.py run --pr-url https://bitbucket.example.com/projects/X/repos/Y/pull-requests/42
 ```
 
-Post findings as inline comments:
+Post findings as inline PR comments:
 
 ```bash
 python cli.py run --pr-url ... --post-comments
@@ -61,12 +65,27 @@ python cli.py run --pr-url ... --post-comments
 
 ## Configuration
 
-`config.yaml` holds committed defaults with `${VAR}` placeholders.
-`config.local.yaml` is deep-merged on top — gitignored, never committed.
-Secrets go in `.env`, sourced before running.
+### `.env`
+
+Secrets and environment-specific values. Copy from `.env.example`, fill in, and `source .env` before running.
+
+```bash
+# LLM
+OPENAI_API_KEY=sk-...
+# or for other providers:
+DEEPSEEK_API_KEY=sk-...
+
+# Bitbucket Server
+BITBUCKET_SERVER_BEARER_TOKEN=...
+REQUESTS_CA_BUNDLE=/path/to/ca.pem        # optional, custom CA
+BITBUCKET_SERVER_CLIENT_CERT=/path/to/client.pem  # optional, mTLS
+```
+
+### `config.local.yaml`
+
+Runtime settings. Deep-merged on top of `config.yaml`. Gitignored, never committed.
 
 ```yaml
-# config.local.yaml
 llm:
   api_url: "https://api.deepseek.com/v1"   # empty = OpenAI directly
   api_key: "${DEEPSEEK_API_KEY}"
@@ -75,14 +94,6 @@ llm:
 review:
   max_steps: 40        # max ReAct tool calls per review
   max_tokens: 40000    # token budget for the solve phase
-```
-
-Environment variables for Bitbucket Server:
-
-```bash
-BITBUCKET_SERVER_BEARER_TOKEN=...   # required
-REQUESTS_CA_BUNDLE=/path/to/ca.pem  # optional, custom CA
-BITBUCKET_SERVER_CLIENT_CERT=...    # optional, mTLS client cert
 ```
 
 ---
@@ -224,7 +235,7 @@ These actions are queued in `ReviewContext` and applied by the caller after `don
 
 Java · Python · TypeScript / TSX · Go · Kotlin · Ruby · C#
 
-(tree-sitter outlines available for all; fallback to line-count-only for unknown extensions)
+(tree-sitter structural outlines for all; plain line-count fallback for unknown extensions)
 
 ---
 
@@ -232,21 +243,17 @@ Java · Python · TypeScript / TSX · Go · Kotlin · Ruby · C#
 
 ```
 diffgraph/
-├── diff_parser.py           git diff text → DiffResult (hunks, changed lines)
-├── lang.py                  language detection, file extensions
-├── tools.py                 list_files, read_file, search_text — filesystem primitives
-├── outline.py               tree-sitter structural outline (classes, methods, line ranges)
-├── diffgraph.py             DiffGraph public API
-├── agents/
-│   ├── orchestrator.py      run_review(): plan phase + ReAct solve phase
-│   ├── streaming.py         stream_llm() — shared streaming helper
-│   └── prompts/
-│       ├── strategist_system.txt   plan phase prompt
-│       └── orchestrator_system.txt  ReAct + SGR prompt
-└── providers/
-    └── bitbucket_server.py  fetch_pr(), post_review_comments(),
-                             get_pr_comments(), reply_to_pr_comment(),
-                             resolve_pr_comment()
+├── api.py               DiffGraph public API
+├── diff_parser.py       git diff text → DiffResult (hunks, changed lines)
+├── lang.py              language detection
+├── tools.py             list_files, read_file, search_text
+├── outline.py           tree-sitter structural outline
+├── streaming.py         stream_llm() helper
+├── orchestrator.py      run_review(): plan phase + ReAct solve phase
+├── bitbucket.py         fetch_pr, post/get/reply/resolve PR comments
+└── prompts/
+    ├── strategist_system.txt    plan phase prompt
+    └── orchestrator_system.txt  ReAct + SGR prompt
 ```
 
 ## Tests
