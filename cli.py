@@ -120,7 +120,7 @@ def run(
     pr_title = pr_description = ""
 
     if pr_url:
-        from diffgraph.providers.bitbucket_server import fetch_pr
+        from diffgraph.bitbucket import fetch_pr
         console.print(f"[bold]PR[/bold]  [cyan]{pr_url}[/cyan]")
         try:
             diff_text, repo_path, cleanup_fn, pr_meta = fetch_pr(
@@ -157,7 +157,7 @@ def run(
     existing_comments: list = []
     if pr_url:
         try:
-            from diffgraph.providers.bitbucket_server import get_pr_comments
+            from diffgraph.bitbucket import get_pr_comments
             existing_comments = get_pr_comments(pr_url)
             if existing_comments:
                 console.print(f"  [dim]{len(existing_comments)} existing comment(s) loaded[/dim]")
@@ -191,7 +191,7 @@ def run(
     _print_findings(findings)
 
     if post_comments and pr_url:
-        from diffgraph.providers.bitbucket_server import post_review_comments
+        from diffgraph.bitbucket import post_review_comments
         comments_to_post = [_finding_to_comment(f) for f in findings]
         changed_lines = {
             path: set(fd.after_changed_lines)
@@ -207,7 +207,7 @@ def run(
 
         # Apply queued replies/resolves
         if review_ctx.comment_replies or review_ctx.comment_resolves:
-            from diffgraph.providers.bitbucket_server import reply_to_pr_comment, resolve_pr_comment
+            from diffgraph.bitbucket import reply_to_pr_comment, resolve_pr_comment
             for reply in review_ctx.comment_replies:
                 try:
                     reply_to_pr_comment(pr_url, reply["comment_id"], reply["text"])

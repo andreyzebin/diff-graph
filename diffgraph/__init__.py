@@ -1,6 +1,6 @@
-from .diffgraph import DiffGraph
+from .api import DiffGraph
 from .diff_parser import parse_diff, DiffResult, FileDiff, HunkSnippet
-from .agents.orchestrator import ReviewFinding
+from .orchestrator import ReviewFinding
 
 __all__ = [
     "DiffGraph",

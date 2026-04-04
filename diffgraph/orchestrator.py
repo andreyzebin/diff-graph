@@ -16,9 +16,9 @@ from typing import Callable, Optional
 
 from .streaming import stream_llm
 from .prompts import load as _load_prompt
-from ..diff_parser import DiffResult, parse_diff
-from ..outline import get_outline
-from ..tools import list_files, read_file, search_text
+from .diff_parser import DiffResult, parse_diff
+from .outline import get_outline
+from .tools import list_files, read_file, search_text
 
 log = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .diff_parser import parse_diff
-from .agents.orchestrator import OnEvent, ReviewFinding, ReviewContext, run_review
+from .orchestrator import OnEvent, ReviewFinding, ReviewContext, run_review
 
 
 class DiffGraph:
