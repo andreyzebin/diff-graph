@@ -271,11 +271,13 @@ def post_review_comments(
         f"/pull-requests/{pr_id}/comments"
     )
 
+    _SEV = {"BLOCKER": "BLOCKER", "MAJOR": "BLOCKER", "MINOR": "NORMAL", "COMMENT": "NORMAL"}
+
     posted = 0
     for c in comments:
         body = _build_comment_body(c)
         anchor = _make_anchor(c.file, c.line, changed_lines)
-        payload: dict = {"text": body, "severity": c.severity}
+        payload: dict = {"text": body, "severity": _SEV.get(c.severity, "NORMAL")}
         if anchor:
             payload["anchor"] = anchor
         try:
