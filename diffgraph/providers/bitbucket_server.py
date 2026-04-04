@@ -271,6 +271,132 @@ def post_review_comments(
     return posted
 
 
+def get_pr_comments(
+    pr_url: str,
+    token: str | None = None,
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+) -> list[dict]:
+    """
+    Fetch all activity-level comments for a PR.
+
+    Returns a list of dicts:
+      {id, file, line, text, author, resolved, anchored}
+    Only inline comments (with a file anchor) are returned.
+    General comments (no anchor) are included with file='' and line=0.
+    """
+    token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
+    ca_bundle   = ca_bundle   or os.environ.get("REQUESTS_CA_BUNDLE")
+    client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
+
+    if not token:
+        raise ValueError("BITBUCKET_SERVER_BEARER_TOKEN is required")
+
+    server_url, project, repo, pr_id = parse_pr_url(pr_url)
+    comments: list[dict] = []
+    start = 0
+
+    while True:
+        url = (
+            f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
+            f"/pull-requests/{pr_id}/activities?start={start}&limit=100"
+        )
+        data = _api_get(url, token, ca_bundle, client_cert)
+        for activity in data.get("values", []):
+            if activity.get("action") != "COMMENTED":
+                continue
+            comment_obj = activity.get("comment", {})
+            anchor = activity.get("commentAnchor") or {}
+            comments.append({
+                "id":       comment_obj.get("id"),
+                "file":     anchor.get("path", ""),
+                "line":     anchor.get("line", 0),
+                "text":     comment_obj.get("text", ""),
+                "author":   comment_obj.get("author", {}).get("displayName", ""),
+                "resolved": comment_obj.get("state", "") == "RESOLVED",
+                "anchored": bool(anchor.get("path")),
+            })
+        if data.get("isLastPage", True):
+            break
+        start = data.get("nextPageStart", start + 100)
+
+    return comments
+
+
+def reply_to_pr_comment(
+    pr_url: str,
+    comment_id: int,
+    text: str,
+    token: str | None = None,
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+) -> None:
+    """Post a reply to an existing PR comment thread."""
+    token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
+    ca_bundle   = ca_bundle   or os.environ.get("REQUESTS_CA_BUNDLE")
+    client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
+
+    if not token:
+        raise ValueError("BITBUCKET_SERVER_BEARER_TOKEN is required")
+
+    server_url, project, repo, pr_id = parse_pr_url(pr_url)
+    endpoint = (
+        f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
+        f"/pull-requests/{pr_id}/comments/{comment_id}"
+    )
+    _api_post(endpoint, token, ca_bundle, client_cert, {"text": text})
+
+
+def resolve_pr_comment(
+    pr_url: str,
+    comment_id: int,
+    token: str | None = None,
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+) -> None:
+    """Mark a PR comment thread as resolved."""
+    token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
+    ca_bundle   = ca_bundle   or os.environ.get("REQUESTS_CA_BUNDLE")
+    client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
+
+    if not token:
+        raise ValueError("BITBUCKET_SERVER_BEARER_TOKEN is required")
+
+    server_url, project, repo, pr_id = parse_pr_url(pr_url)
+    # Bitbucket Server: PUT the comment with state=RESOLVED
+    endpoint = (
+        f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
+        f"/pull-requests/{pr_id}/comments/{comment_id}"
+    )
+    # We need the current version first to do an optimistic-locking PUT
+    comment = _api_get(endpoint, token, ca_bundle, client_cert)
+    version = comment.get("version", 0)
+    _api_put(endpoint, token, ca_bundle, client_cert, {
+        "version": version,
+        "text": comment.get("text", ""),
+        "state": "RESOLVED",
+    })
+
+
+def _api_put(url: str, token: str, ca_bundle: str | None, client_cert: str | None, payload: dict) -> dict:
+    import ssl
+    data = json.dumps(payload).encode()
+    req = Request(
+        url, data=data,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="PUT",
+    )
+    ctx = ssl.create_default_context(cafile=ca_bundle)
+    if client_cert:
+        ctx.load_cert_chain(client_cert)
+    with urlopen(req, context=ctx, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
 def _build_comment_body(c) -> str:
     text = c.comment
     if c.suggestion:

@@ -1,2 +1,0 @@
-
-IMPORTANT: Your previous response was not valid JSON. Return ONLY a raw JSON object, no markdown fences, no prose.

@@ -1,8 +1,6 @@
 # DiffGraph
 
-Multi-agent code review assistant. Starts from a git diff (or a Bitbucket Server PR URL),
-builds a dependency metamodel with an LLM, finds impacted callers, and produces a
-structured prompt context — or posts inline review comments directly to the PR.
+Agentic PR code reviewer. Takes a git diff (or a Bitbucket Server PR URL) and runs a two-phase single-agent review: a strategist plans what to look for, then a ReAct agent explores the repo and produces structured inline findings.
 
 ```
 git diff / PR URL
@@ -11,20 +9,15 @@ git diff / PR URL
 parse_diff()       changed files + changed lines
       │
       ▼
-explore()          BFS: read → LLM extract → resolve deps → repeat
+plan phase         one LLM call: detect system type, build typed task list
       │
       ▼
-MetaModel          mark_changed_symbols() → before/after code per symbol
+solve phase        ReAct loop: explore repo with tools, reflect, report
       │
-      ├──► impact agent    ReAct loop: find files impacted by the change
+      ▼
+ReviewFinding[]    BLOCKER / MAJOR / MINOR / COMMENT with evidence
       │
-      ├──► planner         single LLM call: review strategy hint
-      │
-      ├──► review agent    ReAct loop: curate the most relevant context
-      │
-      ├──► render()        structured text context (token-budget aware)
-      │
-      └──► reviewer        generate + post inline PR comments
+      └──► post inline comments to PR
 ```
 
 No pre-indexing. No database. One session per diff.
@@ -51,11 +44,17 @@ Run against a local diff:
 git diff HEAD~1 | python cli.py run --repo . --diff -
 ```
 
-Run against a Bitbucket Server PR (clones automatically):
+Run against a Bitbucket Server PR:
 
 ```bash
 source .env   # exports BITBUCKET_SERVER_BEARER_TOKEN
-python cli.py run --pr-url https://bitbucket.example.com/projects/X/repos/Y/pull-requests/42 --review
+python cli.py run --pr-url https://bitbucket.example.com/projects/X/repos/Y/pull-requests/42
+```
+
+Post findings as inline comments:
+
+```bash
+python cli.py run --pr-url ... --post-comments
 ```
 
 ---
@@ -73,14 +72,9 @@ llm:
   api_key: "${DEEPSEEK_API_KEY}"
   model: "deepseek-chat"
 
-render:
-  max_tokens: 8000        # token budget for rendered context
-
-explore:
-  depth: 2                # 0 = changed files only, 1 = +direct deps, 2 = +transitive
-  max_callers: 5          # max impacted files to add to the graph
-  max_agent_steps: 32     # ReAct step budget for impact + review agents
-  max_agent_tokens: 20000 # token budget for impact + review agents
+review:
+  max_steps: 40        # max ReAct tool calls per review
+  max_tokens: 40000    # token budget for the solve phase
 ```
 
 Environment variables for Bitbucket Server:
@@ -100,20 +94,14 @@ BITBUCKET_SERVER_CLIENT_CERT=...    # optional, mTLS client cert
 python cli.py run --repo ./my-service --diff changes.diff
 git diff HEAD~1 | python cli.py run --repo . --diff -
 
-# Bitbucket Server PR — auto-clone + diff
+# Bitbucket Server PR
 python cli.py run --pr-url https://bitbucket.example.com/.../pull-requests/42
 
-# With review agent (curated context instead of BFS render)
-python cli.py run --pr-url ... --review
+# Post findings as inline PR comments
+python cli.py run --pr-url ... --post-comments
 
-# Generate and post inline comments to the PR
-python cli.py run --pr-url ... --review --post-comments
-
-# Write context to file
-python cli.py run --repo . --diff my.diff --output context.txt
-
-# Dump the full MetaModel as JSON
-python cli.py run --repo . --diff my.diff --dump-graph graph.json
+# Write findings as JSON
+python cli.py run --repo . --diff my.diff --output findings.json
 
 # Parse only — no LLM
 python cli.py inspect changes.diff
@@ -124,20 +112,16 @@ git diff HEAD~1 | python cli.py inspect -
 
 | Flag | Description |
 |------|-------------|
-| `--repo` / `-r` | Path to repository (after-version checkout) |
+| `--repo` / `-r` | Path to repository |
 | `--diff` / `-d` | Diff file path, or `-` for stdin |
 | `--pr-url` | Bitbucket Server PR URL — clones repo and fetches diff automatically |
-| `--review` | Run review agent for curated context instead of BFS renderer |
-| `--post-comments` | Post review comments to the PR (requires `--pr-url` and `--review`) |
-| `--depth` | BFS depth (default: from config) |
+| `--post-comments` | Post findings to the PR as inline comments (requires `--pr-url`) |
 | `--model` / `-m` | LLM model override |
 | `--api-url` | OpenAI-compatible API base URL override |
 | `--api-key` | API key override |
-| `--output` / `-o` | Write rendered context to file |
-| `--dump-graph` | Write MetaModel as JSON to file |
-
-During `run`, each LLM call streams tokens live with a rolling preview. All agent steps
-are permanently logged so the full execution history is visible after completion.
+| `--output` / `-o` | Write findings as JSON to file |
+| `--max-steps` | Max ReAct tool calls (default: from config) |
+| `--max-tokens` | Max token budget (default: from config) |
 
 ---
 
@@ -147,29 +131,92 @@ are permanently logged so the full execution history is visible after completion
 from openai import OpenAI
 from diffgraph import DiffGraph
 
-client = OpenAI()  # or any OpenAI-compatible client
+client = OpenAI()
 dg = DiffGraph(repo_path="./my-service", llm_client=client)
 
-# One-shot: diff → prompt context string
-context = dg.build_and_render(open("my.diff").read(), depth=2)
+findings, review_ctx = dg.review(open("my.diff").read())
 
-# Step-by-step
-meta, diff_result = dg.build(open("my.diff").read(), depth=2)
-context = dg.render(meta, diff_result)
-
-# With review agent
-meta, diff_result = dg.build(diff_text)
-context = dg.review(meta, diff_result, pr_title="...", pr_description="...")
+for f in findings:
+    print(f.severity, f.file, f.line, f.title)
+    print(f.explanation)
+    if f.suggestion:
+        print("Fix:", f.suggestion)
 
 # With progress callback
 def on_event(event, **kw):
-    if event == "extracted":
-        print(f"{kw['path']}: {kw['symbols']} symbols")
-    elif event == "agent_step":
+    if event == "orchestrator_plan_done":
+        print("plan:", kw["plan"]["system_type"])
+    elif event == "orchestrator_step":
         print(f"  step {kw['step']}  {kw['tool']}")
+    elif event == "orchestrator_reflect":
+        print(f"  reflect [{kw['confidence']}]: {kw['next_action']}")
 
-meta, diff_result = dg.build(diff_text, on_event=on_event)
+findings, _ = dg.review(diff_text, on_event=on_event)
+
+# Incremental review — pass existing PR comments
+findings, ctx = dg.review(diff_text, existing_comments=[
+    {"id": 42, "file": "src/Foo.java", "line": 10, "text": "...", "resolved": False}
+])
+# ctx.comment_replies  — threads the agent wants to reply to
+# ctx.comment_resolves — thread IDs the agent considers resolved
 ```
+
+---
+
+## How it works
+
+### Plan phase
+
+One non-streaming LLM call. The strategist receives a compact diff summary and outputs a JSON plan:
+
+```json
+{
+  "system_type": "spring-service",
+  "tasks": [
+    {
+      "id": "check_callers",
+      "type": "call_chain",
+      "priority": "high",
+      "focus": "Find all callers of PaymentService.processPayment()",
+      "search_hints": ["processPayment", "PaymentService"]
+    }
+  ]
+}
+```
+
+Task types: `call_chain`, `security_config`, `data_model`, `error_handling`, `concurrency`, `business_logic`, `code_conventions`.
+
+### Solve phase
+
+ReAct loop up to `max_steps`. Tools:
+
+| Tool | Description |
+|------|-------------|
+| `find_files(pattern)` | Glob the repo |
+| `read_file(path, start?, end?)` | Read up to 100 lines |
+| `read_outline(path)` | Structural outline via tree-sitter (classes, methods, line ranges) |
+| `search(query, glob?, regex?)` | Text search across files |
+| `get_diff(path?)` | Full diff or per-file section |
+| `reply_to_comment(id, text)` | Queue a reply to an existing comment thread |
+| `resolve_comment(id)` | Queue a resolve on an existing comment thread |
+| `reflect(learned, questions_remaining, confidence, next_action)` | SGR structured self-reflection |
+| `done(findings)` | Submit findings and stop |
+
+Multiple tool calls from a single LLM response execute in parallel via `ThreadPoolExecutor`.
+
+Adaptive budget nudges at 50% and 75% of `max_tokens` push the agent toward wrapping up.
+
+### SGR (Self-Guided Reasoning)
+
+The agent calls `reflect()` every 3–5 steps to track what it has learned, what questions remain open, and what to do next. `reflect()` always returns `"Reflection noted."` — its value is purely in structuring the agent's reasoning before the next step.
+
+### Incremental review
+
+If `existing_comments` is provided, the agent sees all open threads and can:
+- `resolve_comment(id)` — when the issue is addressed in the new diff
+- `reply_to_comment(id, text)` — when a fix is incomplete or needs follow-up
+
+These actions are queued in `ReviewContext` and applied by the caller after `done()`.
 
 ---
 
@@ -177,41 +224,34 @@ meta, diff_result = dg.build(diff_text, on_event=on_event)
 
 Java · Python · TypeScript / TSX · Go · Kotlin · Ruby · C#
 
+(tree-sitter outlines available for all; fallback to line-count-only for unknown extensions)
+
 ---
 
 ## Architecture
 
 ```
 diffgraph/
-├── model.py             # Symbol, Module, MetaModel — in-memory graph
-├── lang.py              # language detection, file extensions, declaration patterns
-├── tools.py             # list_files, read_file, search_text — filesystem primitives
-├── diff_parser.py       # git diff text → DiffResult (hunks, changed lines)
-├── cache.py             # content-addressed LLM extraction cache (~/.cache/diffgraph/)
-├── explorer.py          # explore() BFS + explore_callers() impact analysis
-├── renderer.py          # render() with token-budget degradation + partial compression
-├── diffgraph.py         # DiffGraph public API + mark_changed_symbols()
+├── diff_parser.py           git diff text → DiffResult (hunks, changed lines)
+├── lang.py                  language detection, file extensions
+├── tools.py                 list_files, read_file, search_text — filesystem primitives
+├── outline.py               tree-sitter structural outline (classes, methods, line ranges)
+├── diffgraph.py             DiffGraph public API
 ├── agents/
-│   ├── extractor.py     # extract_module() — one streaming LLM call → Module
-│   ├── impact.py        # find_impact() — ReAct agent: find impacted callers
-│   ├── review.py        # find_review_context() — ReAct agent: curate context
-│   ├── planner.py       # plan_review() — single call: strategy hint for review agent
-│   ├── resolver.py      # resolve_dep() — agentic dependency path resolution
-│   ├── reviewer.py      # generate_review_comments() — inline comment generation
-│   ├── streaming.py     # stream_llm() — shared streaming helper for all agents
-│   └── prompts/         # all prompt text files (SECTION: blocks)
+│   ├── orchestrator.py      run_review(): plan phase + ReAct solve phase
+│   ├── streaming.py         stream_llm() — shared streaming helper
+│   └── prompts/
+│       ├── strategist_system.txt   plan phase prompt
+│       └── orchestrator_system.txt  ReAct + SGR prompt
 └── providers/
-    └── bitbucket_server.py   # PR fetch (clone + diff) + comment posting
+    └── bitbucket_server.py  fetch_pr(), post_review_comments(),
+                             get_pr_comments(), reply_to_pr_comment(),
+                             resolve_pr_comment()
 ```
 
-**Cost controls:**
+## Tests
 
-| Mechanism | Behaviour |
-|-----------|-----------|
-| Extraction cache | SHA256(content+model) → skip LLM if file unchanged |
-| `read_file` cap | Without range: first 300 lines; with range: max 100 lines |
-| BFS visited set | Prevents cycles and duplicate LLM calls |
-| LLM retry | Invalid JSON → up to 2 retries, then skip module |
-| Adaptive budget | Agent nudged at 50% and 75% of token budget |
-| Token-budget render | Degrades depth-2 → depth-1 → names only if over limit |
-| Parallel tool calls | Multiple agent tool calls executed concurrently |
+```bash
+source .venv/bin/activate
+pytest tests/
+```

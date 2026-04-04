@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -13,14 +14,14 @@ from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
-app = typer.Typer(help="DiffGraph — build a dependency metamodel from a git diff.", add_completion=False)
+app = typer.Typer(help="DiffGraph — agentic PR code review.", add_completion=False)
 console = Console()
 
 BASE_DIR = Path(__file__).parent
 CONFIG_FILE = BASE_DIR / "config.yaml"
 
 
-# ── config ───────────────────────────────────────────────────────────────────
+# ── config ────────────────────────────────────────────────────────────────────
 
 def _load_config() -> dict:
     import yaml
@@ -47,17 +48,13 @@ def _load_config() -> dict:
     return _expand_config(cfg)
 
 
-def _expand_env(s: str) -> str:
-    return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), s)
-
-
 def _expand_config(obj):
     if isinstance(obj, dict):
         return {k: _expand_config(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_expand_config(v) for v in obj]
     if isinstance(obj, str):
-        return _expand_env(obj)
+        return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), obj)
     return obj
 
 
@@ -87,66 +84,53 @@ def _read_diff(diff_path: Optional[str]) -> str:
 
 @app.command()
 def run(
-    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Path to the repository (after-version checkout)"),
-    diff: Optional[str] = typer.Option(None, "--diff", "-d", help="Path to .diff file, or '-' for stdin"),
-    pr_url: Optional[str] = typer.Option(None, "--pr-url", help="Bitbucket Server PR URL — clones repo and fetches diff automatically"),
-    depth: Optional[int] = typer.Option(None, "--depth", help="BFS depth (default: from config, usually 2)"),
-    model: Optional[str] = typer.Option(None, "--model", "-m", help="LLM model override"),
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write rendered context to file instead of stdout"),
-    dump_graph: Optional[str] = typer.Option(None, "--dump-graph", help="Write MetaModel as JSON array to file"),
-    api_url: Optional[str] = typer.Option(None, "--api-url", help="OpenAI-compatible API base URL override"),
-    api_key: Optional[str] = typer.Option(None, "--api-key", help="API key override"),
-    review: bool = typer.Option(False, "--review", help="Run review agent for curated context instead of BFS renderer"),
-    post_comments: bool = typer.Option(False, "--post-comments", help="Post review comments to the PR (requires --pr-url and --review)"),
+    repo:          Optional[str] = typer.Option(None,  "--repo",         "-r", help="Path to the repository"),
+    diff:          Optional[str] = typer.Option(None,  "--diff",         "-d", help="Path to .diff file, or '-' for stdin"),
+    pr_url:        Optional[str] = typer.Option(None,  "--pr-url",             help="Bitbucket Server PR URL — clones repo and fetches diff automatically"),
+    model:         Optional[str] = typer.Option(None,  "--model",        "-m", help="LLM model override"),
+    api_url:       Optional[str] = typer.Option(None,  "--api-url",            help="OpenAI-compatible API base URL override"),
+    api_key:       Optional[str] = typer.Option(None,  "--api-key",            help="API key override"),
+    output:        Optional[str] = typer.Option(None,  "--output",       "-o", help="Write findings as JSON to file"),
+    post_comments: bool          = typer.Option(False, "--post-comments",      help="Post findings to the PR as inline comments (requires --pr-url)"),
+    max_steps:     Optional[int] = typer.Option(None,  "--max-steps",          help="Max ReAct steps (default: from config)"),
+    max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
 ):
     """
-    Build a dependency graph from a diff and render a prompt context.
-
-    Examples:
+    Run an agentic PR review and print structured findings.
 
     \b
+      git diff HEAD~1 | python cli.py run --repo .
       python cli.py run --repo ./my-service --diff changes.diff
-      git diff HEAD~1 | python cli.py run --repo . --diff -
-      python cli.py run --pr-url https://bitbucket.example.com/projects/X/repos/Y/pull-requests/42 --review
+      python cli.py run --pr-url https://bitbucket.example.com/projects/X/repos/Y/pull-requests/42
+      python cli.py run --pr-url ... --post-comments
     """
     cfg = _load_config()
-    llm_cfg = cfg.get("llm", {})
-    render_cfg = cfg.get("render", {})
-    explore_cfg = cfg.get("explore", {})
+    llm_cfg    = cfg.get("llm", {})
+    review_cfg = cfg.get("review", {})
 
-    if api_url:
-        llm_cfg["api_url"] = api_url
-    if api_key:
-        llm_cfg["api_key"] = api_key
-    if model:
-        llm_cfg["model"] = model
+    if api_url:  llm_cfg["api_url"] = api_url
+    if api_key:  llm_cfg["api_key"] = api_key
+    if model:    llm_cfg["model"]   = model
 
-    effective_depth = depth if depth is not None else explore_cfg.get("depth", 2)
-    effective_model = llm_cfg.get("model", "gpt-4o-mini")
-    max_tokens = render_cfg.get("max_tokens", 8000)
-    max_callers = explore_cfg.get("max_callers", 5)
-    exclude_tests = explore_cfg.get("exclude_tests", True)
-    max_agent_steps = explore_cfg.get("max_agent_steps", 12)
-    max_agent_tokens = explore_cfg.get("max_agent_tokens", 20000)
+    effective_model     = llm_cfg.get("model", "gpt-4o-mini")
+    effective_steps     = max_steps  if max_steps  is not None else review_cfg.get("max_steps",  40)
+    effective_tokens    = max_tokens if max_tokens is not None else review_cfg.get("max_tokens", 40000)
 
     cleanup_fn = None
-
-    pr_title = ""
-    pr_description = ""
+    pr_title = pr_description = ""
 
     if pr_url:
         from diffgraph.providers.bitbucket_server import fetch_pr
         console.print(f"[bold]PR[/bold]  [cyan]{pr_url}[/cyan]")
         try:
-            diff_text, _tmpdir, cleanup_fn, pr_meta = fetch_pr(
+            diff_text, repo_path, cleanup_fn, pr_meta = fetch_pr(
                 pr_url,
                 on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
             )
         except Exception as exc:
             console.print(f"[red]Failed to fetch PR: {exc}[/red]")
             raise typer.Exit(1)
-        repo_path = _tmpdir
-        pr_title = pr_meta.get("title", "")
+        pr_title       = pr_meta.get("title", "")
         pr_description = pr_meta.get("description", "")
         if pr_title:
             console.print(f"  [dim]title: {pr_title}[/dim]")
@@ -163,80 +147,83 @@ def run(
             cleanup_fn()
         raise typer.Exit(0)
 
-    console.print(f"[bold]DiffGraph[/bold]  repo=[cyan]{repo_path}[/cyan]  depth=[cyan]{effective_depth}[/cyan]  model=[cyan]{effective_model}[/cyan]")
-
-    llm_client = _make_llm_client(llm_cfg)
-
+    # Show diff summary
     sys.path.insert(0, str(BASE_DIR))
-    from diffgraph import DiffGraph
     from diffgraph.diff_parser import parse_diff
-
-    # Show a quick summary of what's in the diff
     diff_result = parse_diff(diff_text)
     _print_diff_summary(diff_result)
 
+    # Fetch existing comments if posting to PR
+    existing_comments: list = []
+    if pr_url:
+        try:
+            from diffgraph.providers.bitbucket_server import get_pr_comments
+            existing_comments = get_pr_comments(pr_url)
+            if existing_comments:
+                console.print(f"  [dim]{len(existing_comments)} existing comment(s) loaded[/dim]")
+        except Exception as exc:
+            console.print(f"  [yellow]Could not fetch existing comments: {exc}[/yellow]")
+
+    console.print(
+        f"\n[bold]Review[/bold]  repo=[cyan]{repo_path}[/cyan]"
+        f"  model=[cyan]{effective_model}[/cyan]"
+        f"  steps=[cyan]{effective_steps}[/cyan]\n"
+    )
+
+    llm_client = _make_llm_client(llm_cfg)
+    from diffgraph import DiffGraph
     dg = DiffGraph(
         repo_path=repo_path,
         llm_client=llm_client,
         llm_model=effective_model,
-        max_tokens_in_prompt=max_tokens,
-        max_callers=max_callers,
-        exclude_tests=exclude_tests,
-        max_agent_steps=max_agent_steps,
-        max_agent_tokens=max_agent_tokens,
+        max_steps=effective_steps,
+        max_tokens=effective_tokens,
     )
-    console.print("")
+
     with Live("", console=console, refresh_per_second=8, vertical_overflow="visible") as live:
-        meta, diff_result = dg.build(
+        findings, review_ctx = dg.review(
             diff_text,
-            depth=effective_depth,
+            existing_comments=existing_comments,
             on_event=_make_event_handler(effective_model, live),
         )
     console.print("")
 
-    _print_model_summary(meta)
+    _print_findings(findings)
 
-    if review:
-        console.print("\n[bold]Review Agent[/bold]  curating context...\n")
-        with Live("", console=console, refresh_per_second=8, vertical_overflow="visible") as live2:
-            context = dg.review(meta, diff_result,
-                                on_event=_make_event_handler(effective_model, live2),
-                                pr_title=pr_title, pr_description=pr_description)
-    else:
-        context = dg.render(meta, diff_result, pr_title=pr_title, pr_description=pr_description)
-
-    if post_comments and review and pr_url:
-        from diffgraph.agents.reviewer import generate_review_comments
+    if post_comments and pr_url:
         from diffgraph.providers.bitbucket_server import post_review_comments
-        console.print("\n[bold]Reviewer[/bold]  generating comments...\n")
-        comments = generate_review_comments(
-            context, llm_client, effective_model,
-            on_event=_make_event_handler(effective_model, None),
+        comments_to_post = [_finding_to_comment(f) for f in findings]
+        console.print(f"\n[bold]Posting[/bold]  {len(comments_to_post)} findings to PR...\n")
+        posted = post_review_comments(
+            pr_url, comments_to_post,
+            on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
         )
-        console.print(f"  [dim]{len(comments)} comment(s) generated[/dim]")
-        if comments:
-            console.print("[bold]Posting[/bold]  to PR...\n")
-            posted = post_review_comments(
-                pr_url, comments,
-                on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
-            )
-            console.print(f"\n[green]Posted {posted}/{len(comments)} comments[/green]")
+        console.print(f"\n[green]Posted {posted}/{len(comments_to_post)} comments[/green]")
+
+        # Apply queued replies/resolves
+        if review_ctx.comment_replies or review_ctx.comment_resolves:
+            from diffgraph.providers.bitbucket_server import reply_to_pr_comment, resolve_pr_comment
+            for reply in review_ctx.comment_replies:
+                try:
+                    reply_to_pr_comment(pr_url, reply["comment_id"], reply["text"])
+                    console.print(f"  [dim]replied to #{reply['comment_id']}[/dim]")
+                except Exception as exc:
+                    console.print(f"  [yellow]reply #{reply['comment_id']} failed: {exc}[/yellow]")
+            for cid in review_ctx.comment_resolves:
+                try:
+                    resolve_pr_comment(pr_url, cid)
+                    console.print(f"  [dim]resolved #{cid}[/dim]")
+                except Exception as exc:
+                    console.print(f"  [yellow]resolve #{cid} failed: {exc}[/yellow]")
+
     elif post_comments and not pr_url:
         console.print("[yellow]--post-comments requires --pr-url[/yellow]")
 
-    if dump_graph:
-        import json
-        Path(dump_graph).write_text(json.dumps(meta.to_json(), ensure_ascii=False, indent=2))
-        console.print(f"[green]Graph written to {dump_graph}[/green]  ({len(meta.modules)} modules)")
-
     if output:
-        Path(output).write_text(context)
-        console.print(f"\n[green]Context written to {output}[/green]  ({len(context)} chars, ~{len(context)//4} tokens)")
-    else:
-        console.print("\n" + "─" * 70)
-        console.print(context, markup=False, highlight=False)
-        console.print("─" * 70)
-        console.print(f"[dim]{len(context)} chars, ~{len(context)//4} tokens[/dim]")
+        Path(output).write_text(
+            json.dumps([f.to_dict() for f in findings], ensure_ascii=False, indent=2)
+        )
+        console.print(f"\n[green]Findings written to {output}[/green]  ({len(findings)} findings)")
 
     if cleanup_fn:
         cleanup_fn()
@@ -248,8 +235,6 @@ def inspect(
 ):
     """
     Parse a diff and show what changed — no LLM required.
-
-    Useful for verifying the diff parser before running the full pipeline.
 
     \b
       python cli.py inspect changes.diff
@@ -267,11 +252,9 @@ def inspect(
     _print_diff_summary(result, verbose=True)
 
 
-# ── formatting helpers ────────────────────────────────────────────────────────
+# ── display helpers ───────────────────────────────────────────────────────────
 
 def _print_diff_summary(diff_result, verbose: bool = False) -> None:
-    from diffgraph.diff_parser import DiffResult
-
     table = Table(title="Diff summary", show_header=True, header_style="bold")
     table.add_column("File")
     table.add_column("Status")
@@ -279,19 +262,14 @@ def _print_diff_summary(diff_result, verbose: bool = False) -> None:
     table.add_column("Hunks", justify="right")
 
     for fd in diff_result.files.values():
-        status_color = {
-            "modified": "yellow",
-            "added": "green",
-            "deleted": "red",
-            "renamed": "cyan",
-        }.get(fd.status, "white")
+        color = {"modified": "yellow", "added": "green",
+                 "deleted": "red", "renamed": "cyan"}.get(fd.status, "white")
         table.add_row(
             fd.path,
-            f"[{status_color}]{fd.status}[/{status_color}]",
+            f"[{color}]{fd.status}[/{color}]",
             str(len(fd.after_changed_lines)),
             str(len(fd.hunks)),
         )
-
     console.print(table)
 
     if verbose:
@@ -306,238 +284,138 @@ def _print_diff_summary(diff_result, verbose: bool = False) -> None:
                 )
 
 
-def _make_event_handler(model: str, live: Optional[Live]):
-    """Returns an on_event callback that logs progress via a Rich Live display."""
-    depth_colors = ["bold cyan", "cyan", "dim cyan"]
-    state: dict = {"path": "", "tok": 0}
+def _print_findings(findings) -> None:
+    sev_color = {"BLOCKER": "red", "MAJOR": "yellow", "MINOR": "cyan", "COMMENT": "dim"}
+    if not findings:
+        console.print("[dim]No findings.[/dim]")
+        return
+    table = Table(title=f"Findings ({len(findings)})", show_header=True, header_style="bold")
+    table.add_column("Sev", width=8)
+    table.add_column("File")
+    table.add_column("Line", justify="right", width=6)
+    table.add_column("Title")
+    for f in findings:
+        color = sev_color.get(f.severity, "white")
+        table.add_row(
+            f"[{color}]{f.severity}[/{color}]", f.file, str(f.line), f.title,
+        )
+    console.print(table)
 
+    for f in findings:
+        color = sev_color.get(f.severity, "white")
+        console.print(
+            f"\n[{color}][{f.severity}][/{color}] [bold]{f.file}:{f.line}[/bold]  {f.title}"
+        )
+        console.print(f"  [dim]{f.explanation}[/dim]")
+        if f.evidence:
+            console.print(f"  Evidence: [italic]{f.evidence[:200]}[/italic]")
+        if f.suggestion:
+            console.print(f"  Suggestion: {f.suggestion[:200]}")
+
+
+def _finding_to_comment(finding):
+    class _C:
+        pass
+    c = _C()
+    c.file = finding.file
+    c.line = finding.line
+    c.severity = finding.severity
+    body = f"**{finding.title}**\n\n{finding.explanation}"
+    if finding.evidence:
+        body += f"\n\n*Evidence:* {finding.evidence}"
+    c.comment = body
+    c.suggestion = finding.suggestion or None
+    return c
+
+
+def _make_event_handler(model: str, live: Optional[Live]):
     def _log(msg: str) -> None:
         (live.console if live else console).log(msg)
 
-    def _live_update(text: str) -> None:
+    def _live_update(text) -> None:
         if live:
             live.update(text)
 
     def on_event(event: str, **kw) -> None:
-        depth = kw.get("depth", 0)
-        path = kw.get("path", "")
-        name = kw.get("name", "")
-        color = depth_colors[min(depth, len(depth_colors) - 1)]
+        if event == "orchestrator_plan_start":
+            _log("[bold green]plan[/bold green]      strategist analyzing diff…")
 
-        if event == "reading":
-            state["path"] = path
-            _log(f"[{color}]read[/{color}]      [bold]{path}[/bold]  [dim]depth={depth}[/dim]")
-
-        elif event == "extracting":
-            state["path"] = path
-            state["tok"] = 0
-            attempt = kw.get("attempt", 0)
-            suffix = f"  [yellow]retry {attempt}[/yellow]" if attempt else f"  [dim]{model}[/dim]"
-            _log(f"[{color}]extract[/{color}]   [bold]{path}[/bold]{suffix}")
-
-        elif event == "token":
-            text = kw.get("text", "")
-            state["tok"] += 1
-            # Collapse whitespace and show a rolling tail of the stream
-            preview = " ".join(text.split())[-100:]
-            _live_update(
-                Text.assemble(
-                    ("  ↳ ", "dim"),
-                    (f"{state['path']}  ", "bold"),
-                    (f"{state['tok']} tok  ", "dim"),
-                    (preview, "dim cyan"),
-                )
+        elif event == "orchestrator_plan_done":
+            plan = kw.get("plan", {})
+            system_type = plan.get("system_type", "?")
+            tasks = plan.get("tasks", [])
+            task_str = "  ".join(
+                f"{t.get('type')}[{t.get('priority', '?')}]" for t in tasks[:5]
             )
-
-        elif event == "cache_hit":
             _log(
-                f"[dim green]cached[/dim green]    [bold]{path}[/bold]"
-                f"  [dim]{kw.get('symbols', 0)} symbols[/dim]"
+                f"[bold green]plan[/bold green]      "
+                f"system=[cyan]{system_type}[/cyan]  [dim]{task_str}[/dim]"
             )
 
-        elif event == "extracted":
-            _live_update("")  # clear the streaming line
-            deps = kw.get("deps", [])
-            dep_names = [d.name if hasattr(d, "name") else str(d) for d in deps]
-            dep_str = ", ".join(dep_names[:6]) + ("…" if len(dep_names) > 6 else "")
-            _log(
-                f"[green]done[/green]      [bold]{path}[/bold]"
-                f"  [dim]{kw.get('symbols', 0)} symbols"
-                + (f"  deps: [{dep_str}]" if deps else "") + "[/dim]"
-            )
-
-        elif event == "retry":
-            _live_update("")
-            _log(
-                f"[yellow]retry {kw.get('attempt')}[/yellow]   [bold]{path}[/bold]"
-                f"  [dim]{kw.get('reason', '')}[/dim]"
-            )
-
-        elif event == "failed":
-            _live_update("")
-            _log(f"[red]failed[/red]    [bold]{path}[/bold]  [dim]skipped after 3 attempts[/dim]")
-
-        elif event == "read_failed":
-            _log(f"[red]missing[/red]   [bold]{path}[/bold]  [dim]file not found[/dim]")
-
-        elif event == "skipped":
-            _log(f"[dim]  skip      {path}  not a source file[/dim]")
-
-        elif event == "resolving":
-            pass  # too noisy — only log when resolved or skipped
-
-        elif event == "resolving_agent":
-            _live_update("")
-            _log(f"[cyan]resolve[/cyan]   agent resolving [bold]{name}[/bold]  [dim]{kw.get('fqn', '')}[/dim]")
-
-        elif event == "resolved":
-            _live_update("")
-            tok_str = _fmt_tok(kw)
-            suffix = f"  [dim cyan]{tok_str}[/dim cyan]" if tok_str else ""
-            _log(f"[dim]  resolve   {name}  →  {kw.get('path', '')}[/dim]{suffix}")
-
-        elif event == "not_resolved":
-            _live_update("")
-            tok_str = _fmt_tok(kw)
-            suffix = f"  [dim cyan]{tok_str}[/dim cyan]" if tok_str else ""
-            _log(f"[dim]  resolve   {name}  →  external, skip[/dim]{suffix}")
-
-        elif event == "searching_callers":
-            _log(f"[magenta]impact[/magenta]    agent analyzing impact of [bold]{name}[/bold]")
-
-        elif event == "agent_stream":
-            tool_name = kw.get("tool_name", "")
+        elif event == "orchestrator_stream":
+            tool_name    = kw.get("tool_name", "")
             args_preview = kw.get("args_preview", "")
-            tok = kw.get("tok", 0)
+            tok          = kw.get("tok", 0)
             _live_update(Text.assemble(
                 ("  ↳ ", "dim"),
                 (f"step {kw.get('step', 0)}  ", "dim"),
-                (tool_name or "…", "magenta"),
+                (tool_name or "…", "green"),
                 (f"({args_preview})", "dim"),
                 (f"  {tok} tok", "dim cyan"),
             ))
 
-        elif event == "agent_step":
+        elif event == "orchestrator_step":
             _live_update("")
-            tool = kw.get("tool", "")
-            args = kw.get("args", {})
-            arg_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:3])
-            tok_suffix = _fmt_tok(kw)
-            suffix = f"  [dim cyan]{tok_suffix}[/dim cyan]" if tok_suffix else ""
-            _log(f"[dim]  step {kw.get('step', 0)}  [magenta]{tool}[/magenta]({arg_str}){suffix}[/dim]")
+            tool    = kw.get("tool", "")
+            args    = kw.get("args", {})
+            arg_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])
+            tok_str = _fmt_tok(kw)
+            _log(f"[dim]  step {kw.get('step', 0)}  [green]{tool}[/green]({arg_str})  {tok_str}[/dim]")
 
-        elif event == "agent_result":
+        elif event == "orchestrator_reflect":
+            _live_update("")
+            learned = str(kw.get("learned", ""))[:80]
+            conf    = kw.get("confidence", "?")
+            next_a  = str(kw.get("next_action", ""))[:60]
+            _log(
+                f"[dim]  reflect  conf=[cyan]{conf}[/cyan]  "
+                f"{learned}  → {next_a}[/dim]"
+            )
+
+        elif event == "orchestrator_result":
             pass
 
-        elif event == "agent_done":
+        elif event == "orchestrator_done":
             _live_update("")
-            hits = kw.get("hits", 0)
             tok_str = _fmt_tok(kw)
-            _log(f"[magenta]impact[/magenta]    [bold]{path}[/bold]  [dim]{hits} impacted file(s) found[/dim]  [dim cyan]{tok_str}[/dim cyan]")
-
-        elif event == "agent_forced_done":
-            _live_update("")
-            reason = kw.get("reason", "limit reached")
-            tok_str = _fmt_tok(kw)
-            _log(f"[yellow]impact[/yellow]    [bold]{path}[/bold]  [dim]{reason}[/dim]  [dim cyan]{tok_str}[/dim cyan]")
-
-        elif event == "reviewer_start":
-            _log("[bold cyan]reviewer[/bold cyan]  calling LLM…")
-
-        elif event == "reviewer_done":
-            tok_str = _fmt_tok(kw)
-            _log(f"[bold cyan]reviewer[/bold cyan]  done  [dim cyan]{tok_str}[/dim cyan]")
-
-        elif event == "reviewer_failed":
-            _log(f"[red]reviewer[/red]  failed: {kw.get('reason', '')}")
-
-        elif event == "review_start":
-            _log(f"[bold cyan]review[/bold cyan]    agent starting  [dim]{kw.get('changed', 0)} changed module(s)[/dim]")
-
-        elif event == "review_stream":
-            tool_name = kw.get("tool_name", "")
-            args_preview = kw.get("args_preview", "")
-            tok = kw.get("tok", 0)
-            _live_update(Text.assemble(
-                ("  ↳ ", "dim"),
-                (f"step {kw.get('step', 0)}  ", "dim"),
-                (tool_name or "…", "cyan"),
-                (f"({args_preview})", "dim"),
-                (f"  {tok} tok", "dim cyan"),
-            ))
-
-        elif event == "review_step":
-            _live_update("")
-            tool = kw.get("tool", "")
-            args = kw.get("args", {})
-            arg_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])
-            tok_suffix = _fmt_tok(kw)
-            _log(f"[dim]  review  step {kw.get('step', 0)}  [cyan]{tool}[/cyan]({arg_str})  {tok_suffix}[/dim]")
-
-        elif event == "review_result":
-            pass  # step line already logged
-
-        elif event == "review_selected":
-            detail = kw.get("detail", "")
             _log(
-                f"[green]select[/green]    [bold]{kw.get('symbol_name', kw.get('name', ''))}[/bold]"
-                f"  [dim]{kw.get('file', '')}[/dim]"
-                f"  [yellow]{detail}[/yellow]"
-                f"  [dim]{kw.get('reason', '')[:80]}[/dim]"
+                f"[bold green]done[/bold green]      "
+                f"[dim]{kw.get('findings', 0)} finding(s)  "
+                f"{kw.get('replies', 0)} replies  "
+                f"{kw.get('resolves', 0)} resolves[/dim]  "
+                f"[dim cyan]{tok_str}[/dim cyan]"
             )
 
-        elif event == "review_done":
+        elif event == "orchestrator_forced_done":
             _live_update("")
-            tok_str = _fmt_tok(kw)
-            _log(f"[bold cyan]review[/bold cyan]    done  [dim]{kw.get('count', 0)} symbols selected[/dim]  [dim cyan]{tok_str}[/dim cyan]")
-
-        elif event == "review_forced_done":
-            _live_update("")
-            tok_str = _fmt_tok(kw)
-            _log(f"[yellow]review[/yellow]    {kw.get('reason', 'limit')}  [dim cyan]{tok_str}[/dim cyan]")
-
-        elif event == "caller_found":
-            conf = kw.get("confidence", "")
-            reason = kw.get("reason", "")
             _log(
-                f"[magenta]caller[/magenta]    [bold]{path}[/bold]"
-                f"  [{conf}]  [dim]{reason[:80]}[/dim]"
+                f"[yellow]forced[/yellow]    {kw.get('reason', 'limit')}  "
+                f"[dim cyan]{_fmt_tok(kw)}[/dim cyan]"
             )
 
     return on_event
 
 
 def _fmt_tok(kw: dict) -> str:
-    """Format token breakdown from an agent event's keyword args."""
-    tok_in = kw.get("tok_in", 0)
-    tok_out = kw.get("tok_out", 0)
+    tok_in     = kw.get("tok_in", 0)
+    tok_out    = kw.get("tok_out", 0)
     tok_cached = kw.get("tok_cached", 0)
     if not (tok_in or tok_out):
-        total = kw.get("total_tokens", 0)
-        return f"{total} tok" if total else ""
+        return ""
     parts = [f"in={tok_in}", f"out={tok_out}"]
     if tok_cached:
         parts.append(f"cached={tok_cached}")
     return "  ".join(parts)
-
-
-def _print_model_summary(meta) -> None:
-    changed = len(meta.changed_module_ids)
-    total = len(meta.modules)
-    sym_changed = sum(1 for mod in meta.modules.values() for s in mod.symbols if s.is_changed)
-
-    depths = meta.compute_depths()
-    by_depth: dict[int, int] = {}
-    for d in depths.values():
-        by_depth[d] = by_depth.get(d, 0) + 1
-
-    depth_str = "  ".join(
-        (f"callers: {n}" if d == -1 else f"depth {d}: {n}")
-        for d, n in sorted(by_depth.items())
-    )
-    console.print(
-        f"[bold]MetaModel[/bold]  {total} modules ({changed} changed, {sym_changed} changed symbols)  {depth_str}"
-    )
 
 
 if __name__ == "__main__":
