@@ -61,12 +61,30 @@ def parse_pr_url(pr_url: str) -> tuple[str, str, str, int]:
 
 def _api_get(url: str, token: str, ca_bundle: str | None, client_cert: str | None) -> dict:
     import ssl
+    from urllib.error import HTTPError
     req = Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
     ctx = ssl.create_default_context(cafile=ca_bundle)
     if client_cert:
         ctx.load_cert_chain(client_cert)
-    with urlopen(req, context=ctx, timeout=30) as resp:
-        return json.loads(resp.read())
+    try:
+        with urlopen(req, context=ctx, timeout=30) as resp:
+            return json.loads(resp.read())
+    except HTTPError as e:
+        raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+
+
+def _read_http_error(e) -> str:
+    """Extract a readable message from an HTTPError, including the response body."""
+    try:
+        body = e.read().decode(errors="replace").strip()
+        # Bitbucket returns JSON errors like {"errors": [{"message": "..."}]}
+        data = json.loads(body)
+        msgs = [err.get("message", "") for err in data.get("errors", []) if err.get("message")]
+        if msgs:
+            return f"HTTP {e.code}: {'; '.join(msgs)}"
+    except Exception:
+        pass
+    return f"HTTP Error {e.code}: {body[:300] if 'body' in dir() else ''}"
 
 
 def _get_pr_meta(
@@ -422,6 +440,7 @@ def resolve_pr_comment(
 
 def _api_put(url: str, token: str, ca_bundle: str | None, client_cert: str | None, payload: dict) -> dict:
     import ssl
+    from urllib.error import HTTPError
     data = json.dumps(payload).encode()
     req = Request(
         url, data=data,
@@ -435,8 +454,11 @@ def _api_put(url: str, token: str, ca_bundle: str | None, client_cert: str | Non
     ctx = ssl.create_default_context(cafile=ca_bundle)
     if client_cert:
         ctx.load_cert_chain(client_cert)
-    with urlopen(req, context=ctx, timeout=30) as resp:
-        return json.loads(resp.read())
+    try:
+        with urlopen(req, context=ctx, timeout=30) as resp:
+            return json.loads(resp.read())
+    except HTTPError as e:
+        raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
 
 
 def _build_comment_body(c) -> str:
@@ -448,6 +470,7 @@ def _build_comment_body(c) -> str:
 
 def _api_post(url: str, token: str, ca_bundle: str | None, client_cert: str | None, payload: dict) -> dict:
     import ssl
+    from urllib.error import HTTPError
     from urllib.request import Request, urlopen
     data = json.dumps(payload).encode()
     req = Request(
@@ -462,5 +485,8 @@ def _api_post(url: str, token: str, ca_bundle: str | None, client_cert: str | No
     ctx = ssl.create_default_context(cafile=ca_bundle)
     if client_cert:
         ctx.load_cert_chain(client_cert)
-    with urlopen(req, context=ctx, timeout=30) as resp:
-        return json.loads(resp.read())
+    try:
+        with urlopen(req, context=ctx, timeout=30) as resp:
+            return json.loads(resp.read())
+    except HTTPError as e:
+        raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
