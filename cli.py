@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+from rich import box as rich_box
 from rich.console import Console
 from rich.live import Live
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-app = typer.Typer(help="DiffGraph — agentic PR code review.", add_completion=False)
+app = typer.Typer(help="DiffGraph — multi-agent PR code review.", add_completion=False)
 console = Console()
 
 BASE_DIR = Path(__file__).parent
@@ -96,7 +98,7 @@ def run(
     max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
 ):
     """
-    Run an agentic PR review and print structured findings.
+    Run a multi-agent PR review and print structured findings.
 
     \b
       git diff HEAD~1 | python cli.py run --repo .
@@ -379,13 +381,34 @@ def _make_event_handler(model: str, live: Optional[Live]):
 
         elif event == "orchestrator_reflect":
             _live_update("")
-            learned = str(kw.get("learned", ""))[:80]
-            conf    = kw.get("confidence", "?")
-            next_a  = str(kw.get("next_action", ""))[:60]
-            _log(
-                f"[dim]  reflect  conf=[cyan]{conf}[/cyan]  "
-                f"{learned}  → {next_a}[/dim]"
+            conf        = kw.get("confidence", "?")
+            learned     = str(kw.get("learned", ""))
+            questions   = kw.get("questions_remaining", [])
+            next_action = str(kw.get("next_action", ""))
+
+            conf_color = {"low": "red", "medium": "yellow", "high": "green"}.get(conf, "white")
+
+            body = Text()
+            if learned:
+                body.append("Learned\n", style="bold")
+                for line in learned.splitlines():
+                    body.append(f"  {line}\n", style="")
+            if questions:
+                body.append("\nOpen\n", style="bold")
+                for q in questions:
+                    body.append(f"  • {q}\n", style="dim")
+            if next_action:
+                body.append("\nNext\n", style="bold green")
+                body.append(f"  {next_action}", style="")
+
+            panel = Panel(
+                body,
+                title=f"reflect · step {kw.get('step', '?')} · conf=[{conf_color}]{conf}[/{conf_color}]",
+                border_style="dim",
+                box=rich_box.ROUNDED,
+                padding=(0, 1),
             )
+            (live.console if live else console).print(panel)
 
         elif event == "orchestrator_result":
             pass

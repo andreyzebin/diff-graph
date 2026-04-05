@@ -1,6 +1,6 @@
 # DiffGraph
 
-Agentic PR code reviewer. Takes a git diff (or a Bitbucket Server PR URL) and runs a two-phase single-agent review: a strategist plans what to look for, then a ReAct agent explores the repo and produces structured inline findings.
+Multi-agent PR code reviewer. Takes a git diff (or a Bitbucket Server PR URL) and runs a two-phase pipeline: a Strategist agent plans what to look for, then a ReAct Solver agent explores the repo and produces structured inline findings.
 
 ```
 git diff / PR URL

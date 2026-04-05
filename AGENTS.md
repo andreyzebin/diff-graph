@@ -4,9 +4,15 @@ This document describes the codebase for AI agents and coding assistants.
 
 ## What this project does
 
-DiffGraph is a single-agent PR code reviewer. It takes a raw `git diff` (or fetches one
-from Bitbucket Server), runs a two-phase agentic pipeline, and produces structured
-`ReviewFinding` objects — optionally posted as inline PR comments.
+DiffGraph is a multi-agent PR code reviewer. It takes a raw `git diff` (or fetches one
+from Bitbucket Server), runs a two-phase pipeline with two specialized agents, and produces
+structured `ReviewFinding` objects — optionally posted as inline PR comments.
+
+**Agents:**
+- **Strategist** — one non-streaming LLM call; reads the diff summary and outputs a typed
+  review plan (system type + task list).
+- **Solver** — ReAct loop; uses 9 tools to explore the repo, calls `reflect()` for
+  self-guided reasoning, and submits findings via `done()`.
 
 No pre-indexing, no database, no persistent state. One `DiffGraph.review()` call per diff.
 
