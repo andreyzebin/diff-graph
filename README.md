@@ -210,7 +210,7 @@ ReAct loop up to `max_steps`. Tools:
 | `get_diff(path?)` | Full diff or per-file section |
 | `reply_to_comment(id, text)` | Queue a reply to an existing comment thread |
 | `resolve_comment(id)` | Queue a resolve on an existing comment thread |
-| `reflect(learned, questions_remaining, confidence, next_action)` | SGR structured self-reflection |
+| `reflect(learned, resolved_questions, questions_remaining, confidence, next_action)` | SGR structured self-reflection |
 | `done(findings)` | Submit findings and stop |
 
 Multiple tool calls from a single LLM response execute in parallel via `ThreadPoolExecutor`.
@@ -219,7 +219,16 @@ Adaptive budget nudges at 50% and 75% of `max_tokens` push the agent toward wrap
 
 ### SGR (Self-Guided Reasoning)
 
-The agent calls `reflect()` every 3–5 steps to track what it has learned, what questions remain open, and what to do next. `reflect()` always returns `"Reflection noted."` — its value is purely in structuring the agent's reasoning before the next step.
+The agent calls `reflect()` every 3–5 steps to track what it has learned, what questions remain open, and what to do next.
+
+The `resolved_questions` field requires the agent to explicitly answer or drop every question from the previous reflect — no silent omissions. Each entry carries a `resolution` (`"answered"` / `"dropped"`) and a `summary` (the answer or reason for dropping).
+
+The CLI renders a live convergence panel at the bottom of the terminal showing:
+- **Confidence trajectory** — `low → medium → high` across all reflects
+- **Open questions** — colour-coded by age: green (new), yellow (1 reflect old), red (stale, 2+)
+- **Resolved section** — last 5 answered/dropped questions with their summaries
+
+`reflect()` returns `"Reflection noted."` — its value is in structuring the agent's reasoning and making convergence visible.
 
 ### Incremental review
 

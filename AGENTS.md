@@ -134,13 +134,18 @@ The `reflect` tool lets the agent structure its own reasoning mid-loop:
 ```json
 {
   "learned": "StoreCreditService.apply() is called from OrderController",
+  "resolved_questions": [
+    {"question": "Is apply() idempotent?", "resolution": "answered", "summary": "Yes — guarded by a unique constraint on credit_application_id"},
+    {"question": "Is there a retry loop?", "resolution": "dropped", "summary": "Out of scope for this diff"}
+  ],
   "questions_remaining": ["Is the balance check atomic?"],
   "confidence": "medium",
   "next_action": "Read the transaction boundary around apply()"
 }
 ```
-Always returns `"Reflection noted."` — no side effects. The value is in forcing
-the agent to articulate its state before the next tool call.
+`resolved_questions` is required: every question open in the previous `reflect()` must be moved here as `"answered"` (with the answer) or `"dropped"` (with a reason). Questions must not silently disappear.
+
+Always returns `"Reflection noted."` — no side effects. The value is in forcing the agent to explicitly resolve prior questions and articulate its state before the next tool call.
 
 ### `bitbucket.py`
 
@@ -174,7 +179,7 @@ All events are fired via `on_event(event, **kwargs)`. Unknown events are silentl
 | `orchestrator_plan_done` | `plan` |
 | `orchestrator_stream` | `step`, `tool_name`, `args_preview`, `tok` |
 | `orchestrator_step` | `step`, `tool`, `args`, `tok_in`, `tok_out`, `tok_cached` |
-| `orchestrator_reflect` | `step`, `learned`, `questions_remaining`, `confidence`, `next_action` |
+| `orchestrator_reflect` | `step`, `learned`, `resolved_questions`, `questions_remaining`, `confidence`, `next_action` |
 | `orchestrator_result` | `step`, `tool`, `result_len` |
 | `orchestrator_done` | `findings`, `replies`, `resolves` |
 | `orchestrator_forced_done` | `reason`, `tok_in`, `tok_out`, `tok_cached` |
