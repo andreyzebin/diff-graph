@@ -153,6 +153,19 @@ _SOLVE_TOOLS = [
                         "items": {"type": "string"},
                         "description": "Open questions still to answer.",
                     },
+                    "resolved_questions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "question": {"type": "string"},
+                                "resolution": {"type": "string", "enum": ["answered", "dropped"]},
+                                "summary": {"type": "string", "description": "The answer, or reason for dropping."},
+                            },
+                            "required": ["question", "resolution", "summary"],
+                        },
+                        "description": "Questions from the previous reflect() that are now resolved. Move each question here as 'answered' (with the answer) or 'dropped' (with reason). Do not leave questions open indefinitely.",
+                    },
                     "confidence": {
                         "type": "string",
                         "enum": ["low", "medium", "high"],

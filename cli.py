@@ -336,12 +336,84 @@ def _finding_to_comment(finding):
 
 
 def _make_event_handler(model: str, live: Optional[Live]):
+    # SGR convergence state — updated on every reflect event
+    _sgr: dict = {
+        "questions":     {},   # question_text -> age (number of reflects it has been open)
+        "step_opened":   {},   # question_text -> step number when first seen
+        "conf_history":  [],   # [(step, conf), ...]
+        "resolved_set":  set(),# unique question texts that have been resolved/dropped
+        "resolutions":   [],   # [(step, question, resolution_type, summary), ...]
+    }
+
+    def _render_convergence() -> Panel:
+        body = Text()
+
+        # Confidence trajectory
+        if _sgr["conf_history"]:
+            _cc = {"low": "red", "medium": "yellow", "high": "green"}
+            body.append("conf: ", style="dim")
+            for i, (_, conf) in enumerate(_sgr["conf_history"]):
+                if i:
+                    body.append(" → ", style="dim")
+                body.append(conf, style=_cc.get(conf, "white"))
+            body.append("\n\n")
+
+        # Open questions with age-based colouring
+        if _sgr["questions"]:
+            for q, age in _sgr["questions"].items():
+                if age == 0:
+                    dot, color, tag = "●", "green", " new"
+                elif age == 1:
+                    dot, color, tag = "●", "yellow", ""
+                else:
+                    dot, color, tag = "●", "red", f" [!×{age}]"
+                display_q = (q[:58] + "…") if len(q) > 60 else q
+                step_opened = _sgr["step_opened"].get(q, "?")
+                body.append(f"  {dot} ", style=f"bold {color}")
+                body.append(display_q)
+                body.append(f"  step {step_opened}  age {age}{tag}\n", style="dim")
+        else:
+            body.append("  (no open questions)\n", style="dim")
+
+        if _sgr["resolutions"]:
+            body.append("\nResolved\n", style="bold")
+            for step_r, q, res_type, summary in _sgr["resolutions"][-5:]:  # last 5
+                icon  = "✓" if res_type == "answered" else "✗"
+                color = "green" if res_type == "answered" else "dim"
+                display_q = (q[:40] + "…") if len(q) > 42 else q
+                body.append(f"  {icon} ", style=f"bold {color}")
+                body.append(f"{display_q}", style="dim")
+                body.append(f"  step {step_r}\n", style="dim")
+                if summary:
+                    body.append(f"    {summary[:80]}\n", style="dim italic")
+
+        n_open = len(_sgr["questions"])
+        last_conf = _sgr["conf_history"][-1][1] if _sgr["conf_history"] else "?"
+        last_conf_color = {"low": "red", "medium": "yellow", "high": "green"}.get(last_conf, "white")
+        return Panel(
+            body,
+            title=(
+                f"[dim]SGR  {n_open} open  "
+                f"conf=[{last_conf_color}]{last_conf}[/{last_conf_color}][/dim]"
+            ),
+            border_style="dim blue",
+            box=rich_box.ROUNDED,
+            padding=(0, 1),
+        )
+
     def _log(msg: str) -> None:
         (live.console if live else console).log(msg)
 
     def _live_update(text) -> None:
         if live:
             live.update(text)
+
+    def _restore_convergence() -> None:
+        """Restore convergence panel after transient live updates (streaming, etc.)."""
+        if _sgr["conf_history"]:
+            _live_update(_render_convergence())
+        else:
+            _live_update("")
 
     def on_event(event: str, **kw) -> None:
         if event == "orchestrator_plan_start":
@@ -390,49 +462,97 @@ def _make_event_handler(model: str, live: Optional[Live]):
             ))
 
         elif event == "orchestrator_step":
-            _live_update("")
             tool    = kw.get("tool", "")
             args    = kw.get("args", {})
             arg_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])
             tok_str = _fmt_tok(kw)
             _log(f"[dim]  step {kw.get('step', 0)}  [green]{tool}[/green]({arg_str})  {tok_str}[/dim]")
+            _restore_convergence()
 
         elif event == "orchestrator_reflect":
-            _live_update("")
-            conf        = kw.get("confidence", "?")
-            learned     = str(kw.get("learned", ""))
-            questions   = kw.get("questions_remaining", [])
-            next_action = str(kw.get("next_action", ""))
+            step               = kw.get("step", 0)
+            conf               = kw.get("confidence", "?")
+            learned            = str(kw.get("learned", ""))
+            questions          = kw.get("questions_remaining", [])
+            resolved_questions = kw.get("resolved_questions", [])
+            next_action        = str(kw.get("next_action", ""))
 
+            # ── Update SGR convergence state ──────────────────────────────────
+            # Record explicit resolutions from the LLM
+            for rq in (resolved_questions or []):
+                if not isinstance(rq, dict):
+                    continue
+                q_text   = rq.get("question", "")
+                res_type = rq.get("resolution", "answered")
+                summary  = rq.get("summary", "")
+                if q_text and q_text not in _sgr["resolved_set"]:
+                    _sgr["resolved_set"].add(q_text)
+                    _sgr["resolutions"].append((step, q_text, res_type, summary))
+
+            # Also silently-resolved questions (disappeared without explicit entry)
+            new_q_set = set(questions)
+            old_q_set = set(_sgr["questions"].keys())
+            for q in (old_q_set - new_q_set):
+                if q not in _sgr["resolved_set"]:
+                    _sgr["resolved_set"].add(q)
+                    _sgr["resolutions"].append((step, q, "dropped", "(implicit)"))
+
+            new_questions: dict = {}
+            for q in questions:
+                if q in _sgr["questions"]:
+                    new_questions[q] = _sgr["questions"][q] + 1  # existing: increment age
+                else:
+                    new_questions[q] = 0                          # new or reappearing: age 0
+                    _sgr["step_opened"][q] = step                 # always sync with age reset
+            _sgr["questions"] = new_questions
+            _sgr["conf_history"].append((step, conf))
+
+            # ── Print reflect panel (scrolls into history) ────────────────────
             conf_color = {"low": "red", "medium": "yellow", "high": "green"}.get(conf, "white")
-
             body = Text()
             if learned:
                 body.append("Learned\n", style="bold")
                 for line in learned.splitlines():
                     body.append(f"  {line}\n", style="")
+            if resolved_questions:
+                body.append("\nResolved\n", style="bold")
+                for rq in resolved_questions:
+                    if not isinstance(rq, dict):
+                        continue
+                    icon  = "✓" if rq.get("resolution") == "answered" else "✗"
+                    color = "green" if rq.get("resolution") == "answered" else "dim"
+                    body.append(f"  {icon} ", style=f"bold {color}")
+                    body.append(f"{rq.get('question', '')}\n", style="dim")
+                    if rq.get("summary"):
+                        body.append(f"    {rq['summary']}\n", style="dim italic")
             if questions:
                 body.append("\nOpen\n", style="bold")
                 for q in questions:
-                    body.append(f"  • {q}\n", style="dim")
+                    age = new_questions.get(q, 0)
+                    age_color = ("green" if age == 0 else "yellow" if age == 1 else "red")
+                    body.append("  • ", style=f"bold {age_color}")
+                    body.append(f"{q}\n", style="dim")
             if next_action:
                 body.append("\nNext\n", style="bold green")
                 body.append(f"  {next_action}", style="")
 
             panel = Panel(
                 body,
-                title=f"reflect · step {kw.get('step', '?')} · conf=[{conf_color}]{conf}[/{conf_color}]",
+                title=f"[bold]reflect[/bold] · step {step} · conf=[{conf_color}]{conf}[/{conf_color}]",
                 border_style="dim",
                 box=rich_box.ROUNDED,
                 padding=(0, 1),
             )
             (live.console if live else console).print(panel)
 
+            # ── Update live convergence panel ─────────────────────────────────
+            _live_update(_render_convergence())
+
         elif event == "orchestrator_result":
             pass
 
         elif event == "orchestrator_done":
-            _live_update("")
+            _live_update("")   # clear convergence panel before final log
             tok_str = _fmt_tok(kw)
             _log(
                 f"[bold green]done[/bold green]      "
@@ -443,7 +563,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             )
 
         elif event == "orchestrator_forced_done":
-            _live_update("")
+            _live_update("")   # clear convergence panel
             _log(
                 f"[yellow]forced[/yellow]    {kw.get('reason', 'limit')}  "
                 f"[dim cyan]{_fmt_tok(kw)}[/dim cyan]"

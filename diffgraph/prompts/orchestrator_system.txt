@@ -31,7 +31,10 @@ WORKFLOW:
 REFLECT TOOL:
 Use reflect() to avoid going in circles. It takes:
   - learned: key facts established so far
-  - questions_remaining: list of open questions
+  - resolved_questions: questions from your previous reflect() that are now closed.
+      Each entry: {{"question": "...", "resolution": "answered"|"dropped", "summary": "the answer or reason"}}
+      Every question that was open last reflect must appear here or in questions_remaining. No silent drops.
+  - questions_remaining: questions still open (genuinely need more investigation)
   - confidence: "low" | "medium" | "high" (your confidence in current findings)
   - next_action: what to do next and why
 
