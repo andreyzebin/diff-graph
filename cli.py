@@ -348,16 +348,34 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _log("[bold green]plan[/bold green]      strategist analyzing diff…")
 
         elif event == "orchestrator_plan_done":
-            plan = kw.get("plan", {})
+            plan        = kw.get("plan", {})
             system_type = plan.get("system_type", "?")
-            tasks = plan.get("tasks", [])
-            task_str = "  ".join(
-                f"{t.get('type')}[{t.get('priority', '?')}]" for t in tasks[:5]
+            tasks       = plan.get("tasks", [])
+
+            pri_color = {"high": "red", "medium": "yellow", "low": "green"}
+
+            body = Text()
+            for t in tasks:
+                pri   = t.get("priority", "?")
+                color = pri_color.get(pri, "white")
+                body.append(f"\n  [{pri}] ", style=f"bold {color}")
+                body.append(t.get("type", "?"), style="bold")
+                body.append("\n")
+                focus = t.get("focus", "")
+                if focus:
+                    body.append(f"    {focus}\n", style="")
+                hints = t.get("search_hints") or []
+                if hints:
+                    body.append(f"    → {' · '.join(hints)}\n", style="dim")
+
+            panel = Panel(
+                body,
+                title=f"[bold green]plan[/bold green] · [cyan]{system_type}[/cyan] · {len(tasks)} focuses",
+                border_style="dim",
+                box=rich_box.ROUNDED,
+                padding=(0, 1),
             )
-            _log(
-                f"[bold green]plan[/bold green]      "
-                f"system=[cyan]{system_type}[/cyan]  [dim]{task_str}[/dim]"
-            )
+            (live.console if live else console).print(panel)
 
         elif event == "orchestrator_stream":
             tool_name    = kw.get("tool_name", "")
