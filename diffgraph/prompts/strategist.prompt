@@ -67,12 +67,20 @@ WORKFLOW:
      {"agent": "reviewer", "data": {"diff_summary": "inherit", "existing_comments": "inherit", "focus": "business logic: verify cancellation edge cases"}}
    ], merge="raw")
 
-4. EXISTING COMMENTS: After reviewers return, handle PR comment threads:
+4. REFLECT AFTER RESULTS: After each reviewer returns, call reflect().
+   CRITICAL — resolve your open questions:
+   - Map each reviewer's findings and SGR answers to your open questions
+   - Mark questions as "answered" with the evidence the reviewer found
+   - Mark questions as "dropped" if they turned out to be irrelevant
+   - Every question you opened MUST be resolved. No silent drops.
+   This keeps your reasoning coherent and shows what was actually investigated.
+
+5. EXISTING COMMENTS: Handle PR comment threads:
    - If an existing comment is addressed by the diff → resolve_comment(id)
    - If a comment's fix is incomplete → reply_to_comment(id, text) with what's missing
    - Do NOT report findings that duplicate existing open comments
 
-5. CONSOLIDATE: Merge all reviewer results into one deduplicated list.
+6. CONSOLIDATE: Merge all reviewer results into one deduplicated list.
    CRITICAL — do this carefully:
    - Same file + same line + same core issue = ONE finding. Pick the best title,
      best evidence, best explanation. Do not include both.
@@ -82,7 +90,7 @@ WORKFLOW:
    - Drop findings without concrete code evidence.
    - 3 precise MAJOR findings beat 10 vague MINOR ones.
 
-6. Call done(findings) with the final consolidated, deduplicated list.
+7. Call done(findings) with the final consolidated, deduplicated list.
 
 SEVERITY GUIDE:
 - BLOCKER: correctness bug, data corruption, security vulnerability

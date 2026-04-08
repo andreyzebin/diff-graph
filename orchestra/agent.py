@@ -356,15 +356,14 @@ class Agent:
                     self._done_output = args.get("findings", args)
                     self._done_called = True
                     findings_from_done = self._done_output
-                elif tc.function.name not in ("reflect", "spawn_agent", "spawn_many",
-                                               "plan", "fork", "adjust_agent", "observe_agents"):
-                    result = dispatch_results.get(tc.id, "")
-                    result_count = len(result) if isinstance(result, list) else None
+                elif tc.function.name != "reflect":
+                    # Emit AGENT_TOOL_RESULT for ALL tools (domain + meta)
+                    result_text = content  # already computed by _handle_tool_call
                     self.event_bus.emit(EventType.AGENT_TOOL_RESULT,
                                        agent_id=self.agent_id, agent_name=self.config.name,
                                        step=step, tool=tc.function.name,
-                                       result_len=len(str(result)),
-                                       result_count=result_count)
+                                       result_len=len(result_text),
+                                       result_count=None)
                     step_record.tool_calls.append({"name": tc.function.name})
 
             if response.usage:
