@@ -151,9 +151,10 @@ class TopologyRunner:
             prompt_vars=prompt_vars,
         )
 
-        # Wire up spawn/fork callbacks
+        # Wire up spawn/fork/plan callbacks
         agent.on_spawn = lambda req: self._handle_spawn(agent, req)
         agent.on_fork = lambda req: self._handle_fork(agent, req)
+        agent.on_plan = lambda req: self._handle_plan(agent, req)
 
         return agent.run()
 
@@ -361,7 +362,62 @@ class TopologyRunner:
 
         return self.config.agents.get(node.agent)
 
-    # ── Spawn / Fork handling ─────────────────────────────────────────────────
+    # ── Plan / Spawn / Fork handling ─────────────────────────────────────────
+
+    def _handle_plan(self, parent: Agent, request: dict) -> Any:
+        """Handle a plan request — spawn a planner sub-agent."""
+        from .tools.builtin import DEFAULT_PLAN_PROMPT
+
+        goal = request.get("goal", "")
+        constraints = request.get("constraints", "")
+        custom_prompt = request.get("_prompt", "")
+
+        plan_prompt = custom_prompt or DEFAULT_PLAN_PROMPT
+
+        user_content = f"Goal: {goal}"
+        if constraints:
+            user_content += f"\nConstraints: {constraints}"
+
+        # Add parent SGR context
+        if parent.sgr and parent.sgr.last:
+            user_content += f"\nCurrent knowledge: {parent.sgr.last.learned[:500]}"
+            if parent.sgr.last.questions_remaining:
+                user_content += "\nOpen questions: " + "; ".join(
+                    parent.sgr.last.questions_remaining[:5]
+                )
+
+        # Allocate child budget
+        child_budget = parent.budget_tracker.allocate_child(parent.budget_state, 0.1)
+
+        plan_config = AgentConfig(
+            name="planner",
+            system_prompt=plan_prompt,
+            sgr=False,
+            budget=child_budget,
+        )
+
+        child = Agent(
+            config=plan_config,
+            tool_registry=self.registry,
+            llm=self.llm,
+            model=self.model,
+            event_bus=self.event_bus,
+            parent_id=parent.agent_id,
+            depth=parent.depth + 1,
+            context_messages=[{"role": "user", "content": user_content}],
+        )
+
+        self.event_bus.emit(EventType.AGENT_SPAWNED,
+                           parent_id=parent.agent_id,
+                           child_id=child.agent_id,
+                           agent_name="planner")
+
+        result = child.run()
+
+        if child.budget_state:
+            parent.budget_tracker.debit_child(parent.budget_state, child.budget_state)
+
+        return result.output
 
     def _handle_spawn(self, parent: Agent, request: dict) -> AgentResult:
         """Handle a spawn_agent request from an agent."""

@@ -103,9 +103,13 @@ class Agent:
         # Resolve LLM params
         self._base_llm_params = self._resolve_base_params()
 
-        # Spawn/fork callbacks (set by runner)
+        # Spawn/fork/plan callbacks (set by runner)
         self.on_spawn: Optional[Callable] = None  # (spawn_request) -> AgentResult
         self.on_fork: Optional[Callable] = None    # (fork_request) -> list[AgentResult]
+        self.on_plan: Optional[Callable] = None    # (plan_request) -> dict
+
+        # Auto-spawn tracking
+        self._auto_spawn_counts: dict[int, int] = {}  # rule_index -> fire count
 
     def run(self) -> AgentResult:
         """Main entry point."""
@@ -189,6 +193,12 @@ class Agent:
                     not self._done_called):
                 # Soft nudge — don't force, just remind
                 pass  # The prompt already tells the agent to reflect every N steps
+
+            # Auto-spawn check (on_start for step 0, on_stuck/on_low_confidence for others)
+            if not self._done_called:
+                auto_result = self._check_auto_spawn(step, messages, "on_start" if step == 0 else None)
+                if auto_result:
+                    messages.append({"role": "user", "content": auto_result})
 
             # Resolve LLM params for this step
             step_params = self._resolve_step_params(step)
@@ -291,6 +301,8 @@ class Agent:
                     content = self._handle_spawn_tool(tc)
                 elif tc.function.name == "fork":
                     content = self._handle_fork_tool(tc)
+                elif tc.function.name == "plan":
+                    content = self._handle_plan_tool(tc)
                 else:
                     result = dispatch_results.get(tc.id, "")
                     result_count = len(result) if isinstance(result, list) else None
@@ -310,6 +322,12 @@ class Agent:
                 step_record.tokens_out = response.usage.completion_tokens
                 step_record.tokens_cached = _extract_cached(response.usage)
             trace.steps.append(step_record)
+
+            # Auto-spawn after reflect (on_reflect, on_low_confidence, on_many_questions)
+            if not self._done_called and self.sgr and steps_since_reflect == 0:
+                auto_result = self._check_auto_spawn(step, messages, "on_reflect")
+                if auto_result:
+                    messages.append({"role": "user", "content": auto_result})
 
             if findings_from_done is not None:
                 trace.total_tokens = self.budget_state.tokens_used
@@ -446,6 +464,176 @@ class Agent:
             except Exception as e:
                 return f"fork failed: {e}"
         return "fork not available at this depth"
+
+    def _handle_plan_tool(self, tc) -> str:
+        """Handle plan() tool call — spawns a planner sub-agent."""
+        try:
+            args = json.loads(tc.function.arguments or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        if self.on_plan:
+            try:
+                result = self.on_plan(args)
+                if isinstance(result, dict):
+                    return json.dumps(result, indent=2, ensure_ascii=False, default=str)
+                return str(result)
+            except Exception as e:
+                return f"plan failed: {e}"
+        # Fallback: run plan inline via a single LLM call
+        return self._run_inline_plan(args)
+
+    def _run_inline_plan(self, args: dict) -> str:
+        """Run a lightweight plan via a single LLM call (no sub-agent needed)."""
+        from .tools.builtin import DEFAULT_PLAN_PROMPT
+        goal = args.get("goal", "")
+        constraints = args.get("constraints", "")
+        output_hint = args.get("output_hint", "")
+
+        user_content = f"Goal: {goal}"
+        if constraints:
+            user_content += f"\nConstraints: {constraints}"
+        if output_hint:
+            user_content += f"\nOutput format: {output_hint}"
+
+        # Add SGR context if available
+        if self.sgr and self.sgr.last:
+            user_content += f"\n\nCurrent knowledge:\n{self.sgr.last.learned}"
+            if self.sgr.last.questions_remaining:
+                user_content += "\nOpen questions:\n" + "\n".join(
+                    f"- {q}" for q in self.sgr.last.questions_remaining
+                )
+
+        try:
+            resp = self.llm.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": DEFAULT_PLAN_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0,
+                stream=False,
+            )
+            content = (resp.choices[0].message.content or "").strip()
+            # Try to parse as JSON for cleaner output
+            if content.startswith("```"):
+                content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            return content
+        except Exception as e:
+            return f"plan generation failed: {e}"
+
+    # ── Auto-spawn ────────────────────────────────────────────────────────────
+
+    def _check_auto_spawn(self, step: int, messages: list[dict],
+                          event: str | None = None) -> str | None:
+        """
+        Check auto-spawn rules and fire if conditions met.
+        Returns a string to inject into messages, or None.
+        """
+        if not self.config.auto_spawn:
+            return None
+
+        for idx, rule in enumerate(self.config.auto_spawn):
+            if not rule.enabled:
+                continue
+            count = self._auto_spawn_counts.get(idx, 0)
+            if count >= rule.max_spawns:
+                continue
+            if not self._should_auto_spawn(rule, step, event):
+                continue
+
+            # Fire!
+            self._auto_spawn_counts[idx] = count + 1
+
+            self.event_bus.emit(EventType.AGENT_SPAWNED,
+                                parent_id=self.agent_id,
+                                child_id=f"{self.agent_id}_auto_{idx}_{count}",
+                                agent_name=f"auto_{rule.spawn_type}",
+                                trigger=rule.trigger)
+
+            if rule.spawn_type == "plan":
+                result = self._auto_spawn_plan(rule)
+            elif rule.spawn_type == "sgr":
+                result = self._auto_spawn_sgr(rule)
+            else:
+                continue
+
+            if result and rule.inject_result:
+                return f"[Auto-spawned {rule.spawn_type} agent result]\n{result}"
+
+        return None
+
+    def _should_auto_spawn(self, rule, step: int, event: str | None) -> bool:
+        """Check if an auto-spawn rule should fire."""
+        trigger = rule.trigger
+
+        if trigger == "on_start" and event == "on_start" and step == 0:
+            return True
+
+        if trigger == "on_reflect" and event == "on_reflect":
+            return True
+
+        if trigger == "on_low_confidence" and self.sgr and self.sgr.last:
+            if self.sgr.last.confidence == "low" and step >= rule.threshold:
+                return True
+
+        if trigger == "on_many_questions" and self.sgr and self.sgr.last:
+            if len(self.sgr.last.questions_remaining) >= rule.threshold:
+                return True
+
+        if trigger == "on_stuck" and event == "on_stuck":
+            return True
+
+        return False
+
+    def _auto_spawn_plan(self, rule) -> str | None:
+        """Auto-spawn a plan sub-agent."""
+        from .tools.builtin import DEFAULT_PLAN_PROMPT
+
+        # Build goal from SGR state
+        goal = "Create a plan for the current investigation."
+        if self.sgr and self.sgr.last:
+            goal = f"Plan next steps. Current knowledge: {self.sgr.last.learned[:300]}"
+            if self.sgr.last.questions_remaining:
+                goal += "\nOpen questions: " + "; ".join(self.sgr.last.questions_remaining[:5])
+
+        prompt = rule.plan_prompt or DEFAULT_PLAN_PROMPT
+
+        if self.on_plan:
+            try:
+                result = self.on_plan({"goal": goal, "_auto": True, "_prompt": prompt})
+                return json.dumps(result, indent=2, default=str) if isinstance(result, dict) else str(result)
+            except Exception as e:
+                log.warning("auto-spawn plan failed: %s", e)
+
+        # Inline fallback
+        return self._run_inline_plan({"goal": goal})
+
+    def _auto_spawn_sgr(self, rule) -> str | None:
+        """Auto-spawn an SGR sub-agent for a specific question."""
+        if not self.sgr or not self.sgr.last or not self.sgr.last.questions_remaining:
+            return None
+
+        # Pick the first open question
+        question = self.sgr.last.questions_remaining[0]
+
+        if self.on_spawn:
+            try:
+                result = self.on_spawn({
+                    "agent": rule.child_agent or self.config.name,
+                    "focus": question,
+                    "context_handoff": rule.context_handoff,
+                    "wait": True,
+                    "_auto": True,
+                })
+                if hasattr(result, 'output'):
+                    return json.dumps({
+                        "question": question,
+                        "result": result.output,
+                    }, indent=2, default=str)
+            except Exception as e:
+                log.warning("auto-spawn sgr failed: %s", e)
+
+        return None
 
     # ── Budget pushers ────────────────────────────────────────────────────────
 

@@ -86,6 +86,35 @@ class AutoForkConfig:
     depth_limit: int = 2
 
 
+# ── Auto-spawn ────────────────────────────────────────────────────────────────
+
+@dataclass
+class AutoSpawnConfig:
+    """
+    Configures automatic spawning of plan or SGR sub-agents.
+
+    Triggers:
+      - on_start:        spawn before the agent's first step
+      - on_reflect:      spawn after every reflect() call
+      - on_low_confidence: spawn when SGR confidence is "low" after N steps
+      - on_stuck:        spawn when stuck detector fires
+      - on_many_questions: spawn when open questions exceed threshold
+
+    Spawn types:
+      - plan:  spawns a planner sub-agent that returns a structured plan
+      - sgr:   spawns an SGR sub-agent that investigates a sub-question
+    """
+    enabled: bool = False
+    trigger: str = "on_start"  # on_start | on_reflect | on_low_confidence | on_stuck | on_many_questions
+    spawn_type: str = "plan"   # plan | sgr
+    threshold: int = 0         # for on_low_confidence: min steps before trigger; on_many_questions: question count
+    max_spawns: int = 3        # max times this auto-spawn can fire per agent run
+    child_agent: str = ""      # agent config name (empty = use built-in plan/sgr agent)
+    context_handoff: str = "sgr_outcomes"
+    plan_prompt: str = ""      # custom system prompt for the plan sub-agent (empty = default)
+    inject_result: bool = True # inject sub-agent result into parent's message history
+
+
 # ── Adaptive LLM params ──────────────────────────────────────────────────────
 
 @dataclass
@@ -134,6 +163,7 @@ class AgentConfig:
     condensation: Optional[CondensationConfig] = None
     fork: Optional[ForkConfig] = None
     auto_fork: Optional[AutoForkConfig] = None
+    auto_spawn: list["AutoSpawnConfig"] = field(default_factory=list)  # multiple auto-spawn rules
     llm_params: Optional[LLMParamsConfig] = None
 
 

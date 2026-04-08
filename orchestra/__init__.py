@@ -4,6 +4,7 @@ Orchestra — a configurable multi-agent orchestration framework.
 from .types import (
     AgentConfig,
     AutoForkConfig,
+    AutoSpawnConfig,
     BudgetConfig,
     CondensationConfig,
     CondensationStrategy,
@@ -30,7 +31,7 @@ from .tools.registry import ToolRegistry
 
 __all__ = [
     # Types
-    "AgentConfig", "AutoForkConfig", "BudgetConfig", "CondensationConfig",
+    "AgentConfig", "AutoForkConfig", "AutoSpawnConfig", "BudgetConfig", "CondensationConfig",
     "CondensationStrategy", "EdgeConfig", "FeedbackLoopConfig", "ForkConfig",
     "LLMParamsConfig", "ModelScheduleEntry", "NodeConfig", "NodeType",
     "OrchestraConfig", "PusherConfig", "PusherType", "ScheduleConfig",

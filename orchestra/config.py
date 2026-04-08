@@ -14,6 +14,7 @@ import yaml
 from .types import (
     AgentConfig,
     AutoForkConfig,
+    AutoSpawnConfig,
     BudgetConfig,
     CondensationConfig,
     CondensationStrategy,
@@ -238,6 +239,20 @@ def _parse_agent(name: str, d: dict) -> AgentConfig:
             model_schedule=model_schedule,
         )
 
+    auto_spawn = []
+    for asp in d.get("auto_spawn", []):
+        auto_spawn.append(AutoSpawnConfig(
+            enabled=asp.get("enabled", False),
+            trigger=asp.get("trigger", "on_start"),
+            spawn_type=asp.get("spawn_type", "plan"),
+            threshold=asp.get("threshold", 0),
+            max_spawns=asp.get("max_spawns", 3),
+            child_agent=asp.get("child_agent", ""),
+            context_handoff=asp.get("context_handoff", "sgr_outcomes"),
+            plan_prompt=asp.get("plan_prompt", ""),
+            inject_result=asp.get("inject_result", True),
+        ))
+
     return AgentConfig(
         name=name,
         system_prompt=d.get("system_prompt", ""),
@@ -251,6 +266,7 @@ def _parse_agent(name: str, d: dict) -> AgentConfig:
         condensation=condensation,
         fork=fork,
         auto_fork=auto_fork,
+        auto_spawn=auto_spawn,
         llm_params=llm_params,
     )
 
