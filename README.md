@@ -1,6 +1,6 @@
 # DiffGraph
 
-Multi-agent PR code reviewer. Takes a git diff (or a Bitbucket Server PR URL) and runs a two-phase pipeline: a Strategist agent plans what to look for, then a ReAct Solver agent explores the repo and produces structured inline findings.
+Multi-agent PR code reviewer powered by the **Orchestra** orchestration framework. Takes a git diff (or a Bitbucket Server PR URL) and runs a configurable agent topology: a Strategist agent plans what to look for, then one or more ReAct Solver agents explore the repo and produce structured inline findings.
 
 ```
 git diff / PR URL
@@ -9,10 +9,17 @@ git diff / PR URL
 parse_diff()       changed files + changed lines
       │
       ▼
-plan phase         one LLM call: detect system type, build typed task list
-      │
-      ▼
-solve phase        ReAct loop: explore repo with tools, reflect, report
+┌─────────────────────────── Orchestra Topology ───────────────────────────┐
+│                                                                          │
+│  strategist (single)    one LLM call → typed task list                   │
+│       │                                                                  │
+│       ▼                                                                  │
+│  reviewer (react)       ReAct loop: tools, SGR reflect, budget pushers   │
+│       │                 can spawn sub-agents / fork branches             │
+│       ▼                                                                  │
+│  [optional: fan_out → N parallel agents → join/synthesizer]              │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
       │
       ▼
 ReviewFinding[]    BLOCKER / MAJOR / MINOR / COMMENT with evidence
@@ -174,6 +181,148 @@ findings, ctx = dg.review(diff_text, existing_comments=[
 
 ---
 
+## Orchestra Framework
+
+DiffGraph is built on **Orchestra**, a general-purpose multi-agent orchestration framework that lives in the `orchestra/` directory. Orchestra can be used independently of DiffGraph for any multi-agent workflow.
+
+### Key capabilities
+
+| Capability | Description |
+|---|---|
+| **YAML-configurable agents** | Define agents with system prompts, tools, SGR, budgets, and adaptive params in YAML or Python |
+| **DAG topologies** | Wire agents into directed acyclic graphs with `single`, `react`, `fan_out`, and `join` node types |
+| **Context handoff** | 7 built-in modes: `full_history`, `sgr_outcomes`, `all_sgr`, `findings_only`, `findings_and_sgr`, `condensed`, `last_N` |
+| **Dynamic spawning** | Agents spawn sub-agents via tool call, JSON output, or SGR auto-fork |
+| **SGR (Self-Guided Reasoning)** | Structured `reflect()` with question tracking, confidence, custom extension fields |
+| **Budget pushers** | Configurable `(threshold, action)` pairs: `nudge`, `force_reflect`, `force_done`, `custom` |
+| **Message condensation** | 4 strategies for long-running agents: `llm_summary`, `sliding_window`, `drop_tool_results`, `hybrid` |
+| **Shared/swarm tools** | Thread-safe `AppendLog`, `MutexMap`, `Blackboard` for agent coordination |
+| **Adaptive LLM params** | Temperature, penalties, model switch per-step driven by budget, SGR confidence, repetition score |
+| **Behavioral feedback** | Repetition detector, progress tracker, stuck detector with configurable actions |
+| **Cross-agent feedback loops** | Topology-level observer→target wiring to adjust child agent params/budget in real time |
+| **Fork & merge** | Agents fork into parallel branches; merge via `best_confidence`, `union`, `llm_merge`, or custom |
+| **Observability** | 22 event types, full execution tree reconstruction, per-agent token accounting |
+
+### Using Orchestra directly
+
+```python
+from orchestra import (
+    Agent, AgentConfig, BudgetConfig, ToolRegistry,
+    Topology, TopologyRunner, EventBus, OrchestraConfig,
+    NodeConfig, EdgeConfig, TopologyConfig, NodeType,
+    PusherConfig, PusherType,
+)
+
+# 1. Define agents
+config = OrchestraConfig(
+    agents={
+        "planner": AgentConfig(
+            name="planner",
+            system_prompt="You plan research tasks. Output JSON with a 'tasks' array.",
+            sgr=False,
+            budget=BudgetConfig(max_steps=1),
+        ),
+        "researcher": AgentConfig(
+            name="researcher",
+            system_prompt="You research topics using available tools.",
+            sgr=True,
+            tools=["search", "read_file"],
+            budget=BudgetConfig(
+                max_tokens=20000, max_steps=20,
+                pushers=[
+                    PusherConfig(at=0.75, type=PusherType.NUDGE, message="Wrap up soon."),
+                    PusherConfig(at=1.0, type=PusherType.FORCE_DONE),
+                ],
+            ),
+        ),
+    },
+    topologies={
+        "research": TopologyConfig(
+            name="research",
+            nodes=[
+                NodeConfig(id="plan", agent="planner", type=NodeType.SINGLE),
+                NodeConfig(id="research", agent="researcher", type=NodeType.REACT),
+            ],
+            edges=[
+                EdgeConfig(from_node="plan", to_node="research", context_handoff="findings_only"),
+            ],
+        ),
+    },
+)
+
+# 2. Register tools
+registry = ToolRegistry()
+
+@registry.register
+def search(query: str) -> str:
+    """Search for information."""
+    return f"Results for: {query}"
+
+# 3. Run topology
+from openai import OpenAI
+llm = OpenAI()
+event_bus = EventBus()
+
+topology = Topology(config.topologies["research"])
+runner = TopologyRunner(topology, config, registry, llm, "gpt-4o-mini", event_bus)
+result = runner.run()
+
+print(result.final_output)
+```
+
+### Fan-out topology (parallel agents)
+
+```python
+# Strategist outputs tasks → N parallel reviewers → synthesizer joins results
+topologies:
+  parallel_review:
+    nodes:
+      - id: strategist
+        agent: strategist
+        type: single
+      - id: reviewers
+        agent: reviewer
+        type: fan_out
+        source: strategist
+        parallel: true
+        spawn_from: tasks       # one agent per task in strategist output
+      - id: synthesizer
+        agent: synthesizer
+        type: join
+        sources: [reviewers]
+    edges:
+      - from: strategist
+        to: reviewers
+        context_handoff: findings_only
+      - from: reviewers
+        to: synthesizer
+        context_handoff: findings_and_sgr
+```
+
+### Adaptive LLM parameters
+
+```yaml
+agents:
+  deep_researcher:
+    llm_params:
+      temperature: 0.3
+      schedules:
+        # Lower temperature as budget depletes
+        - param: temperature
+          driver: budget_ratio
+          curve: linear_decay
+          range: [0.4, 0.1]
+        # Increase frequency penalty when stuck in loops
+        - param: frequency_penalty
+          driver: repetition_score
+          curve: linear
+          range: [0.0, 1.5]
+```
+
+See [REQUIREMENTS.md](REQUIREMENTS.md) for the full technical specification (68 requirements across 11 sections).
+
+---
+
 ## How it works
 
 ### Plan phase
@@ -219,7 +368,7 @@ Adaptive budget nudges at 50% and 75% of `max_tokens` push the agent toward wrap
 
 ### SGR (Self-Guided Reasoning)
 
-The agent calls `reflect()` every 3–5 steps to track what it has learned, what questions remain open, and what to do next.
+The agent calls `reflect()` every 3-5 steps to track what it has learned, what questions remain open, and what to do next.
 
 The `resolved_questions` field requires the agent to explicitly answer or drop every question from the previous reflect — no silent omissions. Each entry carries a `resolution` (`"answered"` / `"dropped"`) and a `summary` (the answer or reason for dropping).
 
@@ -251,17 +400,39 @@ Java · Python · TypeScript / TSX · Go · Kotlin · Ruby · C#
 ## Architecture
 
 ```
-diffgraph/
-├── api.py               DiffGraph public API
-├── diff_parser.py       git diff text → DiffResult (hunks, changed lines)
-├── lang.py              language detection
-├── tools.py             list_files, read_file, search_text
-├── outline.py           tree-sitter structural outline
-├── streaming.py         stream_llm() helper
-├── orchestrator.py      run_review(): plan phase + ReAct solve phase
-├── bitbucket.py         fetch_pr, post/get/reply/resolve PR comments
+orchestra/                   General-purpose multi-agent framework (4,400 LOC)
+├── types.py                 Core dataclasses (AgentConfig, BudgetConfig, TopologyConfig, ...)
+├── config.py                YAML loading, env var expansion, validation
+├── events.py                EventBus with 22 event types
+├── agent.py                 Agent: single-shot + ReAct loop with SGR, budget, condensation
+├── topology.py              DAG definition, validation, topological sort
+├── runner.py                TopologyRunner: executes DAG, fan_out/join, spawn, fork
+├── budget.py                BudgetState, BudgetTracker, child budget partitioning
+├── sgr.py                   SGR tracker with extensions + handoff extraction
+├── handoff.py               7 built-in context handoff modes + compose
+├── condensation.py          4 message condensation strategies
+├── streaming.py             LLM streaming with adaptive param passthrough
+├── adaptive.py              Schedule drivers, curves, AdaptiveParamResolver
+├── feedback.py              Repetition detector, progress tracker, stuck detector
+├── feedback_loops.py        Cross-agent feedback loop manager
+├── merge.py                 Fork/join merge strategies
+├── prompts.py               Template loading + {var} interpolation
+└── tools/
+    ├── registry.py          @register decorator, YAML tools, OpenAI schema generation
+    ├── builtin.py           reflect, done, spawn_agent, fork tool factories
+    └── shared.py            AppendLog, MutexMap, Blackboard (thread-safe swarm tools)
+
+diffgraph/                   Code review domain logic
+├── api.py                   DiffGraph public API
+├── orchestrator.py          Thin wrapper: builds Orchestra topology for code review
+├── orchestra_tools.py       Domain tools registered as closures (find_files, read_file, ...)
+├── diff_parser.py           git diff text → DiffResult (hunks, changed lines)
+├── lang.py                  Language detection
+├── tools.py                 Filesystem primitives (list_files, read_file, search_text)
+├── outline.py               tree-sitter structural outline
+├── bitbucket.py             Bitbucket Server integration (fetch/post/reply/resolve)
 └── prompts/
-    ├── strategist_system.txt    plan phase prompt
+    ├── strategist_system.txt    Plan phase prompt
     └── orchestrator_system.txt  ReAct + SGR prompt
 ```
 
