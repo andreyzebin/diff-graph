@@ -240,7 +240,7 @@ class Agent:
         for step in range(self.config.budget.max_steps):
             if self.budget_state.exhausted:
                 self.event_bus.emit(EventType.AGENT_FORCED_DONE,
-                                   agent_id=self.agent_id, reason="token limit",
+                                   agent_id=self.agent_id, agent_name=self.config.name, reason="token limit",
                                    tok_in=self.budget_state.tokens_in,
                                    tok_out=self.budget_state.tokens_out,
                                    tok_cached=self.budget_state.tokens_cached)
@@ -377,7 +377,7 @@ class Agent:
                 trace.total_tokens = self.budget_state.tokens_used
                 trace.total_steps = self.budget_state.steps_used
                 self.event_bus.emit(EventType.AGENT_DONE,
-                                   agent_id=self.agent_id,
+                                   agent_id=self.agent_id, agent_name=self.config.name,
                                    output=findings_from_done,
                                    tok_in=self.budget_state.tokens_in,
                                    tok_out=self.budget_state.tokens_out,
@@ -394,7 +394,7 @@ class Agent:
 
         # Force done
         self.event_bus.emit(EventType.AGENT_FORCED_DONE,
-                           agent_id=self.agent_id,
+                           agent_id=self.agent_id, agent_name=self.config.name,
                            reason="step limit" if not self.budget_state.exhausted else "token limit",
                            tok_in=self.budget_state.tokens_in,
                            tok_out=self.budget_state.tokens_out,

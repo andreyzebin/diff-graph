@@ -442,15 +442,23 @@ def _make_event_handler(model: str, live: Optional[Live]):
             padding=(0, 1),
         )
 
-    _live_dirty = {"val": False}
+    import time as _time
+    _last_stream_update = {"t": 0.0}
 
     def _update_live(force: bool = False) -> None:
-        if live and (force or _live_dirty["val"]):
-            live.update(_render_live_frame())
-            _live_dirty["val"] = False
+        if not live:
+            return
+        live.update(_render_live_frame())
 
-    def _mark_dirty() -> None:
-        _live_dirty["val"] = True
+    def _update_live_throttled() -> None:
+        """Throttled update for stream events — max ~5/sec."""
+        if not live:
+            return
+        now = _time.monotonic()
+        if now - _last_stream_update["t"] < 0.2:
+            return
+        _last_stream_update["t"] = now
+        live.update(_render_live_frame())
 
     # ── Render final SGR summary (logged permanently) ─────────────────────
 
@@ -618,9 +626,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             tok = kw.get("tok", 0)
             step = kw.get("step", 0)
             _current_stream["text"] = f"step {step}  {tool_name or '…'}({args_preview})  ↓{tok}…"
-            # Stream updates: just refresh the live panel (lightweight)
-            if live:
-                live.update(_render_live_frame())
+            _update_live_throttled()
 
         elif event == "orchestrator_step":
             tool = kw.get("tool", "")
