@@ -12,12 +12,18 @@ def load_prompt(path_or_text: str, base_dir: Path | None = None) -> str:
     """If path_or_text points to an existing file, load it; otherwise return as-is."""
     if not path_or_text:
         return ""
-    if base_dir:
-        candidate = base_dir / path_or_text
-    else:
-        candidate = Path(path_or_text)
-    if candidate.is_file():
-        return candidate.read_text(encoding="utf-8")
+    # If it contains newlines or is very long, it's already prompt text, not a path
+    if "\n" in path_or_text or len(path_or_text) > 500:
+        return path_or_text
+    try:
+        if base_dir:
+            candidate = base_dir / path_or_text
+        else:
+            candidate = Path(path_or_text)
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+    except OSError:
+        pass
     return path_or_text
 
 

@@ -423,7 +423,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             data = kw.get("data", "–")
             bt = kw.get("budget_tokens", 0)
             bs = kw.get("budget_steps", 0)
-            _log(f"[dim]  compiled [cyan]{name}[/cyan] [{mode}]  caps=[{caps}]  data=[{data}]  budget={bt}t/{bs}s[/dim]")
+            _log(f"[dim]  compiled [cyan]{name}[/cyan] \\[{mode}]  caps=\\[{caps}]  data=\\[{data}]  budget={bt}t/{bs}s[/dim]")
 
         elif event == "orchestrator_plan_start":
             _log("[bold green]plan[/bold green]      strategist analyzing diff…")
