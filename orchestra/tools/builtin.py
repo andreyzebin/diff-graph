@@ -71,14 +71,16 @@ def register_builtins(
         registry.register_tool_def(ToolDef(
             name="spawn_agent",
             description=(
-                "Spawn a sub-agent to investigate a specific question. "
-                "Returns the sub-agent's output."
+                "Spawn a sub-agent. Use list_agents() first to see available agents and "
+                "their required input data. Pass data fields matching the agent's @data schema — "
+                "they are injected into the agent's prompt {placeholders}."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "agent": {"type": "string", "description": "Agent config name to spawn."},
-                    "focus": {"type": "string", "description": "What to investigate."},
+                    "agent": {"type": "string", "description": "Agent name from the registry."},
+                    "data": {"type": "object", "description": "Input data matching the agent's @data schema. Injected into prompt {placeholders}."},
+                    "focus": {"type": "string", "description": "Additional focus instruction (appended to context)."},
                     "context_handoff": {
                         "type": "string",
                         "description": "Context to pass: sgr_outcomes, full_history, findings_only, condensed.",
@@ -86,7 +88,7 @@ def register_builtins(
                     },
                     "wait": {"type": "boolean", "description": "Wait for completion (default true)."},
                 },
-                "required": ["agent", "focus"],
+                "required": ["agent"],
             },
             handler=lambda **kw: "handled by agent",
             is_builtin=True,
@@ -205,6 +207,19 @@ def register_builtins(
             description=(
                 "Get the current status of all child agents: step count, budget usage, "
                 "SGR state (confidence, open questions, learned), last tool called."
+            ),
+            parameters={"type": "object", "properties": {}},
+            handler=lambda **kw: "handled by agent",
+            is_builtin=True,
+        ))
+
+    if "list_agents" in meta:
+        registry.register_tool_def(ToolDef(
+            name="list_agents",
+            description=(
+                "Get the registry of all available agents: names, summaries, capabilities, "
+                "required input data schemas. Use this to discover which agent to spawn "
+                "for a given task."
             ),
             parameters={"type": "object", "properties": {}},
             handler=lambda **kw: "handled by agent",

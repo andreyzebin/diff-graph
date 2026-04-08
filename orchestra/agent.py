@@ -82,6 +82,7 @@ class Agent:
         context_messages: Optional[list[dict]] = None,
         prompt_vars: Optional[dict[str, str]] = None,
         agent_configs: Optional[dict[str, AgentConfig]] = None,
+        agent_registry: Any = None,  # AgentRegistry from compiler
     ) -> None:
         self.config = config
         self.registry = tool_registry
@@ -94,7 +95,8 @@ class Agent:
         self.depth = depth
         self.context_messages = context_messages or []
         self.prompt_vars = prompt_vars or {}
-        self.agent_configs = agent_configs or {}  # registry of available agent configs
+        self.agent_configs = agent_configs or {}
+        self.agent_registry = agent_registry  # compiled prompt registry
 
         # SGR
         self.sgr = SGRTracker(config.sgr_extensions) if config.sgr else None
@@ -430,20 +432,51 @@ class Agent:
             return self._meta_adjust_agent(args)
         elif name == "observe_agents":
             return self._meta_observe_agents(args)
+        elif name == "list_agents":
+            return self._meta_list_agents(args)
         else:
             result = dispatch_results.get(tc.id, "")
             return self.registry.format_result(name, result)
 
     # ── Meta-tool implementations ─────────────────────────────────────────────
 
+    def _resolve_agent_config(self, agent_name: str) -> Optional[AgentConfig]:
+        """Resolve agent config from registry (compiled prompts) or agent_configs dict."""
+        # Try compiled registry first
+        if self.agent_registry:
+            entry = self.agent_registry.get(agent_name)
+            if entry:
+                return entry.to_agent_config()
+        # Fallback to dict
+        return self.agent_configs.get(agent_name)
+
     def _meta_spawn_agent(self, args: dict) -> str:
-        """spawn_agent: create and run a child agent."""
+        """spawn_agent: create and run a child agent with data injection."""
         agent_name = args.get("agent", "")
-        agent_config = self.agent_configs.get(agent_name)
+        agent_config = self._resolve_agent_config(agent_name)
         if not agent_config:
             return json.dumps({"error": f"unknown agent: {agent_name}"})
         if self.depth >= self.config.max_depth:
             return json.dumps({"error": "max depth reached"})
+
+        # Data injection: inject @data fields into prompt {placeholders}
+        data = args.get("data", {})
+        if data and "{" in agent_config.system_prompt:
+            agent_config = AgentConfig(
+                name=agent_config.name,
+                system_prompt=interpolate(agent_config.system_prompt, **{k: str(v) for k, v in data.items()}),
+                mode=agent_config.mode,
+                sgr=agent_config.sgr,
+                sgr_interval=agent_config.sgr_interval,
+                sgr_extensions=agent_config.sgr_extensions,
+                tools=list(agent_config.tools),
+                meta_tools=list(agent_config.meta_tools),
+                output_schema=agent_config.output_schema,
+                budget=agent_config.budget,
+                condensation=agent_config.condensation,
+                llm_params=agent_config.llm_params,
+                max_depth=agent_config.max_depth,
+            )
 
         from .handoff import get_handoff
         handoff_mode = args.get("context_handoff", "sgr_outcomes")
@@ -456,6 +489,7 @@ class Agent:
             context.append({"role": "user", "content": focus})
 
         child_budget = self.budget_tracker.allocate_child(self.budget_state, 0.3)
+        # Override budget on the child config
         child_config = AgentConfig(
             name=agent_config.name,
             system_prompt=agent_config.system_prompt,
@@ -476,7 +510,7 @@ class Agent:
             config=child_config, tool_registry=self.registry,
             llm=self.llm, model=self.model, event_bus=self.event_bus,
             parent_id=self.agent_id, parent=self, depth=self.depth + 1,
-            context_messages=context, agent_configs=self.agent_configs,
+            context_messages=context, agent_configs=self.agent_configs, agent_registry=self.agent_registry,
         )
 
         with self._children_lock:
@@ -554,7 +588,7 @@ class Agent:
                 config=child_config, tool_registry=self.registry,
                 llm=self.llm, model=self.model, event_bus=self.event_bus,
                 parent_id=self.agent_id, parent=self, depth=self.depth + 1,
-                context_messages=context, agent_configs=self.agent_configs,
+                context_messages=context, agent_configs=self.agent_configs, agent_registry=self.agent_registry,
             )
             with self._children_lock:
                 self._children[child.agent_id] = child
@@ -661,7 +695,7 @@ class Agent:
                 config=child_config, tool_registry=self.registry,
                 llm=self.llm, model=self.model, event_bus=self.event_bus,
                 parent_id=self.agent_id, parent=self, depth=self.depth + 1,
-                context_messages=context, agent_configs=self.agent_configs,
+                context_messages=context, agent_configs=self.agent_configs, agent_registry=self.agent_registry,
             )
             return child.run()
 
@@ -730,6 +764,22 @@ class Agent:
                     status["output"] = r.output
                     status["status"] = "done"
         return json.dumps(statuses, indent=2, default=str)
+
+    def _meta_list_agents(self, args: dict) -> str:
+        """list_agents: return the agent registry for discovery."""
+        if self.agent_registry:
+            return json.dumps(self.agent_registry.to_listing(), indent=2, ensure_ascii=False)
+        # Fallback: list from agent_configs dict
+        listing = []
+        for name, cfg in self.agent_configs.items():
+            listing.append({
+                "name": name,
+                "summary": cfg.system_prompt[:200] if cfg.system_prompt else "",
+                "mode": cfg.mode.value if hasattr(cfg.mode, 'value') else str(cfg.mode),
+                "tools": cfg.tools,
+                "meta_tools": cfg.meta_tools,
+            })
+        return json.dumps(listing, indent=2, ensure_ascii=False)
 
     # ── Message building ──────────────────────────────────────────────────────
 

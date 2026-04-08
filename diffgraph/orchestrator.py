@@ -1,11 +1,11 @@
 """
-PR reviewer — thin wrapper around Orchestra framework.
+PR reviewer — uses Orchestra's prompt-defined agents.
 
 Preserves the original public API:
   run_review(diff_text, repo_path, llm, model, ...) → (list[ReviewFinding], ReviewContext)
 
-Creates agents directly — no topology runner. The strategist runs as
-a single-shot agent, its output is passed to a react reviewer agent.
+Agents are defined in .prompt files, compiled into a registry.
+Strategist (single-shot) → produces plan → Reviewer (react) executes it.
 """
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from orchestra import (
     BudgetConfig,
     EventBus,
     ToolRegistry,
+    compile_prompts,
 )
-from orchestra.config import resolve_prompt
 from orchestra.tools.builtin import register_builtins
 from orchestra.sgr import SGRTracker
 from orchestra.types import PusherConfig, PusherType
@@ -36,12 +36,15 @@ log = logging.getLogger(__name__)
 
 OnEvent = Optional[Callable[..., None]]
 
+# Compile prompt files once at module load
+_PROMPT_DIR = Path(__file__).parent / "prompts"
+
 
 @dataclass
 class ReviewFinding:
     file: str
     line: int
-    severity: str   # BLOCKER | MAJOR | MINOR | COMMENT
+    severity: str
     title: str
     explanation: str
     evidence: str
@@ -59,7 +62,6 @@ class ReviewFinding:
 
 @dataclass
 class ReviewContext:
-    """Collects side-effectful actions the agent requested during the solve phase."""
     comment_replies: list[dict] = field(default_factory=list)
     comment_resolves: list[int] = field(default_factory=list)
 
@@ -85,38 +87,53 @@ def run_review(
 ) -> tuple[list[ReviewFinding], ReviewContext]:
     _emit = on_event or (lambda *_, **__: None)
     diff_result = parse_diff(diff_text)
-    base_dir = Path(repo_path) if repo_path else Path(".")
 
     ctx = _Ctx(
         diff_text=diff_text, diff_result=diff_result,
         repo_path=repo_path, existing_comments=existing_comments or [],
     )
 
-    # ── Event bus with adapter ────────────────────────────────────────────
+    # ── Compile agent registry from .prompt files ─────────────────────────
+    agent_registry = compile_prompts(_PROMPT_DIR, pattern="*.prompt")
+
+    # ── Event bus ─────────────────────────────────────────────────────────
     event_bus = EventBus()
     event_bus.set_passthrough(_adapt_events(_emit))
 
-    # ── Register tools ────────────────────────────────────────────────────
+    # ── Register domain tools ─────────────────────────────────────────────
     registry = ToolRegistry()
     register_diffgraph_tools(registry, ctx)
 
-    # ── Phase 1: Strategist (single-shot) ─────────────────────────────────
+    # ── Phase 1: Strategist ───────────────────────────────────────────────
     _emit("orchestrator_plan_start")
 
-    strategist_prompt = resolve_prompt("diffgraph/prompts/strategist_system.txt", base_dir)
+    strategist_entry = agent_registry.get("strategist")
+    if strategist_entry:
+        strategist_config = strategist_entry.to_agent_config()
+        # Inject diff_summary into prompt
+        strategist_config = AgentConfig(
+            name=strategist_config.name,
+            system_prompt=interpolate(
+                strategist_config.system_prompt,
+                diff_summary=_summarize_diff_for_plan(diff_text),
+            ),
+            mode=AgentMode.SINGLE,
+            budget=strategist_config.budget,
+            llm_params=strategist_config.llm_params,
+        )
+    else:
+        # Fallback if .prompt file not found
+        strategist_config = AgentConfig(
+            name="strategist", mode=AgentMode.SINGLE,
+            system_prompt="Output a JSON review plan.",
+            budget=BudgetConfig(max_tokens=5000, max_steps=1),
+        )
+
+    register_builtins(registry, strategist_config)
 
     strategist = Agent(
-        config=AgentConfig(
-            name="strategist",
-            system_prompt=strategist_prompt,
-            mode=AgentMode.SINGLE,
-            budget=BudgetConfig(max_tokens=5000, max_steps=1),
-        ),
-        tool_registry=registry,
+        config=strategist_config, tool_registry=registry,
         llm=llm, model=model, event_bus=event_bus,
-        context_messages=[
-            {"role": "user", "content": _summarize_diff_for_plan(diff_text)},
-        ],
     )
     plan_result = strategist.run()
     plan = plan_result.output if isinstance(plan_result.output, dict) else {
@@ -127,51 +144,54 @@ def run_review(
 
     _emit("orchestrator_plan_done", plan=plan)
 
-    # ── Phase 2: Reviewer (react) ─────────────────────────────────────────
-    reviewer_prompt = resolve_prompt("diffgraph/prompts/orchestrator_system.txt", base_dir)
-    diff_summary = _make_diff_summary(diff_result)
-    existing_comments_str = _format_existing_comments(ctx.existing_comments)
+    # ── Phase 2: Reviewer ─────────────────────────────────────────────────
+    reviewer_entry = agent_registry.get("reviewer")
+    if reviewer_entry:
+        reviewer_config = reviewer_entry.to_agent_config()
+        # Inject data into prompt placeholders
+        reviewer_config = AgentConfig(
+            name=reviewer_config.name,
+            system_prompt=interpolate(
+                reviewer_config.system_prompt,
+                diff_summary=_make_diff_summary(diff_result),
+                plan=json.dumps(plan, indent=2, ensure_ascii=False),
+                existing_comments=_format_existing_comments(ctx.existing_comments),
+            ),
+            mode=AgentMode.REACT,
+            sgr=reviewer_config.sgr,
+            sgr_interval=reviewer_config.sgr_interval,
+            tools=list(reviewer_config.tools),
+            meta_tools=list(reviewer_config.meta_tools),
+            budget=BudgetConfig(
+                max_tokens=max_tokens,
+                max_steps=max_steps,
+                pushers=[
+                    PusherConfig(at=0.5, type=PusherType.NUDGE,
+                                 message="Half your token budget used. Focus on high-priority tasks only."),
+                    PusherConfig(at=0.75, type=PusherType.NUDGE,
+                                 message="Token budget 75% used. Call done() soon with your findings."),
+                    PusherConfig(at=1.0, type=PusherType.FORCE_DONE),
+                ],
+            ),
+            llm_params=reviewer_config.llm_params,
+        )
+    else:
+        # Fallback
+        reviewer_config = AgentConfig(
+            name="reviewer", mode=AgentMode.REACT, sgr=True,
+            tools=["find_files", "read_file", "read_outline", "search", "get_diff",
+                    "reply_to_comment", "resolve_comment"],
+            budget=BudgetConfig(max_tokens=max_tokens, max_steps=max_steps),
+        )
 
-    # Interpolate the reviewer prompt with plan data
-    system_prompt = interpolate(
-        reviewer_prompt,
-        diff_summary=diff_summary,
-        plan=json.dumps(plan, indent=2, ensure_ascii=False),
-        existing_comments=existing_comments_str,
-    )
-
-    reviewer_config = AgentConfig(
-        name="reviewer",
-        system_prompt=system_prompt,
-        mode=AgentMode.REACT,
-        sgr=True,
-        sgr_interval=3,
-        tools=[
-            "find_files", "read_file", "read_outline",
-            "search", "get_diff",
-            "reply_to_comment", "resolve_comment",
-        ],
-        budget=BudgetConfig(
-            max_tokens=max_tokens,
-            max_steps=max_steps,
-            pushers=[
-                PusherConfig(at=0.5, type=PusherType.NUDGE,
-                             message="Half your token budget used. Focus on high-priority tasks only."),
-                PusherConfig(at=0.75, type=PusherType.NUDGE,
-                             message="Token budget 75% used. Call done() soon with your findings."),
-                PusherConfig(at=1.0, type=PusherType.FORCE_DONE),
-            ],
-        ),
-    )
-
-    # Register builtins for the reviewer
     sgr_tracker = SGRTracker()
     register_builtins(registry, reviewer_config, sgr_tracker=sgr_tracker)
 
     reviewer = Agent(
-        config=reviewer_config,
-        tool_registry=registry,
+        config=reviewer_config, tool_registry=registry,
         llm=llm, model=model, event_bus=event_bus,
+        agent_registry=agent_registry,
+        agent_configs=agent_registry.get_all_configs(),
     )
     result = reviewer.run()
 
@@ -196,7 +216,6 @@ def run_review(
 # ── Event adapter ─────────────────────────────────────────────────────────────
 
 def _adapt_events(on_event: Callable) -> Callable:
-    """Map orchestra events → existing orchestrator_* events for cli.py."""
     def handler(event_type: str, **kw):
         if event_type == "agent_stream":
             on_event("orchestrator_stream",
