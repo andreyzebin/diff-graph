@@ -1,8 +1,6 @@
 """
 Event system for orchestra.
-
-EventBus supports typed subscriptions and a passthrough callback for
-backward-compatible integration (e.g. diffgraph's cli.py on_event).
+Simplified: agent lifecycle + param changes + signals.
 """
 from __future__ import annotations
 
@@ -12,7 +10,7 @@ from typing import Any, Callable, Optional
 
 log = logging.getLogger(__name__)
 
-OnEvent = Callable[..., None]  # (event_type_str, **kwargs)
+OnEvent = Callable[..., None]
 
 
 class EventType(Enum):
@@ -26,27 +24,14 @@ class EventType(Enum):
     # Streaming
     AGENT_STREAM = "agent_stream"
     AGENT_TOOL_RESULT = "agent_tool_result"
-    # Topology
-    TOPOLOGY_STARTED = "topology_started"
-    TOPOLOGY_DONE = "topology_done"
-    NODE_STARTED = "node_started"
-    NODE_DONE = "node_done"
-    # Plan phase (backward-compat convenience)
-    PLAN_START = "plan_start"
-    PLAN_DONE = "plan_done"
-    # Fork / merge
-    FORK_STARTED = "fork_started"
-    FORK_MERGED = "fork_merged"
+    # Params
+    PARAM_ADJUSTED = "param_adjusted"
     # Budget
     BUDGET_THRESHOLD_HIT = "budget_threshold_hit"
+    # Signals
+    STUCK_DETECTED = "stuck_detected"
     # Condensation
     CONDENSATION_TRIGGERED = "condensation_triggered"
-    # Adaptive params
-    PARAM_ADJUSTED = "param_adjusted"
-    MODEL_SWITCHED = "model_switched"
-    # Feedback
-    STUCK_DETECTED = "stuck_detected"
-    FEEDBACK_LOOP_FIRED = "feedback_loop_fired"
 
 
 class EventBus:
@@ -67,18 +52,15 @@ class EventBus:
             handlers.remove(handler)
 
     def set_passthrough(self, on_event: Optional[OnEvent]) -> None:
-        """Forward all events to a single callback (for CLI compatibility)."""
         self._passthrough = on_event
 
     def emit(self, event_type: EventType | str, **kwargs: Any) -> None:
         key = event_type.value if isinstance(event_type, EventType) else event_type
-
         if self._passthrough:
             try:
                 self._passthrough(key, **kwargs)
             except Exception:
                 log.debug("passthrough handler error for %s", key, exc_info=True)
-
         for handler in self._subscribers.get(key, []):
             try:
                 handler(**kwargs)

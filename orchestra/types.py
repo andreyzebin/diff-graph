@@ -1,20 +1,21 @@
 """
 Core dataclasses shared across all orchestra modules.
+
+Simplified: no topologies, no adaptive schedules, no feedback loop configs.
+Two agent modes (single + react), tools, budget, SGR, mutable params.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
 
-class NodeType(Enum):
+class AgentMode(Enum):
     SINGLE = "single"
     REACT = "react"
-    FAN_OUT = "fan_out"
-    JOIN = "join"
 
 
 class PusherType(Enum):
@@ -47,6 +48,7 @@ class BudgetConfig:
     max_steps: int = 40
     max_wall_time: Optional[float] = None  # seconds
     max_children_budget: float = 0.3
+    max_feedback_budget_delta: int = 10  # max steps a supervisor can extend
     pushers: list[PusherConfig] = field(default_factory=list)
 
 
@@ -62,89 +64,17 @@ class CondensationConfig:
     condense_prompt: str = "Summarize the conversation so far in <500 words."
 
 
-# ── Fork / Auto-fork ─────────────────────────────────────────────────────────
-
-@dataclass
-class ForkConfig:
-    enabled: bool = False
-    mechanism: str = "tool"  # tool | sgr_auto | json_output
-    max_forks: int = 2
-    budget_split: str = "equal"  # equal | proportional | fixed
-    context_handoff: str = "full_history"
-    merge_strategy: str = "best_confidence"
-
-
-@dataclass
-class AutoForkConfig:
-    enabled: bool = False
-    trigger: str = "questions_remaining"
-    threshold: int = 3
-    strategy: str = "one_per_question"
-    child_agent: str = ""
-    context_handoff: str = "sgr_outcomes"
-    max_children: int = 3
-    depth_limit: int = 2
-
-
-# ── Auto-spawn ────────────────────────────────────────────────────────────────
-
-@dataclass
-class AutoSpawnConfig:
-    """
-    Configures automatic spawning of plan or SGR sub-agents.
-
-    Triggers:
-      - on_start:        spawn before the agent's first step
-      - on_reflect:      spawn after every reflect() call
-      - on_low_confidence: spawn when SGR confidence is "low" after N steps
-      - on_stuck:        spawn when stuck detector fires
-      - on_many_questions: spawn when open questions exceed threshold
-
-    Spawn types:
-      - plan:  spawns a planner sub-agent that returns a structured plan
-      - sgr:   spawns an SGR sub-agent that investigates a sub-question
-    """
-    enabled: bool = False
-    trigger: str = "on_start"  # on_start | on_reflect | on_low_confidence | on_stuck | on_many_questions
-    spawn_type: str = "plan"   # plan | sgr
-    threshold: int = 0         # for on_low_confidence: min steps before trigger; on_many_questions: question count
-    max_spawns: int = 3        # max times this auto-spawn can fire per agent run
-    child_agent: str = ""      # agent config name (empty = use built-in plan/sgr agent)
-    context_handoff: str = "sgr_outcomes"
-    plan_prompt: str = ""      # custom system prompt for the plan sub-agent (empty = default)
-    inject_result: bool = True # inject sub-agent result into parent's message history
-
-
-# ── Adaptive LLM params ──────────────────────────────────────────────────────
-
-@dataclass
-class ScheduleConfig:
-    param: str  # temperature, top_p, frequency_penalty, etc.
-    driver: str  # budget_ratio, sgr_confidence, repetition_score, custom, ...
-    curve: str = "linear"  # linear, linear_decay, step, exponential_decay, inverse_linear, custom
-    range: Optional[list[float]] = None  # [start, end]
-    steps: Optional[dict[str, float]] = None  # for step curve: {"0.5": 0.3, ...}
-    merge_policy: str = "last_wins"  # min, max, mean, last_wins
-    handler: Optional[str] = None  # dotted path for custom driver/curve
-
-
-@dataclass
-class ModelScheduleEntry:
-    phase: str  # tool_calls, reflection, synthesis, stuck
-    model: str = ""
-    condition: Optional[str] = None
-
+# ── LLM Params (mutable at runtime) ──────────────────────────────────────────
 
 @dataclass
 class LLMParamsConfig:
-    model: Optional[str] = None  # override agent-level default
+    """Initial LLM params. These become mutable state on the agent at runtime."""
+    model: Optional[str] = None
     temperature: float = 0.3
     top_p: float = 1.0
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
     max_completion_tokens: int = 4096
-    schedules: list[ScheduleConfig] = field(default_factory=list)
-    model_schedule: list[ModelScheduleEntry] = field(default_factory=list)
 
 
 # ── Agent ─────────────────────────────────────────────────────────────────────
@@ -153,71 +83,27 @@ class LLMParamsConfig:
 class AgentConfig:
     name: str
     system_prompt: str = ""  # raw text or file path
+    mode: AgentMode = AgentMode.REACT  # single | react
     sgr: bool = False
     sgr_interval: int = 3
     sgr_extensions: Optional[dict[str, Any]] = None  # extra reflect() fields
-    tools: list[str] = field(default_factory=list)
-    spawn_tools: list[str] = field(default_factory=list)
-    output_schema: Optional[Any] = None  # JSON Schema dict or shorthand
+    tools: list[str] = field(default_factory=list)  # domain tools
+    meta_tools: list[str] = field(default_factory=list)  # spawn_agent, spawn_many, plan, fork, adjust_agent, observe_agents
+    output_schema: Optional[Any] = None  # JSON Schema for done() output
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     condensation: Optional[CondensationConfig] = None
-    fork: Optional[ForkConfig] = None
-    auto_fork: Optional[AutoForkConfig] = None
-    auto_spawn: list["AutoSpawnConfig"] = field(default_factory=list)  # multiple auto-spawn rules
     llm_params: Optional[LLMParamsConfig] = None
-
-
-# ── Topology ──────────────────────────────────────────────────────────────────
-
-@dataclass
-class NodeConfig:
-    id: str
-    agent: str = ""  # agent name or "$dynamic"
-    type: NodeType = NodeType.REACT
-    source: Optional[str] = None  # single upstream node
-    sources: list[str] = field(default_factory=list)  # for join nodes
-    parallel: bool = False
-    spawn_from: Optional[str] = None  # dotted path for dynamic fan_out cardinality
-    focus: Optional[str] = None  # prompt override / focus string
-
-
-@dataclass
-class EdgeConfig:
-    from_node: str
-    to_node: str
-    context_handoff: str = "findings_only"
-
-
-@dataclass
-class FeedbackLoopConfig:
-    observer: str  # agent name or "_runtime"
-    targets: list[str] = field(default_factory=list)
-    trigger: str = "on_child_reflect"
-    condition: Optional[str] = None
-    actions: list[dict[str, Any]] = field(default_factory=list)
-    max_feedback_budget_delta: Optional[int] = None
-
-
-@dataclass
-class TopologyConfig:
-    name: str
-    nodes: list[NodeConfig] = field(default_factory=list)
-    edges: list[EdgeConfig] = field(default_factory=list)
-    feedback_loops: list[FeedbackLoopConfig] = field(default_factory=list)
-    shared_tools: dict[str, dict[str, Any]] = field(default_factory=dict)
+    max_depth: int = 3  # max spawn/fork depth
 
 
 # ── Top-level config ──────────────────────────────────────────────────────────
 
 @dataclass
 class OrchestraConfig:
-    """Top-level config aggregating all sections."""
+    """Top-level config: agents, tools, shared tools."""
     agents: dict[str, AgentConfig] = field(default_factory=dict)
-    topologies: dict[str, TopologyConfig] = field(default_factory=dict)
     tools: dict[str, dict[str, Any]] = field(default_factory=dict)  # YAML-declared tools
     shared_tools: dict[str, dict[str, Any]] = field(default_factory=dict)
-    context_handoff_modes: dict[str, dict[str, Any]] = field(default_factory=dict)
-    feedback_signals: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # Legacy / pass-through
+    # Legacy / pass-through for diffgraph
     llm: dict[str, Any] = field(default_factory=dict)
     review: dict[str, Any] = field(default_factory=dict)

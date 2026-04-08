@@ -1,8 +1,10 @@
 """
-Builtin tools: reflect, done, plan, spawn_agent, fork, create_topology.
+Builtin tools: reflect, done, plan, spawn_agent, spawn_many,
+fork, adjust_agent, observe_agents.
 
-These are registered automatically based on agent config flags.
-Each is a closure factory that captures the agent's runtime state.
+Registered automatically based on agent config (sgr, meta_tools).
+Meta-tools are handled directly by Agent — these registrations
+just provide the OpenAI function schemas.
 """
 from __future__ import annotations
 
@@ -12,7 +14,6 @@ from typing import Any, Callable, Optional, TYPE_CHECKING
 from .registry import ToolDef, ToolRegistry
 
 if TYPE_CHECKING:
-    from ..agent import Agent
     from ..sgr import SGRTracker
 
 
@@ -20,12 +21,8 @@ def register_builtins(
     registry: ToolRegistry,
     agent_config: Any,
     sgr_tracker: Optional["SGRTracker"] = None,
-    done_callback: Optional[Callable[[Any], None]] = None,
-    spawn_callback: Optional[Callable[[dict], Any]] = None,
-    fork_callback: Optional[Callable[[dict], Any]] = None,
-    plan_callback: Optional[Callable[[dict], Any]] = None,
 ) -> None:
-    """Register builtin tools based on agent config flags."""
+    """Register builtin tools based on agent config."""
 
     # ── reflect ───────────────────────────────────────────────────────────
     if agent_config.sgr and sgr_tracker:
@@ -37,7 +34,7 @@ def register_builtins(
                 "avoid going in circles, and plan the next action."
             ),
             parameters=schema,
-            handler=_make_reflect_handler(sgr_tracker),
+            handler=lambda **kw: "Reflection noted.",
             is_builtin=True,
         ))
 
@@ -53,64 +50,105 @@ def register_builtins(
         },
         "required": ["findings"],
     }
-    # Use output_schema if provided
     if agent_config.output_schema and isinstance(agent_config.output_schema, dict):
         done_params = {
             "type": "object",
             "properties": {"findings": agent_config.output_schema},
             "required": ["findings"],
         }
-
     registry.register_tool_def(ToolDef(
         name="done",
         description="Submit all findings and stop.",
         parameters=done_params,
-        handler=_make_done_handler(done_callback),
+        handler=lambda **kw: "Output submitted.",
         is_builtin=True,
     ))
 
-    # ── spawn_agent ───────────────────────────────────────────────────────
-    if agent_config.spawn_tools and "spawn_agent" in agent_config.spawn_tools:
+    # ── Meta-tools (schemas only — Agent handles execution) ───────────────
+    meta = set(agent_config.meta_tools or [])
+
+    if "spawn_agent" in meta:
         registry.register_tool_def(ToolDef(
             name="spawn_agent",
             description=(
                 "Spawn a sub-agent to investigate a specific question. "
-                "The sub-agent runs independently and returns its findings."
+                "Returns the sub-agent's output."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "agent": {
-                        "type": "string",
-                        "description": "Name of the agent config to spawn.",
-                    },
-                    "focus": {
-                        "type": "string",
-                        "description": "What this sub-agent should investigate.",
-                    },
+                    "agent": {"type": "string", "description": "Agent config name to spawn."},
+                    "focus": {"type": "string", "description": "What to investigate."},
                     "context_handoff": {
                         "type": "string",
-                        "description": "How to pass context: sgr_outcomes, full_history, findings_only.",
-                        "enum": ["sgr_outcomes", "full_history", "findings_only"],
+                        "description": "Context to pass: sgr_outcomes, full_history, findings_only, condensed.",
+                        "enum": ["sgr_outcomes", "full_history", "findings_only", "condensed"],
                     },
-                    "wait": {
-                        "type": "boolean",
-                        "description": "Wait for the sub-agent to complete before continuing.",
-                    },
+                    "wait": {"type": "boolean", "description": "Wait for completion (default true)."},
                 },
                 "required": ["agent", "focus"],
             },
-            handler=_make_spawn_handler(spawn_callback),
+            handler=lambda **kw: "handled by agent",
             is_builtin=True,
         ))
 
-    # ── fork ──────────────────────────────────────────────────────────────
-    if agent_config.fork and agent_config.fork.enabled:
+    if "spawn_many" in meta:
+        registry.register_tool_def(ToolDef(
+            name="spawn_many",
+            description=(
+                "Spawn multiple agents in parallel and return merged results. "
+                "Use for fan-out investigation across multiple angles."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "agents": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "agent": {"type": "string"},
+                                "focus": {"type": "string"},
+                            },
+                            "required": ["agent", "focus"],
+                        },
+                    },
+                    "context_handoff": {"type": "string", "enum": ["sgr_outcomes", "findings_only"]},
+                    "merge": {"type": "string", "enum": ["union", "best_confidence", "llm_merge", "raw"]},
+                },
+                "required": ["agents"],
+            },
+            handler=lambda **kw: "handled by agent",
+            is_builtin=True,
+        ))
+
+    if "plan" in meta:
+        registry.register_tool_def(ToolDef(
+            name="plan",
+            description=(
+                "Create a structured plan for a goal. Returns JSON with tasks, "
+                "priorities, risks, and recommendations. Use when you need to "
+                "break down a complex problem or get a strategic perspective."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string", "description": "What you need a plan for."},
+                    "constraints": {"type": "string", "description": "Context, constraints, what you already know."},
+                    "output_hint": {"type": "string", "description": "Desired plan format."},
+                },
+                "required": ["goal"],
+            },
+            handler=lambda **kw: "handled by agent",
+            is_builtin=True,
+        ))
+
+    if "fork" in meta:
         registry.register_tool_def(ToolDef(
             name="fork",
             description=(
-                "Fork yourself into parallel branches, each pursuing a different hypothesis. "
-                "Results will be merged when all branches complete."
+                "Fork into parallel branches, each exploring a different hypothesis. "
+                "Results are merged and returned."
             ),
             parameters={
                 "type": "object",
@@ -120,117 +158,74 @@ def register_builtins(
                         "items": {
                             "type": "object",
                             "properties": {
-                                "focus": {"type": "string", "description": "What this branch should investigate."},
+                                "focus": {"type": "string", "description": "What this branch investigates."},
                             },
                             "required": ["focus"],
                         },
-                        "description": "List of branches to explore in parallel.",
                     },
+                    "context_handoff": {"type": "string", "enum": ["full_history", "sgr_outcomes"]},
+                    "merge": {"type": "string", "enum": ["best_confidence", "union", "llm_merge"]},
                 },
                 "required": ["branches"],
             },
-            handler=_make_fork_handler(fork_callback),
+            handler=lambda **kw: "handled by agent",
             is_builtin=True,
         ))
 
-    # ── plan ──────────────────────────────────────────────────────────────
-    if "plan" in (agent_config.spawn_tools or []):
+    if "adjust_agent" in meta:
         registry.register_tool_def(ToolDef(
-            name="plan",
+            name="adjust_agent",
             description=(
-                "Spawn a planner sub-agent to create a structured plan for a goal. "
-                "The planner analyzes the goal and constraints, then returns a JSON plan "
-                "with prioritized tasks. Use this when you need to break down a complex "
-                "problem before investigating, or when you want a second opinion on strategy."
+                "Adjust a child agent's LLM parameters, inject a message, or extend its budget. "
+                "Use to steer child agents: raise temperature for creativity, add penalties "
+                "to break loops, inject context they're missing, or give more budget."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "goal": {
-                        "type": "string",
-                        "description": "What you need a plan for.",
-                    },
-                    "constraints": {
-                        "type": "string",
-                        "description": "Constraints, context, or what you already know.",
-                    },
-                    "output_hint": {
-                        "type": "string",
-                        "description": "Optional: what shape the plan should take (e.g. 'list of tasks', 'decision tree').",
-                    },
+                    "agent_id": {"type": "string", "description": "ID of the child agent to adjust."},
+                    "temperature": {"type": "number", "description": "New temperature (0-2)."},
+                    "frequency_penalty": {"type": "number", "description": "New frequency penalty (-2 to 2)."},
+                    "presence_penalty": {"type": "number", "description": "New presence penalty (-2 to 2)."},
+                    "top_p": {"type": "number", "description": "New top_p (0-1)."},
+                    "max_completion_tokens": {"type": "integer"},
+                    "model": {"type": "string", "description": "Switch to a different model."},
+                    "inject_message": {"type": "string", "description": "Message to inject into agent's context."},
+                    "extend_budget_steps": {"type": "integer", "description": "Extra steps to grant."},
                 },
-                "required": ["goal"],
+                "required": ["agent_id"],
             },
-            handler=_make_plan_handler(plan_callback),
+            handler=lambda **kw: "handled by agent",
+            is_builtin=True,
+        ))
+
+    if "observe_agents" in meta:
+        registry.register_tool_def(ToolDef(
+            name="observe_agents",
+            description=(
+                "Get the current status of all child agents: step count, budget usage, "
+                "SGR state (confidence, open questions, learned), last tool called."
+            ),
+            parameters={"type": "object", "properties": {}},
+            handler=lambda **kw: "handled by agent",
             is_builtin=True,
         ))
 
 
-# ── Handler factories ─────────────────────────────────────────────────────────
-
-def _make_reflect_handler(sgr_tracker: "SGRTracker") -> Callable:
-    """Returns a handler that records SGR and returns 'Reflection noted.'"""
-    def handler(**kwargs: Any) -> str:
-        # Recording is done in the agent's main loop (needs step number)
-        return "Reflection noted."
-    return handler
-
-
-def _make_done_handler(callback: Optional[Callable]) -> Callable:
-    """Returns a handler that signals agent to stop."""
-    def handler(**kwargs: Any) -> str:
-        if callback:
-            callback(kwargs)
-        return "Review submitted."
-    return handler
-
-
-def _make_spawn_handler(callback: Optional[Callable]) -> Callable:
-    """Returns a handler that delegates to the runner's spawn logic."""
-    def handler(**kwargs: Any) -> str:
-        if callback:
-            result = callback(kwargs)
-            return json.dumps({"status": "completed", "output": result}, default=str)
-        return json.dumps({"status": "spawn not available"})
-    return handler
-
-
-def _make_fork_handler(callback: Optional[Callable]) -> Callable:
-    """Returns a handler that delegates to the runner's fork logic."""
-    def handler(**kwargs: Any) -> str:
-        if callback:
-            results = callback(kwargs)
-            return json.dumps({"status": "completed", "branches": len(results)}, default=str)
-        return json.dumps({"status": "fork not available"})
-    return handler
-
-
-def _make_plan_handler(callback: Optional[Callable]) -> Callable:
-    """Returns a handler that spawns a planner sub-agent."""
-    def handler(**kwargs: Any) -> str:
-        if callback:
-            result = callback(kwargs)
-            if isinstance(result, dict):
-                return json.dumps(result, indent=2, ensure_ascii=False, default=str)
-            return str(result)
-        return json.dumps({"status": "plan not available"})
-    return handler
-
-
-# ── Default plan agent prompt ─────────────────────────────────────────────────
+# ── Default prompts ───────────────────────────────────────────────────────────
 
 DEFAULT_PLAN_PROMPT = """You are a planning agent. Given a goal and optional constraints, \
 produce a structured JSON plan.
 
 OUTPUT FORMAT — return ONLY valid JSON:
 {
-  "analysis": "<1-2 sentence assessment of what's needed>",
+  "analysis": "<1-2 sentence assessment>",
   "tasks": [
     {
       "id": "<short_snake_case>",
       "priority": "high|medium|low",
       "focus": "<what specifically to do>",
-      "rationale": "<why this task matters>"
+      "rationale": "<why this matters>"
     }
   ],
   "risks": ["<potential issue>"],
@@ -241,11 +236,4 @@ RULES:
 - 2-5 tasks, ordered by priority.
 - Be specific: name actual things to investigate, not generic statements.
 - If constraints mention what's already known, don't duplicate that work.
-"""
-
-DEFAULT_SGR_SPAWN_PROMPT = """You are a focused research agent. You have been given a specific \
-question to investigate. Use the available tools to find the answer.
-
-When done, call done() with your findings. Be thorough but focused — \
-answer the specific question, don't expand scope.
 """

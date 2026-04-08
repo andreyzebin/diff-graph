@@ -183,74 +183,42 @@ findings, ctx = dg.review(diff_text, existing_comments=[
 
 ## Orchestra Framework
 
-DiffGraph is built on **Orchestra**, a general-purpose multi-agent orchestration framework that lives in the `orchestra/` directory. Orchestra can be used independently of DiffGraph for any multi-agent workflow.
+DiffGraph is built on **Orchestra**, an agent-first orchestration framework (3,200 LOC) that lives in `orchestra/`. No topologies, no pipelines — agents create all structure at runtime via tool calls.
 
-### Key capabilities
+### Design principles
 
-| Capability | Description |
+| Principle | Meaning |
 |---|---|
-| **YAML-configurable agents** | Define agents with system prompts, tools, SGR, budgets, and adaptive params in YAML or Python |
-| **DAG topologies** | Wire agents into directed acyclic graphs with `single`, `react`, `fan_out`, and `join` node types |
-| **Context handoff** | 7 built-in modes: `full_history`, `sgr_outcomes`, `all_sgr`, `findings_only`, `findings_and_sgr`, `condensed`, `last_N` |
-| **Dynamic spawning** | Agents spawn sub-agents via tool call, JSON output, or SGR auto-fork |
-| **SGR (Self-Guided Reasoning)** | Structured `reflect()` with question tracking, confidence, custom extension fields |
-| **Budget pushers** | Configurable `(threshold, action)` pairs: `nudge`, `force_reflect`, `force_done`, `custom` |
-| **Message condensation** | 4 strategies for long-running agents: `llm_summary`, `sliding_window`, `drop_tool_results`, `hybrid` |
-| **Shared/swarm tools** | Thread-safe `AppendLog`, `MutexMap`, `Blackboard` for agent coordination |
-| **Adaptive LLM params** | Temperature, penalties, model switch per-step driven by budget, SGR confidence, repetition score |
-| **Behavioral feedback** | Repetition detector, progress tracker, stuck detector with configurable actions |
-| **Cross-agent feedback loops** | Topology-level observer→target wiring to adjust child agent params/budget in real time |
-| **Fork & merge** | Agents fork into parallel branches; merge via `best_confidence`, `union`, `llm_merge`, or custom |
-| **Observability** | 22 event types, full execution tree reconstruction, per-agent token accounting |
+| **Agent-first** | Only two modes: `single` (one LLM call) and `react` (non-deterministic tool loop). No topology runner. |
+| **Tools, not config** | Spawn, fork, plan, adjust — all via tool calls at runtime, not YAML declarations |
+| **Prompts, not pipelines** | Agent behavior is determined by prompts. The framework imposes no workflow. |
+| **Mutable params** | LLM params (temperature, penalties, model) are live state. Other agents change them via `adjust_agent`. |
+| **Supervisor = agent** | Feedback loops and coordination via a supervisor agent with `adjust_agent` + `observe_agents` tools |
+
+### Meta-tools
+
+| Tool | What it does |
+|---|---|
+| `spawn_agent` | Create and run a child agent. Sync (wait) or async. |
+| `spawn_many` | Fan-out N agents in parallel, return merged results |
+| `plan` | Spawn a planner that returns structured JSON tasks |
+| `fork` | Clone self into N parallel branches with different focus |
+| `adjust_agent` | Change a child agent's temperature, penalties, model, inject message, extend budget |
+| `observe_agents` | Get status of all children: step, budget, SGR confidence, last tool |
+| `reflect` | SGR self-reflection with question tracking |
+| `done` | Submit output and stop |
 
 ### Using Orchestra directly
 
 ```python
 from orchestra import (
-    Agent, AgentConfig, BudgetConfig, ToolRegistry,
-    Topology, TopologyRunner, EventBus, OrchestraConfig,
-    NodeConfig, EdgeConfig, TopologyConfig, NodeType,
-    PusherConfig, PusherType,
+    Agent, AgentConfig, AgentMode, BudgetConfig, ToolRegistry,
+    EventBus, PusherConfig, PusherType, LLMParamsConfig,
 )
+from orchestra.tools.builtin import register_builtins
+from orchestra.sgr import SGRTracker
 
-# 1. Define agents
-config = OrchestraConfig(
-    agents={
-        "planner": AgentConfig(
-            name="planner",
-            system_prompt="You plan research tasks. Output JSON with a 'tasks' array.",
-            sgr=False,
-            budget=BudgetConfig(max_steps=1),
-        ),
-        "researcher": AgentConfig(
-            name="researcher",
-            system_prompt="You research topics using available tools.",
-            sgr=True,
-            tools=["search", "read_file"],
-            budget=BudgetConfig(
-                max_tokens=20000, max_steps=20,
-                pushers=[
-                    PusherConfig(at=0.75, type=PusherType.NUDGE, message="Wrap up soon."),
-                    PusherConfig(at=1.0, type=PusherType.FORCE_DONE),
-                ],
-            ),
-        ),
-    },
-    topologies={
-        "research": TopologyConfig(
-            name="research",
-            nodes=[
-                NodeConfig(id="plan", agent="planner", type=NodeType.SINGLE),
-                NodeConfig(id="research", agent="researcher", type=NodeType.REACT),
-            ],
-            edges=[
-                EdgeConfig(from_node="plan", to_node="research", context_handoff="findings_only"),
-            ],
-        ),
-    },
-)
-
-# 2. Register tools
+# 1. Register domain tools
 registry = ToolRegistry()
 
 @registry.register
@@ -258,68 +226,58 @@ def search(query: str) -> str:
     """Search for information."""
     return f"Results for: {query}"
 
-# 3. Run topology
+# 2. Define agent
+config = AgentConfig(
+    name="researcher",
+    system_prompt="You research topics using tools. Call done() with findings.",
+    mode=AgentMode.REACT,
+    sgr=True,
+    tools=["search"],
+    meta_tools=["plan", "spawn_agent"],  # can plan and spawn sub-agents
+    budget=BudgetConfig(
+        max_tokens=20000, max_steps=20,
+        pushers=[
+            PusherConfig(at=0.75, type=PusherType.NUDGE, message="Wrap up soon."),
+            PusherConfig(at=1.0, type=PusherType.FORCE_DONE),
+        ],
+    ),
+    llm_params=LLMParamsConfig(temperature=0.3),
+)
+
+# 3. Register builtins and run
+sgr = SGRTracker()
+register_builtins(registry, config, sgr_tracker=sgr)
+
 from openai import OpenAI
-llm = OpenAI()
-event_bus = EventBus()
-
-topology = Topology(config.topologies["research"])
-runner = TopologyRunner(topology, config, registry, llm, "gpt-4o-mini", event_bus)
-result = runner.run()
-
-print(result.final_output)
+agent = Agent(
+    config=config, tool_registry=registry,
+    llm=OpenAI(), model="gpt-4o-mini", event_bus=EventBus(),
+)
+result = agent.run()
+print(result.output)
 ```
 
-### Fan-out topology (parallel agents)
+### Supervisor pattern (agent controls other agents' params)
 
 ```python
-# Strategist outputs tasks → N parallel reviewers → synthesizer joins results
-topologies:
-  parallel_review:
-    nodes:
-      - id: strategist
-        agent: strategist
-        type: single
-      - id: reviewers
-        agent: reviewer
-        type: fan_out
-        source: strategist
-        parallel: true
-        spawn_from: tasks       # one agent per task in strategist output
-      - id: synthesizer
-        agent: synthesizer
-        type: join
-        sources: [reviewers]
-    edges:
-      - from: strategist
-        to: reviewers
-        context_handoff: findings_only
-      - from: reviewers
-        to: synthesizer
-        context_handoff: findings_and_sgr
+# A supervisor agent with adjust_agent + observe_agents
+# All control logic lives in the prompt, not in framework config
+supervisor = AgentConfig(
+    name="supervisor",
+    system_prompt="""You oversee research agents.
+Call observe_agents() to check their progress.
+If an agent is stuck (low confidence, high repetition):
+  - Raise temperature to 0.7 to encourage creativity
+  - Set frequency_penalty to 1.5 to break loops
+  - Inject a message suggesting a different angle
+When all children are done, call done() with consolidated results.""",
+    mode=AgentMode.REACT,
+    sgr=True,
+    meta_tools=["spawn_agent", "spawn_many", "adjust_agent", "observe_agents"],
+)
 ```
 
-### Adaptive LLM parameters
-
-```yaml
-agents:
-  deep_researcher:
-    llm_params:
-      temperature: 0.3
-      schedules:
-        # Lower temperature as budget depletes
-        - param: temperature
-          driver: budget_ratio
-          curve: linear_decay
-          range: [0.4, 0.1]
-        # Increase frequency penalty when stuck in loops
-        - param: frequency_penalty
-          driver: repetition_score
-          curve: linear
-          range: [0.0, 1.5]
-```
-
-See [REQUIREMENTS.md](REQUIREMENTS.md) for the full technical specification (68 requirements across 11 sections).
+See [REQUIREMENTS.md](REQUIREMENTS.md) for the full technical specification.
 
 ---
 
@@ -400,37 +358,34 @@ Java · Python · TypeScript / TSX · Go · Kotlin · Ruby · C#
 ## Architecture
 
 ```
-orchestra/                   General-purpose multi-agent framework (4,400 LOC)
-├── types.py                 Core dataclasses (AgentConfig, BudgetConfig, TopologyConfig, ...)
+orchestra/                   Agent-first orchestration framework (3,200 LOC)
+├── types.py                 Core dataclasses (AgentConfig, BudgetConfig, LLMParamsConfig)
 ├── config.py                YAML loading, env var expansion, validation
-├── events.py                EventBus with 22 event types
-├── agent.py                 Agent: single-shot + ReAct loop with SGR, budget, condensation
-├── topology.py              DAG definition, validation, topological sort
-├── runner.py                TopologyRunner: executes DAG, fan_out/join, spawn, fork
+├── events.py                EventBus with typed events
+├── agent.py                 Agent: single + react, spawn/fork/plan/adjust built-in
 ├── budget.py                BudgetState, BudgetTracker, child budget partitioning
 ├── sgr.py                   SGR tracker with extensions + handoff extraction
-├── handoff.py               7 built-in context handoff modes + compose
+├── handoff.py               7 context handoff modes + compose
 ├── condensation.py          4 message condensation strategies
-├── streaming.py             LLM streaming with adaptive param passthrough
-├── adaptive.py              Schedule drivers, curves, AdaptiveParamResolver
-├── feedback.py              Repetition detector, progress tracker, stuck detector
-├── feedback_loops.py        Cross-agent feedback loop manager
+├── streaming.py             LLM streaming with param passthrough
+├── feedback.py              Read-only signals: repetition, progress, stuck detection
 ├── merge.py                 Fork/join merge strategies
 ├── prompts.py               Template loading + {var} interpolation
 └── tools/
     ├── registry.py          @register decorator, YAML tools, OpenAI schema generation
-    ├── builtin.py           reflect, done, spawn_agent, fork tool factories
+    ├── builtin.py           reflect, done, spawn_agent, spawn_many, plan, fork,
+    │                        adjust_agent, observe_agents — schema definitions
     └── shared.py            AppendLog, MutexMap, Blackboard (thread-safe swarm tools)
 
 diffgraph/                   Code review domain logic
 ├── api.py                   DiffGraph public API
-├── orchestrator.py          Thin wrapper: builds Orchestra topology for code review
-├── orchestra_tools.py       Domain tools registered as closures (find_files, read_file, ...)
+├── orchestrator.py          Creates strategist + reviewer agents directly
+├── orchestra_tools.py       Domain tools registered as closures
 ├── diff_parser.py           git diff text → DiffResult (hunks, changed lines)
 ├── lang.py                  Language detection
 ├── tools.py                 Filesystem primitives (list_files, read_file, search_text)
 ├── outline.py               tree-sitter structural outline
-├── bitbucket.py             Bitbucket Server integration (fetch/post/reply/resolve)
+├── bitbucket.py             Bitbucket Server integration
 └── prompts/
     ├── strategist_system.txt    Plan phase prompt
     └── orchestrator_system.txt  ReAct + SGR prompt

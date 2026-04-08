@@ -1,41 +1,32 @@
 """
-Orchestra — a configurable multi-agent orchestration framework.
+Orchestra — agent-first orchestration framework.
+
+Two agent modes (single + react), tool system, mutable LLM params,
+SGR, budget constraints, and observability. No topologies, no pipelines.
+All structure created at runtime by agents via tools.
 """
 from .types import (
     AgentConfig,
-    AutoForkConfig,
-    AutoSpawnConfig,
+    AgentMode,
     BudgetConfig,
     CondensationConfig,
     CondensationStrategy,
-    EdgeConfig,
-    FeedbackLoopConfig,
-    ForkConfig,
     LLMParamsConfig,
-    ModelScheduleEntry,
-    NodeConfig,
-    NodeType,
     OrchestraConfig,
     PusherConfig,
     PusherType,
-    ScheduleConfig,
-    TopologyConfig,
 )
 from .config import load_config, merge_configs, validate_config, resolve_prompt
 from .events import EventBus, EventType, OnEvent
 from .agent import Agent, AgentResult, AgentTrace
 from .budget import BudgetTracker, BudgetState
-from .topology import Topology
-from .runner import TopologyRunner, TopologyResult
 from .tools.registry import ToolRegistry
 
 __all__ = [
     # Types
-    "AgentConfig", "AutoForkConfig", "AutoSpawnConfig", "BudgetConfig", "CondensationConfig",
-    "CondensationStrategy", "EdgeConfig", "FeedbackLoopConfig", "ForkConfig",
-    "LLMParamsConfig", "ModelScheduleEntry", "NodeConfig", "NodeType",
-    "OrchestraConfig", "PusherConfig", "PusherType", "ScheduleConfig",
-    "TopologyConfig",
+    "AgentConfig", "AgentMode", "BudgetConfig", "CondensationConfig",
+    "CondensationStrategy", "LLMParamsConfig", "OrchestraConfig",
+    "PusherConfig", "PusherType",
     # Config
     "load_config", "merge_configs", "validate_config", "resolve_prompt",
     # Events
@@ -43,7 +34,5 @@ __all__ = [
     # Core
     "Agent", "AgentResult", "AgentTrace",
     "BudgetTracker", "BudgetState",
-    "Topology",
-    "TopologyRunner", "TopologyResult",
     "ToolRegistry",
 ]
