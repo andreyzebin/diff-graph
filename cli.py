@@ -363,16 +363,64 @@ def _make_event_handler(model: str, live: Optional[Live]):
     # Budget tracking
     _budget: dict = {"step": 0, "max_steps": 40, "tok_in": 0, "tok_out": 0, "tok_cached": 0}
 
-    # ── Render the live frame ─────────────────────────────────────────────
+    # ── Render the live frame (SGR top, Actions bottom) ─────────────────────
+
+    _cc = {"low": "red", "medium": "yellow", "high": "green"}
+
+    def _render_sgr_section(body: Text) -> None:
+        """Append SGR section to body."""
+        if not _sgr["conf_history"]:
+            return
+
+        body.append("SGR · ", style="dim bold")
+        for i, (_, conf) in enumerate(_sgr["conf_history"]):
+            if i:
+                body.append(" → ", style="dim")
+            body.append(conf, style=_cc.get(conf, "white"))
+        body.append("\n")
+
+        # Resolved (compact: icon + short question + answer)
+        if _sgr["resolutions"]:
+            for _, q, res_type, summary in _sgr["resolutions"][-6:]:
+                icon = "✓" if res_type == "answered" else "✗"
+                color = "green" if res_type == "answered" else "dim"
+                display_q = (q[:36] + "…") if len(q) > 38 else q
+                body.append(f"  {icon} ", style=f"bold {color}")
+                body.append(display_q, style="dim")
+                if summary and summary != "(implicit)":
+                    display_s = (summary[:60] + "…") if len(summary) > 62 else summary
+                    body.append(f" → {display_s}", style="dim italic")
+                body.append("\n")
+
+        # Open questions
+        if _sgr["questions"]:
+            body.append(f"\n  Open ({len(_sgr['questions'])})\n", style="bold")
+            for q, age in _sgr["questions"].items():
+                if age == 0:
+                    dot, color, tag = "●", "green", "  new"
+                elif age == 1:
+                    dot, color, tag = "●", "yellow", ""
+                else:
+                    dot, color, tag = "●", "red", "  ⚠"
+                display_q = (q[:58] + "…") if len(q) > 60 else q
+                step_opened = _sgr["step_opened"].get(q, "?")
+                body.append(f"    {dot} ", style=f"bold {color}")
+                body.append(display_q, style="")
+                body.append(f"  step {step_opened}{tag}\n", style="dim")
 
     def _render_live_frame() -> Panel:
         body = Text()
 
-        # Actions section
-        body.append("Actions\n", style="bold")
-        visible = _actions[-15:]
+        # SGR section (top)
+        _render_sgr_section(body)
+
+        # Separator
+        if _sgr["conf_history"] or _actions:
+            body.append("\n")
+
+        # Actions section (bottom, last 12)
+        visible = _actions[-12:]
         for line in visible:
-            # Actions may contain markup — render via from_markup
             try:
                 rendered = Text.from_markup(f"  {line}")
             except Exception:
@@ -383,46 +431,6 @@ def _make_event_handler(model: str, live: Optional[Live]):
         # Current streaming step
         if _current_stream["text"]:
             body.append(f"  ↳ {_current_stream['text']}\n", style="dim")
-
-        # SGR section (only if we have data)
-        if _sgr["conf_history"]:
-            body.append("\n")
-            body.append("─── SGR · ", style="dim")
-            _cc = {"low": "red", "medium": "yellow", "high": "green"}
-            for i, (_, conf) in enumerate(_sgr["conf_history"]):
-                if i:
-                    body.append(" → ", style="dim")
-                body.append(conf, style=_cc.get(conf, "white"))
-            body.append("\n", style="dim")
-
-            if _sgr["questions"]:
-                body.append("\n  Open", style="bold")
-                body.append(f" ({len(_sgr['questions'])})\n", style="dim")
-                for q, age in _sgr["questions"].items():
-                    if age == 0:
-                        dot, color, tag = "●", "green", "  new"
-                    elif age == 1:
-                        dot, color, tag = "●", "yellow", ""
-                    else:
-                        dot, color, tag = "●", "red", "  ⚠"
-                    display_q = (q[:60] + "…") if len(q) > 62 else q
-                    step_opened = _sgr["step_opened"].get(q, "?")
-                    body.append(f"    {dot} ", style=f"bold {color}")
-                    body.append(display_q, style="")
-                    body.append(f"  step {step_opened}  age {age}{tag}\n", style="dim")
-
-            if _sgr["resolutions"]:
-                body.append(f"\n  Resolved ({len(_sgr['resolutions'])})\n", style="bold")
-                for step_r, q, res_type, summary in _sgr["resolutions"][-5:]:
-                    icon = "✓" if res_type == "answered" else "✗"
-                    color = "green" if res_type == "answered" else "dim"
-                    display_q = (q[:38] + "…") if len(q) > 40 else q
-                    body.append(f"    {icon} ", style=f"bold {color}")
-                    body.append(f"{display_q}", style="dim")
-                    body.append(f"  step {step_r}\n", style="dim")
-                    if summary:
-                        display_s = (summary[:76] + "…") if len(summary) > 78 else summary
-                        body.append(f"      {display_s}\n", style="dim italic")
 
         # Title
         step = _budget["step"]
@@ -460,51 +468,49 @@ def _make_event_handler(model: str, live: Optional[Live]):
         _last_stream_update["t"] = now
         live.update(_render_live_frame())
 
-    # ── Render final SGR summary (logged permanently) ─────────────────────
+    # ── Render final summary (SGR + compact actions, logged permanently) ────
 
-    def _render_final_sgr() -> Panel:
+    def _render_final_summary() -> Panel:
         body = Text()
 
-        # Confidence trajectory
-        body.append("SGR · ", style="dim bold")
-        _cc = {"low": "red", "medium": "yellow", "high": "green"}
-        for i, (_, conf) in enumerate(_sgr["conf_history"]):
-            if i:
-                body.append(" → ", style="dim")
-            body.append(conf, style=_cc.get(conf, "white"))
-        body.append("\n")
+        # SGR section (compact — all resolutions, no open questions section)
+        if _sgr["conf_history"]:
+            body.append("SGR · ", style="dim bold")
+            for i, (_, conf) in enumerate(_sgr["conf_history"]):
+                if i:
+                    body.append(" → ", style="dim")
+                body.append(conf, style=_cc.get(conf, "white"))
+            body.append("\n")
 
-        # Resolved
-        answered = [(s, q, t, sm) for s, q, t, sm in _sgr["resolutions"] if t == "answered"]
-        dropped = [(s, q, t, sm) for s, q, t, sm in _sgr["resolutions"] if t != "answered"]
-
-        if answered:
-            body.append(f"\nResolved ({len(answered)})\n", style="bold")
-            for step_r, q, _, summary in answered:
-                display_q = (q[:38] + "…") if len(q) > 40 else q
-                body.append("  ✓ ", style="bold green")
-                body.append(f"{display_q}", style="")
-                if summary:
-                    display_s = (summary[:70] + "…") if len(summary) > 72 else summary
-                    body.append(f" → {display_s}", style="dim")
+            for _, q, res_type, summary in _sgr["resolutions"]:
+                icon = "✓" if res_type == "answered" else "✗"
+                color = "green" if res_type == "answered" else "dim"
+                display_q = (q[:36] + "…") if len(q) > 38 else q
+                body.append(f"  {icon} ", style=f"bold {color}")
+                body.append(display_q, style="dim" if res_type != "answered" else "")
+                if summary and summary != "(implicit)":
+                    display_s = (summary[:60] + "…") if len(summary) > 62 else summary
+                    body.append(f" → {display_s}", style="dim italic")
+                elif res_type != "answered":
+                    body.append(" → (dropped)", style="dim italic")
                 body.append("\n")
 
-        if dropped:
-            body.append(f"\nDropped ({len(dropped)})\n", style="bold")
-            for step_r, q, _, summary in dropped:
-                display_q = (q[:38] + "…") if len(q) > 40 else q
-                body.append("  ✗ ", style="bold dim")
-                body.append(f"{display_q}", style="dim")
-                if summary:
-                    display_s = (summary[:70] + "…") if len(summary) > 72 else summary
-                    body.append(f" → {display_s}", style="dim")
-                body.append("\n")
+            if _sgr["questions"]:
+                for q in _sgr["questions"]:
+                    display_q = (q[:58] + "…") if len(q) > 60 else q
+                    body.append("  ● ", style="bold yellow")
+                    body.append(f"{display_q} (open)\n", style="yellow")
 
-        # Still open (shouldn't happen if agent finished properly)
-        if _sgr["questions"]:
-            body.append(f"\nStill open ({len(_sgr['questions'])})\n", style="bold yellow")
-            for q in _sgr["questions"]:
-                body.append(f"  ● {q}\n", style="yellow")
+            body.append("\n")
+
+        # Compact actions (no tokens, just tool + short args)
+        for line in _actions:
+            # Strip Rich markup for compact log
+            import re as _re
+            clean = _re.sub(r"\[/?[^\]]*\]", "", line)
+            # Remove token info (↑... ↓...)
+            clean = _re.sub(r"\s+[↑↓][^\s]*", "", clean).strip()
+            body.append(f"  {clean}\n", style="dim")
 
         step = _budget["step"]
         tok_in = _budget["tok_in"]
@@ -543,7 +549,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
 
             # Print final SGR summary for previous agent
             if _sgr["conf_history"]:
-                (live.console if live else console).print(_render_final_sgr())
+                (live.console if live else console).print(_render_final_summary())
 
             # Reset state for new agent
             _sgr["questions"].clear()
@@ -692,7 +698,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
                 live.update("")
             # Print final SGR summary to log (permanent)
             if _sgr["conf_history"]:
-                (live.console if live else console).print(_render_final_sgr())
+                (live.console if live else console).print(_render_final_summary())
             # Done message
             _log(
                 f"[bold green]done[/bold green]      "
@@ -705,7 +711,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             if live:
                 live.update("")
             if _sgr["conf_history"]:
-                (live.console if live else console).print(_render_final_sgr())
+                (live.console if live else console).print(_render_final_summary())
             _log(
                 f"[yellow]forced[/yellow]    {kw.get('reason', 'limit')}  "
                 f"[dim cyan]{_fmt_tok_short()}[/dim cyan]"
