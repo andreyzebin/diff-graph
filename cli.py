@@ -336,6 +336,10 @@ def _finding_to_comment(finding):
 
 
 def _make_event_handler(model: str, live: Optional[Live]):
+    # Last-known token counts + pending step info (for deferred logging)
+    _last: dict = {"tok_in": 0, "tok_out": 0, "tok_cached": 0}
+    _step_info: dict = {}  # (step, tool) -> arg_str
+
     # SGR convergence state — updated on every reflect event
     _sgr: dict = {
         "questions":     {},   # question_text -> age (number of reflects it has been open)
@@ -452,21 +456,24 @@ def _make_event_handler(model: str, live: Optional[Live]):
         elif event == "orchestrator_stream":
             tool_name    = kw.get("tool_name", "")
             args_preview = kw.get("args_preview", "")
-            tok          = kw.get("tok", 0)
+            tok_out_live = kw.get("tok", 0)
+            tok_in_str   = f"↑{_last['tok_in']}  " if _last["tok_in"] else ""
             _live_update(Text.assemble(
                 ("  ↳ ", "dim"),
                 (f"step {kw.get('step', 0)}  ", "dim"),
                 (tool_name or "…", "green"),
                 (f"({args_preview})", "dim"),
-                (f"  {tok} tok", "dim cyan"),
+                (f"  {tok_in_str}↓{tok_out_live}…", "dim cyan"),
             ))
 
         elif event == "orchestrator_step":
             tool    = kw.get("tool", "")
             args    = kw.get("args", {})
             arg_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])
-            tok_str = _fmt_tok(kw)
-            _log(f"[dim]  step {kw.get('step', 0)}  [green]{tool}[/green]({arg_str})  {tok_str}[/dim]")
+            _last["tok_in"]     = kw.get("tok_in",     _last["tok_in"])
+            _last["tok_out"]    = kw.get("tok_out",    _last["tok_out"])
+            _last["tok_cached"] = kw.get("tok_cached", _last["tok_cached"])
+            _step_info[(kw.get("step", 0), tool)] = arg_str
             _restore_convergence()
 
         elif event == "orchestrator_reflect":
@@ -549,7 +556,14 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _live_update(_render_convergence())
 
         elif event == "orchestrator_result":
-            pass
+            step         = kw.get("step", 0)
+            tool         = kw.get("tool", "")
+            result_count = kw.get("result_count")
+            arg_str      = _step_info.pop((step, tool), "")
+            count_str    = f"  ×{result_count}" if result_count is not None else ""
+            tok_str      = _fmt_tok(_last)
+            _log(f"[dim]  step {step}  [green]{tool}[/green]({arg_str}){count_str}  {tok_str}[/dim]")
+            _restore_convergence()
 
         elif event == "orchestrator_done":
             _live_update("")   # clear convergence panel before final log
@@ -578,10 +592,8 @@ def _fmt_tok(kw: dict) -> str:
     tok_cached = kw.get("tok_cached", 0)
     if not (tok_in or tok_out):
         return ""
-    parts = [f"in={tok_in}", f"out={tok_out}"]
-    if tok_cached:
-        parts.append(f"cached={tok_cached}")
-    return "  ".join(parts)
+    in_str = f"↑{tok_in}[{tok_cached}]" if tok_cached else f"↑{tok_in}"
+    return f"{in_str} ↓{tok_out}"
 
 
 if __name__ == "__main__":

@@ -443,8 +443,9 @@ def _solve_phase(
                 content = "Reflection noted."
             else:
                 result = dispatch_results.get(tc.id, "")
+                result_count = len(result) if isinstance(result, list) else None
                 _emit("orchestrator_result", step=step, tool=tc.function.name,
-                      result_len=len(str(result)))
+                      result_len=len(str(result)), result_count=result_count)
                 content = _format_result(result)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
 
