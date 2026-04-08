@@ -527,6 +527,13 @@ def _make_event_handler(model: str, live: Optional[Live]):
         elif event == "orchestrator_plan_start":
             _log("[bold green]plan[/bold green]      strategist analyzing diff…")
 
+        elif event == "orchestrator_agent_spawned":
+            parent = kw.get("parent_id", "?")
+            child = kw.get("child_id", "?")
+            name = kw.get("agent_name", "?")
+            _actions.append(f"spawned [bold cyan]{name}[/bold cyan] ({child})")
+            _update_live()
+
         elif event == "orchestrator_plan_done":
             plan = kw.get("plan", {})
             system_type = plan.get("system_type", "?")

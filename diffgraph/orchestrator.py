@@ -1,11 +1,12 @@
 """
-PR reviewer — uses Orchestra's prompt-defined agents.
+PR reviewer — one agent entry point.
 
-Preserves the original public API:
+The strategist agent is the sole orchestrator: it analyzes the diff,
+spawns reviewer agents via tool calls, and consolidates findings.
+All pipeline logic lives in prompts, not in code.
+
+Public API:
   run_review(diff_text, repo_path, llm, model, ...) → (list[ReviewFinding], ReviewContext)
-
-Agents are defined in .prompt files, compiled into a registry.
-Strategist (single-shot) → produces plan → Reviewer (react) executes it.
 """
 from __future__ import annotations
 
@@ -18,7 +19,6 @@ from typing import Callable, Optional
 from orchestra import (
     Agent,
     AgentConfig,
-    AgentMode,
     BudgetConfig,
     EventBus,
     ToolRegistry,
@@ -36,7 +36,6 @@ log = logging.getLogger(__name__)
 
 OnEvent = Optional[Callable[..., None]]
 
-# Compile prompt files once at module load
 _PROMPT_DIR = Path(__file__).parent / "prompts"
 
 
@@ -81,8 +80,8 @@ def run_review(
     llm,
     model: str,
     existing_comments: Optional[list[dict]] = None,
-    max_steps: int = 40,
-    max_tokens: int = 40000,
+    max_steps: int = 50,
+    max_tokens: int = 50000,
     on_event: OnEvent = None,
 ) -> tuple[list[ReviewFinding], ReviewContext]:
     _emit = on_event or (lambda *_, **__: None)
@@ -93,7 +92,7 @@ def run_review(
         repo_path=repo_path, existing_comments=existing_comments or [],
     )
 
-    # ── Compile agent registry from .prompt files ─────────────────────────
+    # ── Compile agents from .prompt files ─────────────────────────────────
     agent_registry = compile_prompts(_PROMPT_DIR, pattern="*.prompt")
     for entry in agent_registry.entries.values():
         caps = ", ".join(entry.capabilities) if entry.capabilities else "–"
@@ -109,99 +108,57 @@ def run_review(
     event_bus.set_passthrough(_adapt_events(_emit))
 
     # ── Register domain tools ─────────────────────────────────────────────
-    registry = ToolRegistry()
-    register_diffgraph_tools(registry, ctx)
+    tool_registry = ToolRegistry()
+    register_diffgraph_tools(tool_registry, ctx)
 
-    # ── Phase 1: Strategist ───────────────────────────────────────────────
-    _emit("orchestrator_plan_start")
+    # ── Build strategist config ───────────────────────────────────────────
+    config = agent_registry.get_config("strategist")
+    if not config:
+        log.error("strategist agent not found in prompt registry")
+        return [], ctx.review_context
 
-    strategist_entry = agent_registry.get("strategist")
-    if strategist_entry:
-        strategist_config = strategist_entry.to_agent_config()
-        # Inject diff_summary into prompt
-        strategist_config = AgentConfig(
-            name=strategist_config.name,
-            system_prompt=interpolate(
-                strategist_config.system_prompt,
-                diff_summary=_summarize_diff_for_plan(diff_text),
-            ),
-            mode=AgentMode.SINGLE,
-            budget=strategist_config.budget,
-            llm_params=strategist_config.llm_params,
-        )
-    else:
-        # Fallback if .prompt file not found
-        strategist_config = AgentConfig(
-            name="strategist", mode=AgentMode.SINGLE,
-            system_prompt="Output a JSON review plan.",
-            budget=BudgetConfig(max_tokens=5000, max_steps=1),
-        )
-
-    register_builtins(registry, strategist_config)
-
-    strategist = Agent(
-        config=strategist_config, tool_registry=registry,
-        llm=llm, model=model, event_bus=event_bus,
+    # Inject data into prompt placeholders
+    diff_summary = _make_diff_summary(diff_result)
+    existing_comments_str = _format_existing_comments(ctx.existing_comments)
+    config.system_prompt = interpolate(
+        config.system_prompt,
+        diff_summary=diff_summary,
+        existing_comments=existing_comments_str,
     )
-    plan_result = strategist.run()
-    plan = plan_result.output if isinstance(plan_result.output, dict) else {
-        "system_type": "unknown",
-        "tasks": [{"id": "review", "type": "business_logic", "priority": "high",
-                    "focus": "Review the changed code", "search_hints": []}],
-    }
 
-    _emit("orchestrator_plan_done", plan=plan)
+    # Override budget from CLI params
+    config.budget = BudgetConfig(
+        max_tokens=max_tokens,
+        max_steps=max_steps,
+        pushers=[
+            PusherConfig(at=0.5, type=PusherType.NUDGE,
+                         message="Half budget used. Focus on high-priority tasks."),
+            PusherConfig(at=0.8, type=PusherType.NUDGE,
+                         message="80% budget. Consolidate findings and call done()."),
+            PusherConfig(at=1.0, type=PusherType.FORCE_DONE),
+        ],
+    )
 
-    # ── Phase 2: Reviewer ─────────────────────────────────────────────────
-    reviewer_entry = agent_registry.get("reviewer")
-    if reviewer_entry:
-        reviewer_config = reviewer_entry.to_agent_config()
-        # Inject data into prompt placeholders
-        reviewer_config = AgentConfig(
-            name=reviewer_config.name,
-            system_prompt=interpolate(
-                reviewer_config.system_prompt,
-                diff_summary=_make_diff_summary(diff_result),
-                plan=json.dumps(plan, indent=2, ensure_ascii=False),
-                existing_comments=_format_existing_comments(ctx.existing_comments),
-            ),
-            mode=AgentMode.REACT,
-            sgr=reviewer_config.sgr,
-            sgr_interval=reviewer_config.sgr_interval,
-            tools=list(reviewer_config.tools),
-            meta_tools=list(reviewer_config.meta_tools),
-            budget=BudgetConfig(
-                max_tokens=max_tokens,
-                max_steps=max_steps,
-                pushers=[
-                    PusherConfig(at=0.5, type=PusherType.NUDGE,
-                                 message="Half your token budget used. Focus on high-priority tasks only."),
-                    PusherConfig(at=0.75, type=PusherType.NUDGE,
-                                 message="Token budget 75% used. Call done() soon with your findings."),
-                    PusherConfig(at=1.0, type=PusherType.FORCE_DONE),
-                ],
-            ),
-            llm_params=reviewer_config.llm_params,
-        )
-    else:
-        # Fallback
-        reviewer_config = AgentConfig(
-            name="reviewer", mode=AgentMode.REACT, sgr=True,
-            tools=["find_files", "read_file", "read_outline", "search", "get_diff",
-                    "reply_to_comment", "resolve_comment"],
-            budget=BudgetConfig(max_tokens=max_tokens, max_steps=max_steps),
-        )
-
+    # ── Register builtins and run ─────────────────────────────────────────
     sgr_tracker = SGRTracker()
-    register_builtins(registry, reviewer_config, sgr_tracker=sgr_tracker)
+    register_builtins(tool_registry, config, sgr_tracker=sgr_tracker)
 
-    reviewer = Agent(
-        config=reviewer_config, tool_registry=registry,
-        llm=llm, model=model, event_bus=event_bus,
+    agent = Agent(
+        config=config,
+        tool_registry=tool_registry,
+        llm=llm,
+        model=model,
+        event_bus=event_bus,
         agent_registry=agent_registry,
         agent_configs=agent_registry.get_all_configs(),
     )
-    result = reviewer.run()
+    # Set data scope for inheritance by child agents
+    agent.data_scope = {
+        "diff_summary": diff_summary,
+        "existing_comments": existing_comments_str,
+    }
+
+    result = agent.run()
 
     # ── Parse findings ────────────────────────────────────────────────────
     raw_findings = []
@@ -209,7 +166,9 @@ def run_review(
         if isinstance(result.output, list):
             raw_findings = result.output
         elif isinstance(result.output, dict):
-            raw_findings = result.output.get("findings", [])
+            raw_findings = result.output.get("findings", raw_findings)
+            if not raw_findings:
+                raw_findings = result.output.get("tasks", raw_findings)
 
     findings = _parse_findings(raw_findings)
 
@@ -252,6 +211,11 @@ def _adapt_events(on_event: Callable) -> Callable:
                      reason=kw.get("reason", ""),
                      tok_in=kw.get("tok_in", 0), tok_out=kw.get("tok_out", 0),
                      tok_cached=kw.get("tok_cached", 0))
+        elif event_type == "agent_spawned":
+            on_event("orchestrator_agent_spawned",
+                     parent_id=kw.get("parent_id", ""),
+                     child_id=kw.get("child_id", ""),
+                     agent_name=kw.get("agent_name", ""))
     return handler
 
 
@@ -270,18 +234,6 @@ def _parse_findings(raw: list) -> list[ReviewFinding]:
             suggestion=f.get("suggestion", ""),
         ))
     return sorted(findings, key=lambda f: _order.get(f.severity, 2))
-
-
-def _summarize_diff_for_plan(diff_text: str) -> str:
-    lines = diff_text.splitlines()
-    added = sum(1 for l in lines if l.startswith("+") and not l.startswith("+++"))
-    removed = sum(1 for l in lines if l.startswith("-") and not l.startswith("---"))
-    files_changed = [l[6:] for l in lines if l.startswith("+++ b/")]
-    header = (
-        f"Files changed ({len(files_changed)}): {', '.join(files_changed[:15])}\n"
-        f"Total: +{added} -{removed} lines\n\n"
-    )
-    return header + "\n".join(lines[:200])
 
 
 def _make_diff_summary(diff_result: DiffResult) -> str:

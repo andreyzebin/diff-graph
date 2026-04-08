@@ -97,6 +97,7 @@ class Agent:
         self.prompt_vars = prompt_vars or {}
         self.agent_configs = agent_configs or {}
         self.agent_registry = agent_registry  # compiled prompt registry
+        self.data_scope: dict[str, str] = {}  # resolved @data values for inheritance
 
         # SGR
         self.sgr = SGRTracker(config.sgr_extensions) if config.sgr else None
@@ -450,6 +451,18 @@ class Agent:
         # Fallback to dict
         return self.agent_configs.get(agent_name)
 
+    def _resolve_data_inheritance(self, data: dict) -> dict:
+        """Resolve "inherit" values from parent's data_scope."""
+        resolved = {}
+        for key, val in data.items():
+            if val == "inherit":
+                if key in self.data_scope:
+                    resolved[key] = self.data_scope[key]
+                # else: skip — child's {placeholder} stays unresolved
+            else:
+                resolved[key] = str(val)
+        return resolved
+
     def _meta_spawn_agent(self, args: dict) -> str:
         """spawn_agent: create and run a child agent with data injection."""
         agent_name = args.get("agent", "")
@@ -459,12 +472,14 @@ class Agent:
         if self.depth >= self.config.max_depth:
             return json.dumps({"error": "max depth reached"})
 
-        # Data injection: inject @data fields into prompt {placeholders}
+        # Data injection: resolve inheritance, inject into prompt {placeholders}
         data = args.get("data", {})
-        if data and "{" in agent_config.system_prompt:
+        resolved_data = self._resolve_data_inheritance(data) if data else {}
+
+        if resolved_data and "{" in agent_config.system_prompt:
             agent_config = AgentConfig(
                 name=agent_config.name,
-                system_prompt=interpolate(agent_config.system_prompt, **{k: str(v) for k, v in data.items()}),
+                system_prompt=interpolate(agent_config.system_prompt, **resolved_data),
                 mode=agent_config.mode,
                 sgr=agent_config.sgr,
                 sgr_interval=agent_config.sgr_interval,
@@ -512,6 +527,7 @@ class Agent:
             parent_id=self.agent_id, parent=self, depth=self.depth + 1,
             context_messages=context, agent_configs=self.agent_configs, agent_registry=self.agent_registry,
         )
+        child.data_scope = resolved_data  # for further inheritance
 
         with self._children_lock:
             self._children[child.agent_id] = child
@@ -562,9 +578,23 @@ class Agent:
 
         def _run_one(spec: dict) -> AgentResult:
             agent_name = spec.get("agent", "")
-            agent_config = self.agent_configs.get(agent_name)
+            agent_config = self._resolve_agent_config(agent_name)
             if not agent_config:
                 return AgentResult(agent_name=agent_name, output={"error": f"unknown: {agent_name}"})
+
+            # Data inheritance
+            spec_data = spec.get("data", {})
+            resolved_data = self._resolve_data_inheritance(spec_data) if spec_data else {}
+            if resolved_data and "{" in agent_config.system_prompt:
+                agent_config = AgentConfig(
+                    name=agent_config.name,
+                    system_prompt=interpolate(agent_config.system_prompt, **resolved_data),
+                    mode=agent_config.mode, sgr=agent_config.sgr,
+                    sgr_interval=agent_config.sgr_interval,
+                    tools=list(agent_config.tools), meta_tools=list(agent_config.meta_tools),
+                    output_schema=agent_config.output_schema, budget=agent_config.budget,
+                    llm_params=agent_config.llm_params, max_depth=agent_config.max_depth,
+                )
 
             handoff = get_handoff(handoff_mode)
             context = handoff.apply(
@@ -590,6 +620,7 @@ class Agent:
                 parent_id=self.agent_id, parent=self, depth=self.depth + 1,
                 context_messages=context, agent_configs=self.agent_configs, agent_registry=self.agent_registry,
             )
+            child.data_scope = resolved_data
             with self._children_lock:
                 self._children[child.agent_id] = child
             self.event_bus.emit(EventType.AGENT_SPAWNED,
