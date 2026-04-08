@@ -370,10 +370,15 @@ def _make_event_handler(model: str, live: Optional[Live]):
 
         # Actions section
         body.append("Actions\n", style="bold")
-        # Show last 15 actions to keep frame compact
         visible = _actions[-15:]
         for line in visible:
-            body.append(f"  {line}\n")
+            # Actions may contain markup — render via from_markup
+            try:
+                rendered = Text.from_markup(f"  {line}")
+            except Exception:
+                rendered = Text(f"  {line}")
+            body.append_text(rendered)
+            body.append("\n")
 
         # Current streaming step
         if _current_stream["text"]:
@@ -382,16 +387,14 @@ def _make_event_handler(model: str, live: Optional[Live]):
         # SGR section (only if we have data)
         if _sgr["conf_history"]:
             body.append("\n")
-            # Separator
             body.append("─── SGR · ", style="dim")
             _cc = {"low": "red", "medium": "yellow", "high": "green"}
             for i, (_, conf) in enumerate(_sgr["conf_history"]):
                 if i:
                     body.append(" → ", style="dim")
                 body.append(conf, style=_cc.get(conf, "white"))
-            body.append(" ─" * 20 + "\n", style="dim")
+            body.append("\n", style="dim")
 
-            # Open questions
             if _sgr["questions"]:
                 body.append("\n  Open", style="bold")
                 body.append(f" ({len(_sgr['questions'])})\n", style="dim")
@@ -401,14 +404,13 @@ def _make_event_handler(model: str, live: Optional[Live]):
                     elif age == 1:
                         dot, color, tag = "●", "yellow", ""
                     else:
-                        dot, color, tag = "●", "red", f"  ⚠"
+                        dot, color, tag = "●", "red", "  ⚠"
                     display_q = (q[:60] + "…") if len(q) > 62 else q
                     step_opened = _sgr["step_opened"].get(q, "?")
                     body.append(f"    {dot} ", style=f"bold {color}")
                     body.append(display_q, style="")
                     body.append(f"  step {step_opened}  age {age}{tag}\n", style="dim")
 
-            # Resolved questions (last 5)
             if _sgr["resolutions"]:
                 body.append(f"\n  Resolved ({len(_sgr['resolutions'])})\n", style="bold")
                 for step_r, q, res_type, summary in _sgr["resolutions"][-5:]:
@@ -422,7 +424,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
                         display_s = (summary[:76] + "…") if len(summary) > 78 else summary
                         body.append(f"      {display_s}\n", style="dim italic")
 
-        # Title with step and budget info
+        # Title
         step = _budget["step"]
         max_steps = _budget["max_steps"]
         tok_in = _budget["tok_in"]
@@ -440,9 +442,15 @@ def _make_event_handler(model: str, live: Optional[Live]):
             padding=(0, 1),
         )
 
-    def _update_live() -> None:
-        if live:
+    _live_dirty = {"val": False}
+
+    def _update_live(force: bool = False) -> None:
+        if live and (force or _live_dirty["val"]):
             live.update(_render_live_frame())
+            _live_dirty["val"] = False
+
+    def _mark_dirty() -> None:
+        _live_dirty["val"] = True
 
     # ── Render final SGR summary (logged permanently) ─────────────────────
 
@@ -550,7 +558,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             agent_id = kw.get("agent_id", "")
             agent_name = kw.get("agent_name", "agent")
             _switch_agent(agent_id, agent_name)
-            _update_live()
+            _update_live(force=True)
 
         elif event == "orchestrator_plan_start":
             _log("[bold green]plan[/bold green]      strategist analyzing diff…")
@@ -564,7 +572,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
                 _actions.append(f"[bold cyan]spawn {name}[/bold cyan] → {focus_short}")
             else:
                 _actions.append(f"[bold cyan]spawn {name}[/bold cyan] ({child[:6]})")
-            _update_live()
+            _update_live(force=True)
 
         elif event == "orchestrator_agent_done":
             # Will be followed by parent resuming — _switch_agent handles transition
@@ -601,17 +609,17 @@ def _make_event_handler(model: str, live: Optional[Live]):
             tok = kw.get("tok", 0)
             step = kw.get("step", 0)
             _current_stream["text"] = f"step {step}  {tool_name or '…'}({args_preview})  ↓{tok}…"
-            _update_live()
+            # Stream updates: just refresh the live panel (lightweight)
+            if live:
+                live.update(_render_live_frame())
 
         elif event == "orchestrator_step":
             tool = kw.get("tool", "")
-            args = kw.get("args", {})
             step = kw.get("step", 0)
             _budget["step"] = step + 1
             _budget["tok_in"] = kw.get("tok_in", _budget["tok_in"])
             _budget["tok_out"] = kw.get("tok_out", _budget["tok_out"])
             _budget["tok_cached"] = kw.get("tok_cached", _budget["tok_cached"])
-            # Don't add to actions yet — wait for orchestrator_result
 
         elif event == "orchestrator_result":
             step = kw.get("step", 0)
@@ -621,7 +629,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             tok_str = _fmt_tok_short()
             _actions.append(f"step {step}  {tool}{count_str}  {tok_str}")
             _current_stream["text"] = ""
-            _update_live()
+            _update_live(force=True)
 
         elif event == "orchestrator_reflect":
             step = kw.get("step", 0)
@@ -661,7 +669,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             conf_color = {"low": "red", "medium": "yellow", "high": "green"}.get(conf, "white")
             _actions.append(f"step {step}  reflect()  conf=[{conf_color}]{conf}[/{conf_color}]")
             _current_stream["text"] = ""
-            _update_live()
+            _update_live(force=True)
 
         elif event == "orchestrator_done":
             # Clear live frame
