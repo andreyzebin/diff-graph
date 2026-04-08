@@ -184,38 +184,50 @@ def run_review(
 
 def _adapt_events(on_event: Callable) -> Callable:
     def handler(event_type: str, **kw):
-        if event_type == "agent_stream":
+        # Pass agent identity through all events
+        aid = kw.get("agent_id", "")
+        aname = kw.get("agent_name", "")
+
+        if event_type == "agent_started":
+            on_event("orchestrator_agent_started",
+                     agent_id=aid, agent_name=aname, depth=kw.get("depth", 0))
+        elif event_type == "agent_stream":
             on_event("orchestrator_stream",
-                     step=kw.get("step", 0), tool_name=kw.get("tool_name", ""),
+                     agent_id=aid, step=kw.get("step", 0),
+                     tool_name=kw.get("tool_name", ""),
                      args_preview=kw.get("args_preview", ""), tok=kw.get("tok", 0))
         elif event_type == "agent_step":
             on_event("orchestrator_step",
-                     step=kw.get("step", 0), tool=kw.get("tool", ""),
+                     agent_id=aid, step=kw.get("step", 0), tool=kw.get("tool", ""),
                      args=kw.get("args", {}),
                      tok_in=kw.get("tok_in", 0), tok_out=kw.get("tok_out", 0),
                      tok_cached=kw.get("tok_cached", 0))
         elif event_type == "agent_reflect":
             on_event("orchestrator_reflect",
-                     step=kw.get("step", 0), learned=kw.get("learned", ""),
+                     agent_id=aid, step=kw.get("step", 0),
+                     learned=kw.get("learned", ""),
                      resolved_questions=kw.get("resolved_questions", []),
                      questions_remaining=kw.get("questions_remaining", []),
                      confidence=kw.get("confidence", ""),
                      next_action=kw.get("next_action", ""))
         elif event_type == "agent_tool_result":
             on_event("orchestrator_result",
-                     step=kw.get("step", 0), tool=kw.get("tool", ""),
+                     agent_id=aid, step=kw.get("step", 0), tool=kw.get("tool", ""),
                      result_len=kw.get("result_len", 0),
                      result_count=kw.get("result_count"))
+        elif event_type == "agent_done":
+            on_event("orchestrator_agent_done",
+                     agent_id=aid, agent_name=aname)
         elif event_type == "agent_forced_done":
             on_event("orchestrator_forced_done",
-                     reason=kw.get("reason", ""),
+                     agent_id=aid, reason=kw.get("reason", ""),
                      tok_in=kw.get("tok_in", 0), tok_out=kw.get("tok_out", 0),
                      tok_cached=kw.get("tok_cached", 0))
         elif event_type == "agent_spawned":
             on_event("orchestrator_agent_spawned",
                      parent_id=kw.get("parent_id", ""),
                      child_id=kw.get("child_id", ""),
-                     agent_name=kw.get("agent_name", ""))
+                     agent_name=aname or kw.get("agent_name", ""))
     return handler
 
 

@@ -344,17 +344,20 @@ def _make_event_handler(model: str, live: Optional[Live]):
 
     # ── State ─────────────────────────────────────────────────────────────
 
+    # Agent identity (tracks which agent is currently displayed)
+    _active: dict = {"agent_id": "", "agent_name": "agent"}
+
     # Action log (accumulated, shown in live frame)
-    _actions: list[str] = []           # ["step 0  get_diff()  ↑2273 ↓20", ...]
-    _current_stream: dict = {"text": ""}  # live-updating current step
+    _actions: list[str] = []
+    _current_stream: dict = {"text": ""}
 
     # SGR state
     _sgr: dict = {
-        "questions":     {},   # question_text -> age
-        "step_opened":   {},   # question_text -> step when first seen
-        "conf_history":  [],   # [(step, conf), ...]
+        "questions":     {},
+        "step_opened":   {},
+        "conf_history":  [],
         "resolved_set":  set(),
-        "resolutions":   [],   # [(step, question, resolution_type, summary), ...]
+        "resolutions":   [],
     }
 
     # Budget tracking
@@ -426,7 +429,8 @@ def _make_event_handler(model: str, live: Optional[Live]):
         pct = int(100 * step / max_steps) if max_steps else 0
         last_conf = _sgr["conf_history"][-1][1] if _sgr["conf_history"] else ""
         conf_str = f" · conf={last_conf}" if last_conf else ""
-        title = f"reviewer · step {step}/{max_steps} · {pct}% · ↑{tok_in}{conf_str}"
+        agent_name = _active["agent_name"]
+        title = f"{agent_name} · step {step}/{max_steps} · {pct}% · ↑{tok_in}{conf_str}"
 
         return Panel(
             body,
@@ -491,7 +495,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
         tok_out = _budget["tok_out"]
         return Panel(
             body,
-            title=f"[dim]reviewer · done · {step} steps · ↑{tok_in} ↓{tok_out}[/dim]",
+            title=f"[dim]{_active['agent_name']} · done · {step} steps · ↑{tok_in} ↓{tok_out}[/dim]",
             border_style="dim",
             box=rich_box.ROUNDED,
             padding=(0, 1),
@@ -513,6 +517,24 @@ def _make_event_handler(model: str, live: Optional[Live]):
 
     # ── Event handler ─────────────────────────────────────────────────────
 
+    def _switch_agent(agent_id: str, agent_name: str) -> None:
+        """Switch live frame to a new agent. Log previous agent's final SGR if any."""
+        prev = _active["agent_id"]
+        if prev and prev != agent_id and _sgr["conf_history"]:
+            # Print final SGR for the previous agent before switching
+            (live.console if live else console).print(_render_final_sgr())
+            # Reset SGR state for new agent
+            _sgr["questions"].clear()
+            _sgr["step_opened"].clear()
+            _sgr["conf_history"].clear()
+            _sgr["resolved_set"].clear()
+            _sgr["resolutions"].clear()
+            _actions.clear()
+            _budget.update(step=0, tok_in=0, tok_out=0, tok_cached=0)
+
+        _active["agent_id"] = agent_id
+        _active["agent_name"] = agent_name
+
     def on_event(event: str, **kw) -> None:
         if event == "orchestrator_agent_compiled":
             name = kw.get("name", "?")
@@ -524,6 +546,12 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _budget["max_steps"] = max(_budget["max_steps"], bs)
             _log(f"[dim]  compiled [cyan]{name}[/cyan] \\[{mode}]  caps=\\[{caps}]  data=\\[{data}]  budget={bt}t/{bs}s[/dim]")
 
+        elif event == "orchestrator_agent_started":
+            agent_id = kw.get("agent_id", "")
+            agent_name = kw.get("agent_name", "agent")
+            _switch_agent(agent_id, agent_name)
+            _update_live()
+
         elif event == "orchestrator_plan_start":
             _log("[bold green]plan[/bold green]      strategist analyzing diff…")
 
@@ -531,8 +559,12 @@ def _make_event_handler(model: str, live: Optional[Live]):
             parent = kw.get("parent_id", "?")
             child = kw.get("child_id", "?")
             name = kw.get("agent_name", "?")
-            _actions.append(f"spawned [bold cyan]{name}[/bold cyan] ({child})")
+            _actions.append(f"spawned [bold cyan]{name}[/bold cyan] ({child[:6]})")
             _update_live()
+
+        elif event == "orchestrator_agent_done":
+            # Will be followed by parent resuming — _switch_agent handles transition
+            pass
 
         elif event == "orchestrator_plan_done":
             plan = kw.get("plan", {})
