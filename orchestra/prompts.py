@@ -3,6 +3,7 @@ Prompt template loading and variable interpolation.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -20,15 +21,22 @@ def load_prompt(path_or_text: str, base_dir: Path | None = None) -> str:
     return path_or_text
 
 
+# Matches {word} but not {word:spec} or {"json"} or {<angle>} etc.
+# Only replaces simple {identifier} placeholders.
+_PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+
+
 def interpolate(template: str, **variables: Any) -> str:
     """
     Replace {var_name} placeholders with values.
 
-    Uses str.format_map with a defaultdict fallback so missing keys
-    are left as-is (no KeyError).
+    Only replaces simple {identifier} patterns — leaves JSON braces,
+    format specs, and other brace content untouched.
     """
-    class _SafeDict(dict):
-        def __missing__(self, key: str) -> str:
-            return "{" + key + "}"
+    def _replace(match: re.Match) -> str:
+        key = match.group(1)
+        if key in variables:
+            return str(variables[key])
+        return match.group(0)  # leave as-is if not in variables
 
-    return template.format_map(_SafeDict(**variables))
+    return _PLACEHOLDER_RE.sub(_replace, template)

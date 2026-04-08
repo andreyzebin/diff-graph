@@ -151,14 +151,26 @@ def compile_prompts(
 
     registry = AgentRegistry(source_hash=combined_hash)
 
+    log.info("compiling %d prompt files from %s", len(files), prompt_dir)
+
     for filepath in files:
         try:
             text = filepath.read_text(encoding="utf-8")
             entry = _parse_prompt_file(text, filepath, llm, model)
             if entry:
                 registry.entries[entry.name] = entry
+                caps = ", ".join(entry.capabilities) if entry.capabilities else "none"
+                tools = ", ".join(entry.tools[:5]) if entry.tools else "none"
+                data_fields = ", ".join(entry.input_schema.keys()) if entry.input_schema else "none"
+                log.info(
+                    "  compiled agent '%s' [%s] — capabilities=[%s] tools=[%s] data=[%s] budget=%dt/%ds",
+                    entry.name, entry.mode.value, caps, tools, data_fields,
+                    entry.budget.max_tokens, entry.budget.max_steps,
+                )
+            else:
+                log.warning("  skipped %s — no @agent header found", filepath.name)
         except Exception as e:
-            log.warning("failed to compile %s: %s", filepath, e)
+            log.warning("  failed to compile %s: %s", filepath.name, e)
 
     if use_cache:
         _CACHE[combined_hash] = registry

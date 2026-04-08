@@ -95,6 +95,14 @@ def run_review(
 
     # ── Compile agent registry from .prompt files ─────────────────────────
     agent_registry = compile_prompts(_PROMPT_DIR, pattern="*.prompt")
+    for entry in agent_registry.entries.values():
+        caps = ", ".join(entry.capabilities) if entry.capabilities else "–"
+        data_fields = ", ".join(entry.input_schema.keys()) if entry.input_schema else "–"
+        _emit("orchestrator_agent_compiled",
+              name=entry.name, mode=entry.mode.value,
+              capabilities=caps, data=data_fields,
+              budget_tokens=entry.budget.max_tokens,
+              budget_steps=entry.budget.max_steps)
 
     # ── Event bus ─────────────────────────────────────────────────────────
     event_bus = EventBus()
