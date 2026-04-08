@@ -1,26 +1,37 @@
 # DiffGraph
 
-Multi-agent PR code reviewer. Takes a git diff (or a Bitbucket Server PR URL) and runs a two-phase pipeline: a Strategist agent plans what to look for, then a ReAct Solver agent explores the repo and produces structured inline findings.
+Multi-agent PR code reviewer powered by the **Orchestra** framework. Takes a git diff (or a Bitbucket Server PR URL), spawns a strategist agent that analyzes the change, delegates investigation to focused reviewer agents, and consolidates findings into a deduplicated list.
 
 ```
 git diff / PR URL
       │
       ▼
-parse_diff()       changed files + changed lines
+parse_diff()         changed files + changed lines
       │
       ▼
-plan phase         one LLM call: detect system type, build typed task list
+┌───────────────────── Orchestra ─────────────────────┐
+│                                                      │
+│  strategist (react)                                  │
+│    Phase 1: ANALYZE — get_diff, form questions       │
+│    Phase 2: INVESTIGATE — spawn reviewer(s)          │
+│    Phase 3: JUDGE — consolidate, reply, done         │
+│       │                                              │
+│       ├── spawn_agent("reviewer", focus="...")        │
+│       │      └── ReAct loop: tools + SGR             │
+│       │                                              │
+│       ├── [optional: spawn_many for parallel]        │
+│       │                                              │
+│       └── done(consolidated_findings)                │
+│                                                      │
+└──────────────────────────────────────────────────────┘
       │
       ▼
-solve phase        ReAct loop: explore repo with tools, reflect, report
-      │
-      ▼
-ReviewFinding[]    BLOCKER / MAJOR / MINOR / COMMENT with evidence
+ReviewFinding[]      BLOCKER / MAJOR / MINOR / COMMENT
       │
       └──► post inline comments to PR
 ```
 
-No pre-indexing. No database. One session per diff.
+No pre-indexing. No database. One session per diff. All agents defined by `.prompt` files.
 
 ---
 
@@ -67,33 +78,25 @@ python cli.py run --pr-url ... --post-comments
 
 ### `.env`
 
-Secrets and environment-specific values. Copy from `.env.example`, fill in, and `source .env` before running.
-
 ```bash
-# LLM
 OPENAI_API_KEY=sk-...
-# or for other providers:
 DEEPSEEK_API_KEY=sk-...
-
-# Bitbucket Server
 BITBUCKET_SERVER_BEARER_TOKEN=...
-REQUESTS_CA_BUNDLE=/path/to/ca.pem        # optional, custom CA
-BITBUCKET_SERVER_CLIENT_CERT=/path/to/client.pem  # optional, mTLS
+REQUESTS_CA_BUNDLE=/path/to/ca.pem        # optional
+BITBUCKET_SERVER_CLIENT_CERT=/path/to/client.pem  # optional
 ```
 
 ### `config.local.yaml`
 
-Runtime settings. Deep-merged on top of `config.yaml`. Gitignored, never committed.
-
 ```yaml
 llm:
-  api_url: "https://api.deepseek.com/v1"   # empty = OpenAI directly
+  api_url: "https://api.deepseek.com/v1"
   api_key: "${DEEPSEEK_API_KEY}"
   model: "deepseek-chat"
 
 review:
-  max_steps: 40        # max ReAct tool calls per review
-  max_tokens: 40000    # token budget for the solve phase
+  max_steps: 40
+  max_tokens: 40000
 ```
 
 ---
@@ -101,142 +104,149 @@ review:
 ## CLI
 
 ```bash
-# Local diff
 python cli.py run --repo ./my-service --diff changes.diff
-git diff HEAD~1 | python cli.py run --repo . --diff -
-
-# Bitbucket Server PR
 python cli.py run --pr-url https://bitbucket.example.com/.../pull-requests/42
-
-# Post findings as inline PR comments
 python cli.py run --pr-url ... --post-comments
-
-# Write findings as JSON
 python cli.py run --repo . --diff my.diff --output findings.json
-
-# Parse only — no LLM
-python cli.py inspect changes.diff
-git diff HEAD~1 | python cli.py inspect -
+python cli.py inspect changes.diff    # parse only, no LLM
 ```
-
-**`run` flags:**
 
 | Flag | Description |
 |------|-------------|
 | `--repo` / `-r` | Path to repository |
 | `--diff` / `-d` | Diff file path, or `-` for stdin |
-| `--pr-url` | Bitbucket Server PR URL — clones repo and fetches diff automatically |
-| `--post-comments` | Post findings to the PR as inline comments (requires `--pr-url`) |
+| `--pr-url` | Bitbucket Server PR URL |
+| `--post-comments` | Post findings as inline PR comments |
 | `--model` / `-m` | LLM model override |
-| `--api-url` | OpenAI-compatible API base URL override |
+| `--api-url` | API base URL override |
 | `--api-key` | API key override |
-| `--output` / `-o` | Write findings as JSON to file |
-| `--max-steps` | Max ReAct tool calls (default: from config) |
-| `--max-tokens` | Max token budget (default: from config) |
-
----
-
-## Python API
-
-```python
-from openai import OpenAI
-from diffgraph import DiffGraph
-
-client = OpenAI()
-dg = DiffGraph(repo_path="./my-service", llm_client=client)
-
-findings, review_ctx = dg.review(open("my.diff").read())
-
-for f in findings:
-    print(f.severity, f.file, f.line, f.title)
-    print(f.explanation)
-    if f.suggestion:
-        print("Fix:", f.suggestion)
-
-# With progress callback
-def on_event(event, **kw):
-    if event == "orchestrator_plan_done":
-        print("plan:", kw["plan"]["system_type"])
-    elif event == "orchestrator_step":
-        print(f"  step {kw['step']}  {kw['tool']}")
-    elif event == "orchestrator_reflect":
-        print(f"  reflect [{kw['confidence']}]: {kw['next_action']}")
-
-findings, _ = dg.review(diff_text, on_event=on_event)
-
-# Incremental review — pass existing PR comments
-findings, ctx = dg.review(diff_text, existing_comments=[
-    {"id": 42, "file": "src/Foo.java", "line": 10, "text": "...", "resolved": False}
-])
-# ctx.comment_replies  — threads the agent wants to reply to
-# ctx.comment_resolves — thread IDs the agent considers resolved
-```
+| `--output` / `-o` | Write findings as JSON |
+| `--max-steps` | Max ReAct tool calls |
+| `--max-tokens` | Max token budget |
 
 ---
 
 ## How it works
 
-### Plan phase
+### Three-phase review methodology
 
-One non-streaming LLM call. The strategist receives a compact diff summary and outputs a JSON plan:
+**Phase 1 — ANALYZE:** The strategist reads the diff, identifies the system type, and formulates ALL investigation questions in a single reflect() call. This is the complete scope.
 
-```json
-{
-  "system_type": "spring-service",
-  "tasks": [
-    {
-      "id": "check_callers",
-      "type": "call_chain",
-      "priority": "high",
-      "focus": "Find all callers of PaymentService.processPayment()",
-      "search_hints": ["processPayment", "PaymentService"]
-    }
-  ]
-}
-```
+**Phase 2 — INVESTIGATE (one round):** Based on the analysis, the strategist spawns reviewer agent(s). All questions in one area → one reviewer. Different domains → spawn_many. No iterative spawning — one round of investigation.
 
-Task types: `call_chain`, `security_config`, `data_model`, `error_handling`, `concurrency`, `business_logic`, `code_conventions`.
+**Phase 3 — JUDGE (no going back):** The strategist resolves questions from the evidence collected, handles PR comment threads, deduplicates findings, and delivers the verdict. New questions from results are answered from collected evidence, not by spawning more reviewers.
 
-### Solve phase
+### Agents (defined by `.prompt` files)
 
-ReAct loop up to `max_steps`. Tools:
+**Strategist** — react agent with `spawn`, `observe_agents`, `adjust_agent` capabilities. Orchestrates the review. Owns PR comment interaction (`reply_to_comment`, `resolve_comment`).
 
-| Tool | Description |
-|------|-------------|
-| `find_files(pattern)` | Glob the repo |
-| `read_file(path, start?, end?)` | Read up to 100 lines |
-| `read_outline(path)` | Structural outline via tree-sitter (classes, methods, line ranges) |
-| `search(query, glob?, regex?)` | Text search across files |
-| `get_diff(path?)` | Full diff or per-file section |
-| `reply_to_comment(id, text)` | Queue a reply to an existing comment thread |
-| `resolve_comment(id)` | Queue a resolve on an existing comment thread |
-| `reflect(learned, resolved_questions, questions_remaining, confidence, next_action)` | SGR structured self-reflection |
-| `done(findings)` | Submit findings and stop |
-
-Multiple tool calls from a single LLM response execute in parallel via `ThreadPoolExecutor`.
-
-Adaptive budget nudges at 50% and 75% of `max_tokens` push the agent toward wrapping up.
+**Reviewer** — focused react agent with SGR. Gets a specific focus from the strategist, investigates using repo tools (`find_files`, `read_file`, `read_outline`, `search`, `get_diff`), returns findings. No spawning, no PR interaction.
 
 ### SGR (Self-Guided Reasoning)
 
-The agent calls `reflect()` every 3–5 steps to track what it has learned, what questions remain open, and what to do next.
+Every react agent tracks its reasoning via `reflect()`:
 
-The `resolved_questions` field requires the agent to explicitly answer or drop every question from the previous reflect — no silent omissions. Each entry carries a `resolution` (`"answered"` / `"dropped"`) and a `summary` (the answer or reason for dropping).
+- `learned` — facts established so far
+- `questions_remaining` — open questions
+- `resolved_questions` — each with `resolution` (answered/dropped) and `summary`
+- `confidence` — low / medium / high
+- `next_action` — what to do next
 
-The CLI renders a live convergence panel at the bottom of the terminal showing:
-- **Confidence trajectory** — `low → medium → high` across all reflects
-- **Open questions** — colour-coded by age: green (new), yellow (1 reflect old), red (stale, 2+)
-- **Resolved section** — last 5 answered/dropped questions with their summaries
+Every open question must be explicitly resolved. No silent drops.
 
-`reflect()` returns `"Reflection noted."` — its value is in structuring the agent's reasoning and making convergence visible.
+### CLI live display
+
+Single live panel per agent (SGR top, actions bottom):
+
+```
+╭──────────────── reviewer · step 6/30 · 20% · ↑3246 · conf=high ────────────────╮
+│ SGR · medium → high                                                              │
+│   ✓ Order model items null? → @Builder.Default, never null                       │
+│   ✓ Other getItems usages? → createOrder:29, PricingService:23                   │
+│   ● releaseInventory behavior?                              step 3  new          │
+│                                                                                  │
+│   step 0  get_diff  ↑1823 ↓20                                                   │
+│   step 1  read_outline(OrderService.java)  ↑2042 ↓50                            │
+│   step 2  read_file(OrderService.java)  ↑2231 ↓49                               │
+│   step 3  reflect()  conf=medium                                                 │
+│   step 4  find_files(**/*.java)  ×1  ↑3165 ↓39                                  │
+│   ↳ step 5  search("getItems")  ↓22…                                            │
+╰──────────────────────────────────────────────────────────────────────────────────╯
+```
+
+When an agent finishes, the panel (SGR + actions) is printed permanently to the log. The live frame switches to the next active agent.
 
 ### Incremental review
 
-If `existing_comments` is provided, the agent sees all open threads and can:
-- `resolve_comment(id)` — when the issue is addressed in the new diff
-- `reply_to_comment(id, text)` — when a fix is incomplete or needs follow-up
+Existing PR comments are passed to the strategist. In Phase 3, the strategist:
+- `resolve_comment(id)` — when the issue is addressed by the diff
+- `reply_to_comment(id, text)` — when a fix is incomplete
 
-These actions are queued in `ReviewContext` and applied by the caller after `done()`.
+---
+
+## Orchestra Framework
+
+DiffGraph is built on **Orchestra** (~3,700 LOC), a prompt-defined agent framework. Agents are defined entirely by `.prompt` files with `@` headers. No topologies, no pipelines — agents create structure at runtime via tool calls.
+
+### Prompt file format
+
+```
+@agent: reviewer
+@mode: react
+@capabilities: sgr
+@tools: find_files, read_file, search, get_diff
+@budget: 30000 tokens, 30 steps
+@llm: temperature=0
+@data:
+  diff_summary: string — changed files with line counts
+  focus: string — specific task from strategist
+@summary: Focused code reviewer. Investigates one aspect of a PR.
+---
+You are a code reviewer investigating a specific aspect.
+
+{diff_summary}
+
+YOUR TASK:
+{focus}
+
+...
+```
+
+`@data` fields serve triple duty: input schema for `spawn_agent`, `{placeholder}` injection into the prompt, and documentation for `list_agents`.
+
+### LLM compiler
+
+At startup, `.prompt` files are compiled into an agent registry. Two-pass parsing: deterministic regex for `@` headers + LLM fallback for unstructured prompts. Cached by file hash.
+
+### Meta-tools
+
+| Tool | What it does |
+|---|---|
+| `spawn_agent` | Create a child agent. Data fields injected into prompt `{placeholders}`. `"inherit"` copies from parent. |
+| `spawn_many` | Fan-out N agents in parallel, return merged results |
+| `plan` | Single-shot planner returning structured JSON tasks |
+| `fork` | Clone self into N parallel branches with different focus |
+| `adjust_agent` | Change a child's temperature, penalties, model, inject message, extend budget |
+| `observe_agents` | Get status of all children: step, budget, SGR, signals |
+| `list_agents` | Get the compiled agent registry (summaries, input schemas) |
+| `reflect` | SGR self-reflection |
+| `done` | Submit output and stop |
+
+### Mutable LLM params
+
+Every agent's generation parameters (temperature, penalties, model) are mutable at runtime. A supervisor agent can `adjust_agent(id, temperature=0.8, frequency_penalty=1.5)` to steer a stuck child. All changes logged as `param_adjusted` events.
+
+### Behavioral signals (read-only)
+
+| Signal | What it detects |
+|---|---|
+| `repetition_score` | Same tools/args called repeatedly |
+| `progress_score` | Unique files explored, questions resolved |
+| `stuck` | High repetition + low progress |
+
+Available via `observe_agents`. Framework does not act on them — supervisor agents decide.
+
+See [REQUIREMENTS.md](REQUIREMENTS.md) for the full technical specification.
 
 ---
 
@@ -244,25 +254,44 @@ These actions are queued in `ReviewContext` and applied by the caller after `don
 
 Java · Python · TypeScript / TSX · Go · Kotlin · Ruby · C#
 
-(tree-sitter structural outlines for all; plain line-count fallback for unknown extensions)
+(tree-sitter structural outlines; plain line-count fallback for unknown extensions)
 
 ---
 
 ## Architecture
 
 ```
-diffgraph/
-├── api.py               DiffGraph public API
-├── diff_parser.py       git diff text → DiffResult (hunks, changed lines)
-├── lang.py              language detection
-├── tools.py             list_files, read_file, search_text
-├── outline.py           tree-sitter structural outline
-├── streaming.py         stream_llm() helper
-├── orchestrator.py      run_review(): plan phase + ReAct solve phase
-├── bitbucket.py         fetch_pr, post/get/reply/resolve PR comments
+orchestra/                   Prompt-defined agent framework (~3,700 LOC)
+├── compiler.py              LLM compiler: .prompt files → agent registry
+├── types.py                 Core dataclasses (AgentConfig, BudgetConfig, LLMParamsConfig)
+├── config.py                YAML loading, env var expansion, validation
+├── events.py                EventBus with typed events
+├── agent.py                 Agent: single + react, all meta-tools built-in
+├── budget.py                BudgetState, BudgetTracker, child budget partitioning
+├── sgr.py                   SGR tracker with extensions + handoff extraction
+├── handoff.py               7 context handoff modes + compose
+├── condensation.py          4 message condensation strategies
+├── streaming.py             LLM streaming with param passthrough
+├── feedback.py              Read-only behavioral signals
+├── merge.py                 Fork/join merge strategies
+├── prompts.py               Template loading + {var} interpolation
+└── tools/
+    ├── registry.py          @register decorator, schema generation
+    ├── builtin.py           Meta-tool schemas (spawn, adjust, observe, etc.)
+    └── shared.py            AppendLog, MutexMap, Blackboard (swarm tools)
+
+diffgraph/                   Code review domain
+├── api.py                   DiffGraph public API
+├── orchestrator.py          One agent entry point (~35 lines of logic)
+├── orchestra_tools.py       Domain tools as closures
+├── diff_parser.py           git diff → DiffResult
+├── lang.py                  Language detection
+├── tools.py                 Filesystem primitives
+├── outline.py               tree-sitter structural outline
+├── bitbucket.py             Bitbucket Server integration
 └── prompts/
-    ├── strategist_system.txt    plan phase prompt
-    └── orchestrator_system.txt  ReAct + SGR prompt
+    ├── strategist.prompt    Three-phase review lead (analyze → investigate → judge)
+    └── reviewer.prompt      Focused investigator with SGR
 ```
 
 ## Tests

@@ -3,11 +3,15 @@ Streaming LLM helper for tool-calling agents.
 
 Assembles a complete response from the SSE stream and fires a per-chunk
 callback so callers can show live progress in the terminal.
+
+Moved from diffgraph/streaming.py and generalized with **llm_params
+passthrough for adaptive parameter control.
 """
 from __future__ import annotations
+
 import logging
-from dataclasses import dataclass, field
-from typing import Callable, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +44,7 @@ class _Choice:
 
 class StreamedResponse:
     """Compatible with openai.ChatCompletion for `.choices[0].message` and `.usage`."""
-    def __init__(self, choices: list[_Choice], usage):
+    def __init__(self, choices: list[_Choice], usage: Any):
         self.choices = choices
         self.usage = usage  # raw usage object from the stream's final chunk
 
@@ -51,13 +55,14 @@ OnToken = Callable[[str, str, int], None]  # (tool_name, args_so_far, chunk_coun
 
 
 def stream_llm(
-    llm,
+    llm: Any,
     model: str,
     messages: list[dict],
     tools: list[dict],
     tool_choice: str | dict = "required",
     temperature: float = 0,
     on_token: Optional[OnToken] = None,
+    **llm_params: Any,
 ) -> StreamedResponse:
     """
     Stream an LLM tool-calling request and assemble the full response.
@@ -65,22 +70,32 @@ def stream_llm(
     on_token(tool_name, args_so_far, chunk_count) is called for every streamed
     chunk so the caller can update a live display.
 
+    Extra **llm_params are passed through to the LLM API call (e.g.,
+    top_p, frequency_penalty, presence_penalty, max_completion_tokens).
+
     Returns a StreamedResponse compatible with the non-streaming OpenAI interface.
     """
-    tc_acc: dict[int, dict] = {}  # index → {id, name, args}
+    tc_acc: dict[int, dict] = {}  # index -> {id, name, args}
     content_acc = ""
     usage = None
     chunk_count = 0
 
-    stream = llm.chat.completions.create(
-        model=model,
-        messages=messages,
-        tools=tools,
-        tool_choice=tool_choice,
-        temperature=temperature,
-        stream=True,
-        stream_options={"include_usage": True},
-    )
+    # Build API kwargs — filter out None values
+    create_kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "temperature": temperature,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    # Merge adaptive params (top_p, frequency_penalty, etc.)
+    for k, v in llm_params.items():
+        if v is not None:
+            create_kwargs[k] = v
+
+    stream = llm.chat.completions.create(**create_kwargs)
 
     for chunk in stream:
         # Final chunk carries usage when stream_options=include_usage
