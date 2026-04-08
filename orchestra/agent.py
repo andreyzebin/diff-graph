@@ -532,9 +532,13 @@ class Agent:
         with self._children_lock:
             self._children[child.agent_id] = child
 
+        # Log spawn details
+        spawn_focus = args.get("focus", "")
+        data_keys = list(resolved_data.keys()) if resolved_data else []
         self.event_bus.emit(EventType.AGENT_SPAWNED,
                            parent_id=self.agent_id, child_id=child.agent_id,
-                           agent_name=agent_name)
+                           agent_name=agent_name, focus=spawn_focus,
+                           data_keys=data_keys)
 
         wait = args.get("wait", True)
         if wait:
@@ -543,10 +547,19 @@ class Agent:
                 self._children_results[child.agent_id] = result
             if child.budget_state:
                 self.budget_tracker.debit_child(self.budget_state, child.budget_state)
+            # Return output + SGR summary for parent to consolidate
+            sgr_summary = ""
+            if result.sgr_history:
+                last = result.sgr_history[-1]
+                sgr_summary = f"confidence={last.confidence}, learned: {last.learned[:300]}"
             return json.dumps({
                 "status": "completed",
                 "agent_id": child.agent_id,
+                "agent_name": agent_name,
                 "output": result.output,
+                "sgr_summary": sgr_summary,
+                "steps": child.budget_state.steps_used if child.budget_state else 0,
+                "tokens": child.budget_state.tokens_used if child.budget_state else 0,
             }, ensure_ascii=False, indent=2, default=str)
         else:
             # Async — run in background thread
@@ -625,7 +638,8 @@ class Agent:
                 self._children[child.agent_id] = child
             self.event_bus.emit(EventType.AGENT_SPAWNED,
                                parent_id=self.agent_id, child_id=child.agent_id,
-                               agent_name=agent_name)
+                               agent_name=agent_name, focus=focus,
+                               data_keys=list(resolved_data.keys()) if resolved_data else [])
             r = child.run()
             if child.budget_state:
                 self.budget_tracker.debit_child(self.budget_state, child.budget_state)

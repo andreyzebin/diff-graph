@@ -556,10 +556,14 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _log("[bold green]plan[/bold green]      strategist analyzing diff…")
 
         elif event == "orchestrator_agent_spawned":
-            parent = kw.get("parent_id", "?")
             child = kw.get("child_id", "?")
             name = kw.get("agent_name", "?")
-            _actions.append(f"spawned [bold cyan]{name}[/bold cyan] ({child[:6]})")
+            focus = kw.get("focus", "")
+            focus_short = (focus[:60] + "…") if len(focus) > 62 else focus
+            if focus_short:
+                _actions.append(f"[bold cyan]spawn {name}[/bold cyan] → {focus_short}")
+            else:
+                _actions.append(f"[bold cyan]spawn {name}[/bold cyan] ({child[:6]})")
             _update_live()
 
         elif event == "orchestrator_agent_done":
