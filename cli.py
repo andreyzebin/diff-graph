@@ -528,22 +528,35 @@ def _make_event_handler(model: str, live: Optional[Live]):
     def _switch_agent(agent_id: str, agent_name: str) -> None:
         """Switch live frame to a new agent. Log previous agent's final SGR if any."""
         prev = _active["agent_id"]
-        if prev and prev != agent_id and _sgr["conf_history"]:
-            # Print final SGR for the previous agent before switching
-            (live.console if live else console).print(_render_final_sgr())
-            # Reset SGR state for new agent
+        if prev and prev != agent_id:
+            # Clear live panel before printing to log (prevents duplication)
+            if live:
+                live.update("")
+
+            # Print final SGR summary for previous agent
+            if _sgr["conf_history"]:
+                (live.console if live else console).print(_render_final_sgr())
+
+            # Reset state for new agent
             _sgr["questions"].clear()
             _sgr["step_opened"].clear()
             _sgr["conf_history"].clear()
             _sgr["resolved_set"].clear()
             _sgr["resolutions"].clear()
             _actions.clear()
+            _current_stream["text"] = ""
             _budget.update(step=0, tok_in=0, tok_out=0, tok_cached=0)
 
         _active["agent_id"] = agent_id
         _active["agent_name"] = agent_name
 
     def on_event(event: str, **kw) -> None:
+        # Auto-switch active agent when agent_id changes on any event
+        aid = kw.get("agent_id", "")
+        aname = kw.get("agent_name", "")
+        if aid and aid != _active["agent_id"]:
+            _switch_agent(aid, aname or aid[:8])
+
         if event == "orchestrator_agent_compiled":
             name = kw.get("name", "?")
             mode = kw.get("mode", "?")
@@ -555,17 +568,14 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _log(f"[dim]  compiled [cyan]{name}[/cyan] \\[{mode}]  caps=\\[{caps}]  data=\\[{data}]  budget={bt}t/{bs}s[/dim]")
 
         elif event == "orchestrator_agent_started":
-            agent_id = kw.get("agent_id", "")
-            agent_name = kw.get("agent_name", "agent")
-            _switch_agent(agent_id, agent_name)
-            _update_live(force=True)
+            pass  # handled by auto-switch above
 
         elif event == "orchestrator_plan_start":
             _log("[bold green]plan[/bold green]      strategist analyzing diff…")
 
         elif event == "orchestrator_agent_spawned":
             child = kw.get("child_id", "?")
-            name = kw.get("agent_name", "?")
+            name = kw.get("agent_name", "?") or kw.get("name", "?")
             focus = kw.get("focus", "")
             focus_short = (focus[:60] + "…") if len(focus) > 62 else focus
             if focus_short:
@@ -575,8 +585,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _update_live(force=True)
 
         elif event == "orchestrator_agent_done":
-            # Will be followed by parent resuming — _switch_agent handles transition
-            pass
+            pass  # parent will resume, auto-switch handles it
 
         elif event == "orchestrator_plan_done":
             plan = kw.get("plan", {})

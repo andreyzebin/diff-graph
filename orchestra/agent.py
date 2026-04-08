@@ -264,10 +264,11 @@ class Agent:
             step_model = step_params.pop("model", self.model)
 
             # Stream callback
+            _agent_name = self.config.name  # capture for closure
             def _on_token(tn: str, args: str, tok: int) -> None:
                 self.event_bus.emit(EventType.AGENT_STREAM,
-                                   agent_id=self.agent_id, step=step,
-                                   tool_name=tn, args_preview=args[:80], tok=tok)
+                                   agent_id=self.agent_id, agent_name=_agent_name,
+                                   step=step, tool_name=tn, args_preview=args[:80], tok=tok)
 
             try:
                 response = stream_llm(
@@ -311,12 +312,13 @@ class Agent:
                     if self.sgr:
                         self.sgr.record(step, args)
                         self.event_bus.emit(EventType.AGENT_REFLECT,
-                                           agent_id=self.agent_id, step=step, **args)
+                                           agent_id=self.agent_id, agent_name=self.config.name,
+                                           step=step, **args)
                         steps_since_reflect = 0
                 elif tc.function.name != "done":
                     self.event_bus.emit(EventType.AGENT_STEP,
-                                       agent_id=self.agent_id, step=step,
-                                       tool=tc.function.name, args=args,
+                                       agent_id=self.agent_id, agent_name=self.config.name,
+                                       step=step, tool=tc.function.name, args=args,
                                        tok_in=self.budget_state.tokens_in,
                                        tok_out=self.budget_state.tokens_out,
                                        tok_cached=self.budget_state.tokens_cached)
@@ -359,8 +361,8 @@ class Agent:
                     result = dispatch_results.get(tc.id, "")
                     result_count = len(result) if isinstance(result, list) else None
                     self.event_bus.emit(EventType.AGENT_TOOL_RESULT,
-                                       agent_id=self.agent_id, step=step,
-                                       tool=tc.function.name,
+                                       agent_id=self.agent_id, agent_name=self.config.name,
+                                       step=step, tool=tc.function.name,
                                        result_len=len(str(result)),
                                        result_count=result_count)
                     step_record.tool_calls.append({"name": tc.function.name})
