@@ -1,611 +1,407 @@
-# DiffGraph Agent Orchestration Framework — Technical Requirements
+# Orchestra — Agent-First Orchestration Framework
 
-## 1. Core Abstractions
+## Philosophy
 
-### 1.1 Agent Definition
+**One primitive: the Agent.** Everything else — topology, coordination, feedback — emerges from agent decisions via tools and prompts.
 
-An **Agent** is the atomic unit. Each agent is defined by a config (YAML or dict) and is runtime-instantiable.
+No predefined pipelines. No state machines. No declarative DAGs. The framework provides two agent modes (single-shot and react), a tool system, budget constraints, and observability. All structure is created at runtime by agents themselves.
+
+**Three levels of control over agent behavior:**
+
+| Level | Mechanism | What it changes |
+|---|---|---|
+| **Prompt** | system prompt, injected messages | *What* the agent thinks about — direction, focus, constraints |
+| **Params** | temperature, top_p, penalties, max_tokens | *How* the agent thinks — exploration vs. exploitation, diversity, verbosity |
+| **Model** | model switch | *Who* thinks — different model with different strengths and biases |
+
+All three levels are controllable by other agents via tools at runtime.
+
+---
+
+## 1. Agent
+
+The only execution unit. Two modes:
+
+- **single** — one LLM call, no tools. For simple tasks: classify, extract, summarize, plan.
+- **react** — non-deterministic ReAct loop with tools, optional SGR, budget constraints, and message condensation. The general-purpose mode for everything else.
 
 ```yaml
 agents:
-  security_reviewer:
-    system_prompt: prompts/security.txt
-    sgr: true                          # enables reflect() tool + question tracking
-    tools: [find_files, read_file, read_outline, search, get_diff]
-    spawn_tools: [spawn_agent]         # optional: can fork
-    output_schema: ReviewFinding[]     # structured output on done()
-    budget:
-      max_tokens: 20000
-      max_steps: 25
-      max_wall_time: 120s              # optional time-based limit
-    budget_pushers:                     # configurable nudge thresholds
-      - at: 0.5
-        type: nudge
-        message: "Focus on high-severity issues only."
-      - at: 0.75
-        type: nudge
-        message: "Wrap up. Call done() soon."
-      - at: 0.9
-        type: force_reflect            # force a reflect() before continuing
-      - at: 1.0
-        type: force_done
-    condensation:                      # for long-running agents
-      enabled: true
-      trigger: 30000                   # tokens in message history
-      strategy: llm_summary            # or: drop_tool_results | sliding_window | hybrid
-      preserve_last: 5                 # always keep last N messages uncondensed
-      preserve_sgr: true               # always keep reflect() calls intact
-
-  perf_reviewer:
-    system_prompt: prompts/performance.txt
-    sgr: false                         # non-SGR agent, simpler loop
+  researcher:
+    system_prompt: prompts/researcher.txt
+    mode: react                        # or: single
+    sgr: true
     tools: [find_files, read_file, search, get_diff]
+    meta_tools: [spawn_agent, spawn_many, plan, fork, adjust_agent, observe_agents]
     output_schema: ReviewFinding[]
     budget:
-      max_tokens: 15000
-      max_steps: 15
-
-  synthesizer:
-    system_prompt: prompts/synthesizer.txt
-    sgr: false
-    tools: []                          # no repo tools, just receives data
-    output_schema: ReviewFinding[]
-    budget:
-      max_tokens: 10000
-      max_steps: 3
+      max_tokens: 40000
+      max_steps: 40
+      max_wall_time: 180s
+      max_children_budget: 0.3
+      pushers:
+        - at: 0.5
+          type: nudge
+          message: "Half budget used. Focus on high-priority tasks."
+        - at: 0.75
+          type: force_reflect
+        - at: 1.0
+          type: force_done
+    llm_params:
+      model: gpt-4o
+      temperature: 0.3
+    condensation:
+      enabled: true
+      trigger: 30000
+      strategy: llm_summary
+      preserve_sgr: true
 ```
 
-**Requirements:**
+### Requirements
 
-- **R1.1**: Agent configs loadable from YAML files or inline dicts.
-- **R1.2**: Agents are either **SGR** (have `reflect()` with question tracking) or **non-SGR** (plain ReAct or single-shot).
-- **R1.3**: Each agent has its own independent budget (tokens, steps, wall time) — not shared.
-- **R1.4**: Budget pushers are a configurable list of `(threshold, action)` pairs, not hardcoded.
-- **R1.5**: Pusher actions: `nudge` (inject user message), `force_reflect` (only allow reflect tool next step), `force_done` (only allow done tool), `custom` (call a Python hook).
-- **R1.6**: Agents are instantiated at runtime from a registered name — not imported as classes.
+- **R1.1**: Two agent modes: `single` (one LLM call, no tools) and `react` (non-deterministic tool-use loop).
+- **R1.2**: Agent config loadable from YAML or Python dicts. Config is data, not code.
+- **R1.3**: Each agent has its own independent budget (tokens, steps, wall time).
+- **R1.4**: Each agent has mutable `llm_params` (temperature, top_p, frequency_penalty, presence_penalty, max_completion_tokens, model) that can be changed at any point during execution — by the agent itself, by a parent agent via tool, or by budget pushers.
+- **R1.5**: Agents are instantiated at runtime from a registered config name. Multiple instances of the same config can run concurrently.
+- **R1.6**: An agent's behavior is determined by its **prompt** and **available tools**. The framework imposes no workflow, sequence, or structure beyond the ReAct loop itself.
+- **R1.7**: The react loop is maximally non-deterministic: the LLM decides which tools to call, in what order, when to reflect, when to spawn, when to stop. The only hard constraints are budget limits and tool availability.
 
-### 1.2 Topology Definition
+---
 
-A **Topology** defines how agents connect. It is a DAG (directed acyclic graph at definition time, but dynamic spawning can create runtime branches).
+## 2. Tool System
 
-```yaml
-topologies:
-  parallel_review:
-    nodes:
-      - id: strategist
-        agent: strategist
-        type: single                   # one-shot, no ReAct
+Everything is a tool. Domain actions, meta-actions (spawn, fork, plan), agent control (adjust params, inject messages), coordination (shared state) — all exposed as tools in the agent's toolset.
 
-      - id: reviewers
-        agent: $dynamic                # agent chosen at runtime by strategist
-        type: fan_out
-        source: strategist             # takes output from strategist
-        parallel: true
-        spawn_from: plan.tasks         # one agent per task in plan output
+### 2.1 Tool Registry
 
-      - id: synthesizer
-        agent: synthesizer
-        type: join
-        sources: [reviewers]           # waits for all fan_out agents
-
-    edges:
-      - from: strategist
-        to: reviewers
-        context_handoff: sgr_outcomes  # what to pass (see 1.3)
-
-      - from: reviewers
-        to: synthesizer
-        context_handoff: findings_and_sgr
+```python
+@registry.register
+def read_file(path: str, start_line: int = None, end_line: int = None) -> str:
+    """Read up to 100 lines of a file."""
+    ...
 ```
 
-**Requirements:**
+- **R2.1**: Tools registered via Python decorator or YAML config. Both produce identical internal representations.
+- **R2.2**: Each agent's toolset is explicitly configured — not global. An agent only sees tools listed in its config.
+- **R2.3**: Tool results auto-truncated per configurable limit.
+- **R2.4**: Multiple tool calls in a single LLM response execute in parallel via `ThreadPoolExecutor`.
 
-- **R1.7**: Topologies are declarative DAGs defined in YAML or constructed programmatically.
-- **R1.8**: Node types: `single` (one-shot LLM call), `react` (ReAct loop), `fan_out` (spawn N parallel agents), `join` (wait and aggregate).
-- **R1.9**: Fan-out cardinality can be: static (N defined in config), dynamic (derived from parent output field like `plan.tasks`), or agent-decided (see 1.4).
-- **R1.10**: Topologies are selectable at runtime (e.g., `--topology parallel_review`).
-- **R1.11**: Topologies can be nested — a node can reference another topology as a sub-graph.
+### 2.2 Meta-Tools (Builtin)
 
-### 1.3 Context Handoff Modes
+These are the tools that give agents the ability to create structure, coordinate, and control other agents. They are the replacement for predefined topologies, feedback loops, and adaptive schedules.
 
-When one agent passes context to another, the **handoff mode** controls what is transferred.
-
-```yaml
-context_handoff_modes:
-  full_history:          # fork with complete message history
-    messages: all
-
-  sgr_outcomes:          # only the last reflect() output
-    messages: none
-    include: [last_sgr]
-
-  findings_and_sgr:      # structured output + full SGR history
-    messages: none
-    include: [output, all_sgr]
-
-  condensed:             # LLM-summarized history
-    messages: condensed
-    condense_prompt: "Summarize the investigation so far in <500 words."
-
-  last_n:                # sliding window
-    messages: last_20
-    include: [first_sgr, last_sgr]   # bookend with first and last reflection
-
-  custom:                # user-defined Python function
-    handler: myproject.handoffs.security_handoff
-```
-
-**Requirements:**
-
-- **R1.12**: Context handoff is configured per-edge in the topology, not globally.
-- **R1.13**: Built-in handoff modes:
-  - `full_history` — clone the entire message list (fork semantics).
-  - `sgr_outcomes` — only the last `reflect()` call's structured data.
-  - `all_sgr` — all `reflect()` calls in order (the full reasoning trajectory).
-  - `findings_only` — only the `done()` output, no history.
-  - `findings_and_sgr` — done() output + all reflect() calls.
-  - `condensed` — LLM-generated summary of message history (configurable prompt).
-  - `last_n` — last N messages, optionally with SGR bookends.
-  - `custom` — user-provided Python callable `(messages, sgr_history, output) → messages`.
-- **R1.14**: Handoff modes are composable — e.g., `include: [output, last_sgr, last_5_messages]`.
-- **R1.15**: Join nodes receive a **list** of handoffs (one per source agent), not a merged blob — the synthesizer prompt can reference them individually.
-
-### 1.4 Agent-Driven Topology (Dynamic Spawning)
-
-Agents with spawn capability can create child agents at runtime via three mechanisms.
-
-**Mechanism A: Tool call**
+#### `spawn_agent` — create a child agent
 
 ```json
 {
   "name": "spawn_agent",
   "arguments": {
     "agent": "security_reviewer",
-    "focus": "Check if the new endpoint validates auth tokens",
+    "focus": "Check if /api/transfer validates auth tokens",
     "context_handoff": "sgr_outcomes",
     "wait": true
   }
 }
 ```
 
-**Mechanism B: JSON output field**
+- **R2.5**: `spawn_agent` creates a child agent from a registered config. The parent specifies: agent config name, focus (injected as user message), context handoff mode, and whether to wait (sync) or continue (async).
+- **R2.6**: Synchronous spawn (`wait: true`): parent blocks, child runs to completion, child output returned as tool result. Parent continues its ReAct loop with the new information.
+- **R2.7**: Asynchronous spawn (`wait: false`): child runs in parallel. Parent continues. Parent can later call `observe_agents` to check status or collect results.
+- **R2.8**: Child's budget is partitioned from parent's remaining budget. Parent is debited by child's actual consumption.
+- **R2.9**: Depth limit enforced globally. Agents at max depth have meta-tools removed from their toolset.
+
+#### `spawn_many` — parallel fan-out as a single tool call
 
 ```json
 {
-  "spawn": [
-    {"agent": "security_reviewer", "focus": "auth validation"},
-    {"agent": "perf_reviewer", "focus": "N+1 query in the new loop"}
-  ]
+  "name": "spawn_many",
+  "arguments": {
+    "agents": [
+      {"agent": "security_reviewer", "focus": "auth validation"},
+      {"agent": "perf_reviewer", "focus": "N+1 query in loop"},
+      {"agent": "logic_reviewer", "focus": "off-by-one in pagination"}
+    ],
+    "context_handoff": "sgr_outcomes",
+    "merge": "union"
+  }
 }
 ```
 
-**Mechanism C: SGR-driven (from `reflect()` questions)**
+- **R2.10**: `spawn_many` launches N agents in parallel and returns all results as one tool result. This is fan-out + join in a single tool call.
+- **R2.11**: Merge strategies for combining results: `union` (concatenate, deduplicate), `best_confidence` (pick highest SGR confidence), `llm_merge` (spawn a merge agent), `raw` (return all results as-is).
+- **R2.12**: Budget split across children: `equal` (remaining / N), or proportional to a `priority` field on each agent spec.
 
-```yaml
-agents:
-  deep_researcher:
-    sgr: true
-    auto_fork:
-      enabled: true
-      trigger: questions_remaining    # fork when questions > threshold
-      threshold: 3                    # if ≥3 open questions after reflect
-      strategy: one_per_question      # spawn one child per question
-      child_agent: focused_researcher
-      context_handoff: sgr_outcomes
-      max_children: 3
-      depth_limit: 2
+#### `plan` — spawn a planner sub-agent
+
+```json
+{
+  "name": "plan",
+  "arguments": {
+    "goal": "Break down the security review into concrete investigation steps",
+    "constraints": "Focus on the auth middleware changes. Ignore test files.",
+    "output_hint": "list of tasks with priorities"
+  }
+}
 ```
 
-**Requirements:**
+- **R2.13**: `plan` spawns a lightweight single-shot planner agent that returns structured JSON (analysis, tasks, risks, recommendation). The planner automatically receives the parent's current SGR state (learned facts, open questions) as context.
+- **R2.14**: Default planner prompt is built-in but overridable per agent config.
+- **R2.15**: Plan result is returned as tool result — the parent agent decides what to do with it. The framework does not execute the plan.
 
-- **R1.16**: Three spawn mechanisms: tool call, JSON output field, SGR-driven auto-fork.
-- **R1.17**: Each spawn specifies: which agent config, focus/prompt override, context handoff mode, sync/async.
-- **R1.18**: **Synchronous spawn** (`wait: true`): parent blocks, child runs, child result injected into parent's message history as a tool result. Parent continues its ReAct loop.
-- **R1.19**: **Asynchronous spawn** (`wait: false`): parent continues, child runs in parallel. Results collected at next join node or at parent's `done()`.
-- **R1.20**: Depth limit is enforced globally — agents at max depth have spawn tools removed from their toolset.
-- **R1.21**: SGR auto-fork is configurable: trigger condition, threshold, child agent, max children per fork event.
-- **R1.22**: An agent can create a **sub-topology** via a tool call — returning a topology definition (YAML or dict) that the runtime executes and returns results from.
+#### `fork` — explore multiple hypotheses in parallel
 
-## 2. Budget & Lifecycle
-
-### 2.1 Budget Model
-
-```yaml
-budget:
-  max_tokens: 40000          # total token consumption (in + out)
-  max_steps: 40              # ReAct loop iterations
-  max_wall_time: 180s        # real time limit
-  max_children_budget: 0.3   # max fraction of own budget allocatable to children
-
-  pushers:
-    - at: 0.5                # 50% of any limit
-      type: nudge
-      message: "Half budget used. Prioritize."
-    - at: 0.75
-      type: force_reflect    # must reflect before next action
-    - at: 0.9
-      type: nudge
-      message: "Almost out of budget. Call done() with current findings."
-    - at: 1.0
-      type: force_done
+```json
+{
+  "name": "fork",
+  "arguments": {
+    "branches": [
+      {"focus": "Assume the race condition IS exploitable. Find evidence."},
+      {"focus": "Assume the race condition is benign. Find evidence."}
+    ],
+    "context_handoff": "full_history",
+    "merge": "best_confidence"
+  }
+}
 ```
 
-**Requirements:**
+- **R2.16**: `fork` clones the current agent into N parallel copies, each with a different focus. Results are merged and returned as a single tool result.
+- **R2.17**: Context at fork point is configurable per call (typically `full_history` for true forking, `sgr_outcomes` for lightweight divergence).
+- **R2.18**: Fork depth limit enforced. Forks inherit parent's remaining budget, split equally.
 
-- **R2.1**: Budget tracked on three dimensions independently: tokens, steps, wall time.
-- **R2.2**: Pushers trigger on whichever dimension hits the threshold first.
-- **R2.3**: Pusher types: `nudge`, `force_reflect`, `force_done`, `custom` (Python callback).
-- **R2.4**: Pushers are evaluated after every step, not just at LLM call boundaries.
-- **R2.5**: When an agent spawns children, budget is partitioned: `child_budget = min(remaining * allocation_fraction, max_children_budget * original_budget)`.
-- **R2.6**: Parent's budget is debited by child's actual consumption, not the allocated amount.
-- **R2.7**: Budget is a first-class object passed through the topology, not implicit global state.
+#### `adjust_agent` — control another agent's generation parameters
 
-### 2.2 Message Condensation
-
-For long-running agents whose message history grows beyond useful context window.
-
-**Requirements:**
-
-- **R2.8**: Condensation triggered when message history exceeds a configurable token threshold.
-- **R2.9**: Condensation strategies:
-  - `llm_summary` — separate LLM call to summarize older messages, replace them with summary.
-  - `drop_tool_results` — keep tool calls but truncate results to first N chars.
-  - `sliding_window` — keep only last N messages, prepend a static summary of dropped messages.
-  - `hybrid` — LLM-summarize messages older than N, keep recent ones verbatim.
-- **R2.10**: SGR reflect() calls are optionally exempt from condensation (`preserve_sgr: true`) — they are the agent's memory backbone.
-- **R2.11**: System message and first user message are never condensed.
-- **R2.12**: Condensation is transparent to the agent — it doesn't know its history was condensed.
-
-## 3. Tool System
-
-### 3.1 Tool Registry
-
-```python
-@tool_registry.register
-def read_file(path: str, start_line: int = None, end_line: int = None) -> str:
-    """Read up to 100 lines of a file."""
-    ...
+```json
+{
+  "name": "adjust_agent",
+  "arguments": {
+    "agent_id": "abc123",
+    "temperature": 0.8,
+    "frequency_penalty": 1.5,
+    "presence_penalty": 1.0,
+    "inject_message": "The auth middleware is bypassed for /api/internal/*. Factor this in.",
+    "extend_budget_steps": 5
+  }
+}
 ```
 
-Or declaratively:
+- **R2.19**: `adjust_agent` allows a parent/supervisor agent to modify a running child agent's LLM parameters, inject a message into its context, or extend/reduce its budget.
+- **R2.20**: Parameter changes take effect on the child's **next** LLM call. They are not retroactive.
+- **R2.21**: This is the replacement for static feedback loop configs and adaptive parameter schedules. A supervisor agent with a prompt like *"observe your children, if one is stuck raise its temperature, if one found something important tell the others"* — all logic lives in the prompt, not in YAML.
+- **R2.22**: Every `adjust_agent` call emits a `param_adjusted` event for observability.
+- **R2.23**: Adjustments are bounded: budget extensions cannot exceed a configurable `max_feedback_budget_delta`. Temperature/penalties are clamped to valid ranges.
 
-```yaml
-tools:
-  read_file:
-    handler: diffgraph.tools.read_file
-    description: "Read up to 100 lines of a file."
-    parameters:
-      path: {type: string, required: true}
-      start_line: {type: integer}
-      end_line: {type: integer}
-    result_limit: 6000            # auto-truncate result
+#### `observe_agents` — monitor child agents
+
+```json
+{
+  "name": "observe_agents",
+  "arguments": {}
+}
 ```
 
-**Requirements:**
+Returns:
+```json
+[
+  {
+    "agent_id": "abc123",
+    "agent_name": "security_reviewer",
+    "status": "running",
+    "step": 12,
+    "budget_ratio": 0.45,
+    "sgr": {"confidence": "medium", "questions_remaining": 2, "learned": "..."},
+    "last_tool": "read_file"
+  }
+]
+```
 
-- **R3.1**: Tools registered via decorator or YAML — both produce the same internal schema.
-- **R3.2**: Each agent's toolset is configured in its agent definition — not global.
-- **R3.3**: Special tools (`reflect`, `done`, `spawn_agent`) are added automatically based on agent config flags (`sgr: true`, `spawn_tools`, etc.).
-- **R3.4**: Tool results auto-truncated at configurable limit per tool.
-- **R3.5**: Tools execute in parallel when the LLM returns multiple tool calls in one response (current behavior preserved).
+- **R2.24**: `observe_agents` returns the current state of all child agents spawned by the calling agent. Includes: status, step count, budget usage, last SGR entry, last tool called.
+- **R2.25**: This is how a supervisor agent gets the information it needs to decide whether to `adjust_agent`, `inject_message`, or let the child continue.
 
-### 3.2 Shared / Collaborative Tools (Swarm)
+#### `reflect` — self-guided reasoning (SGR)
 
-For agents that need to coordinate via shared state rather than just message passing.
+- **R2.26**: Available to agents with `sgr: true`. Schema: `learned`, `questions_remaining`, `resolved_questions`, `confidence`, `next_action`, plus custom extension fields.
+- **R2.27**: Returns `"Reflection noted."` — no side effects beyond recording. The value is in structuring the agent's own thinking.
+- **R2.28**: SGR history is a first-class data structure: extractable for handoff, visible in `observe_agents`, logged in traces.
+
+#### `done` — submit output and stop
+
+- **R2.29**: `done(findings)` submits the agent's structured output and terminates the ReAct loop.
+- **R2.30**: Output schema is configurable per agent config.
+
+### 2.3 Shared Tools (Swarm Coordination)
+
+For agents running in parallel that need to coordinate via shared state.
 
 ```yaml
 shared_tools:
   shared_findings:
-    type: append_log              # agents append, all can read
-    schema: ReviewFinding
-
-  claim_board:
-    type: mutex_map               # agents claim files to avoid duplicate work
-    schema: {file: string, agent: string}
+    type: append_log
+  file_claims:
+    type: mutex_map
+  notes:
+    type: blackboard
 ```
 
-**Requirements:**
+- **R2.31**: Shared tools are created per-execution and injected into specified agents' toolsets.
+- **R2.32**: Types: `append_log` (append + read all, thread-safe), `mutex_map` (claim/release keys), `blackboard` (key-value, last-write-wins), `custom` (user-provided class).
+- **R2.33**: Agents interact with shared tools via normal tool calls. The LLM sees them as regular tools.
 
-- **R3.6**: Shared tools are declared at topology level, injected into specified agents.
-- **R3.7**: Shared tool types:
-  - `append_log` — any agent can append, any agent can read all entries. Thread-safe.
-  - `mutex_map` — agents claim keys (e.g., file paths). `claim(key)` fails if already claimed by another agent. Prevents duplicate work.
-  - `blackboard` — key-value store, any agent reads/writes. Last-write-wins.
-  - `custom` — user-provided Python class implementing `read()`, `write()`, `query()`.
-- **R3.8**: Shared tool state is scoped to a single topology execution — not persisted across runs.
-- **R3.9**: Agents interact with shared tools via normal tool calls — the LLM sees them as regular tools with descriptions like "Read all findings submitted by other reviewers".
+---
 
-## 4. SGR (Self-Guided Reasoning) System
+## 3. Context Handoff
 
-**Requirements:**
+When one agent passes context to another (via `spawn_agent`, `spawn_many`, `fork`), the **handoff mode** controls what is transferred. The calling agent chooses the mode per-call — it is not a framework config.
 
-- **R4.1**: SGR is an opt-in capability per agent (`sgr: true`).
-- **R4.2**: SGR-enabled agents get `reflect()` tool with current schema: `learned`, `questions_remaining`, `resolved_questions`, `confidence`, `next_action`.
-- **R4.3**: SGR frequency is configurable: `sgr_interval: 3` means the system nudges reflection every 3 steps (current behavior).
-- **R4.4**: SGR history (all reflect calls) is a first-class data structure attached to the agent's execution record — extractable for handoff, join, and observability.
-- **R4.5**: SGR can be extended with custom fields per agent:
-  ```yaml
-  sgr_extensions:
-    risk_assessment: {type: string, enum: [low, medium, high, critical]}
-    files_analyzed: {type: array, items: {type: string}}
-  ```
-- **R4.6**: SGR-driven auto-fork (R1.21) reads `questions_remaining` to decide when/how to spawn children.
+### Built-in modes
 
-## 5. Agent-Created Topologies
+| Mode | What is transferred |
+|---|---|
+| `full_history` | Complete message list (fork semantics) |
+| `sgr_outcomes` | Last reflect() structured data only |
+| `all_sgr` | All reflect() calls in order (reasoning trajectory) |
+| `findings_only` | Only the done() output |
+| `findings_and_sgr` | done() output + all SGR calls |
+| `condensed` | LLM-generated summary of message history |
+| `last_N` | Last N messages, optionally with SGR bookends |
+| `custom` | User-provided Python callable |
 
-An agent (typically the strategist) can output a topology definition rather than just a task list.
+- **R3.1**: Handoff mode is specified as an argument to spawn/fork tool calls, not as a topology-level config.
+- **R3.2**: Built-in modes are composable: `["findings_only", "last_sgr"]` produces a message list combining both.
+- **R3.3**: `condensed` mode uses an LLM call to summarize — the condensation prompt is configurable.
+- **R3.4**: Custom handoff mode: a Python callable `(messages, sgr_history, output) → messages`.
 
-**Requirements:**
+---
 
-- **R5.1**: A `create_topology` tool or JSON output field allows an agent to define a sub-topology at runtime.
-- **R5.2**: The runtime validates the topology against registered agent names and available tools before executing.
-- **R5.3**: The agent-created topology is subject to the parent's remaining budget — it cannot allocate more than what's left.
-- **R5.4**: Agent-created topologies support all node types: single, react, fan_out, join.
-- **R5.5**: This replaces the current strategist's static `tasks[]` output with a richer structure:
-  ```json
-  {
-    "topology": {
-      "nodes": [
-        {"id": "security", "agent": "security_reviewer", "focus": "..."},
-        {"id": "logic", "agent": "logic_reviewer", "focus": "..."},
-        {"id": "merge", "agent": "synthesizer", "sources": ["security", "logic"]}
-      ],
-      "edges": [
-        {"from": "security", "to": "merge", "context_handoff": "findings_and_sgr"},
-        {"from": "logic", "to": "merge", "context_handoff": "findings_only"}
-      ]
-    }
-  }
-  ```
-- **R5.6**: Predefined topology templates can be referenced by name — the strategist doesn't have to build from scratch every time.
+## 4. SGR (Self-Guided Reasoning)
 
-## 6. Forking Behavior (Explore Both Paths)
+- **R4.1**: Opt-in per agent (`sgr: true`).
+- **R4.2**: Schema: `learned`, `questions_remaining`, `resolved_questions` (with `resolution` + `summary`), `confidence` (low/medium/high), `next_action`.
+- **R4.3**: Extensible: agents can have custom SGR fields (e.g., `risk_assessment`, `files_analyzed`).
+- **R4.4**: SGR history is the backbone of inter-agent communication: it is what gets passed in `sgr_outcomes` handoff, what `observe_agents` returns, what supervisor agents use to decide adjustments.
+- **R4.5**: `resolved_questions` enforces accountability — every open question from the previous reflect must move to resolved (answered or dropped). No silent omissions.
+- **R4.6**: SGR frequency nudge: configurable `sgr_interval` (default 3 steps). The framework reminds the agent to reflect, but does not force it.
 
-When an agent is uncertain, it should be able to fork itself to explore alternatives in parallel.
+---
 
-```yaml
-agents:
-  explorer:
-    sgr: true
-    fork:
-      enabled: true
-      mechanism: tool                  # or: sgr_auto | json_output
-      max_forks: 2
-      budget_split: equal              # or: proportional | fixed
-      context_handoff: full_history    # forks get same history
-      merge_strategy: best_confidence  # or: union | llm_merge | custom
+## 5. Budget & Lifecycle
+
+### 5.1 Budget Model
+
+- **R5.1**: Budget tracked on three dimensions: tokens, steps, wall time.
+- **R5.2**: Pushers are configurable `(threshold, action)` pairs. Actions: `nudge` (inject message), `force_reflect` (restrict to reflect tool), `force_done` (restrict to done tool), `custom` (Python hook).
+- **R5.3**: Pushers trigger on whichever dimension hits the threshold first.
+- **R5.4**: When spawning children, budget is partitioned from parent's remaining budget. Parent is debited by child's actual consumption.
+- **R5.5**: Budget is a mutable object on the agent — `adjust_agent` can extend or reduce it at runtime.
+
+### 5.2 Message Condensation
+
+- **R5.6**: Triggered when message history exceeds a configurable token threshold.
+- **R5.7**: Strategies: `llm_summary`, `sliding_window`, `drop_tool_results`, `hybrid`.
+- **R5.8**: SGR reflect() calls are optionally exempt from condensation — they are the agent's long-term memory.
+- **R5.9**: System message is never condensed.
+- **R5.10**: Condensation is transparent to the agent.
+
+---
+
+## 6. LLM Parameters as Mutable State
+
+LLM generation parameters are **mutable state** on every agent, not static config. They can be changed by:
+
+1. **Budget pushers** — automated threshold actions (e.g., force_done at 100%)
+2. **The agent itself** — an agent could theoretically request its own param changes
+3. **Another agent via `adjust_agent` tool** — the primary mechanism for intelligent, context-aware parameter control
+
+- **R6.1**: Every agent has a mutable `llm_params` dict: `temperature`, `top_p`, `frequency_penalty`, `presence_penalty`, `max_completion_tokens`, `model`.
+- **R6.2**: Initial values come from agent config. Changes are applied immediately to the next LLM call.
+- **R6.3**: Every param change emits a `param_adjusted` event with: `agent_id`, `param`, `old_value`, `new_value`, `source` (pusher / self / agent_id of adjuster).
+- **R6.4**: Parameters are clamped to valid ranges: temperature [0, 2], penalties [-2, 2], top_p [0, 1].
+- **R6.5**: Model can be switched mid-run. Message history format must remain compatible.
+- **R6.6**: The framework provides **no** automatic parameter schedules, curves, or drivers. If you want budget-driven temperature decay, write a supervisor agent with a prompt that does it. All intelligence lives in prompts, not in framework config.
+
+### Supervisor pattern (replaces feedback loops and adaptive schedules)
+
+A supervisor is just a react agent with `adjust_agent` and `observe_agents` tools and a prompt like:
+
+```
+You are a supervisor overseeing research agents.
+
+Every few steps, call observe_agents() to check their progress.
+
+If an agent's confidence is stuck at "low" after 50% of its budget:
+  - Raise its temperature to 0.6-0.8 to encourage creative exploration
+  - Inject a message suggesting a different angle
+
+If an agent is repeating the same tools (check last_tool pattern):
+  - Set frequency_penalty to 1.5 to break the loop
+  - After 2 steps, reduce it back to 0.3
+
+If one agent discovers something relevant to another:
+  - Inject the finding into the other agent's context
+
+When all children are done, call done() with the consolidated results.
 ```
 
-**Requirements:**
+- **R6.7**: The framework provides the tools. The prompt provides the strategy. No YAML-declared feedback loops, no schedule configs, no curve functions.
 
-- **R6.1**: An agent can fork itself into N parallel copies, each pursuing a different hypothesis.
-- **R6.2**: Fork trigger is configurable: explicit tool call (`fork(branches: [{focus: "..."}, ...])`), SGR auto-fork when confidence is low + multiple plausible next actions, or JSON output.
-- **R6.3**: Budget split strategies: `equal` (remaining / N), `proportional` (weighted by priority), `fixed` (each gets a fixed amount).
-- **R6.4**: Context at fork point: configurable handoff mode (typically `full_history` for true forking, or `sgr_outcomes` for lightweight branching).
-- **R6.5**: Merge strategies for collecting fork results:
-  - `best_confidence` — take results from the fork with highest SGR confidence.
-  - `union` — concatenate all findings, deduplicate.
-  - `llm_merge` — run a merge agent to reconcile conflicting findings.
-  - `custom` — user-provided Python callable.
-- **R6.6**: Fork depth limit enforced (default 1 — forks cannot fork again unless explicitly allowed).
+---
 
-## 7. Adaptive LLM Parameters & Feedback Loops
+## 7. Behavioral Signals
 
-LLM generation parameters (temperature, top_p, penalties, max tokens, even model) are not static — they are **dynamic variables** driven by agent state, budget, and behavioral signals.
+The framework computes behavioral signals and makes them available to agents (via `observe_agents`) and to budget pushers. These are **read-only observations**, not control mechanisms.
 
-### 7.1 Parameter Scheduling
+- **R7.1**: **Repetition score** (0.0–1.0): computed from a sliding window of recent tool calls. Configurable: window size, what counts as repetition.
+- **R7.2**: **Progress score** (0.0–1.0): computed from SGR question resolution rate, unique files explored, findings produced per step.
+- **R7.3**: **Stuck flag**: true when repetition_score > threshold AND progress_score < threshold. Configurable thresholds.
+- **R7.4**: Signals are included in `observe_agents` output so supervisor agents can react to them.
+- **R7.5**: Signals are included in event bus emissions for observability.
+- **R7.6**: The framework does NOT act on signals automatically. No auto-param-adjustment, no auto-nudge from stuck detection. If you want stuck detection to trigger actions, write it in a supervisor's prompt or in a budget pusher.
 
-Analogous to learning rate scheduling in ML training. Parameters follow a **schedule** that can be state-driven, rule-driven, or both.
+---
 
-```yaml
-agents:
-  deep_researcher:
-    llm_params:
-      # --- static defaults ---
-      model: gpt-4o
-      temperature: 0.3
-      top_p: 1.0
-      frequency_penalty: 0.0
-      presence_penalty: 0.0
-      max_completion_tokens: 4096
+## 8. Configurability
 
-      # --- adaptive schedules ---
-      schedules:
-        # Budget-driven: become more focused as budget depletes
-        - param: temperature
-          driver: budget_ratio                # 0.0 = fresh, 1.0 = exhausted
-          curve: linear_decay                 # or: step | exponential_decay | custom
-          range: [0.4, 0.1]                   # [start_value, end_value]
+- **R8.1**: Agent definitions are YAML-configurable.
+- **R8.2**: Python API for everything YAML can do.
+- **R8.3**: Prompt templates support `{variable}` interpolation.
+- **R8.4**: Adding a new agent = YAML block + optional prompt file. No code changes.
+- **R8.5**: Adding a new tool = Python decorator or YAML registration. No changes to agent loop.
+- **R8.6**: Custom budget pushers, handoff modes, and merge strategies via Python hooks.
+- **R8.7**: Shared tools configurable in YAML per execution context.
 
-        # SGR-driven: explore more when confidence is low
-        - param: temperature
-          driver: sgr_confidence              # low=0, medium=0.5, high=1.0
-          curve: inverse_linear
-          range: [0.6, 0.1]                   # low confidence → 0.6, high → 0.1
-
-        # Step-driven: shorter responses in later steps
-        - param: max_completion_tokens
-          driver: step_ratio
-          curve: step
-          steps: {0.0: 4096, 0.5: 2048, 0.8: 1024}
-
-        # Anti-repetition: increase penalty when stuck
-        - param: frequency_penalty
-          driver: repetition_score            # 0.0 = novel, 1.0 = repeating
-          curve: linear
-          range: [0.0, 1.5]
-```
-
-**Requirements:**
-
-- **R7.1**: LLM parameters (`temperature`, `top_p`, `frequency_penalty`, `presence_penalty`, `max_completion_tokens`) are adjustable per-step, not just per-agent.
-- **R7.2**: Parameter schedules are configurable per agent in YAML or via Python API.
-- **R7.3**: Built-in schedule drivers (signal sources):
-  - `budget_ratio` — fraction of budget consumed (0.0 → 1.0). Works for tokens, steps, or wall time (whichever is highest).
-  - `step_ratio` — current step / max steps.
-  - `sgr_confidence` — from last reflect(): `low`=0.0, `medium`=0.5, `high`=1.0.
-  - `sgr_question_count` — number of open questions remaining.
-  - `sgr_staleness` — number of reflect() calls since confidence last changed.
-  - `repetition_score` — computed from recent tool calls (see R7.7).
-  - `custom` — user-provided Python callable `(agent_state) → float`.
-- **R7.4**: Built-in curve functions:
-  - `linear` / `linear_decay` — linear interpolation between range endpoints.
-  - `step` — discrete steps at defined thresholds.
-  - `exponential_decay` — fast decay early, slow later.
-  - `inverse_linear` — flip the interpolation direction.
-  - `custom` — user-provided `(driver_value, range) → param_value`.
-- **R7.5**: When multiple schedules target the same parameter, a **merge policy** resolves conflicts: `min`, `max`, `mean`, `last_wins`, or `custom`.
-- **R7.6**: Parameter overrides from schedules are logged in the agent trace for observability.
-
-### 7.2 Behavioral Feedback Signals
-
-The system computes real-time behavioral signals from the agent's execution history. These feed into parameter schedules and budget pushers.
-
-```yaml
-feedback_signals:
-  repetition_score:
-    window: 6                          # look at last 6 tool calls
-    triggers:
-      - condition: same_tool_3x        # same tool called 3+ times in window
-        weight: 0.5
-      - condition: same_args_2x        # same tool+args called 2+ times
-        weight: 0.8
-      - condition: same_file_read_3x   # same file read 3+ times
-        weight: 0.9
-
-  progress_score:
-    signals:
-      - sgr_questions_resolved_rate    # questions resolved per reflect()
-      - unique_files_explored_rate     # new files per step
-      - findings_rate                  # findings discovered per step
-
-  stuck_detector:
-    window: 8
-    condition: repetition_score > 0.6 AND progress_score < 0.2
-    actions:
-      - type: nudge
-        message: "You appear to be going in circles. Reflect on what you've learned and try a different approach."
-      - type: adjust_param
-        param: temperature
-        value: 0.7
-      - type: adjust_param
-        param: presence_penalty
-        value: 1.0
-```
-
-**Requirements:**
-
-- **R7.7**: The runtime computes a **repetition score** from a sliding window of recent tool calls. Configurable: window size, what counts as repetition (same tool, same args, same file).
-- **R7.8**: The runtime computes a **progress score** from SGR question resolution rate, unique files explored, and findings produced per step.
-- **R7.9**: A **stuck detector** combines signals to detect unproductive loops. Configurable threshold and window.
-- **R7.10**: When stuck is detected, configurable actions fire: nudge message, parameter adjustment, force reflect, or custom hook.
-- **R7.11**: Feedback signals are available as schedule drivers (R7.3) — they can drive any parameter, not just trigger discrete actions.
-- **R7.12**: All behavioral signals are exposed in the agent trace and via `on_event` for observability.
-
-### 7.3 Dynamic Model Switching
-
-```yaml
-agents:
-  adaptive_reviewer:
-    llm_params:
-      model: gpt-4o                    # default model
-      model_schedule:
-        - phase: tool_calls            # routine tool use steps
-          model: gpt-4o-mini           # cheaper model for simple dispatch
-          condition: tool_count == 1 AND tool_name in [find_files, read_file, search]
-        - phase: reflection            # SGR reflect steps
-          model: gpt-4o               # full model for reasoning
-        - phase: synthesis             # done() step
-          model: gpt-4o               # full model for final output
-        - phase: stuck                 # when stuck detector fires
-          model: gpt-4o               # upgrade if on mini, or switch provider
-```
-
-**Requirements:**
-
-- **R7.13**: Model can change per-step based on configurable conditions (phase, tool pattern, stuck state, budget).
-- **R7.14**: Model switching is transparent to the agent — message history format remains compatible across models.
-- **R7.15**: Token budget accounting normalizes across models (e.g., a mini step costs fewer tokens than a full-model step, tracked accurately).
-
-### 7.4 Feedback Loops Between Agents
-
-Parent agents can adjust child agent parameters based on intermediate results.
-
-```yaml
-topologies:
-  adaptive_review:
-    feedback_loops:
-      - observer: synthesizer          # agent that monitors
-        targets: [reviewers]           # agents being adjusted
-        trigger: on_child_reflect      # fires when a child calls reflect()
-        condition: child.sgr.confidence == "low" AND child.step_ratio > 0.5
-        actions:
-          - type: adjust_param
-            param: temperature
-            value: 0.5
-          - type: inject_message
-            message: "The synthesizer notes your confidence is low at 50% budget. Consider narrowing scope."
-          - type: extend_budget
-            steps: +5                  # give the struggling agent more runway
-```
-
-**Requirements:**
-
-- **R7.16**: Feedback loops are declared at the topology level, connecting an observer agent (or the runtime itself) to target agents.
-- **R7.17**: Triggers: `on_child_reflect`, `on_child_step`, `on_child_stuck`, `on_child_done`, `periodic` (every N steps).
-- **R7.18**: Actions: `adjust_param`, `inject_message`, `extend_budget`, `reduce_budget`, `force_reflect`, `force_done`, `custom`.
-- **R7.19**: Budget extension/reduction by feedback loops is bounded — a configurable `max_feedback_budget_delta` prevents runaway allocation.
-- **R7.20**: Cross-agent feedback is logged as events and visible in the execution trace.
-
-## 8. Configurability & Extensibility (General)
-
-**Requirements:**
-
-- **R8.1**: All agent definitions, topologies, budget configs, handoff modes, and parameter schedules are YAML-configurable.
-- **R8.2**: Python API for everything YAML can do — YAML is syntactic sugar, not the only interface.
-- **R8.3**: Prompt templates support variable interpolation: `{diff_summary}`, `{plan}`, `{parent_sgr}`, etc.
-- **R8.4**: Adding a new agent = adding a YAML block + optional prompt file. No code changes to the framework.
-- **R8.5**: Adding a new tool = decorator or YAML registration. No changes to agent loop code.
-- **R8.6**: Changing topology = editing YAML or calling `topology.add_node()` / `topology.add_edge()`. No changes to execution engine.
-- **R8.7**: Custom budget pushers via Python hooks: `def my_pusher(agent_state, budget_state) → PusherAction`.
-- **R8.8**: Custom handoff modes via Python hooks: `def my_handoff(messages, sgr_history, output) → messages`.
-- **R8.9**: Custom merge strategies via Python hooks: `def my_merge(fork_results) → merged_output`.
-- **R8.10**: Custom parameter schedule drivers and curves via Python hooks.
-- **R8.11**: Custom feedback signal computations via Python hooks.
+---
 
 ## 9. Observability
 
-**Requirements:**
+- **R9.1**: Every agent execution produces a structured trace: agent_id, parent_id, steps, tools called, SGR history, budget consumed, LLM params per step, output.
+- **R9.2**: Events: `agent_started`, `agent_step`, `agent_reflect`, `agent_done`, `agent_forced_done`, `agent_spawned`, `agent_stream`, `agent_tool_result`, `param_adjusted`, `stuck_detected`, `condensation_triggered`, `budget_threshold_hit`.
+- **R9.3**: Full execution tree reconstructable from events: who spawned whom, what was handed off, what params were adjusted.
+- **R9.4**: Token accounting per-agent and aggregated.
+- **R9.5**: LLM param trajectory logged per agent — every change with timestamp and source.
 
-- **R9.1**: Every agent execution produces a structured trace: agent_id, parent_id, topology_node, steps, tools called, SGR history, budget consumed, LLM params per step, output.
-- **R9.2**: The event system (current `on_event`) is extended with: `agent_spawned`, `agent_done`, `fork_started`, `fork_merged`, `condensation_triggered`, `budget_threshold_hit`, `param_adjusted`, `stuck_detected`, `feedback_loop_fired`.
-- **R9.3**: Full execution tree is reconstructable from events — which agent spawned which, what was handed off, what was merged, what parameters were adjusted.
-- **R9.4**: SGR convergence tracking per agent (current live display) extends to show the full agent tree.
-- **R9.5**: Token accounting is per-agent and aggregated — you can see budget consumption at any level.
-- **R9.6**: Parameter trajectory is logged — you can plot temperature, penalties, etc. over time for each agent.
+---
 
-## 10. Non-Requirements (Explicitly Out of Scope)
+## 10. What the Framework Does NOT Do
 
-- **R10.1**: No persistent state between runs — each review is stateless.
-- **R10.2**: No built-in A/B testing framework (but topology selection enables manual A/B).
-- **R10.3**: No built-in prompt optimization (complement with DSPy externally).
-- **R10.4**: No multi-LLM-provider abstraction beyond current OpenAI-compatible interface — agents can use different models via config but through the same client interface.
-- **R10.5**: No web UI — CLI and Python API only.
+- **R10.1**: No predefined topologies, DAGs, pipelines, or state machines. Agents create structure at runtime through tool calls.
+- **R10.2**: No automatic parameter schedules, curves, or drivers. LLM params are mutable state controlled by agents or pushers.
+- **R10.3**: No declarative feedback loops between agents. A supervisor agent with tools IS the feedback loop.
+- **R10.4**: No auto-fork, auto-spawn, or auto-plan configs. If you want automatic behavior, encode it in the agent's prompt.
+- **R10.5**: No persistent state between runs. Each execution is stateless.
+- **R10.6**: No web UI. CLI and Python API only.
+- **R10.7**: No multi-provider abstraction beyond OpenAI-compatible interface.
 
-## 11. Summary: Current State vs. Proposed
+---
 
-| Current (1,900 LOC) | Proposed |
+## 11. Summary: Design Principles
+
+| Principle | Implication |
 |---|---|
-| 1 strategist + 1 solver, hardcoded | N agents, YAML-defined |
-| Fixed 2-phase pipeline | Arbitrary DAG topologies |
-| Hardcoded 50%/75% nudges | Configurable budget pushers per agent |
-| No spawning | 3 spawn mechanisms + auto-fork from SGR |
-| No context control | 7+ handoff modes, per-edge configurable |
-| No condensation | 4 condensation strategies for long-running agents |
-| No shared state | Swarm tools (append_log, mutex_map, blackboard) |
-| SGR is one schema | SGR with custom extensions per agent |
-| Topology is code | Topology is YAML or agent-created at runtime |
-| Static temperature=0 | Adaptive LLM params driven by SGR, budget, and behavioral signals |
-| No repetition detection | Stuck detector with configurable feedback actions |
-| Single model throughout | Dynamic model switching per step based on phase/conditions |
-| No cross-agent feedback | Topology-level feedback loops between parent and child agents |
+| **Agent-first** | The agent is the only execution unit. No topology runner, no pipeline engine. |
+| **Tools, not config** | Spawn, fork, plan, adjust — all via tool calls, not YAML declarations. |
+| **Prompts, not pipelines** | Agent behavior is determined by prompts. The framework imposes no workflow. |
+| **Mutable params** | LLM generation parameters are live state, not static config. Other agents can change them. |
+| **Max non-determinism** | The react loop has no predetermined steps. The LLM decides everything at every step. |
+| **Supervisor = agent** | Feedback loops, adaptive schedules, coordination — all via a supervisor agent with `adjust_agent` + `observe_agents` tools and a prompt. |
+| **Signals, not actions** | The framework computes behavioral signals (repetition, stuck) but does not act on them. Agents or pushers decide. |
+| **Budget = only hard constraint** | Budget pushers are the only framework-imposed guardrails. Everything else is soft (prompt-based). |
