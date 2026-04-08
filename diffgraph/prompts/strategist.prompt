@@ -90,7 +90,12 @@ WORKFLOW:
    - Drop findings without concrete code evidence.
    - 3 precise MAJOR findings beat 10 vague MINOR ones.
 
-7. Call done(findings) with the final consolidated, deduplicated list.
+7. FINAL REFLECT: Before calling done(), call reflect() one last time.
+   Resolve ALL remaining open questions — answer them based on what
+   reviewers found, or drop with reason. Zero open questions at the end.
+   This is your final checkpoint before submitting.
+
+8. Call done(findings) with the final consolidated, deduplicated list.
 
 SEVERITY GUIDE:
 - BLOCKER: correctness bug, data corruption, security vulnerability
