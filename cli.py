@@ -193,7 +193,8 @@ def run(
         if event == "orchestrator_root_agent":
             _root_agent_ref["agent"] = kw.get("agent")
         _trace_collector.on_event(event, **kw)
-        _trace_db.on_event(event, **kw)
+        # Note: _trace_db gets raw events via direct EventBus subscription
+        # in orchestrator.py — no need to call it here (would duplicate)
 
     with Live("", console=console, refresh_per_second=8, vertical_overflow="visible") as live:
         event_handler = _make_event_handler(effective_model, live)

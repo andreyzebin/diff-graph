@@ -66,14 +66,30 @@ class TraceDBWriter:
 
     def on_event(self, event_type: str, **kw):
         """Called on every event. Writes to DB immediately."""
-        aid = kw.get("agent_id", "")
+        aid = kw.get("agent_id", "") or kw.get("parent_id", "")
         aname = kw.get("agent_name", "")
         step = kw.get("step")
 
-        # Serialize data — handle non-serializable objects
+        # Serialize data — handle non-serializable objects, skip huge fields
         data = {}
         for k, v in kw.items():
-            if k in ("agent",):  # skip agent object references
+            if k in ("agent", "event_bus"):  # skip object references
+                continue
+            if k == "messages" and isinstance(v, list):
+                # Compact messages: truncate content
+                compact = []
+                for m in v:
+                    cm = {"role": m.get("role", "?")}
+                    content = m.get("content", "")
+                    if content:
+                        cm["content"] = content[:2000] + ("…" if len(content) > 2000 else "")
+                    if m.get("tool_calls"):
+                        cm["tool_calls"] = m["tool_calls"]
+                    compact.append(cm)
+                data[k] = compact
+                continue
+            if k == "tools" and isinstance(v, list):
+                data["tools_count"] = len(v)
                 continue
             try:
                 json.dumps(v)
@@ -163,8 +179,23 @@ class TraceDBReader:
 
             if etype == "agent_spawned":
                 child_id = data.get("child_id", "")
-                if child_id and aid:
-                    agent_parents[child_id] = aid
+                parent_id = data.get("parent_id", "") or aid
+                child_name = data.get("agent_name", "")
+                # Register child agent even before it emits its own events
+                if child_id and child_id not in agents:
+                    agents[child_id] = {
+                        "agent_id": child_id,
+                        "agent_name": child_name or child_id[:8],
+                        "steps": 0,
+                        "tokens_in": 0, "tokens_out": 0,
+                        "tokens_cached": 0, "tokens_paid": 0,
+                        "sgr": [],
+                        "llm_calls": [],
+                        "children": [],
+                        "output": None,
+                    }
+                if child_id and parent_id:
+                    agent_parents[child_id] = parent_id
 
             if not aid or aid not in agents:
                 continue
