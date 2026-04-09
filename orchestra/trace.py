@@ -105,6 +105,9 @@ def collect_trace(agent: "Agent", collector: Optional[TraceCollector] = None) ->
 # ── HTML Renderer ─────────────────────────────────────────────────────────────
 
 def render_html(trace: dict, title: str = "Review Trace") -> str:
+    global _tab_counter
+    _tab_counter = 0
+    _data_blocks.clear()
     h = _H()
     h.line("<!DOCTYPE html><html><head>")
     h.line(f"<title>{esc(title)}</title>")
@@ -121,22 +124,33 @@ def render_html(trace: dict, title: str = "Review Trace") -> str:
     h.line('<div class="tab-content" id="tab-content"></div>')
     h.line('</div>')
     h.line('</div>')
+    _flush_data_blocks(h)
     h.line(f"<script>{_JS}</script>")
     h.line("</body></html>")
     return h.build()
 
 
 _tab_counter = 0
+_data_blocks: list[str] = []  # collected data blocks to emit at end
 
 def _open_btn(title: str, content: str) -> str:
-    """Generate an inline [⧉] button that opens content in the right panel."""
+    """Generate [⧉] button + hidden data block. Content stored safely, not in onclick."""
     global _tab_counter
     _tab_counter += 1
-    tid = f"tab_{_tab_counter}"
-    # Escape for JS string (single quotes, newlines, backslashes)
-    js_title = title.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
-    js_content = content.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("</", "<\\/")
-    return f'<span class="open-btn" onclick="openTab(\'{js_title}\', \'{js_content}\', \'{tid}\')">⧉</span>'
+    did = f"d{_tab_counter}"
+    # Store content in a hidden script tag (type=text/data won't execute)
+    # Only need to escape </script> inside
+    safe_content = content.replace("</script>", "<\\/script>")
+    _data_blocks.append(f'<script type="text/data" id="{did}">{safe_content}</script>')
+    js_title = esc(title)
+    return f'<span class="open-btn" onclick="openTabById(\'{js_title}\', \'{did}\')">⧉</span>'
+
+
+def _flush_data_blocks(h: _H):
+    """Emit all stored data blocks."""
+    for block in _data_blocks:
+        h.line(block)
+    _data_blocks.clear()
 
 
 class _H:
@@ -281,11 +295,11 @@ def _render_llm_call(h: _H, step: int, req: Optional[dict], resp: Optional[dict]
     # Call: what the LLM decided (tool calls with args)
     if resp:
         h.line(f'<div class="llm-section">')
-        call_parts = []
         for tc in resp.get("tool_calls", []):
+            tc_name = tc["name"]
             full_args = tc.get("arguments", "")
-            call_parts.append(f'{tc["name"]}({full_args})')
-            h.line(f'<div class="resp-tc">{esc(tc["name"])}({esc(full_args[:500])}) {_open_btn(f"step {step} Call: {tc['name']}", full_args)}</div>')
+            btn = _open_btn(f"step {step} Call: {tc_name}", full_args)
+            h.line(f'<div class="resp-tc">{esc(tc_name)}({esc(full_args[:500])}) {btn}</div>')
         usage = resp.get("usage", {})
         if usage:
             h.line(f'<div class="resp-usage">in:{usage.get("prompt_tokens",0)} out:{usage.get("completion_tokens",0)} cached:{usage.get("cached_tokens",0)} paid:{usage.get("paid",0)}</div>')
@@ -551,10 +565,16 @@ document.querySelectorAll('.output-section').forEach(el => {
 const tabs = {};
 let activeTab = null;
 
+function openTabById(title, dataId) {
+  // Read content from hidden script tag
+  const dataEl = document.getElementById(dataId);
+  if (!dataEl) return;
+  const content = dataEl.textContent;
+  openTab(title, content, dataId);
+}
+
 function openTab(title, content, id) {
-  const panel = document.getElementById('detail-panel');
   const bar = document.getElementById('tab-bar');
-  const area = document.getElementById('tab-content');
 
   // Remove hint
   const hint = bar.querySelector('.tab-hint');
@@ -570,8 +590,15 @@ function openTab(title, content, id) {
   const btn = document.createElement('div');
   btn.className = 'tab-btn';
   btn.dataset.id = id;
-  btn.innerHTML = '<span class="tab-title">' + escHtml(title.substring(0, 30)) + '</span>' +
-                  '<span class="tab-close" onclick="event.stopPropagation(); closeTab(\\'' + id + '\\')">×</span>';
+  const titleSpan = document.createElement('span');
+  titleSpan.className = 'tab-title';
+  titleSpan.textContent = title.substring(0, 30);
+  const closeSpan = document.createElement('span');
+  closeSpan.className = 'tab-close';
+  closeSpan.textContent = '×';
+  closeSpan.onclick = (e) => { e.stopPropagation(); closeTab(id); };
+  btn.appendChild(titleSpan);
+  btn.appendChild(closeSpan);
   btn.onclick = () => activateTab(id);
   bar.appendChild(btn);
 
@@ -601,7 +628,10 @@ function activateTab(id) {
     display = JSON.stringify(parsed, null, 2);
   } catch(e) {}
 
-  area.innerHTML = '<pre>' + escHtml(display) + '</pre>';
+  area.innerHTML = '';
+  const pre = document.createElement('pre');
+  pre.textContent = display;
+  area.appendChild(pre);
 }
 
 function closeTab(id) {
