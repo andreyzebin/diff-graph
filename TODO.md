@@ -15,6 +15,13 @@
 - ~~CLI trace command~~ — --log, --list, --run, browser auto-open
 - ~~Data inheritance~~ — parent data_scope auto-injected into child {placeholders}
 - ~~No handoff context by default~~ — child gets everything via system prompt
+- ~~Concerns scale to diff size~~ — 1-2 small, 2-3 medium, 3-5 large. No splitting one issue.
+- ~~Reviewer: investigate first, reflect after~~ — get_diff/read_outline before first reflect
+- ~~SGR reflect rules~~ — don't open already-known questions, don't reflect twice in a row
+- ~~Lead doesn't hand off SGR~~ — prompt instructs not to pass context_handoff
+- ~~Thread-safe trace DB~~ — threading.Lock on SQLite writes for parallel agents
+- ~~Orphan agents in trace~~ — unlinked agents attached to root, all visible
+- ~~strategist → lead rename~~ — everywhere in code, prompts, docs
 
 ---
 

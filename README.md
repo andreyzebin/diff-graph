@@ -147,7 +147,7 @@ python cli.py inspect changes.diff
 
 ### Three-phase review methodology
 
-**Phase 1 -- ANALYZE:** The lead reads the diff, identifies the system type, and formulates 3-5 high-level concerns (not 15 specific questions). Each concern is a theme for investigation.
+**Phase 1 -- ANALYZE:** The lead reads the diff, identifies the system type, and formulates concerns scaled to diff size: 1-2 for small diffs, 2-3 for medium, 3-5 for large. Each concern is a distinct theme — not split facets of the same issue.
 
 **Phase 2 -- INVESTIGATE (one round):** The lead spawns reviewer agent(s), each getting one concern as its focus. The reviewer breaks the concern into sub-questions and investigates using repo tools. One round of investigation -- no iterative spawning.
 
@@ -157,7 +157,7 @@ python cli.py inspect changes.diff
 
 **Lead** -- react agent with `spawn`, `observe_agents`, `adjust_agent` capabilities. Orchestrates the review. Owns PR comment interaction (`reply_to_comment`, `resolve_comment`).
 
-**Reviewer** -- focused react agent with SGR. Gets a specific concern as focus from the lead, breaks it into sub-questions, investigates using repo tools (`find_files`, `read_file`, `read_outline`, `search`, `get_diff`), returns findings. No spawning, no PR interaction.
+**Reviewer** -- focused react agent with SGR. Gets a concern as focus, investigates first (get_diff, read_outline), then reflects with only genuinely unknown questions. Resolved questions from previous reflects carry concrete answers. No spawning, no PR interaction, no lead SGR context (clean start).
 
 ### SGR (Self-Guided Reasoning)
 

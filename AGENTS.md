@@ -7,8 +7,8 @@ This document describes the codebase for AI agents and coding assistants.
 DiffGraph is a multi-agent PR code reviewer built on the Orchestra framework. It takes a raw `git diff` (or fetches one from Bitbucket Server), runs a three-phase review pipeline via prompt-defined agents, and produces structured `ReviewFinding` objects -- optionally posted as inline PR comments.
 
 **Agents (defined by `.prompt` files):**
-- **Lead** (react) -- three-phase review lead: analyze the diff to form 3-5 high-level concerns, spawn reviewer(s) to investigate (one round), then consolidate findings and judge.
-- **Reviewer** (react with SGR) -- focused investigator. Gets one concern as focus, breaks it into sub-questions, explores the repo, returns findings. No spawning, no PR interaction.
+- **Lead** (react) -- three-phase review lead: analyze the diff, form concerns scaled to diff size (1-2 small, 2-3 medium, 3-5 large), spawn reviewer(s) without SGR handoff (one round), consolidate and judge.
+- **Reviewer** (react with SGR) -- focused investigator. Gets one concern, investigates first (get_diff, read_outline), then reflects with only genuinely unknown questions. Returns findings with evidence. No spawning, no PR interaction.
 
 No pre-indexing, no database, no persistent state. One `run_review()` call per diff. The orchestrator is ~35 lines of logic -- all methodology lives in the `.prompt` files.
 

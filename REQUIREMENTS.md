@@ -161,7 +161,7 @@ Registered via Python `@registry.register` decorator or YAML config. Each agent 
 
 ## 6. Context Handoff
 
-When spawning or forking, the calling agent chooses what context to pass. By default, no handoff context is provided -- child agents get everything via their system prompt.
+When spawning or forking, the calling agent can choose what context to pass. By default, no handoff context is provided — child agents get everything via `{placeholder}` injection in their system prompt. The lead is instructed not to pass SGR to reviewers (it adds noise — reviewers have their own concerns).
 
 | Mode | What is transferred |
 |---|---|
@@ -183,11 +183,18 @@ Structured self-reflection. Backbone of inter-agent communication.
 
 ### Schema
 
-`learned`, `questions_remaining`, `resolved_questions` (resolution + summary), `confidence` (low/medium/high), `next_action`. Extensible with custom fields per agent.
+`learned` (facts with evidence), `questions_remaining` (things you don't know yet — not things you can already answer), `resolved_questions` (from previous reflect, with concrete answers), `confidence`, `next_action`. Extensible with custom fields.
 
 ### Question IDs
 
-Each question gets a stable ID. Fuzzy matching links questions across reflect() calls even when wording drifts between steps. This provides stability for tracking question lifecycle across the agent's execution.
+Each question gets a stable ID (Q1, Q2...). PUT semantics: same ID across reflects updates text without resetting age. Fuzzy matching (>50% word overlap) links questions even when wording drifts.
+
+### Rules
+
+- `questions_remaining`: only things you genuinely need to investigate. Don't list questions you can already answer — put those in `learned`.
+- `resolved_questions`: from PREVIOUS reflect only. Don't open and resolve in the same reflect.
+- Don't reflect twice in a row without tool calls between them.
+- Investigate first (get_diff, read_outline), then reflect with what you learned.
 
 ### Accountability
 
