@@ -185,13 +185,15 @@ def run(
 
     _root_agent_ref: dict = {"agent": None}
     from orchestra.trace import TraceCollector
+    from orchestra.trace_db import TraceDBWriter
     _trace_collector = TraceCollector()
+    _trace_db = TraceDBWriter()
 
     def _capture_event(event: str, **kw):
         if event == "orchestrator_root_agent":
             _root_agent_ref["agent"] = kw.get("agent")
-        # Always collect LLM request/response events for tracing
         _trace_collector.on_event(event, **kw)
+        _trace_db.on_event(event, **kw)
 
     with Live("", console=console, refresh_per_second=8, vertical_overflow="visible") as live:
         event_handler = _make_event_handler(effective_model, live)
@@ -209,15 +211,31 @@ def run(
 
     _print_findings(findings)
 
-    # Write HTML trace if requested
-    if trace_file and _root_agent_ref["agent"]:
-        from orchestra.trace import collect_trace, render_html
-        agent = _root_agent_ref["agent"]
-        trace_data = collect_trace(agent, collector=_trace_collector)
+    # Finish trace DB run
+    _trace_db.finish_run(
+        model=effective_model,
+        pr_url=pr_url or "",
+        findings_count=len(findings),
+    )
+    _trace_db.close()
+    console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")
+
+    # Write HTML trace if --trace flag given
+    if trace_file:
+        if _root_agent_ref["agent"]:
+            from orchestra.trace import collect_trace, render_html
+            trace_data = collect_trace(_root_agent_ref["agent"], collector=_trace_collector)
+        else:
+            # Fallback: render from DB
+            from orchestra.trace_db import TraceDBReader
+            from orchestra.trace import render_html
+            reader = TraceDBReader()
+            trace_data = reader.get_run_trace(_trace_db.run_id)
+            reader.close()
         trace_html = render_html(trace_data, title=f"Review Trace · {effective_model}")
         from pathlib import Path
         Path(trace_file).write_text(trace_html, encoding="utf-8")
-        console.print(f"\n[dim]Trace written to {trace_file}[/dim]")
+        console.print(f"[dim]  html:  {trace_file}[/dim]")
 
     if post_comments and pr_url:
         from diffgraph.bitbucket import post_review_comments
@@ -261,6 +279,86 @@ def run(
 
     if cleanup_fn:
         cleanup_fn()
+
+
+@app.command()
+def trace(
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write HTML to file (default: open in browser)"),
+    run_id: Optional[str] = typer.Option(None, "--run", help="Specific run ID (default: last run)"),
+    list_runs: bool = typer.Option(False, "--list", "-l", help="List recent runs"),
+):
+    """
+    Render HTML trace from the last run (or a specific run).
+
+    \b
+      python cli.py trace              # render last run, open in browser
+      python cli.py trace -o trace.html  # save to file
+      python cli.py trace --list       # list recent runs
+      python cli.py trace --run abc123 # render specific run
+    """
+    from orchestra.trace_db import TraceDBReader, DEFAULT_DB_PATH
+    from orchestra.trace import render_html
+
+    if not DEFAULT_DB_PATH.exists():
+        console.print("[red]No trace database found.[/red] Run a review first.")
+        raise typer.Exit(1)
+
+    reader = TraceDBReader()
+
+    if list_runs:
+        runs = reader.list_runs(limit=20)
+        if not runs:
+            console.print("[dim]No runs found.[/dim]")
+            raise typer.Exit(0)
+        from rich.table import Table
+        table = Table(title="Recent Runs", box=rich_box.SIMPLE)
+        table.add_column("Run ID", style="cyan")
+        table.add_column("Started")
+        table.add_column("Model")
+        table.add_column("Findings", justify="right")
+        table.add_column("Tokens", justify="right")
+        table.add_column("Status")
+        for r in runs:
+            started = r["started_at"][:19] if r["started_at"] else "?"
+            table.add_row(
+                r["id"],
+                started,
+                r["model"] or "?",
+                str(r["findings_count"] or 0),
+                str(r["total_tokens_paid"] or 0),
+                r["status"] or "?",
+            )
+        console.print(table)
+        reader.close()
+        raise typer.Exit(0)
+
+    # Get run ID
+    target_id = run_id
+    if not target_id:
+        target_id = reader.get_last_run_id()
+        if not target_id:
+            console.print("[red]No runs found.[/red]")
+            reader.close()
+            raise typer.Exit(1)
+
+    console.print(f"[dim]Rendering trace for run {target_id}…[/dim]")
+    trace_data = reader.get_run_trace(target_id)
+    reader.close()
+
+    trace_html = render_html(trace_data, title=f"Trace · {target_id}")
+
+    if output:
+        from pathlib import Path
+        Path(output).write_text(trace_html, encoding="utf-8")
+        console.print(f"[green]Written to {output}[/green]")
+    else:
+        # Write to temp file and open in browser
+        import tempfile, webbrowser
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w") as f:
+            f.write(trace_html)
+            tmp_path = f.name
+        webbrowser.open(f"file://{tmp_path}")
+        console.print(f"[green]Opened in browser[/green] ({tmp_path})")
 
 
 @app.command()
