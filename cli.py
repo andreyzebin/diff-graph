@@ -470,33 +470,42 @@ def _print_llm_call_log(req: dict | None, resp: dict | None, step: int, indent: 
         f"[dim]{model} {temp}[/dim]"
     )
 
-    # Request messages (compact)
+    # Request: only show last 3 messages (not full history) — system shown only on step 0
     if req:
         msgs = req.get("messages", [])
-        for m in msgs:
+        # Show system only on first step, otherwise last 3 non-system messages
+        if step == 0:
+            show_msgs = msgs[:3]
+        else:
+            non_system = [m for m in msgs if m.get("role") != "system"]
+            show_msgs = non_system[-3:]
+
+        for m in show_msgs:
             role = m.get("role", "?")
             content = m.get("content", "")
             tcs = m.get("tool_calls", [])
             role_color = {"system": "yellow", "user": "green", "assistant": "cyan", "tool": "dim"}.get(role, "white")
 
-            if content:
-                preview = content[:120].replace("\n", "↵ ")
-                if len(content) > 120:
-                    preview += "…"
-                console.print(f"{indent}    [{role_color}]{role}[/{role_color}]: [dim]{preview}[/dim]")
-            elif tcs:
+            if tcs:
                 tc_names = ", ".join(
                     tc.get("name", "") or tc.get("function", {}).get("name", "?")
                     for tc in tcs[:3]
                 )
                 console.print(f"{indent}    [{role_color}]{role}[/{role_color}]: [dim]→ {tc_names}[/dim]")
+            elif content:
+                # Tool results for meta-tools: show more
+                max_len = 300 if role == "tool" and ('"status"' in content or '"completed"' in content) else 120
+                preview = content[:max_len].replace("\n", "↵ ")
+                if len(content) > max_len:
+                    preview += "…"
+                console.print(f"{indent}    [{role_color}]{role}[/{role_color}]: [dim]{preview}[/dim]")
 
-    # Response
+    # Response (LLM output)
     if resp:
         for tc in resp.get("tool_calls", []):
             args = tc.get("arguments", "")
-            if isinstance(args, str) and len(args) > 100:
-                args = args[:100] + "…"
+            if isinstance(args, str) and len(args) > 150:
+                args = args[:150] + "…"
             console.print(f"{indent}    [cyan]→ {tc.get('name', '?')}[/cyan]([dim]{args}[/dim])")
         content = resp.get("content", "")
         if content:
