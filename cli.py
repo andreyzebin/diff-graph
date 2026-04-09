@@ -93,6 +93,7 @@ def run(
     api_url:       Optional[str] = typer.Option(None,  "--api-url",            help="OpenAI-compatible API base URL override"),
     api_key:       Optional[str] = typer.Option(None,  "--api-key",            help="API key override"),
     output:        Optional[str] = typer.Option(None,  "--output",       "-o", help="Write findings as JSON to file"),
+    trace_file:    Optional[str] = typer.Option(None,  "--trace",        "-t", help="Write HTML trace to file for post-run analysis"),
     post_comments: bool          = typer.Option(False, "--post-comments",      help="Post findings to the PR as inline comments (requires --pr-url)"),
     max_steps:     Optional[int] = typer.Option(None,  "--max-steps",          help="Max ReAct steps (default: from config)"),
     max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
@@ -182,15 +183,37 @@ def run(
         max_tokens=effective_tokens,
     )
 
+    _root_agent_ref: dict = {"agent": None}
+
+    def _capture_event(event: str, **kw):
+        if event == "orchestrator_root_agent":
+            _root_agent_ref["agent"] = kw.get("agent")
+
+    event_handler = _make_event_handler(effective_model, live)
+
+    def _combined_handler(event: str, **kw):
+        _capture_event(event, **kw)
+        event_handler(event, **kw)
+
     with Live("", console=console, refresh_per_second=8, vertical_overflow="visible") as live:
         findings, review_ctx = dg.review(
             diff_text,
             existing_comments=existing_comments,
-            on_event=_make_event_handler(effective_model, live),
+            on_event=_combined_handler,
         )
     console.print("")
 
     _print_findings(findings)
+
+    # Write HTML trace if requested
+    if trace_file and _root_agent_ref["agent"]:
+        from orchestra.trace import collect_trace, render_html
+        agent = _root_agent_ref["agent"]
+        trace_data = collect_trace(agent)
+        trace_html = render_html(trace_data, title=f"Review Trace · {effective_model}")
+        from pathlib import Path
+        Path(trace_file).write_text(trace_html, encoding="utf-8")
+        console.print(f"\n[dim]Trace written to {trace_file}[/dim]")
 
     if post_comments and pr_url:
         from diffgraph.bitbucket import post_review_comments

@@ -160,6 +160,9 @@ def run_review(
 
     result = agent.run()
 
+    # Store agent ref for trace collection
+    _emit("orchestrator_root_agent", agent=agent)
+
     # ── Parse findings ────────────────────────────────────────────────────
     raw_findings = []
     if result.output is not None:
