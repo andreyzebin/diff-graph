@@ -120,6 +120,16 @@ class LLMMerge:
             return UnionMerge().merge(results)
 
 
+class RawMerge:
+    """Return all outputs as-is, no deduplication."""
+
+    def merge(self, results: list["AgentResult"]) -> Any:
+        return [
+            {"agent": r.agent_name, "output": r.output}
+            for r in results
+        ]
+
+
 class CustomMerge:
     """User-provided Python callable."""
 
@@ -142,6 +152,8 @@ def get_merge_strategy(
         return BestConfidenceMerge()
     elif name == "union":
         return UnionMerge()
+    elif name == "raw":
+        return RawMerge()
     elif name == "llm_merge":
         return LLMMerge(llm=llm, model=model)
     elif name == "custom" and handler:
