@@ -480,10 +480,17 @@ h1 { color: #58a6ff; margin-bottom: 20px; font-size: 1.4em; }
             opacity: 0.5; }
 .open-btn:hover { opacity: 1; color: #58a6ff; }
 
-/* Download button */
+/* Copy button */
 .download-btn { cursor: pointer; color: #8b949e; font-size: 0.75em; margin-left: 8px;
                 opacity: 0.5; padding: 1px 4px; border: 1px solid #30363d; border-radius: 3px; }
 .download-btn:hover { opacity: 1; color: #56d364; border-color: #56d364; }
+
+/* Toast notification */
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%) translateY(20px);
+         background: #238636; color: #fff; padding: 8px 20px; border-radius: 6px;
+         font-size: 0.9em; opacity: 0; transition: opacity 0.3s, transform 0.3s;
+         z-index: 1000; pointer-events: none; }
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 details { margin: 4px 0; }
 summary { cursor: pointer; user-select: none; }
@@ -675,12 +682,17 @@ function downloadJSON(filename, dataId) {
   let content = dataEl.textContent;
   try { content = JSON.stringify(JSON.parse(content), null, 2); } catch(e) {}
   navigator.clipboard.writeText(content).then(() => {
-    const btn = event.target;
-    const orig = btn.textContent;
-    btn.textContent = '✓ copied';
-    btn.style.color = '#56d364';
-    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 1500);
+    showToast('✓ Copied to clipboard');
   });
+}
+
+function showToast(msg) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  requestAnimationFrame(() => t.classList.add('show'));
+  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 1500);
 }
 
 function escHtml(s) {
