@@ -228,6 +228,16 @@ def _render_agent(h: _H, trace: dict, depth: int):
         resp = next((c for c in step_calls if c["type"] == "response"), None)
         steps_list.append({"step": step_num, "req": req, "resp": resp})
 
+    # Compute per-step delta paid (not cumulative)
+    prev_paid = 0
+    for sd in steps_list:
+        resp = sd.get("resp")
+        if resp:
+            usage = resp.get("usage", {})
+            current_paid = usage.get("paid", 0)
+            usage["step_paid"] = current_paid - prev_paid if current_paid > prev_paid else current_paid
+            prev_paid = current_paid
+
     # Pair tool results: get NEW tool messages from next step's request
     prev_tool_count = 0
     for i, sd in enumerate(steps_list):
@@ -277,10 +287,10 @@ def _render_llm_call(h: _H, step: int, req: Optional[dict], resp: Optional[dict]
             if len(calls) > 3:
                 tool_names += f" +{len(calls)-3}"
         usage = resp.get("usage", {})
-        paid = usage.get("paid", 0)
+        step_paid = usage.get("step_paid", usage.get("paid", 0))
         cached = usage.get("cached_tokens", 0)
-        if paid:
-            usage_str = f" · paid:{paid}"
+        if step_paid:
+            usage_str = f" · paid:{step_paid}"
             if cached:
                 usage_str += f" (cache:{cached})"
 
@@ -312,7 +322,8 @@ def _render_llm_call(h: _H, step: int, req: Optional[dict], resp: Optional[dict]
             h.line(f'<div class="resp-tc">{esc(tc_name)}({esc(full_args[:500])}) {btn}</div>')
         usage = resp.get("usage", {})
         if usage:
-            h.line(f'<div class="resp-usage">in:{usage.get("prompt_tokens",0)} out:{usage.get("completion_tokens",0)} cached:{usage.get("cached_tokens",0)} paid:{usage.get("paid",0)}</div>')
+            sp = usage.get("step_paid", usage.get("paid", 0))
+            h.line(f'<div class="resp-usage">in:{usage.get("prompt_tokens",0)} out:{usage.get("completion_tokens",0)} cached:{usage.get("cached_tokens",0)} step_paid:{sp}</div>')
         h.line('</div>')
 
     # Result: what the tool returned
