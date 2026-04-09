@@ -406,16 +406,19 @@ def _print_trace_log(trace: dict, depth: int = 0):
         resp = next((c for c in step_calls if c["type"] == "response"), None)
         steps_data.append({"step": step_num, "req": req, "resp": resp})
 
+    # Track how many tool messages we've seen so far
+    prev_tool_count = 0
     for i, sd in enumerate(steps_data):
         step_num = sd["step"]
         resp = sd["resp"]
-        # Get tool results from NEXT step's request messages
+        # Get only NEW tool results: compare tool messages in next request vs current
         tool_results = []
         if i + 1 < len(steps_data) and steps_data[i + 1]["req"]:
             next_msgs = steps_data[i + 1]["req"].get("messages", [])
-            for m in next_msgs:
-                if m.get("role") == "tool":
-                    tool_results.append(m.get("content", ""))
+            all_tool_msgs = [m.get("content", "") for m in next_msgs if m.get("role") == "tool"]
+            # Only take tool messages beyond what we saw last step
+            tool_results = all_tool_msgs[prev_tool_count:]
+            prev_tool_count = len(all_tool_msgs)
 
         if resp or sd["req"]:
             _print_llm_call_log(sd["req"], resp, step_num, indent, tool_results)
