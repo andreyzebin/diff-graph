@@ -351,13 +351,12 @@ def _make_event_handler(model: str, live: Optional[Live]):
     _actions: list[str] = []
     _current_stream: dict = {"text": ""}
 
-    # SGR state
+    # SGR state — keyed by question ID
     _sgr: dict = {
-        "questions":     {},
-        "step_opened":   {},
-        "conf_history":  [],
-        "resolved_set":  set(),
-        "resolutions":   [],
+        "questions":     {},   # id -> {text, age, step_opened}
+        "conf_history":  [],   # [(step, conf), ...]
+        "resolved_set":  set(),# resolved IDs
+        "resolutions":   [],   # [(step, id, text, resolution, summary), ...]
     }
 
     # Budget tracking
@@ -379,31 +378,36 @@ def _make_event_handler(model: str, live: Optional[Live]):
             body.append(conf, style=_cc.get(conf, "white"))
         body.append("\n")
 
-        # Resolved (compact: icon + short question + answer)
+        # Resolved (compact: icon + ID + text + answer)
         if _sgr["resolutions"]:
-            for _, q, res_type, summary in _sgr["resolutions"][-6:]:
+            for entry in _sgr["resolutions"][-6:]:
+                _, qid, q_text, res_type, summary = entry
                 icon = "✓" if res_type == "answered" else "✗"
                 color = "green" if res_type == "answered" else "dim"
-                display_q = (q[:36] + "…") if len(q) > 38 else q
+                label = f"{qid}: {q_text}" if qid != q_text else q_text
+                display_q = (label[:36] + "…") if len(label) > 38 else label
                 body.append(f"  {icon} ", style=f"bold {color}")
                 body.append(display_q, style="dim")
                 if summary and summary != "(implicit)":
-                    display_s = (summary[:60] + "…") if len(summary) > 62 else summary
+                    display_s = (summary[:55] + "…") if len(summary) > 57 else summary
                     body.append(f" → {display_s}", style="dim italic")
                 body.append("\n")
 
-        # Open questions
+        # Open questions (keyed by ID, value is {text, age, step_opened})
         if _sgr["questions"]:
             body.append(f"\n  Open ({len(_sgr['questions'])})\n", style="bold")
-            for q, age in _sgr["questions"].items():
+            for qid, qdata in _sgr["questions"].items():
+                text = qdata["text"] if isinstance(qdata, dict) else str(qdata)
+                age = qdata["age"] if isinstance(qdata, dict) else 0
+                step_opened = qdata.get("step_opened", "?") if isinstance(qdata, dict) else "?"
                 if age == 0:
                     dot, color, tag = "●", "green", "  new"
                 elif age == 1:
                     dot, color, tag = "●", "yellow", ""
                 else:
                     dot, color, tag = "●", "red", "  ⚠"
-                display_q = (q[:58] + "…") if len(q) > 60 else q
-                step_opened = _sgr["step_opened"].get(q, "?")
+                label = f"{qid}: {text}" if qid != text else text
+                display_q = (label[:56] + "…") if len(label) > 58 else label
                 body.append(f"    {dot} ", style=f"bold {color}")
                 body.append(display_q, style="")
                 body.append(f"  step {step_opened}{tag}\n", style="dim")
@@ -490,22 +494,26 @@ def _make_event_handler(model: str, live: Optional[Live]):
                 body.append(conf, style=_cc.get(conf, "white"))
             body.append("\n")
 
-            for _, q, res_type, summary in _sgr["resolutions"]:
+            for entry in _sgr["resolutions"]:
+                _, qid, q_text, res_type, summary = entry
                 icon = "✓" if res_type == "answered" else "✗"
                 color = "green" if res_type == "answered" else "dim"
-                display_q = (q[:36] + "…") if len(q) > 38 else q
+                label = f"{qid}: {q_text}" if qid != q_text else q_text
+                display_q = (label[:36] + "…") if len(label) > 38 else label
                 body.append(f"  {icon} ", style=f"bold {color}")
                 body.append(display_q, style="dim" if res_type != "answered" else "")
                 if summary and summary != "(implicit)":
-                    display_s = (summary[:60] + "…") if len(summary) > 62 else summary
+                    display_s = (summary[:55] + "…") if len(summary) > 57 else summary
                     body.append(f" → {display_s}", style="dim italic")
                 elif res_type != "answered":
                     body.append(" → (dropped)", style="dim italic")
                 body.append("\n")
 
             if _sgr["questions"]:
-                for q in _sgr["questions"]:
-                    display_q = (q[:58] + "…") if len(q) > 60 else q
+                for qid, qdata in _sgr["questions"].items():
+                    text = qdata["text"] if isinstance(qdata, dict) else str(qdata)
+                    label = f"{qid}: {text}" if qid != text else text
+                    display_q = (label[:56] + "…") if len(label) > 58 else label
                     body.append("  ● ", style="bold yellow")
                     body.append(f"{display_q} (open)\n", style="yellow")
 
@@ -557,7 +565,6 @@ def _make_event_handler(model: str, live: Optional[Live]):
             (live.console if live else console).print(_render_final_summary())
         # Reset state
         _sgr["questions"].clear()
-        _sgr["step_opened"].clear()
         _sgr["conf_history"].clear()
         _sgr["resolved_set"].clear()
         _sgr["resolutions"].clear()
@@ -710,51 +717,49 @@ def _make_event_handler(model: str, live: Optional[Live]):
             questions = kw.get("questions_remaining", [])
             resolved_questions = kw.get("resolved_questions", [])
 
-            # Update SGR state — handle both ID-based and text-based formats
+            # Process resolved questions
             for rq in (resolved_questions or []):
                 if not isinstance(rq, dict):
                     continue
-                # ID-based: use id as key. Text-based: use question text.
                 qid = rq.get("id", "") or rq.get("question", "")
                 q_text = rq.get("question", "") or rq.get("text", "") or qid
                 res_type = rq.get("resolution", "answered")
                 summary = rq.get("summary", "")
                 if qid and qid not in _sgr["resolved_set"]:
                     _sgr["resolved_set"].add(qid)
-                    _sgr["resolutions"].append((step, q_text, res_type, summary))
+                    # Use stored text if available (more stable)
+                    stored = _sgr["questions"].get(qid, {})
+                    display_text = stored.get("text", q_text) if isinstance(stored, dict) else q_text
+                    _sgr["resolutions"].append((step, qid, display_text, res_type, summary))
 
-            # Extract IDs/keys from remaining questions
-            new_q_keys: dict[str, str] = {}  # key -> display text
+            # Extract IDs from remaining questions
+            new_q: dict[str, str] = {}  # id -> text
             for q in questions:
                 if isinstance(q, dict):
                     qid = q.get("id", q.get("text", ""))
                     text = q.get("text", qid)
-                    new_q_keys[qid] = text
+                    new_q[qid] = text
                 else:
-                    new_q_keys[str(q)] = str(q)
+                    new_q[str(q)] = str(q)
 
-            # Detect implicit drops
+            # Detect implicit drops (ID disappeared without resolution)
             for qid in list(_sgr["questions"].keys()):
-                if qid not in new_q_keys and qid not in _sgr["resolved_set"]:
+                if qid not in new_q and qid not in _sgr["resolved_set"]:
                     _sgr["resolved_set"].add(qid)
-                    old_text = _sgr["questions"][qid]
-                    if isinstance(old_text, dict):
-                        old_text = old_text.get("text", qid)
-                    elif isinstance(old_text, int):
-                        old_text = qid  # was age counter
-                    _sgr["resolutions"].append((step, str(old_text), "dropped", "(implicit)"))
+                    old = _sgr["questions"][qid]
+                    old_text = old.get("text", qid) if isinstance(old, dict) else str(old)
+                    _sgr["resolutions"].append((step, qid, old_text, "dropped", "(implicit)"))
 
-            # Update open questions: key -> age (int)
-            new_questions: dict = {}
-            for qid, text in new_q_keys.items():
-                display = f"{qid}: {text}" if qid != text and not text.startswith(qid) else text
+            # PUT semantics: update existing by ID, add new
+            new_questions: dict[str, dict] = {}
+            for qid, text in new_q.items():
                 if qid in _sgr["questions"]:
-                    old_val = _sgr["questions"][qid]
-                    age = old_val + 1 if isinstance(old_val, int) else 1
-                    new_questions[display] = age
+                    old = _sgr["questions"][qid]
+                    age = old["age"] + 1 if isinstance(old, dict) else 1
+                    step_opened = old.get("step_opened", step) if isinstance(old, dict) else step
+                    new_questions[qid] = {"text": text, "age": age, "step_opened": step_opened}
                 else:
-                    new_questions[display] = 0
-                    _sgr["step_opened"][display] = step
+                    new_questions[qid] = {"text": text, "age": 0, "step_opened": step}
             _sgr["questions"] = new_questions
             _sgr["conf_history"].append((step, conf))
 
