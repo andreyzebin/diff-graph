@@ -251,16 +251,32 @@ def _render_llm_call(h: _H, step: int, req: Optional[dict], resp: Optional[dict]
         for m in msgs:
             role = m.get("role", "?")
             content = m.get("content", "")
+            tcs = m.get("tool_calls", [])
+
+            # Build preview: content for user/system/tool, tool names for assistant
+            if content:
+                preview = (content[:80] + "…") if len(content) > 80 else content
+                preview = preview.replace("\n", " ")
+            elif tcs:
+                tc_names = ", ".join(
+                    tc.get("name", "") or tc.get("function", {}).get("name", "?")
+                    for tc in tcs[:3]
+                )
+                preview = f"→ {tc_names}" + (f" +{len(tcs)-3}" if len(tcs) > 3 else "")
+            else:
+                preview = "(empty)"
+
             h.line(f'<details class="msg-entry">')
-            preview = (content[:80] + "…") if len(content) > 80 else content
-            preview = preview.replace("\n", " ")
             h.line(f'<summary class="msg-role msg-{role}">{role}: {esc(preview)}</summary>')
             if content:
                 h.line(f'<pre class="msg-content">{esc(content)}</pre>')
-            tcs = m.get("tool_calls", [])
             if tcs:
                 for tc in tcs:
-                    h.line(f'<div class="msg-tc">{esc(tc.get("name", "?"))}({esc(tc.get("args", "")[:200])})</div>')
+                    name = tc.get("name", "") or tc.get("function", {}).get("name", "?")
+                    args = tc.get("args", "") or tc.get("function", {}).get("arguments", "")
+                    if isinstance(args, dict):
+                        args = json.dumps(args)
+                    h.line(f'<div class="msg-tc">{esc(name)}({esc(str(args)[:300])})</div>')
             h.line('</details>')
         h.line('</div>')
 
