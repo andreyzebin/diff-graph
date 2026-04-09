@@ -21,12 +21,14 @@ class TraceDBWriter:
     """Writes events to SQLite in real-time."""
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH, run_id: str = ""):
+        import threading
         db_path = Path(db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db_path = db_path
         self.run_id = run_id or str(uuid.uuid4())[:12]
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self.conn.execute("PRAGMA journal_mode=WAL")  # better concurrent reads
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self._lock = threading.Lock()
         self._create_tables()
         self._insert_run()
 
@@ -98,13 +100,14 @@ class TraceDBWriter:
                 data[k] = str(v)
 
         try:
-            self.conn.execute(
-                "INSERT INTO events (run_id, agent_id, agent_name, timestamp, event_type, step, data_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (self.run_id, aid, aname, datetime.now().isoformat(), event_type, step,
-                 json.dumps(data, default=str, ensure_ascii=False)),
-            )
-            self.conn.commit()
+            with self._lock:
+                self.conn.execute(
+                    "INSERT INTO events (run_id, agent_id, agent_name, timestamp, event_type, step, data_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (self.run_id, aid, aname, datetime.now().isoformat(), event_type, step,
+                     json.dumps(data, default=str, ensure_ascii=False)),
+                )
+                self.conn.commit()
         except Exception:
             pass  # never crash the agent due to tracing
 
@@ -244,10 +247,18 @@ class TraceDBReader:
                 if output:
                     agent["output"] = output
 
-        # Build tree
+        # Build tree: link children to parents
+        linked = set()
         for child_id, parent_id in agent_parents.items():
             if child_id in agents and parent_id in agents:
                 agents[parent_id]["children"].append(agents[child_id])
+                linked.add(child_id)
+
+        # Orphan agents (events exist but no agent_spawned) → attach to root
+        if root_id:
+            for aid in agents:
+                if aid != root_id and aid not in linked:
+                    agents[root_id]["children"].append(agents[aid])
 
         # Return root
         if root_id and root_id in agents:
