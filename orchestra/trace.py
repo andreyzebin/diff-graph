@@ -111,11 +111,32 @@ def render_html(trace: dict, title: str = "Review Trace") -> str:
     h.line("<meta charset='utf-8'>")
     h.line(f"<style>{_CSS}</style>")
     h.line("</head><body>")
+    h.line('<div class="layout">')
+    h.line('<div class="left-pane">')
     h.line(f"<h1>{esc(title)}</h1>")
     _render_agent(h, trace, depth=0)
+    h.line('</div>')
+    h.line('<div class="right-pane" id="detail-panel">')
+    h.line('<div class="tab-bar" id="tab-bar"><span class="tab-hint">Click [⧉] to open details</span></div>')
+    h.line('<div class="tab-content" id="tab-content"></div>')
+    h.line('</div>')
+    h.line('</div>')
     h.line(f"<script>{_JS}</script>")
     h.line("</body></html>")
     return h.build()
+
+
+_tab_counter = 0
+
+def _open_btn(title: str, content: str) -> str:
+    """Generate an inline [⧉] button that opens content in the right panel."""
+    global _tab_counter
+    _tab_counter += 1
+    tid = f"tab_{_tab_counter}"
+    # Escape for JS string (single quotes, newlines, backslashes)
+    js_title = title.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+    js_content = content.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("</", "<\\/")
+    return f'<span class="open-btn" onclick="openTab(\'{js_title}\', \'{js_content}\', \'{tid}\')">⧉</span>'
 
 
 class _H:
@@ -260,9 +281,11 @@ def _render_llm_call(h: _H, step: int, req: Optional[dict], resp: Optional[dict]
     # Call: what the LLM decided (tool calls with args)
     if resp:
         h.line(f'<div class="llm-section">')
-        h.line(f'<div class="llm-section-title">Call</div>')
+        call_parts = []
         for tc in resp.get("tool_calls", []):
-            h.line(f'<div class="resp-tc">{esc(tc["name"])}({esc(tc.get("arguments", "")[:500])})</div>')
+            full_args = tc.get("arguments", "")
+            call_parts.append(f'{tc["name"]}({full_args})')
+            h.line(f'<div class="resp-tc">{esc(tc["name"])}({esc(full_args[:500])}) {_open_btn(f"step {step} Call: {tc['name']}", full_args)}</div>')
         usage = resp.get("usage", {})
         if usage:
             h.line(f'<div class="resp-usage">in:{usage.get("prompt_tokens",0)} out:{usage.get("completion_tokens",0)} cached:{usage.get("cached_tokens",0)} paid:{usage.get("paid",0)}</div>')
@@ -272,11 +295,12 @@ def _render_llm_call(h: _H, step: int, req: Optional[dict], resp: Optional[dict]
     if tool_results:
         h.line(f'<div class="llm-section">')
         h.line(f'<div class="llm-section-title">Result</div>')
-        for result in tool_results:
+        for ri, result in enumerate(tool_results):
             truncated = result[:1000]
             if len(result) > 1000:
                 truncated += "…"
             h.line(f'<pre class="msg-content">{esc(truncated)}</pre>')
+            h.line(_open_btn(f"step {step} Result", result))
         h.line('</div>')
 
     # Context: message history (collapsible, secondary)
@@ -302,7 +326,8 @@ def _render_llm_call(h: _H, step: int, req: Optional[dict], resp: Optional[dict]
                 preview = "(empty)"
 
             h.line(f'<details class="msg-entry">')
-            h.line(f'<summary class="msg-role msg-{role}">{role}: {esc(preview)}</summary>')
+            btn = _open_btn(f"{role}", content) if content else ""
+            h.line(f'<summary class="msg-role msg-{role}">{role}: {esc(preview)} {btn}</summary>')
             if content:
                 h.line(f'<pre class="msg-content">{esc(content)}</pre>')
             if tcs:
@@ -402,8 +427,32 @@ def _render_output(h: _H, output):
 _CSS = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
-       background: #0d1117; color: #c9d1d9; padding: 20px; max-width: 1200px; margin: 0 auto; }
+       background: #0d1117; color: #c9d1d9; padding: 0; }
 h1 { color: #58a6ff; margin-bottom: 20px; font-size: 1.4em; }
+
+/* Split-pane layout */
+.layout { display: flex; height: 100vh; }
+.left-pane { flex: 1; overflow-y: auto; padding: 20px; min-width: 400px; }
+.right-pane { width: 50%; min-width: 300px; border-left: 1px solid #30363d;
+              display: flex; flex-direction: column; background: #0d1117; }
+.tab-bar { display: flex; gap: 0; overflow-x: auto; background: #161b22;
+           border-bottom: 1px solid #30363d; min-height: 32px; align-items: center; flex-shrink: 0; }
+.tab-hint { color: #8b949e; font-size: 0.8em; padding: 0 12px; }
+.tab-btn { padding: 6px 12px; font-size: 0.8em; cursor: pointer; border: none;
+           background: none; color: #8b949e; border-bottom: 2px solid transparent;
+           white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.tab-btn:hover { color: #c9d1d9; background: #1c2129; }
+.tab-btn.active { color: #58a6ff; border-bottom-color: #58a6ff; background: #0d1117; }
+.tab-close { font-size: 1em; opacity: 0.5; }
+.tab-close:hover { opacity: 1; color: #f47067; }
+.tab-content { flex: 1; overflow: auto; padding: 12px; }
+.tab-content pre { white-space: pre-wrap; word-break: break-all; font-size: 0.8em;
+                   color: #c9d1d9; line-height: 1.5; }
+
+/* Open-in-panel button */
+.open-btn { cursor: pointer; color: #8b949e; font-size: 0.75em; margin-left: 4px;
+            opacity: 0.5; }
+.open-btn:hover { opacity: 1; color: #58a6ff; }
 
 details { margin: 4px 0; }
 summary { cursor: pointer; user-select: none; }
@@ -492,8 +541,90 @@ summary:hover { background: #161b22; }
 """
 
 _JS = """
+// Auto-expand agents with findings
 document.querySelectorAll('.output-section').forEach(el => {
   let details = el.closest('details');
   if (details) details.open = true;
 });
+
+// Tab system for right panel
+const tabs = {};
+let activeTab = null;
+
+function openTab(title, content, id) {
+  const panel = document.getElementById('detail-panel');
+  const bar = document.getElementById('tab-bar');
+  const area = document.getElementById('tab-content');
+
+  // Remove hint
+  const hint = bar.querySelector('.tab-hint');
+  if (hint) hint.remove();
+
+  // If tab already exists, just activate it
+  if (tabs[id]) {
+    activateTab(id);
+    return;
+  }
+
+  // Create tab button
+  const btn = document.createElement('div');
+  btn.className = 'tab-btn';
+  btn.dataset.id = id;
+  btn.innerHTML = '<span class="tab-title">' + escHtml(title.substring(0, 30)) + '</span>' +
+                  '<span class="tab-close" onclick="event.stopPropagation(); closeTab(\\'' + id + '\\')">×</span>';
+  btn.onclick = () => activateTab(id);
+  bar.appendChild(btn);
+
+  // Store tab data
+  tabs[id] = { title, content, btn };
+
+  // Activate
+  activateTab(id);
+}
+
+function activateTab(id) {
+  const area = document.getElementById('tab-content');
+  const tab = tabs[id];
+  if (!tab) return;
+
+  // Deactivate all
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+
+  // Activate this one
+  tab.btn.classList.add('active');
+  activeTab = id;
+
+  // Try to format as JSON, otherwise plain text
+  let display = tab.content;
+  try {
+    const parsed = JSON.parse(display);
+    display = JSON.stringify(parsed, null, 2);
+  } catch(e) {}
+
+  area.innerHTML = '<pre>' + escHtml(display) + '</pre>';
+}
+
+function closeTab(id) {
+  const tab = tabs[id];
+  if (!tab) return;
+  tab.btn.remove();
+  delete tabs[id];
+
+  if (activeTab === id) {
+    const remaining = Object.keys(tabs);
+    if (remaining.length > 0) {
+      activateTab(remaining[remaining.length - 1]);
+    } else {
+      document.getElementById('tab-content').innerHTML = '';
+      const bar = document.getElementById('tab-bar');
+      bar.innerHTML = '<span class="tab-hint">Click [⧉] to open details</span>';
+    }
+  }
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
 """
