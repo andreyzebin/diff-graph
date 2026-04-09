@@ -77,6 +77,9 @@ PHASE 2 — INVESTIGATE (one round, no iteration)
         whether the check is consistent with other methods, and what happens
         when inventory release is skipped.")
 
+  Do NOT pass context_handoff — reviewers get all data via their prompt.
+  Your SGR is your reasoning, not theirs. Passing it adds noise.
+
   CRITICAL: spawn ONCE. No more reviewers after results come back.
 
 PHASE 3 — JUDGE (no more spawning)

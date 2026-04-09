@@ -540,8 +540,7 @@ class Agent:
                 max_depth=agent_config.max_depth,
             )
 
-        # No handoff context by default — child gets everything via {placeholders} in system prompt.
-        # Only pass handoff if explicitly requested (e.g. context_handoff: "full_history").
+        # Pass handoff context if explicitly requested by LLM
         context: list[dict] = []
         handoff_mode = args.get("context_handoff", "")
         if handoff_mode:
@@ -648,7 +647,7 @@ class Agent:
                     llm_params=agent_config.llm_params, max_depth=agent_config.max_depth,
                 )
 
-            # No handoff by default — child gets everything via {placeholders}
+            # Pass handoff context if requested
             context: list[dict] = []
             if handoff_mode:
                 from .handoff import get_handoff
