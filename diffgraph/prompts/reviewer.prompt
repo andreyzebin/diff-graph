@@ -2,7 +2,7 @@
 @mode: react
 @capabilities: sgr
 @tools: find_files, read_file, read_outline, search, get_diff
-@budget: 30000 tokens, 30 steps
+@budget: 15000 tokens, 20 steps
 @sgr_interval: 3
 @llm: temperature=0
 @data:

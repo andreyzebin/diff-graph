@@ -551,23 +551,8 @@ class Agent:
                 [], self.sgr.history if self.sgr else [], None, self.llm, self.model
             )
 
-        child_budget = self.budget_tracker.allocate_child(self.budget_state, 0.3)
-        # Override budget on the child config
-        child_config = AgentConfig(
-            name=agent_config.name,
-            system_prompt=agent_config.system_prompt,
-            mode=agent_config.mode,
-            sgr=agent_config.sgr,
-            sgr_interval=agent_config.sgr_interval,
-            sgr_extensions=agent_config.sgr_extensions,
-            tools=list(agent_config.tools),
-            meta_tools=list(agent_config.meta_tools),
-            output_schema=agent_config.output_schema,
-            budget=child_budget,
-            condensation=agent_config.condensation,
-            llm_params=agent_config.llm_params,
-            max_depth=agent_config.max_depth,
-        )
+        # Child uses its own budget from .prompt config — not overridden by parent
+        child_config = agent_config
 
         child = Agent(
             config=child_config, tool_registry=self.registry,
@@ -672,15 +657,8 @@ class Agent:
                     [], self.sgr.history if self.sgr else [], None, self.llm, self.model
                 )
 
-            n = len(agents_specs)
-            child_budget = self.budget_tracker.allocate_child(self.budget_state, 0.8 / n)
-            child_config = AgentConfig(
-                name=agent_config.name, system_prompt=agent_config.system_prompt,
-                mode=agent_config.mode, sgr=agent_config.sgr,
-                tools=list(agent_config.tools), meta_tools=list(agent_config.meta_tools),
-                output_schema=agent_config.output_schema, budget=child_budget,
-                llm_params=agent_config.llm_params, max_depth=agent_config.max_depth,
-            )
+            # Child uses its own budget from .prompt config
+            child_config = agent_config
 
             child = Agent(
                 config=child_config, tool_registry=self.registry,
