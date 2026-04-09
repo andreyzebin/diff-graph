@@ -259,13 +259,16 @@ class SGRTracker:
                     "type": "object",
                     "properties": {
                         "id": {"type": "string",
-                                "description": "Short stable ID (C1, C2, Q1, Q2...). Reuse the same ID when keeping a question open. Assign a new ID for genuinely new questions."},
+                                "description": "Short stable ID (Q1, Q2...). Reuse same ID across reflects."},
                         "text": {"type": "string",
-                                 "description": "The question or concern text."},
+                                 "description": "The question text."},
                     },
                     "required": ["id", "text"],
                 },
-                "description": "Open questions/concerns. Use stable IDs — do not change the ID of an existing question.",
+                "description": (
+                    "Questions you still need to investigate. Only list things you "
+                    "DON'T know yet. If you already have the answer, put it in 'learned' instead."
+                ),
             },
             "resolved_questions": {
                 "type": "array",
@@ -273,16 +276,17 @@ class SGRTracker:
                     "type": "object",
                     "properties": {
                         "id": {"type": "string",
-                                "description": "ID of the question being resolved (from previous reflect)."},
+                                "description": "ID of the question from your PREVIOUS reflect."},
                         "resolution": {"type": "string", "enum": ["answered", "dropped"]},
                         "summary": {"type": "string",
-                                    "description": "The answer, or reason for dropping."},
+                                    "description": "The concrete answer you found, or reason for dropping."},
                     },
                     "required": ["id", "resolution", "summary"],
                 },
                 "description": (
-                    "Questions from previous reflect() that are now resolved. "
-                    "Reference by ID. Every open question must eventually be resolved."
+                    "Questions from your PREVIOUS reflect() that you can now answer. "
+                    "Reference by ID. Include the answer in summary. "
+                    "Do NOT resolve questions you just opened in this same reflect."
                 ),
             },
             "confidence": {
