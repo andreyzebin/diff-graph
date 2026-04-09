@@ -2,8 +2,8 @@
 
 ## Done (implemented)
 
-- ~~3.1 Concerns instead of questions~~ — strategist uses 3-5 concerns, reviewer breaks into sub-questions
-- ~~3.2 Question cap (max 5)~~ — in strategist prompt
+- ~~3.1 Concerns instead of questions~~ — lead uses 3-5 concerns, reviewer breaks into sub-questions
+- ~~3.2 Question cap (max 5)~~ — in lead prompt
 - ~~3.3 Question IDs in SGR schema~~ — IDs with PUT semantics, fuzzy matching fallback
 - ~~3.4 Fuzzy matching in SGR~~ — >50% word overlap matches existing question
 - ~~1.5 Child cost in spawn results~~ — spawn returns steps, tokens, sgr_summary
@@ -22,7 +22,7 @@
 
 ### 1.1 Budget context injection at start
 
-Inject budget context before strategist's first LLM call:
+Inject budget context before lead's first LLM call:
 
 ```
 BUDGET CONTEXT:
@@ -59,7 +59,7 @@ spawn_many(4 reviewers): need ~60k, have 40k → spawn 2, merge tasks
 
 ### 1.4 `budget_status` meta-tool
 
-Tool the strategist can call to see remaining budget, children cost, affordable count.
+Tool the lead can call to see remaining budget, children cost, affordable count.
 
 **Where:** `orchestra/tools/builtin.py` + `orchestra/agent.py`.
 **Effort:** Small.
@@ -103,7 +103,7 @@ Currently child events are suppressed in live CLI (only root shown). But `trace 
 Show brief status while spawn_many is running:
 
 ```
-  strategist  spawning 4 reviewers…  [R1: step 3] [R2: step 5] [R3: step 2] [R4: done]
+  lead  spawning 4 reviewers…  [R1: step 3] [R2: step 5] [R3: step 2] [R4: done]
 ```
 
 **Where:** `cli.py` — subscribe to child events during spawn_many.
@@ -113,7 +113,7 @@ Show brief status while spawn_many is running:
 
 ## 3. Prompt Quality
 
-### 3.1 Budget balance instruction in strategist prompt
+### 3.1 Budget balance instruction in lead prompt
 
 ```
 BUDGET MANAGEMENT:
@@ -122,7 +122,7 @@ BUDGET MANAGEMENT:
   Better to spawn 2 thorough reviewers than 4 starved ones.
 ```
 
-**Where:** `diffgraph/prompts/strategist.prompt`.
+**Where:** `diffgraph/prompts/lead.prompt`.
 **Effort:** Small.
 
 ### 3.2 Reviewer efficiency prompt
@@ -190,7 +190,7 @@ python cli.py trace --search "auth" --severity MAJOR
 
 After findings, show cost breakdown:
 ```
-Cost: 12,500 tokens paid (strategist: 4,200 + reviewer×2: 4,150 each)
+Cost: 12,500 tokens paid (lead: 4,200 + reviewer×2: 4,150 each)
       22 steps total, 45s wall time
 ```
 

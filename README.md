@@ -1,6 +1,6 @@
 # DiffGraph
 
-Multi-agent PR code reviewer powered by the **Orchestra** framework. Takes a git diff (or a Bitbucket Server PR URL), spawns a strategist agent that analyzes the change, delegates investigation to focused reviewer agents, and consolidates findings into a deduplicated list.
+Multi-agent PR code reviewer powered by the **Orchestra** framework. Takes a git diff (or a Bitbucket Server PR URL), spawns a lead agent that analyzes the change, delegates investigation to focused reviewer agents, and consolidates findings into a deduplicated list.
 
 ```
 git diff / PR URL
@@ -11,7 +11,7 @@ parse_diff()         changed files + changed lines
       v
 +----------------------- Orchestra -----------------------+
 |                                                          |
-|  strategist (react)                                      |
+|  lead (react)                                      |
 |    Phase 1: ANALYZE  -- read diff, form concerns         |
 |    Phase 2: INVESTIGATE -- spawn reviewer(s), one round  |
 |    Phase 3: JUDGE -- consolidate, reply, done            |
@@ -147,17 +147,17 @@ python cli.py inspect changes.diff
 
 ### Three-phase review methodology
 
-**Phase 1 -- ANALYZE:** The strategist reads the diff, identifies the system type, and formulates 3-5 high-level concerns (not 15 specific questions). Each concern is a theme for investigation.
+**Phase 1 -- ANALYZE:** The lead reads the diff, identifies the system type, and formulates 3-5 high-level concerns (not 15 specific questions). Each concern is a theme for investigation.
 
-**Phase 2 -- INVESTIGATE (one round):** The strategist spawns reviewer agent(s), each getting one concern as its focus. The reviewer breaks the concern into sub-questions and investigates using repo tools. One round of investigation -- no iterative spawning.
+**Phase 2 -- INVESTIGATE (one round):** The lead spawns reviewer agent(s), each getting one concern as its focus. The reviewer breaks the concern into sub-questions and investigates using repo tools. One round of investigation -- no iterative spawning.
 
-**Phase 3 -- JUDGE (no going back):** The strategist resolves concerns from the evidence collected, handles PR comment threads, deduplicates findings, and delivers the verdict. New questions from results are answered from collected evidence, not by spawning more reviewers.
+**Phase 3 -- JUDGE (no going back):** The lead resolves concerns from the evidence collected, handles PR comment threads, deduplicates findings, and delivers the verdict. New questions from results are answered from collected evidence, not by spawning more reviewers.
 
 ### Agents (defined by `.prompt` files)
 
-**Strategist** -- react agent with `spawn`, `observe_agents`, `adjust_agent` capabilities. Orchestrates the review. Owns PR comment interaction (`reply_to_comment`, `resolve_comment`).
+**Lead** -- react agent with `spawn`, `observe_agents`, `adjust_agent` capabilities. Orchestrates the review. Owns PR comment interaction (`reply_to_comment`, `resolve_comment`).
 
-**Reviewer** -- focused react agent with SGR. Gets a specific concern as focus from the strategist, breaks it into sub-questions, investigates using repo tools (`find_files`, `read_file`, `read_outline`, `search`, `get_diff`), returns findings. No spawning, no PR interaction.
+**Reviewer** -- focused react agent with SGR. Gets a specific concern as focus from the lead, breaks it into sub-questions, investigates using repo tools (`find_files`, `read_file`, `read_outline`, `search`, `get_diff`), returns findings. No spawning, no PR interaction.
 
 ### SGR (Self-Guided Reasoning)
 
@@ -197,7 +197,7 @@ Child events suppressed in CLI -- only root agent visible. Single live panel per
 
 ### Incremental review
 
-Existing PR comments are passed to the strategist. In Phase 3, the strategist:
+Existing PR comments are passed to the lead. In Phase 3, the lead:
 - `resolve_comment(id)` -- when the issue is addressed by the diff
 - `reply_to_comment(id, text)` -- when a fix is incomplete
 
@@ -218,7 +218,7 @@ DiffGraph is built on **Orchestra** (~3,700 LOC), a prompt-defined agent framewo
 @llm: temperature=0
 @data:
   diff_summary: string -- changed files with line counts
-  focus: string -- specific task from strategist
+  focus: string -- specific task from lead
 @summary: Focused code reviewer. Investigates one aspect of a PR.
 ---
 You are a code reviewer investigating a specific aspect.
@@ -315,7 +315,7 @@ diffgraph/                   Code review domain
 +-- outline.py               tree-sitter structural outline
 +-- bitbucket.py             Bitbucket Server integration
 +-- prompts/
-    +-- strategist.prompt    Three-phase review lead (analyze -> investigate -> judge)
+    +-- lead.prompt    Three-phase review lead (analyze -> investigate -> judge)
     +-- reviewer.prompt      Focused investigator with SGR
 ```
 

@@ -8,7 +8,7 @@
 @data:
   diff_summary: string — list of changed files with line counts
   existing_comments: string — open PR comment threads or (none)
-  focus: string — high-level concern to investigate (from strategist)
+  focus: string — high-level concern to investigate (from lead)
 @summary: Focused code reviewer. Receives a high-level concern (e.g.
   "security", "business logic"), breaks it into specific investigation
   questions, explores the repo, and returns findings with evidence.
@@ -36,7 +36,7 @@ TOOLS:
 WORKFLOW:
 1. Read the concern above. Break it into 3-5 specific investigation
    QUESTIONS in your first reflect(). These are YOUR questions — the
-   strategist gave you the theme, you decide what to check.
+   lead gave you the theme, you decide what to check.
 
 2. Call get_diff() to load the diff, then read_outline() on relevant files.
 

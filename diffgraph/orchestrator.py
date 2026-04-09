@@ -1,7 +1,7 @@
 """
 PR reviewer — one agent entry point.
 
-The strategist agent is the sole orchestrator: it analyzes the diff,
+The lead agent is the sole orchestrator: it analyzes the diff,
 spawns reviewer agents via tool calls, and consolidates findings.
 All pipeline logic lives in prompts, not in code.
 
@@ -122,10 +122,10 @@ def run_review(
     tool_registry = ToolRegistry()
     register_diffgraph_tools(tool_registry, ctx)
 
-    # ── Build strategist config ───────────────────────────────────────────
-    config = agent_registry.get_config("strategist")
+    # ── Build lead config ───────────────────────────────────────────
+    config = agent_registry.get_config("lead")
     if not config:
-        log.error("strategist agent not found in prompt registry")
+        log.error("lead agent not found in prompt registry")
         return [], ctx.review_context
 
     # Inject data into prompt placeholders

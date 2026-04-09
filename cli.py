@@ -901,7 +901,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             pass
 
         elif event == "orchestrator_plan_start":
-            _log("[bold green]plan[/bold green]      strategist analyzing diff…")
+            _log("[bold green]plan[/bold green]      lead analyzing diff…")
 
         elif event == "orchestrator_agent_spawned":
             child = kw.get("child_id", "?")

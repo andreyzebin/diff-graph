@@ -1,4 +1,4 @@
-@agent: strategist
+@agent: lead
 @mode: react
 @capabilities: sgr, spawn, spawn_many, observe_agents, adjust_agent
 @tools: get_diff, reply_to_comment, resolve_comment

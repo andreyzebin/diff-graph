@@ -7,7 +7,7 @@ This document describes the codebase for AI agents and coding assistants.
 DiffGraph is a multi-agent PR code reviewer built on the Orchestra framework. It takes a raw `git diff` (or fetches one from Bitbucket Server), runs a three-phase review pipeline via prompt-defined agents, and produces structured `ReviewFinding` objects -- optionally posted as inline PR comments.
 
 **Agents (defined by `.prompt` files):**
-- **Strategist** (react) -- three-phase review lead: analyze the diff to form 3-5 high-level concerns, spawn reviewer(s) to investigate (one round), then consolidate findings and judge.
+- **Lead** (react) -- three-phase review lead: analyze the diff to form 3-5 high-level concerns, spawn reviewer(s) to investigate (one round), then consolidate findings and judge.
 - **Reviewer** (react with SGR) -- focused investigator. Gets one concern as focus, breaks it into sub-questions, explores the repo, returns findings. No spawning, no PR interaction.
 
 No pre-indexing, no database, no persistent state. One `run_review()` call per diff. The orchestrator is ~35 lines of logic -- all methodology lives in the `.prompt` files.
@@ -46,7 +46,7 @@ diffgraph/                       Code review domain
 +-- outline.py                   tree-sitter structural outline
 +-- bitbucket.py                 Bitbucket Server integration
 +-- prompts/
-    +-- strategist.prompt        Three-phase review lead (analyze -> investigate -> judge)
+    +-- lead.prompt        Three-phase review lead (analyze -> investigate -> judge)
     +-- reviewer.prompt          Focused investigator with SGR
 
 tests/
@@ -70,10 +70,10 @@ parse_diff(diff_text)
 run_review(diff_text, repo_path, llm, model, existing_comments?)
   +-> compile_prompts()          -> agent registry from .prompt files
   +-> register_diffgraph_tools() -> domain tools as closures over context
-  +-> build strategist config    -> inject diff_summary, existing_comments
-  +-> Agent(strategist).run()
+  +-> build lead config    -> inject diff_summary, existing_comments
+  +-> Agent(lead).run()
         |
-        Strategist (react):
+        Lead (react):
           Phase 1: ANALYZE -- read diff, form 3-5 concerns
           Phase 2: INVESTIGATE -- spawn_agent("reviewer", focus=concern)
               +-> Reviewer (react + SGR):
@@ -182,7 +182,7 @@ Tree-sitter structural outline of a source file. Returns plain text:
 ### Change review methodology
 
 Edit the `.prompt` files in `diffgraph/prompts/`:
-- `strategist.prompt` -- three-phase methodology, concern types, system type examples
+- `lead.prompt` -- three-phase methodology, concern types, system type examples
 - `reviewer.prompt` -- investigation workflow, severity guide, tool usage rules
 
 All methodology lives in prompts, not in Python code. The orchestrator is ~35 lines.
