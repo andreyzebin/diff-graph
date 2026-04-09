@@ -710,31 +710,51 @@ def _make_event_handler(model: str, live: Optional[Live]):
             questions = kw.get("questions_remaining", [])
             resolved_questions = kw.get("resolved_questions", [])
 
-            # Update SGR state
+            # Update SGR state — handle both ID-based and text-based formats
             for rq in (resolved_questions or []):
                 if not isinstance(rq, dict):
                     continue
-                q_text = rq.get("question", "")
+                # ID-based: use id as key. Text-based: use question text.
+                qid = rq.get("id", "") or rq.get("question", "")
+                q_text = rq.get("question", "") or rq.get("text", "") or qid
                 res_type = rq.get("resolution", "answered")
                 summary = rq.get("summary", "")
-                if q_text and q_text not in _sgr["resolved_set"]:
-                    _sgr["resolved_set"].add(q_text)
+                if qid and qid not in _sgr["resolved_set"]:
+                    _sgr["resolved_set"].add(qid)
                     _sgr["resolutions"].append((step, q_text, res_type, summary))
 
-            new_q_set = set(questions)
-            old_q_set = set(_sgr["questions"].keys())
-            for q in (old_q_set - new_q_set):
-                if q not in _sgr["resolved_set"]:
-                    _sgr["resolved_set"].add(q)
-                    _sgr["resolutions"].append((step, q, "dropped", "(implicit)"))
-
-            new_questions: dict = {}
+            # Extract IDs/keys from remaining questions
+            new_q_keys: dict[str, str] = {}  # key -> display text
             for q in questions:
-                if q in _sgr["questions"]:
-                    new_questions[q] = _sgr["questions"][q] + 1
+                if isinstance(q, dict):
+                    qid = q.get("id", q.get("text", ""))
+                    text = q.get("text", qid)
+                    new_q_keys[qid] = text
                 else:
-                    new_questions[q] = 0
-                    _sgr["step_opened"][q] = step
+                    new_q_keys[str(q)] = str(q)
+
+            # Detect implicit drops
+            for qid in list(_sgr["questions"].keys()):
+                if qid not in new_q_keys and qid not in _sgr["resolved_set"]:
+                    _sgr["resolved_set"].add(qid)
+                    old_text = _sgr["questions"][qid]
+                    if isinstance(old_text, dict):
+                        old_text = old_text.get("text", qid)
+                    elif isinstance(old_text, int):
+                        old_text = qid  # was age counter
+                    _sgr["resolutions"].append((step, str(old_text), "dropped", "(implicit)"))
+
+            # Update open questions: key -> age (int)
+            new_questions: dict = {}
+            for qid, text in new_q_keys.items():
+                display = f"{qid}: {text}" if qid != text and not text.startswith(qid) else text
+                if qid in _sgr["questions"]:
+                    old_val = _sgr["questions"][qid]
+                    age = old_val + 1 if isinstance(old_val, int) else 1
+                    new_questions[display] = age
+                else:
+                    new_questions[display] = 0
+                    _sgr["step_opened"][display] = step
             _sgr["questions"] = new_questions
             _sgr["conf_history"].append((step, conf))
 
