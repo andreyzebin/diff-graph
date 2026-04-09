@@ -285,18 +285,20 @@ def run(
 
 @app.command()
 def trace(
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write HTML to file (default: open in browser)"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write HTML to file"),
     run_id: Optional[str] = typer.Option(None, "--run", help="Specific run ID (default: last run)"),
     list_runs: bool = typer.Option(False, "--list", "-l", help="List recent runs"),
+    log_mode: bool = typer.Option(False, "--log", help="Print trace to console instead of HTML"),
 ):
     """
-    Render HTML trace from the last run (or a specific run).
+    Render trace from the last run (or a specific run).
 
     \b
-      python cli.py trace              # render last run, open in browser
-      python cli.py trace -o trace.html  # save to file
+      python cli.py trace --log        # print to console
+      python cli.py trace              # open HTML in browser
+      python cli.py trace -o trace.html  # save HTML to file
       python cli.py trace --list       # list recent runs
-      python cli.py trace --run abc123 # render specific run
+      python cli.py trace --run abc123 # specific run
     """
     from orchestra.trace_db import TraceDBReader, DEFAULT_DB_PATH
     from orchestra.trace import render_html
@@ -343,9 +345,12 @@ def trace(
             reader.close()
             raise typer.Exit(1)
 
-    console.print(f"[dim]Rendering trace for run {target_id}…[/dim]")
     trace_data = reader.get_run_trace(target_id)
     reader.close()
+
+    if log_mode:
+        _print_trace_log(trace_data, depth=0)
+        return
 
     trace_html = render_html(trace_data, title=f"Trace · {target_id}")
 
@@ -354,13 +359,185 @@ def trace(
         Path(output).write_text(trace_html, encoding="utf-8")
         console.print(f"[green]Written to {output}[/green]")
     else:
-        # Write to temp file and open in browser
         import tempfile, webbrowser
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w") as f:
             f.write(trace_html)
             tmp_path = f.name
         webbrowser.open(f"file://{tmp_path}")
         console.print(f"[green]Opened in browser[/green] ({tmp_path})")
+
+
+def _print_trace_log(trace: dict, depth: int = 0):
+    """Print trace to console in a log-like format."""
+    import json as _json
+    indent = "  " * depth
+    name = trace.get("agent_name", "?")
+    steps = trace.get("steps", 0)
+    paid = trace.get("tokens_paid", 0)
+    agent_id = trace.get("agent_id", "?")
+
+    # Agent header
+    _cc = {"low": "red", "medium": "yellow", "high": "green"}
+    sgr = trace.get("sgr", [])
+    conf_trail = ""
+    if sgr:
+        confs = [e.get("confidence", "?") for e in sgr]
+        conf_trail = " → ".join(confs)
+
+    console.print(f"\n{indent}[bold cyan]{'═' * 70}[/bold cyan]")
+    console.print(f"{indent}[bold cyan]{name}[/bold cyan]  [dim]{agent_id}  {steps} steps  paid:{paid} tok[/dim]")
+    if conf_trail:
+        console.print(f"{indent}[dim]SGR: {conf_trail}[/dim]")
+    console.print(f"{indent}[bold cyan]{'─' * 70}[/bold cyan]")
+
+    # Interleave LLM calls and SGR by step
+    llm_calls = trace.get("llm_calls", [])
+    sgr_by_step = {e["step"]: e for e in sgr}
+    all_steps = sorted(set(
+        [c["step"] for c in llm_calls] +
+        [e["step"] for e in sgr]
+    ))
+
+    for step_num in all_steps:
+        step_calls = [c for c in llm_calls if c["step"] == step_num]
+        req = next((c for c in step_calls if c["type"] == "request"), None)
+        resp = next((c for c in step_calls if c["type"] == "response"), None)
+
+        if req or resp:
+            _print_llm_call_log(req, resp, step_num, indent)
+
+        if step_num in sgr_by_step:
+            _print_sgr_log(sgr_by_step[step_num], indent)
+
+    # Children
+    children = trace.get("children", [])
+    if children:
+        console.print(f"\n{indent}[dim italic]  spawned {len(children)} agent(s)[/dim italic]")
+        for child in children:
+            _print_trace_log(child, depth + 1)
+
+    # Output
+    output = trace.get("output")
+    if output:
+        console.print(f"\n{indent}[bold]  Output:[/bold]")
+        if isinstance(output, list):
+            for f in output:
+                if isinstance(f, dict):
+                    sev = f.get("severity", "?")
+                    title = f.get("title", "?")
+                    file = f.get("file", "")
+                    line = f.get("line", "")
+                    sev_color = {"BLOCKER": "red", "MAJOR": "yellow", "MINOR": "cyan", "COMMENT": "dim"}.get(sev, "white")
+                    console.print(f"{indent}    [{sev_color}]{sev}[/{sev_color}] {title}  [dim]{file}:{line}[/dim]")
+        else:
+            text = _json.dumps(output, indent=2, default=str)[:500]
+            console.print(f"{indent}    [dim]{text}[/dim]")
+
+
+def _print_llm_call_log(req: dict | None, resp: dict | None, step: int, indent: str):
+    """Print one LLM call to console."""
+    import json as _json
+
+    # Tool names and cost from response
+    tool_names = ""
+    usage_str = ""
+    if resp:
+        calls = resp.get("tool_calls", [])
+        if calls:
+            tool_names = ", ".join(c.get("name", "?") for c in calls[:4])
+        usage = resp.get("usage", {})
+        paid = usage.get("paid", 0)
+        cached = usage.get("cached_tokens", 0)
+        tok_in = usage.get("prompt_tokens", 0)
+        tok_out = usage.get("completion_tokens", 0)
+        if paid:
+            usage_str = f"paid:{paid}"
+            if cached:
+                usage_str += f" (↑{tok_in} cache:{cached} ↓{tok_out})"
+
+    model = ""
+    temp = ""
+    if req:
+        params = req.get("llm_params", {})
+        model = params.get("model", "")
+        temp = f"t={params.get('temperature', '?')}"
+
+    # Summary line
+    console.print(
+        f"{indent}  [dim]step {step}[/dim]  "
+        f"[cyan]{tool_names or '…'}[/cyan]  "
+        f"[dim]{usage_str}[/dim]  "
+        f"[dim]{model} {temp}[/dim]"
+    )
+
+    # Request messages (compact)
+    if req:
+        msgs = req.get("messages", [])
+        for m in msgs:
+            role = m.get("role", "?")
+            content = m.get("content", "")
+            tcs = m.get("tool_calls", [])
+            role_color = {"system": "yellow", "user": "green", "assistant": "cyan", "tool": "dim"}.get(role, "white")
+
+            if content:
+                preview = content[:120].replace("\n", "↵ ")
+                if len(content) > 120:
+                    preview += "…"
+                console.print(f"{indent}    [{role_color}]{role}[/{role_color}]: [dim]{preview}[/dim]")
+            elif tcs:
+                tc_names = ", ".join(
+                    tc.get("name", "") or tc.get("function", {}).get("name", "?")
+                    for tc in tcs[:3]
+                )
+                console.print(f"{indent}    [{role_color}]{role}[/{role_color}]: [dim]→ {tc_names}[/dim]")
+
+    # Response
+    if resp:
+        for tc in resp.get("tool_calls", []):
+            args = tc.get("arguments", "")
+            if isinstance(args, str) and len(args) > 100:
+                args = args[:100] + "…"
+            console.print(f"{indent}    [cyan]→ {tc.get('name', '?')}[/cyan]([dim]{args}[/dim])")
+        content = resp.get("content", "")
+        if content:
+            console.print(f"{indent}    [dim]{content[:200]}[/dim]")
+
+
+def _print_sgr_log(entry: dict, indent: str):
+    """Print one SGR reflect to console."""
+    conf = entry.get("confidence", "?")
+    step = entry.get("step", "?")
+    learned = entry.get("learned", "")
+    questions = entry.get("questions_remaining", [])
+    resolved = entry.get("resolved_questions", [])
+    conf_color = {"low": "red", "medium": "yellow", "high": "green"}.get(conf, "white")
+
+    console.print(f"{indent}  [bold]reflect[/bold] step {step}  conf=[{conf_color}]{conf}[/{conf_color}]")
+
+    if learned:
+        short = learned[:150].replace("\n", " ")
+        if len(learned) > 150:
+            short += "…"
+        console.print(f"{indent}    [dim]learned: {short}[/dim]")
+
+    for rq in resolved:
+        if not isinstance(rq, dict):
+            continue
+        qid = rq.get("id", rq.get("question", "?"))
+        res = rq.get("resolution", "?")
+        summary = rq.get("summary", "")
+        icon = "✓" if res == "answered" else "✗"
+        color = "green" if res == "answered" else "dim"
+        short_s = (summary[:80] + "…") if len(summary) > 80 else summary
+        console.print(f"{indent}    [{color}]{icon} {qid}[/{color}] [dim]{short_s}[/dim]")
+
+    for q in questions:
+        if isinstance(q, dict):
+            qid = q.get("id", "?")
+            text = q.get("text", "")
+            console.print(f"{indent}    [yellow]● {qid}: {text[:80]}[/yellow]")
+        else:
+            console.print(f"{indent}    [yellow]● {q}[/yellow]")
 
 
 @app.command()
