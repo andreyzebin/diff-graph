@@ -175,19 +175,30 @@ def _render_agent(h: _H, trace: dict, depth: int):
         [c["step"] for c in llm_calls]
     ))
 
+    # Build steps with tool results paired
+    steps_list = []
     for step_num in all_steps:
-        # LLM request/response for this step
         step_calls = [c for c in llm_calls if c["step"] == step_num]
         req = next((c for c in step_calls if c["type"] == "request"), None)
         resp = next((c for c in step_calls if c["type"] == "response"), None)
+        steps_list.append({"step": step_num, "req": req, "resp": resp})
 
-        if req or resp:
-            _render_llm_call(h, step_num, req, resp)
+    # Pair tool results: get NEW tool messages from next step's request
+    prev_tool_count = 0
+    for i, sd in enumerate(steps_list):
+        tool_results = []
+        if i + 1 < len(steps_list) and steps_list[i + 1]["req"]:
+            next_msgs = steps_list[i + 1]["req"].get("messages", [])
+            all_tool_msgs = [m.get("content", "") for m in next_msgs if m.get("role") == "tool"]
+            tool_results = all_tool_msgs[prev_tool_count:]
+            prev_tool_count = len(all_tool_msgs)
 
-        # SGR entry for this step
-        if step_num in sgr_by_step:
-            _render_sgr_entry(h, sgr_by_step[step_num],
-                              list(sgr_by_step.keys()).index(step_num))
+        if sd["req"] or sd["resp"]:
+            _render_llm_call(h, sd["step"], sd["req"], sd["resp"], tool_results)
+
+        if sd["step"] in sgr_by_step:
+            _render_sgr_entry(h, sgr_by_step[sd["step"]],
+                              list(sgr_by_step.keys()).index(sd["step"]))
 
     # Children
     children = trace.get("children", [])
@@ -206,8 +217,11 @@ def _render_agent(h: _H, trace: dict, depth: int):
     h.line('</details>')
 
 
-def _render_llm_call(h: _H, step: int, req: Optional[dict], resp: Optional[dict]):
-    """Render a collapsible LLM request/response pair."""
+def _render_llm_call(h: _H, step: int, req: Optional[dict], resp: Optional[dict],
+                     tool_results: Optional[list[str]] = None):
+    """Render a collapsible LLM call: context + call + result."""
+    tool_results = tool_results or []
+
     # Summary line
     tool_names = ""
     usage_str = ""
@@ -243,17 +257,38 @@ def _render_llm_call(h: _H, step: int, req: Optional[dict], resp: Optional[dict]
         h.line(f'<span class="llm-model">{esc(model)}{esc(temp)}</span>')
     h.line('</summary>')
 
-    # Request details
+    # Call: what the LLM decided (tool calls with args)
+    if resp:
+        h.line(f'<div class="llm-section">')
+        h.line(f'<div class="llm-section-title">Call</div>')
+        for tc in resp.get("tool_calls", []):
+            h.line(f'<div class="resp-tc">{esc(tc["name"])}({esc(tc.get("arguments", "")[:500])})</div>')
+        usage = resp.get("usage", {})
+        if usage:
+            h.line(f'<div class="resp-usage">in:{usage.get("prompt_tokens",0)} out:{usage.get("completion_tokens",0)} cached:{usage.get("cached_tokens",0)} paid:{usage.get("paid",0)}</div>')
+        h.line('</div>')
+
+    # Result: what the tool returned
+    if tool_results:
+        h.line(f'<div class="llm-section">')
+        h.line(f'<div class="llm-section-title">Result</div>')
+        for result in tool_results:
+            truncated = result[:1000]
+            if len(result) > 1000:
+                truncated += "…"
+            h.line(f'<pre class="msg-content">{esc(truncated)}</pre>')
+        h.line('</div>')
+
+    # Context: message history (collapsible, secondary)
     if req:
         msgs = req.get("messages", [])
-        h.line(f'<div class="llm-section">')
-        h.line(f'<div class="llm-section-title">Request ({len(msgs)} messages, {req.get("tools_count", 0)} tools)</div>')
+        h.line(f'<details class="llm-context">')
+        h.line(f'<summary class="llm-section-title">Context ({len(msgs)} messages)</summary>')
         for m in msgs:
             role = m.get("role", "?")
             content = m.get("content", "")
             tcs = m.get("tool_calls", [])
 
-            # Build preview: content for user/system/tool, tool names for assistant
             if content:
                 preview = (content[:80] + "…") if len(content) > 80 else content
                 preview = preview.replace("\n", " ")
@@ -278,21 +313,7 @@ def _render_llm_call(h: _H, step: int, req: Optional[dict], resp: Optional[dict]
                         args = json.dumps(args)
                     h.line(f'<div class="msg-tc">{esc(name)}({esc(str(args)[:300])})</div>')
             h.line('</details>')
-        h.line('</div>')
-
-    # Response details
-    if resp:
-        h.line(f'<div class="llm-section">')
-        h.line(f'<div class="llm-section-title">Response</div>')
-        for tc in resp.get("tool_calls", []):
-            h.line(f'<div class="resp-tc">{esc(tc["name"])}({esc(tc.get("arguments", "")[:300])})</div>')
-        content = resp.get("content", "")
-        if content:
-            h.line(f'<pre class="msg-content">{esc(content)}</pre>')
-        usage = resp.get("usage", {})
-        if usage:
-            h.line(f'<div class="resp-usage">in:{usage.get("prompt_tokens",0)} out:{usage.get("completion_tokens",0)} cached:{usage.get("cached_tokens",0)} paid:{usage.get("paid",0)}</div>')
-        h.line('</div>')
+        h.line('</details>')
 
     h.line('</details>')
 
@@ -428,6 +449,9 @@ summary:hover { background: #161b22; }
 .msg-tc { padding: 2px 12px; font-size: 0.8em; color: #79c0ff; }
 .resp-tc { padding: 2px 0; font-size: 0.85em; color: #79c0ff; }
 .resp-usage { font-size: 0.8em; color: #8b949e; padding: 2px 0; }
+.llm-context { margin: 2px 0; }
+.llm-context > summary { color: #8b949e; font-size: 0.8em; cursor: pointer; padding: 2px 12px; }
+.llm-context > summary:hover { color: #c9d1d9; }
 
 /* SGR entries */
 .sgr-entry { margin: 2px 12px; border-left: 2px solid #30363d; }
