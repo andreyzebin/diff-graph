@@ -673,19 +673,14 @@ function downloadJSON(filename, dataId) {
   const dataEl = document.getElementById(dataId);
   if (!dataEl) return;
   let content = dataEl.textContent;
-  // Try to pretty-print
-  try {
-    content = JSON.stringify(JSON.parse(content), null, 2);
-  } catch(e) {}
-  const blob = new Blob([content], {type: 'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  try { content = JSON.stringify(JSON.parse(content), null, 2); } catch(e) {}
+  navigator.clipboard.writeText(content).then(() => {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = '✓ copied';
+    btn.style.color = '#56d364';
+    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 1500);
+  });
 }
 
 function escHtml(s) {
