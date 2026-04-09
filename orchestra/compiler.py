@@ -341,7 +341,16 @@ def _parse_budget_header(value: str) -> BudgetConfig:
                 val = float(num.group(1))
                 wall_time = val * 60 if part.endswith("m") else val
 
-    return BudgetConfig(max_tokens=tokens, max_steps=steps, max_wall_time=wall_time)
+    return BudgetConfig(
+        max_tokens=tokens,
+        max_steps=steps,
+        max_wall_time=wall_time,
+        pushers=[
+            PusherConfig(at=0.75, type=PusherType.NUDGE,
+                         message="75% budget used. Wrap up current investigation and call done()."),
+            PusherConfig(at=1.0, type=PusherType.FORCE_DONE),
+        ],
+    )
 
 
 def _parse_llm_header(value: str) -> LLMParamsConfig:
