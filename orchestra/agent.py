@@ -358,12 +358,20 @@ class Agent:
                     findings_from_done = self._done_output
                 elif tc.function.name != "reflect":
                     # Emit AGENT_TOOL_RESULT for ALL tools (domain + meta)
-                    result_text = content  # already computed by _handle_tool_call
+                    result_text = content
+                    # Build a short preview of the result
+                    result_preview = result_text[:200].replace("\n", " ").strip()
+                    try:
+                        tc_args = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        tc_args = {}
                     self.event_bus.emit(EventType.AGENT_TOOL_RESULT,
                                        agent_id=self.agent_id, agent_name=self.config.name,
                                        step=step, tool=tc.function.name,
+                                       args=tc_args,
                                        result_len=len(result_text),
-                                       result_count=None)
+                                       result_preview=result_preview,
+                                       result_count=len(result_text) if isinstance(result_text, list) else None)
                     step_record.tool_calls.append({"name": tc.function.name})
 
             if response.usage:

@@ -215,7 +215,9 @@ def _adapt_events(on_event: Callable) -> Callable:
             on_event("orchestrator_result",
                      agent_id=aid, agent_name=aname, step=kw.get("step", 0),
                      tool=kw.get("tool", ""),
+                     args=kw.get("args", {}),
                      result_len=kw.get("result_len", 0),
+                     result_preview=kw.get("result_preview", ""),
                      result_count=kw.get("result_count"))
         elif event_type == "agent_done":
             on_event("orchestrator_agent_done",

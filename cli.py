@@ -652,10 +652,55 @@ def _make_event_handler(model: str, live: Optional[Live]):
         elif event == "orchestrator_result":
             step = kw.get("step", 0)
             tool = kw.get("tool", "")
-            result_count = kw.get("result_count")
-            count_str = f"  ×{result_count}" if result_count is not None else ""
+            args = kw.get("args", {})
+            result_preview = kw.get("result_preview", "")
             tok_str = _fmt_tok_short()
-            _actions.append(f"step {step}  {tool}{count_str}  {tok_str}")
+
+            # Build compact args string
+            if tool == "spawn_agent":
+                agent = args.get("agent", "?")
+                data = args.get("data", {})
+                focus = data.get("focus", args.get("focus", ""))
+                focus_short = (focus[:50] + "…") if len(focus) > 52 else focus
+                arg_str = f"[cyan]{agent}[/cyan]"
+                if focus_short:
+                    arg_str += f" → {focus_short}"
+            elif tool == "spawn_many":
+                agents = args.get("agents", [])
+                names = [a.get("agent", "?") for a in agents[:4]]
+                arg_str = f"[cyan]{', '.join(names)}[/cyan] ×{len(agents)}"
+            elif tool in ("reply_to_comment", "resolve_comment"):
+                cid = args.get("comment_id", "?")
+                text = args.get("text", "")
+                text_short = (text[:40] + "…") if len(text) > 42 else text
+                arg_str = f"#{cid}"
+                if text_short:
+                    arg_str += f" {text_short}"
+            elif tool == "get_diff":
+                path = args.get("path", "")
+                arg_str = path if path else "(full)"
+            else:
+                # Generic: show first 1-2 args compactly
+                parts = []
+                for k, v in list(args.items())[:2]:
+                    vs = str(v)
+                    if len(vs) > 30:
+                        vs = vs[:28] + "…"
+                    parts.append(f"{k}={vs}")
+                arg_str = ", ".join(parts)
+
+            # Build result preview for meta-tools
+            res_str = ""
+            if tool in ("spawn_agent", "spawn_many") and result_preview:
+                # Show first part of output
+                preview = result_preview[:80].replace("{", "").replace("}", "").replace('"', "")
+                res_str = f" [dim]→ {preview}[/dim]"
+
+            action_line = f"step {step}  {tool}"
+            if arg_str:
+                action_line += f"({arg_str})"
+            action_line += f"  {tok_str}{res_str}"
+            _actions.append(action_line)
             _current_stream["text"] = ""
             _update_live()
 
