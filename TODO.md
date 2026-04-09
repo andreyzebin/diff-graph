@@ -254,35 +254,94 @@ Instead of interleaving, show separate live panels for each parallel reviewer (s
 
 ---
 
-## 3. SGR Quality (Model-Dependent)
+## 3. SGR Quality — Question Stability
 
 ### Problem
 
-Deepseek-chat reformulates questions between reflects instead of resolving them: drops 15 old questions, opens 15 new ones that are substantively the same. The SGR accountability rule ("every question must be resolved") is formally satisfied but semantically violated.
+When diff is large (9+ files, 500+ lines), the strategist opens 10-15 questions. At this volume, deepseek-chat reformulates all questions between reflects: drops 15, opens 15 new ones that are substantively the same. SGR accountability rule is formally satisfied but semantically violated ("question laundering").
 
-### 3.1 Question deduplication in SGR tracker
+**Root cause:** LLM can't hold 15 questions stable in working memory across multiple reflects. At 4 questions — no problem. At 15 — massive reformulation. A human reviewer doesn't track 15 questions either — they track 3-5 concerns.
 
-The SGR tracker detects when a "new" question is semantically similar to a dropped one:
+### 3.1 Concerns instead of questions (methodology + prompt)
 
-```python
-# Simple heuristic: if new question shares >60% words with a dropped question,
-# treat it as the same question (don't reset age, don't count as "new")
+**The key insight:** distinguish between **concerns** (high-level themes, stable) and **sub-questions** (specific, fluid, not tracked in SGR).
+
+A concern is: "Security of the promotion endpoint."
+Sub-questions are: "Auth check?", "Input validation?", "CSRF?", "Data exposure?"
+
+The strategist tracks 3-5 concerns in SGR. Each concern maps to one reviewer. The reviewer decides which specific questions to ask during investigation. Concerns are resolved as "confirmed (finding)" or "dismissed (no issue)."
+
+```
+reflect():
+  questions_remaining:   ← these are CONCERNS, max 5
+    - "Security: auth and access control on promotion endpoints"
+    - "Business logic: partitionGroups correctness and edge cases"
+    - "Data model: Promotion entity completeness and validation"
+  resolved_questions:
+    - question: "Security: auth and access control"
+      resolution: "answered"
+      summary: "Missing auth check confirmed — BLOCKER. Data exposure via full entity return — MINOR."
 ```
 
-**Where:** `orchestra/sgr.py`.
-**Effort:** Medium. Fuzzy matching heuristic, word overlap or embedding similarity.
+3-5 concerns are inherently stable — "security" doesn't reformulate into "auth validation" between reflects. And it maps 1:1 to spawning: one concern → one reviewer.
 
-### 3.2 Prompt reinforcement
+**Prompt changes:**
 
-Add to strategist prompt:
+Strategist:
 ```
-IMPORTANT: Do not reformulate questions between reflects. Keep the same 
-question text. If you want to refine a question, resolve the old one 
-as "answered" or "dropped" and explain why. Then open the refined version.
+PHASE 1 — ANALYZE:
+  Identify 3-5 CONCERNS (not detailed questions). A concern is a high-level 
+  theme: "security", "business logic correctness", "data model completeness".
+  Maximum 5 concerns. Each concern becomes a reviewer's focus.
+  Do NOT enumerate specific sub-questions — the reviewer will figure those out.
 ```
+
+Reviewer:
+```
+You receive a high-level concern as your focus. Break it down into specific 
+investigation questions yourself. Track your sub-questions in reflect().
+```
+
+**Where:** `diffgraph/prompts/strategist.prompt`, `diffgraph/prompts/reviewer.prompt`.
+**Effort:** Small. Prompt restructuring only, no framework changes.
+**Impact:** High. Directly eliminates reformulation by reducing tracked items from 15 to 5.
+
+### 3.2 Question cap (prompt, quick win)
+
+Add to strategist prompt: "Maximum 5 open questions at any time. Group related concerns into one."
+
+Can be combined with 3.1 or used standalone as a quick fix.
 
 **Where:** `diffgraph/prompts/strategist.prompt`.
-**Effort:** Small. Prompt change only.
+**Effort:** Tiny. One line in prompt.
+
+### 3.3 Question IDs in SGR schema (framework)
+
+Give each question an ID at opening. Resolve by ID, not by text:
+
+```json
+{
+  "questions_remaining": [
+    {"id": "Q1", "text": "partitionGroups correctness"},
+    {"id": "Q2", "text": "security checks"}
+  ],
+  "resolved_questions": [
+    {"id": "Q1", "resolution": "answered", "summary": "off-by-one confirmed"}
+  ]
+}
+```
+
+SGR tracker matches by ID. Text reformulation doesn't break tracking. Robust against all models.
+
+**Where:** `orchestra/sgr.py` — schema change in `build_reflect_schema()`. Tracking by ID in `record()`.
+**Effort:** Medium. Schema change, backward compat, ID generation.
+
+### 3.4 Fuzzy matching in SGR tracker (framework)
+
+If a "new" question shares >60% words with a recently dropped question, treat as same (preserve age, don't count as "new"). Technical safety net.
+
+**Where:** `orchestra/sgr.py`.
+**Effort:** Medium. Word overlap heuristic.
 
 ---
 
@@ -355,9 +414,11 @@ Show a visual budget bar in the live frame title:
 | 1.4 | budget_status tool | High | Small | Do second |
 | 1.3 | Pre-spawn validation | High | Medium | Do second |
 | 1.2 | Smart pushers | Medium | Medium | Do second |
+| 3.1 | Concerns instead of questions (methodology) | **High** | Small | **Do first** |
+| 3.2 | Question cap (max 5) | High | Tiny | **Do first** |
 | 2.1 | Agent prefix in parallel | Medium | Medium | Do third |
-| 3.2 | SGR prompt reinforcement | Medium | Small | Do third |
 | 1.6 | Historical cost tracking (complexity tiers + percentiles) | Medium | Medium | Do third |
-| 3.1 | Question dedup in SGR | Low | Medium | Later |
+| 3.3 | Question IDs in SGR schema | Medium | Medium | Later |
+| 3.4 | Fuzzy matching in SGR | Low | Medium | Later |
 | 2.2 | Separate parallel panels | Low | Large | Later |
 | 5.2 | Progress bar | Low | Small | Later |
