@@ -547,28 +547,26 @@ def _make_event_handler(model: str, live: Optional[Live]):
 
     # ── Event handler ─────────────────────────────────────────────────────
 
+    def _print_and_reset(agent_id: str) -> None:
+        """Print final summary for current agent and reset state."""
+        if not _sgr["conf_history"] and not _actions:
+            return  # nothing to print
+        if live:
+            live.update("")
+        if _sgr["conf_history"] or _actions:
+            (live.console if live else console).print(_render_final_summary())
+        # Reset state
+        _sgr["questions"].clear()
+        _sgr["step_opened"].clear()
+        _sgr["conf_history"].clear()
+        _sgr["resolved_set"].clear()
+        _sgr["resolutions"].clear()
+        _actions.clear()
+        _current_stream["text"] = ""
+        _budget.update(step=0, tok_in=0, tok_out=0, tok_cached=0)
+
     def _switch_agent(agent_id: str, agent_name: str) -> None:
-        """Switch live frame to a new agent. Log previous agent's final SGR if any."""
-        prev = _active["agent_id"]
-        if prev and prev != agent_id:
-            # Clear live panel before printing to log (prevents duplication)
-            if live:
-                live.update("")
-
-            # Print final SGR summary for previous agent
-            if _sgr["conf_history"]:
-                (live.console if live else console).print(_render_final_summary())
-
-            # Reset state for new agent
-            _sgr["questions"].clear()
-            _sgr["step_opened"].clear()
-            _sgr["conf_history"].clear()
-            _sgr["resolved_set"].clear()
-            _sgr["resolutions"].clear()
-            _actions.clear()
-            _current_stream["text"] = ""
-            _budget.update(step=0, tok_in=0, tok_out=0, tok_cached=0)
-
+        """Switch live frame to a new agent. Does NOT print final summary."""
         _active["agent_id"] = agent_id
         _active["agent_name"] = agent_name
 
@@ -607,7 +605,8 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _update_live()
 
         elif event == "orchestrator_agent_done":
-            pass  # parent will resume, auto-switch handles it
+            # Print final summary for the finishing agent
+            _print_and_reset(kw.get("agent_id", ""))
 
         elif event == "orchestrator_plan_done":
             plan = kw.get("plan", {})
@@ -701,13 +700,8 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _update_live()
 
         elif event == "orchestrator_done":
-            # Clear live frame
             if live:
                 live.update("")
-            # Print final SGR summary to log (permanent)
-            if _sgr["conf_history"]:
-                (live.console if live else console).print(_render_final_summary())
-            # Done message
             _log(
                 f"[bold green]done[/bold green]      "
                 f"[dim]{kw.get('findings', 0)} finding(s)  "
@@ -716,14 +710,14 @@ def _make_event_handler(model: str, live: Optional[Live]):
             )
 
         elif event == "orchestrator_forced_done":
-            if live:
-                live.update("")
-            if _sgr["conf_history"]:
-                (live.console if live else console).print(_render_final_summary())
+            tok_str = _fmt_tok_short()
             _log(
                 f"[yellow]forced[/yellow]    {kw.get('reason', 'limit')}  "
-                f"[dim cyan]{_fmt_tok_short()}[/dim cyan]"
+                f"[dim cyan]{tok_str}[/dim cyan]"
             )
+            # Print final summary (if not already printed by agent_done)
+            if _sgr["conf_history"] or _actions:
+                _print_and_reset(kw.get("agent_id", ""))
 
     return on_event
 
