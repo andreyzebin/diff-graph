@@ -35,14 +35,21 @@ class BudgetState:
     original_tokens: int = 40_000
     original_steps: int = 40
     original_wall_time: Optional[float] = None
-    cache_discount: float = 0.1  # copied from BudgetConfig at start
+    cache_discount: float = 0.1
+
+    # Cumulative paid = sum of per-step deltas
+    cumulative_paid: int = 0
+    _prev_step_paid: int = 0  # last step's paid for delta computation
 
     fired_pushers: set[int] = field(default_factory=set)
 
     @property
     def tokens_paid(self) -> int:
-        """Effective tokens accounting for cache discount.
-        paid = uncached_input + cached_input * discount + output"""
+        """Cumulative effective tokens paid (sum of per-step deltas)."""
+        return self.cumulative_paid
+
+    def _compute_step_paid(self) -> int:
+        """Per-call paid cost for the current step."""
         uncached_in = max(0, self.tokens_in - self.tokens_cached)
         cached_cost = int(self.tokens_cached * self.cache_discount)
         return uncached_in + cached_cost + self.tokens_out
@@ -51,7 +58,7 @@ class BudgetState:
     def token_ratio(self) -> float:
         if self.original_tokens <= 0:
             return 0.0
-        return min(self.tokens_paid / self.original_tokens, 1.0)
+        return min(self.cumulative_paid / self.original_tokens, 1.0)
 
     @property
     def step_ratio(self) -> float:
@@ -117,11 +124,19 @@ class BudgetTracker:
     def update_tokens(self, state: BudgetState, total_tokens: int,
                       tokens_in: int = 0, tokens_out: int = 0,
                       tokens_cached: int = 0) -> None:
-        """Update cumulative token usage from LLM response."""
+        """Update token usage. Computes per-step delta and accumulates."""
         state.tokens_used = total_tokens
         state.tokens_in = tokens_in
         state.tokens_out = tokens_out
         state.tokens_cached = tokens_cached
+
+        # Compute this step's paid cost and accumulate delta
+        current_step_paid = state._compute_step_paid()
+        delta = current_step_paid - state._prev_step_paid
+        if delta < 0:
+            delta = current_step_paid  # first step or reset
+        state.cumulative_paid += delta
+        state._prev_step_paid = current_step_paid
 
     def check_pushers(self, state: BudgetState) -> list[PusherAction]:
         """Evaluate pushers and return newly-triggered actions."""
