@@ -412,66 +412,40 @@ def _make_event_handler(model: str, live: Optional[Live]):
                 body.append(display_q, style="")
                 body.append(f"  step {step_opened}{tag}\n", style="dim")
 
-    def _render_live_frame() -> Panel:
-        body = Text()
-
-        # Actions only (SGR shown in final summary when agent finishes)
-        visible = _actions[-15:]
-        for line in visible:
-            try:
-                rendered = Text.from_markup(f"  {line}")
-            except Exception:
-                rendered = Text(f"  {line}")
-            body.append_text(rendered)
-            body.append("\n")
-
-        # Current streaming step
-        if _current_stream["text"]:
-            body.append(f"  ↳ {_current_stream['text']}\n", style="dim")
-
-        # Title
-        step = _budget["step"]
-        max_steps = _budget["max_steps"]
-        tok_in = _budget["tok_in"]
-        pct = int(100 * step / max_steps) if max_steps else 0
-        last_conf = _sgr["conf_history"][-1][1] if _sgr["conf_history"] else ""
-        conf_str = f" · conf={last_conf}" if last_conf else ""
+    def _render_live_stream() -> Text:
+        """Minimal live indicator: just the current stream line."""
         agent_name = _active["agent_name"]
-        title = f"{agent_name} · step {step}/{max_steps} · {pct}% · ↑{tok_in}{conf_str}"
-
-        return Panel(
-            body,
-            title=f"[dim]{title}[/dim]",
-            border_style="dim blue",
-            box=rich_box.ROUNDED,
-            padding=(0, 1),
-        )
+        step = _budget["step"]
+        stream = _current_stream["text"]
+        if stream:
+            return Text.assemble(
+                (f"  {agent_name} ", "dim cyan"),
+                (stream, "dim"),
+            )
+        elif _actions:
+            # Show last action if no active stream
+            last = _actions[-1]
+            try:
+                return Text.from_markup(f"  [dim cyan]{agent_name}[/dim cyan] [dim]{last}[/dim]")
+            except Exception:
+                return Text(f"  {agent_name} {last}", style="dim")
+        return Text(f"  {agent_name} · step {step}…", style="dim")
 
     def _update_live() -> None:
-        """Full panel re-render. Only call on meaningful state changes."""
+        """Update live indicator with minimal text."""
         if not live:
             return
-        live.update(_render_live_frame())
+        live.update(_render_live_stream())
 
     def _update_stream_only() -> None:
-        """Lightweight stream update — just the streaming line, no full re-render."""
+        """Throttled stream update."""
         if not live:
             return
-        # Build a minimal text showing just the stream status
-        agent_name = _active["agent_name"]
-        step = _budget["step"]
-        max_steps = _budget["max_steps"]
-        stream = _current_stream["text"]
-        tok_in = _budget["tok_in"]
-        last_conf = _sgr["conf_history"][-1][1] if _sgr["conf_history"] else ""
-        conf_str = f" · conf={last_conf}" if last_conf else ""
-        title = f"{agent_name} · step {step}/{max_steps} · ↑{tok_in}{conf_str}"
-        live.update(Text.assemble(
-            (f"╭─ {title} ", "dim blue"),
-            ("─" * 40, "dim blue"),
-            "\n",
-            (f"  ↳ {stream}", "dim"),
-        ))
+        now = _time.monotonic()
+        if now - _last_stream_update["t"] < 0.2:
+            return
+        _last_stream_update["t"] = now
+        live.update(_render_live_stream())
 
     # ── Render final summary (SGR + compact actions, logged permanently) ────
 
