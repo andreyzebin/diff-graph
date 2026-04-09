@@ -550,8 +550,11 @@ def _make_event_handler(model: str, live: Optional[Live]):
         tok_cached = _budget["tok_cached"]
         if not (tok_in or tok_out):
             return ""
-        in_str = f"↑{tok_in}[{tok_cached}]" if tok_cached else f"↑{tok_in}"
-        return f"{in_str} ↓{tok_out}"
+        if tok_cached:
+            # Show paid tokens: uncached_in + cached*0.1 + out
+            paid_in = (tok_in - tok_cached) + int(tok_cached * 0.1)
+            return f"↑{tok_in}[cache:{tok_cached}] ↓{tok_out} paid:{paid_in + tok_out}"
+        return f"↑{tok_in} ↓{tok_out}"
 
     # ── Event handler ─────────────────────────────────────────────────────
 

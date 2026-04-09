@@ -49,6 +49,7 @@ class BudgetConfig:
     max_wall_time: Optional[float] = None  # seconds
     max_children_budget: float = 0.3
     max_feedback_budget_delta: int = 10  # max steps a supervisor can extend
+    cache_discount: float = 0.1  # cached tokens cost this fraction (0.1 = 90% cheaper)
     pushers: list[PusherConfig] = field(default_factory=list)
 
 

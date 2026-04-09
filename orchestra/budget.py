@@ -35,14 +35,23 @@ class BudgetState:
     original_tokens: int = 40_000
     original_steps: int = 40
     original_wall_time: Optional[float] = None
+    cache_discount: float = 0.1  # copied from BudgetConfig at start
 
-    fired_pushers: set[int] = field(default_factory=set)  # indices already fired
+    fired_pushers: set[int] = field(default_factory=set)
+
+    @property
+    def tokens_paid(self) -> int:
+        """Effective tokens accounting for cache discount.
+        paid = uncached_input + cached_input * discount + output"""
+        uncached_in = max(0, self.tokens_in - self.tokens_cached)
+        cached_cost = int(self.tokens_cached * self.cache_discount)
+        return uncached_in + cached_cost + self.tokens_out
 
     @property
     def token_ratio(self) -> float:
         if self.original_tokens <= 0:
             return 0.0
-        return min(self.tokens_used / self.original_tokens, 1.0)
+        return min(self.tokens_paid / self.original_tokens, 1.0)
 
     @property
     def step_ratio(self) -> float:
@@ -72,7 +81,7 @@ class BudgetState:
 
     @property
     def tokens_remaining(self) -> int:
-        return max(0, self.original_tokens - self.tokens_used)
+        return max(0, self.original_tokens - self.tokens_paid)
 
     @property
     def steps_remaining(self) -> int:
@@ -93,6 +102,7 @@ class BudgetTracker:
             original_tokens=self.config.max_tokens,
             original_steps=self.config.max_steps,
             original_wall_time=self.config.max_wall_time,
+            cache_discount=self.config.cache_discount,
         )
 
     def record_step(self, state: BudgetState, tokens_in: int = 0,
