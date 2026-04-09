@@ -406,6 +406,16 @@ def _print_trace_log(trace: dict, depth: int = 0):
         resp = next((c for c in step_calls if c["type"] == "response"), None)
         steps_data.append({"step": step_num, "req": req, "resp": resp})
 
+    # Compute per-step delta paid
+    prev_paid = 0
+    for sd in steps_data:
+        resp = sd.get("resp")
+        if resp:
+            usage = resp.get("usage", {})
+            current_paid = usage.get("paid", 0)
+            usage["step_paid"] = current_paid - prev_paid if current_paid > prev_paid else current_paid
+            prev_paid = current_paid
+
     # Track how many tool messages we've seen so far
     prev_tool_count = 0
     for i, sd in enumerate(steps_data):
@@ -464,12 +474,12 @@ def _print_llm_call_log(req: dict | None, resp: dict | None, step: int, indent: 
         if calls:
             tool_names = ", ".join(c.get("name", "?") for c in calls[:4])
         usage = resp.get("usage", {})
-        paid = usage.get("paid", 0)
+        step_paid = usage.get("step_paid", usage.get("paid", 0))
         cached = usage.get("cached_tokens", 0)
         tok_in = usage.get("prompt_tokens", 0)
         tok_out = usage.get("completion_tokens", 0)
-        if paid:
-            usage_str = f"paid:{paid}"
+        if step_paid:
+            usage_str = f"paid:{step_paid}"
             if cached:
                 usage_str += f" (↑{tok_in} cache:{cached} ↓{tok_out})"
 

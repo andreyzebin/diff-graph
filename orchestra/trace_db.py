@@ -220,10 +220,13 @@ class TraceDBReader:
                     "usage": data.get("usage", {}),
                 })
                 usage = data.get("usage", {})
-                agent["tokens_in"] += usage.get("prompt_tokens", 0)
+                current_paid = usage.get("paid", 0)
+                # Track last values to compute deltas
+                prev_paid = agent.get("_last_paid", 0)
+                delta = current_paid - prev_paid if current_paid > prev_paid else current_paid
+                agent["_last_paid"] = current_paid
+                agent["tokens_paid"] += delta
                 agent["tokens_out"] += usage.get("completion_tokens", 0)
-                agent["tokens_cached"] += usage.get("cached_tokens", 0)
-                agent["tokens_paid"] += usage.get("paid", 0)
             elif etype == "agent_reflect":
                 agent["sgr"].append({
                     "step": step,
