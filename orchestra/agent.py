@@ -270,6 +270,14 @@ class Agent:
                                    agent_id=self.agent_id, agent_name=_agent_name,
                                    step=step, tool_name=tn, args_preview=args[:80], tok=tok)
 
+            # Emit LLM request for tracing
+            self.event_bus.emit(EventType.AGENT_LLM_REQUEST,
+                               agent_id=self.agent_id, agent_name=self.config.name,
+                               step=step,
+                               messages=messages,
+                               tools=current_tools_schema,
+                               llm_params={"model": step_model, **step_params})
+
             try:
                 response = stream_llm(
                     self.llm, step_model, messages, current_tools_schema,
@@ -281,17 +289,40 @@ class Agent:
                 break
 
             # Update budget
+            tok_in = tok_out = tok_cached = 0
             if response.usage:
+                tok_in = response.usage.prompt_tokens
+                tok_out = response.usage.completion_tokens
+                tok_cached = _extract_cached(response.usage)
                 self.budget_tracker.update_tokens(
                     self.budget_state,
                     total_tokens=response.usage.total_tokens,
-                    tokens_in=response.usage.prompt_tokens,
-                    tokens_out=response.usage.completion_tokens,
-                    tokens_cached=_extract_cached(response.usage),
+                    tokens_in=tok_in, tokens_out=tok_out, tokens_cached=tok_cached,
                 )
             self.budget_state.steps_used = step + 1
 
             msg = response.choices[0].message
+
+            # Emit LLM response for tracing
+            resp_tool_calls = []
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    resp_tool_calls.append({
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments[:500],
+                    })
+            uncached = max(0, tok_in - tok_cached)
+            paid = uncached + int(tok_cached * self.budget_state.cache_discount) + tok_out
+            self.event_bus.emit(EventType.AGENT_LLM_RESPONSE,
+                               agent_id=self.agent_id, agent_name=self.config.name,
+                               step=step,
+                               tool_calls=resp_tool_calls,
+                               content=msg.content[:500] if msg.content else "",
+                               usage={"prompt_tokens": tok_in,
+                                      "completion_tokens": tok_out,
+                                      "cached_tokens": tok_cached,
+                                      "paid": paid})
+
             if not msg.tool_calls:
                 break
 

@@ -184,10 +184,14 @@ def run(
     )
 
     _root_agent_ref: dict = {"agent": None}
+    from orchestra.trace import TraceCollector
+    _trace_collector = TraceCollector()
 
     def _capture_event(event: str, **kw):
         if event == "orchestrator_root_agent":
             _root_agent_ref["agent"] = kw.get("agent")
+        # Always collect LLM request/response events for tracing
+        _trace_collector.on_event(event, **kw)
 
     with Live("", console=console, refresh_per_second=8, vertical_overflow="visible") as live:
         event_handler = _make_event_handler(effective_model, live)
@@ -209,7 +213,7 @@ def run(
     if trace_file and _root_agent_ref["agent"]:
         from orchestra.trace import collect_trace, render_html
         agent = _root_agent_ref["agent"]
-        trace_data = collect_trace(agent)
+        trace_data = collect_trace(agent, collector=_trace_collector)
         trace_html = render_html(trace_data, title=f"Review Trace · {effective_model}")
         from pathlib import Path
         Path(trace_file).write_text(trace_html, encoding="utf-8")

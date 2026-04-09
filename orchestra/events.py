@@ -24,6 +24,9 @@ class EventType(Enum):
     # Streaming
     AGENT_STREAM = "agent_stream"
     AGENT_TOOL_RESULT = "agent_tool_result"
+    # LLM calls (full prompts and responses for tracing)
+    AGENT_LLM_REQUEST = "agent_llm_request"
+    AGENT_LLM_RESPONSE = "agent_llm_response"
     # Params
     PARAM_ADJUSTED = "param_adjusted"
     # Budget
