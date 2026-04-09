@@ -1,379 +1,186 @@
 # Orchestra — Planned Improvements
 
+## Done (implemented)
+
+- ~~3.1 Concerns instead of questions~~ — strategist uses 3-5 concerns, reviewer breaks into sub-questions
+- ~~3.2 Question cap (max 5)~~ — in strategist prompt
+- ~~3.3 Question IDs in SGR schema~~ — IDs with PUT semantics, fuzzy matching fallback
+- ~~3.4 Fuzzy matching in SGR~~ — >50% word overlap matches existing question
+- ~~1.5 Child cost in spawn results~~ — spawn returns steps, tokens, sgr_summary
+- ~~Budget cache discount~~ — cumulative_paid = sum of per-step deltas, cache_discount=0.1
+- ~~Child agents use own .prompt budget~~ — not parent-allocated
+- ~~Default pushers from compiler~~ — 75% nudge + 100% force_done for all agents
+- ~~SQLite trace DB~~ — events persisted per-step, crash-safe
+- ~~HTML trace~~ — split-pane, [⧉] detail tabs, [📋 JSON] copy, Call→Result→Context
+- ~~CLI trace command~~ — --log, --list, --run, browser auto-open
+- ~~Data inheritance~~ — parent data_scope auto-injected into child {placeholders}
+- ~~No handoff context by default~~ — child gets everything via system prompt
+
+---
+
 ## 1. Budget Awareness & Cost Control
-
-### Problem
-
-The strategist spawns N reviewers without knowing if the budget can sustain them. On large diffs, 3 of 4 reviewers hit token limit at 0 useful steps — wasting budget on system prompts and get_diff calls that produce no findings.
 
 ### 1.1 Budget context injection at start
 
-Inject a user message before the strategist's first LLM call with computed budget context:
+Inject budget context before strategist's first LLM call:
 
 ```
 BUDGET CONTEXT:
   Total: 50,000 tokens / 50 steps
   Diff size: 26,000 chars / 9 files
-  Estimated reviewer cost: ~8,000-12,000 tokens each
-  Max affordable reviewers: ~3 (with 5,000 reserved for consolidation)
+  Reviewer budget: 15,000 tokens / 20 steps (from reviewer.prompt)
+  Max affordable reviewers: ~3 (with reserve for consolidation)
 ```
 
-Estimation heuristic:
-```python
-diff_tokens = min(len(diff_text) / 4, 2000)  # get_diff truncated at 8k
-base_cost = 1000 + diff_tokens                 # system prompt + first get_diff
-per_step = 400                                  # avg tool call + result
-typical_steps = 8
-estimated_child_cost = base_cost + per_step * typical_steps
-
-consolidation_reserve = 5000
-available = total_budget - consolidation_reserve
-max_children = available // estimated_child_cost
-```
-
-**Where:** `diffgraph/orchestrator.py` — inject as user message after system prompt.
-**Effort:** Small. Pure prompt injection, no framework changes.
+**Where:** `diffgraph/orchestrator.py` — inject as user message.
+**Effort:** Small.
 
 ### 1.2 Smart pushers (runtime-computed messages)
 
-Replace static pusher messages with callbacks that compute context-aware nudges:
+Replace static pusher messages with callbacks that include current budget state:
 
 ```
-at 30%: "Budget 30% used (35,000 remaining). ~3 reviewers affordable. Spawn now if in Phase 2."
-at 50%: "Budget 50% used (25,000 remaining). Max ~2 more reviewers. Prepare for Phase 3."
-at 75%: "Budget 75% used (12,500 remaining). No more spawning. Consolidate and done()."
-at 90%: "Budget 90%. Call done() NOW."
+"75% budget used (11,250 of 15,000 paid). Wrap up current investigation."
 ```
 
-The callback has access to `budget_state`, `diff_size`, `children_spawned`, `estimated_child_cost`.
-
-**Where:** `orchestra/budget.py` — pusher callback receives BudgetState. `diffgraph/orchestrator.py` — define callback.
-**Effort:** Medium. Needs callback support in pushers (currently message is a static string).
+**Where:** `orchestra/budget.py` — pusher callback receives BudgetState.
+**Effort:** Medium.
 
 ### 1.3 Pre-spawn budget validation
 
-When `spawn_agent` or `spawn_many` is called, the framework:
-
-1. Estimates child cost based on diff size + agent config
-2. Validates affordability against remaining budget minus consolidation reserve
-3. Adjusts if needed:
+When `spawn_many` is called, estimate total child cost. If too expensive, reduce N:
 
 ```
-spawn_many(4 reviewers):
-  estimated: 4 × 10,000 = 40,000
-  available: 25,000
-  → spawns 2 instead of 4
-  → result: "Spawned 2/4 reviewers (budget constraint). Remaining tasks merged into reviewer #2's focus."
-
-spawn_agent(reviewer):
-  estimated: 10,000
-  available: 3,000
-  → error: "Insufficient budget for reviewer (need ~10k, have 3k). Consolidate with existing findings."
+spawn_many(4 reviewers): need ~60k, have 40k → spawn 2, merge tasks
 ```
 
-**Where:** `orchestra/agent.py` `_meta_spawn_agent` / `_meta_spawn_many`.
-**Effort:** Medium. Estimation logic + spawn reduction + informative error messages.
+**Where:** `orchestra/agent.py` `_meta_spawn_many`.
+**Effort:** Medium.
 
 ### 1.4 `budget_status` meta-tool
 
-A tool the strategist can call at any time to see current budget state:
+Tool the strategist can call to see remaining budget, children cost, affordable count.
 
-```json
-{
-  "name": "budget_status",
-  "arguments": {}
-}
+**Where:** `orchestra/tools/builtin.py` + `orchestra/agent.py`.
+**Effort:** Small.
+
+### 1.5 Historical cost tracking with complexity tiers
+
+Track cost across runs indexed by complexity (tiny/small/medium/large). Percentile distributions per model. Feeds into budget context injection.
+
+Already have SQLite trace DB — can compute from events table:
+```sql
+SELECT percentile(paid, 0.75) FROM events
+WHERE event_type='agent_llm_response' AND run_id IN (
+  SELECT id FROM runs WHERE model='deepseek-chat'
+)
 ```
 
-Returns:
-```json
-{
-  "total_tokens": 50000,
-  "used_tokens": 22000,
-  "remaining_tokens": 28000,
-  "steps_used": 7,
-  "steps_remaining": 43,
-  "wall_time_elapsed": "45s",
-  "children_spawned": 1,
-  "children_total_cost": 8500,
-  "estimated_child_cost": 10000,
-  "max_affordable_children": 2,
-  "consolidation_reserve": 5000,
-  "recommendation": "Can afford 2 more reviewers. Reserve 5k for consolidation."
-}
-```
-
-**Where:** New meta-tool in `orchestra/tools/builtin.py` + handler in `orchestra/agent.py`.
-**Effort:** Small. Reads existing BudgetState, adds estimation.
-
-### 1.5 Child cost reporting in spawn results
-
-When a child agent completes, include its actual token consumption in the result:
-
-```json
-{
-  "status": "completed",
-  "agent_id": "abc123",
-  "agent_name": "reviewer",
-  "output": [...findings...],
-  "cost": {
-    "tokens_used": 8500,
-    "steps_used": 9,
-    "wall_time": "12s"
-  },
-  "sgr_summary": "confidence=high, learned: ..."
-}
-```
-
-This is already partially implemented (`steps` and `tokens` are returned). Needs formatting into a clear `cost` section.
-
-**Where:** `orchestra/agent.py` `_meta_spawn_agent` return value.
-**Effort:** Small. Already have the data, just format it.
-
-### 1.6 Historical cost tracking with complexity tiers
-
-Track cost data across runs, indexed by diff complexity tier. Provides percentile-based estimates instead of flat averages.
-
-**Complexity tiers (map key):**
-
-| Tier | Criteria | Typical scenario |
-|---|---|---|
-| `tiny` | 1 file, <50 lines | NPE fix, typo, config change |
-| `small` | 1-3 files, 50-200 lines | Bug fix, small feature, refactor |
-| `medium` | 3-10 files, 200-500 lines | New feature, API change, migration |
-| `large` | 10+ files or 500+ lines | Major feature, architectural change |
-
-**Each tier stores percentile distributions:**
-
-```json
-{
-  "medium": {
-    "criteria": "3-10 files, 200-500 lines",
-    "samples": 28,
-    "cost": {
-      "tokens": {"p25": 8000, "p50": 12000, "p75": 18000, "p90": 25000},
-      "steps":  {"p25": 12,   "p50": 18,    "p75": 25,    "p90": 35}
-    },
-    "strategy": {
-      "avg_reviewers": 2.3,
-      "avg_findings": 4.1,
-      "avg_questions_opened": 8.5,
-      "avg_questions_resolved": 7.2
-    },
-    "by_model": {
-      "deepseek-chat": {"p50_tokens": 14000, "p75_tokens": 20000, "samples": 20},
-      "gpt-4o":        {"p50_tokens": 9000,  "p75_tokens": 13000, "samples": 8}
-    },
-    "typical": "Java/Spring, 5 files avg, mix new + modified. 2 reviewers: logic + security."
-  }
-}
-```
-
-**Why percentiles not averages:**
-- Averages hide bimodality (some reviews finish fast, some hit limits)
-- Strategist thinks in risk terms: "at p75 = 18k, I can afford 2 reviewers from 50k with consolidation reserve"
-- p90 = worst case for budget validation
-
-**Feeds into budget context injection (1.1):**
-
-```
-BUDGET CONTEXT (based on 28 similar medium-complexity reviews):
-  Diff: 9 files, ~640 lines → complexity: medium
-  Reviewer cost (deepseek-chat): ~14,000 tokens (p50), ~20,000 (p75)
-  Recommended: 2 reviewers (at p75, leaves 10k for consolidation)
-  Historical: similar reviews found avg 4.1 findings with 2.3 reviewers
-```
-
-**Feedback loop — after each run, append data point:**
-
-```json
-{
-  "timestamp": "2026-04-09T10:22:29",
-  "tier": "medium",
-  "model": "deepseek-chat",
-  "files": 9, "lines": 643,
-  "total_tokens": 32500,
-  "strategist_tokens": 12000,
-  "reviewers": [{"tokens": 8500, "steps": 9}, {"tokens": 6000, "steps": 5}],
-  "findings": 6,
-  "questions_opened": 15, "questions_resolved": 11
-}
-```
-
-Percentiles recomputed on append. Different models tracked separately — switching from deepseek-chat to gpt-4o adapts estimates from scratch.
-
-**Tier `typical` summary** generated by LLM from last N data points: "what does a typical medium review look like". The strategist sees: "similar reviews usually need 2 reviewers: one for business logic, one for security."
-
-**Where:** New `orchestra/cost_tracker.py`. Storage: `~/.diffgraph/cost_history.json` or project-local.
-**Effort:** Medium. Tier classification, percentile computation, file I/O, integration with estimation.
+**Where:** `orchestra/trace_db.py` — add query methods. Or new `orchestra/cost_tracker.py`.
+**Effort:** Medium.
 
 ---
 
 ## 2. Parallel Agent Observability
 
-### Problem
+### 2.1 Agent prefix in trace --log
 
-When `spawn_many` launches N reviewers in parallel, their events interleave in the actions list:
-```
-step 0  get_diff        ← reviewer 1
-step 0  get_diff        ← reviewer 2  
-step 0  get_diff        ← reviewer 3
-step 1  read_outline    ← reviewer 1
-step 1  find_files      ← reviewer 2
-```
-
-No way to tell which reviewer did what.
-
-### 2.1 Agent prefix in parallel actions
-
-When multiple children run concurrently, prefix each action with a short agent identifier:
+When showing parallel children in `trace --log`, prefix with agent short id:
 
 ```
-[R1] step 0  get_diff((full))
-[R2] step 0  get_diff((full))
-[R3] step 0  get_diff((full))
+[R1] step 0  get_diff
+[R2] step 0  get_diff
 [R1] step 1  read_outline(PricingService.java)
-[R2] step 1  find_files(**/*Test*.java)
 ```
 
-**Where:** `cli.py` — track active children count. If > 1, prefix with agent short id.
-**Effort:** Medium. Need to track concurrent children in CLI state.
+Currently child events are suppressed in live CLI (only root shown). But `trace --log` shows all agents — needs prefix.
 
-### 2.2 Separate panels per parallel agent
+**Where:** `cli.py` `_print_trace_log`.
+**Effort:** Small.
 
-Instead of interleaving, show separate live panels for each parallel reviewer (stacked):
+### 2.2 Live progress for parallel children
+
+Show brief status while spawn_many is running:
 
 ```
-╭── reviewer R1 · step 3/30 ──╮  ╭── reviewer R2 · step 2/30 ──╮
-│ search(getItems)             │  │ find_files(**/*Test*)         │
-╰──────────────────────────────╯  ╰──────────────────────────────╯
+  strategist  spawning 4 reviewers…  [R1: step 3] [R2: step 5] [R3: step 2] [R4: done]
 ```
 
-**Where:** `cli.py` — Rich Layout with multiple panels.
-**Effort:** Large. Requires Rich Layout, tracking N live panels, merging when done.
+**Where:** `cli.py` — subscribe to child events during spawn_many.
+**Effort:** Medium.
 
 ---
 
-## 3. SGR Quality — Question Stability
+## 3. Prompt Quality
 
-### Problem
+### 3.1 Budget balance instruction in strategist prompt
 
-When diff is large (9+ files, 500+ lines), the strategist opens 10-15 questions. At this volume, deepseek-chat reformulates all questions between reflects: drops 15, opens 15 new ones that are substantively the same. SGR accountability rule is formally satisfied but semantically violated ("question laundering").
-
-**Root cause:** LLM can't hold 15 questions stable in working memory across multiple reflects. At 4 questions — no problem. At 15 — massive reformulation. A human reviewer doesn't track 15 questions either — they track 3-5 concerns.
-
-### 3.1 Concerns instead of questions (methodology + prompt)
-
-**The key insight:** distinguish between **concerns** (high-level themes, stable) and **sub-questions** (specific, fluid, not tracked in SGR).
-
-A concern is: "Security of the promotion endpoint."
-Sub-questions are: "Auth check?", "Input validation?", "CSRF?", "Data exposure?"
-
-The strategist tracks 3-5 concerns in SGR. Each concern maps to one reviewer. The reviewer decides which specific questions to ask during investigation. Concerns are resolved as "confirmed (finding)" or "dismissed (no issue)."
-
-```
-reflect():
-  questions_remaining:   ← these are CONCERNS, max 5
-    - "Security: auth and access control on promotion endpoints"
-    - "Business logic: partitionGroups correctness and edge cases"
-    - "Data model: Promotion entity completeness and validation"
-  resolved_questions:
-    - question: "Security: auth and access control"
-      resolution: "answered"
-      summary: "Missing auth check confirmed — BLOCKER. Data exposure via full entity return — MINOR."
-```
-
-3-5 concerns are inherently stable — "security" doesn't reformulate into "auth validation" between reflects. And it maps 1:1 to spawning: one concern → one reviewer.
-
-**Prompt changes:**
-
-Strategist:
-```
-PHASE 1 — ANALYZE:
-  Identify 3-5 CONCERNS (not detailed questions). A concern is a high-level 
-  theme: "security", "business logic correctness", "data model completeness".
-  Maximum 5 concerns. Each concern becomes a reviewer's focus.
-  Do NOT enumerate specific sub-questions — the reviewer will figure those out.
-```
-
-Reviewer:
-```
-You receive a high-level concern as your focus. Break it down into specific 
-investigation questions yourself. Track your sub-questions in reflect().
-```
-
-**Where:** `diffgraph/prompts/strategist.prompt`, `diffgraph/prompts/reviewer.prompt`.
-**Effort:** Small. Prompt restructuring only, no framework changes.
-**Impact:** High. Directly eliminates reformulation by reducing tracked items from 15 to 5.
-
-### 3.2 Question cap (prompt, quick win)
-
-Add to strategist prompt: "Maximum 5 open questions at any time. Group related concerns into one."
-
-Can be combined with 3.1 or used standalone as a quick fix.
-
-**Where:** `diffgraph/prompts/strategist.prompt`.
-**Effort:** Tiny. One line in prompt.
-
-### 3.3 Question IDs in SGR schema (framework)
-
-Give each question an ID at opening. Resolve by ID, not by text:
-
-```json
-{
-  "questions_remaining": [
-    {"id": "Q1", "text": "partitionGroups correctness"},
-    {"id": "Q2", "text": "security checks"}
-  ],
-  "resolved_questions": [
-    {"id": "Q1", "resolution": "answered", "summary": "off-by-one confirmed"}
-  ]
-}
-```
-
-SGR tracker matches by ID. Text reformulation doesn't break tracking. Robust against all models.
-
-**Where:** `orchestra/sgr.py` — schema change in `build_reflect_schema()`. Tracking by ID in `record()`.
-**Effort:** Medium. Schema change, backward compat, ID generation.
-
-### 3.4 Fuzzy matching in SGR tracker (framework)
-
-If a "new" question shares >60% words with a recently dropped question, treat as same (preserve age, don't count as "new"). Technical safety net.
-
-**Where:** `orchestra/sgr.py`.
-**Effort:** Medium. Word overlap heuristic.
-
----
-
-## 4. Budget-Aware Prompting
-
-### 4.1 Budget balance instruction in strategist prompt
-
-Add to methodology section:
 ```
 BUDGET MANAGEMENT:
   Your total budget is shared with all reviewers you spawn.
-  Before spawning, estimate: remaining_budget / estimated_reviewer_cost.
-  Always reserve ~20% of total budget for Phase 3 (consolidation + done).
+  Each reviewer costs ~5,000-10,000 tokens.
   Better to spawn 2 thorough reviewers than 4 starved ones.
-  Call budget_status() if unsure how much budget remains.
 ```
 
 **Where:** `diffgraph/prompts/strategist.prompt`.
-**Effort:** Small. Prompt change.
+**Effort:** Small.
 
-### 4.2 Budget info in reviewer prompt
+### 3.2 Reviewer efficiency prompt
 
-Add budget awareness to reviewer:
 ```
-You have a limited token budget. Work efficiently:
+Work efficiently:
 - Use read_outline before read_file to target specific lines
-- Don't re-read files you've already read
-- If budget is running low, focus on your highest-priority finding
+- Don't re-read files you've already seen
+- If budget running low, focus on highest-priority finding
 ```
 
 **Where:** `diffgraph/prompts/reviewer.prompt`.
-**Effort:** Small. Prompt change.
+**Effort:** Small.
+
+### 3.3 Diff filtering in system prompt
+
+Don't include gradle wrapper, binary files, and other noise in diff_summary. Filter before injecting.
+
+**Where:** `diffgraph/orchestrator.py` `_make_diff_summary`.
+**Effort:** Small.
+
+---
+
+## 4. Trace Improvements
+
+### 4.1 Trace comparison (diff two runs)
+
+Compare two traces side-by-side:
+```
+python cli.py trace --diff run1 run2
+```
+
+Show: which concerns overlapped, which findings matched, cost difference.
+
+**Where:** `orchestra/trace.py` — new render mode.
+**Effort:** Medium.
+
+### 4.2 Trace export to JSON
+
+```
+python cli.py trace --run ID --format json > trace.json
+```
+
+For programmatic analysis, CI integration, dashboards.
+
+**Where:** `cli.py` trace command + `orchestra/trace_db.py`.
+**Effort:** Small.
+
+### 4.3 Trace search
+
+Search across runs by finding title, file, severity:
+
+```
+python cli.py trace --search "auth" --severity MAJOR
+```
+
+**Where:** `orchestra/trace_db.py` — SQL queries.
+**Effort:** Small.
 
 ---
 
@@ -381,24 +188,24 @@ You have a limited token budget. Work efficiently:
 
 ### 5.1 Total cost summary at end
 
-After findings, show total cost breakdown:
+After findings, show cost breakdown:
 ```
-Cost: 32,500 tokens (strategist: 12,000 + reviewer×2: 10,250 each)
-      18 steps total, 45s wall time
-```
-
-**Where:** `cli.py` — accumulate from events, print after findings.
-**Effort:** Small. Sum token events.
-
-### 5.2 Progress bar for budget
-
-Show a visual budget bar in the live frame title:
-```
-╭── strategist · step 7/50 · ████████░░ 65% · ↑32,500 ──╮
+Cost: 12,500 tokens paid (strategist: 4,200 + reviewer×2: 4,150 each)
+      22 steps total, 45s wall time
 ```
 
-**Where:** `cli.py` `_render_live_frame`.
-**Effort:** Small. Rich progress characters.
+**Where:** `cli.py` — accumulate from events.
+**Effort:** Small.
+
+### 5.2 Model comparison mode
+
+Run same PR with two models, compare results:
+```
+python cli.py run --pr-url ... --model gpt-4o --compare deepseek-chat
+```
+
+**Where:** `cli.py` — run twice, diff findings.
+**Effort:** Medium.
 
 ---
 
@@ -407,18 +214,17 @@ Show a visual budget bar in the live frame title:
 | # | Item | Impact | Effort | Priority |
 |---|---|---|---|---|
 | 1.1 | Budget context injection | High | Small | **Do first** |
-| 1.5 | Child cost in spawn results | Medium | Small | **Do first** |
-| 4.1 | Budget balance prompt | High | Small | **Do first** |
-| 4.2 | Reviewer efficiency prompt | Medium | Small | **Do first** |
+| 3.1 | Budget balance prompt | High | Small | **Do first** |
+| 3.2 | Reviewer efficiency prompt | Medium | Small | **Do first** |
+| 3.3 | Diff filtering | Medium | Small | **Do first** |
 | 5.1 | Total cost summary | Medium | Small | **Do first** |
 | 1.4 | budget_status tool | High | Small | Do second |
 | 1.3 | Pre-spawn validation | High | Medium | Do second |
-| 1.2 | Smart pushers | Medium | Medium | Do second |
-| 3.1 | Concerns instead of questions (methodology) | **High** | Small | **Do first** |
-| 3.2 | Question cap (max 5) | High | Tiny | **Do first** |
-| 2.1 | Agent prefix in parallel | Medium | Medium | Do third |
-| 1.6 | Historical cost tracking (complexity tiers + percentiles) | Medium | Medium | Do third |
-| 3.3 | Question IDs in SGR schema | Medium | Medium | Later |
-| 3.4 | Fuzzy matching in SGR | Low | Medium | Later |
-| 2.2 | Separate parallel panels | Low | Large | Later |
-| 5.2 | Progress bar | Low | Small | Later |
+| 2.1 | Agent prefix in trace | Medium | Small | Do second |
+| 1.2 | Smart pushers | Medium | Medium | Do third |
+| 1.5 | Historical cost tracking | Medium | Medium | Do third |
+| 2.2 | Live parallel progress | Medium | Medium | Do third |
+| 4.1 | Trace comparison | Low | Medium | Later |
+| 4.2 | Trace JSON export | Low | Small | Later |
+| 4.3 | Trace search | Low | Small | Later |
+| 5.2 | Model comparison | Low | Medium | Later |
