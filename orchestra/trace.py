@@ -146,6 +146,16 @@ def _open_btn(title: str, content: str) -> str:
     return f'<span class="open-btn" onclick="openTabById(\'{js_title}\', \'{did}\')">⧉</span>'
 
 
+def _download_btn(filename: str, content: str) -> str:
+    """Generate [⬇] button that downloads content as JSON file."""
+    global _tab_counter
+    _tab_counter += 1
+    did = f"dl{_tab_counter}"
+    safe_content = content.replace("</script>", "<\\/script>")
+    _data_blocks.append(f'<script type="text/data" id="{did}">{safe_content}</script>')
+    return f'<span class="download-btn" onclick="downloadJSON(\'{esc(filename)}\', \'{did}\')">⬇ JSON</span>'
+
+
 def _flush_data_blocks(h: _H):
     """Emit all stored data blocks."""
     for block in _data_blocks:
@@ -320,8 +330,10 @@ def _render_llm_call(h: _H, step: int, req: Optional[dict], resp: Optional[dict]
     # Context: message history (collapsible, secondary)
     if req:
         msgs = req.get("messages", [])
+        msgs_json = json.dumps(msgs, indent=2, default=str, ensure_ascii=False)
+        dl_btn = _download_btn(f"step_{step}_messages.json", msgs_json)
         h.line(f'<details class="llm-context">')
-        h.line(f'<summary class="llm-section-title">Context ({len(msgs)} messages)</summary>')
+        h.line(f'<summary class="llm-section-title">Context ({len(msgs)} messages) {dl_btn}</summary>')
         for m in msgs:
             role = m.get("role", "?")
             content = m.get("content", "")
@@ -467,6 +479,11 @@ h1 { color: #58a6ff; margin-bottom: 20px; font-size: 1.4em; }
 .open-btn { cursor: pointer; color: #8b949e; font-size: 0.75em; margin-left: 4px;
             opacity: 0.5; }
 .open-btn:hover { opacity: 1; color: #58a6ff; }
+
+/* Download button */
+.download-btn { cursor: pointer; color: #8b949e; font-size: 0.75em; margin-left: 8px;
+                opacity: 0.5; padding: 1px 4px; border: 1px solid #30363d; border-radius: 3px; }
+.download-btn:hover { opacity: 1; color: #56d364; border-color: #56d364; }
 
 details { margin: 4px 0; }
 summary { cursor: pointer; user-select: none; }
@@ -650,6 +667,25 @@ function closeTab(id) {
       bar.innerHTML = '<span class="tab-hint">Click [⧉] to open details</span>';
     }
   }
+}
+
+function downloadJSON(filename, dataId) {
+  const dataEl = document.getElementById(dataId);
+  if (!dataEl) return;
+  let content = dataEl.textContent;
+  // Try to pretty-print
+  try {
+    content = JSON.stringify(JSON.parse(content), null, 2);
+  } catch(e) {}
+  const blob = new Blob([content], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function escHtml(s) {
