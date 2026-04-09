@@ -688,7 +688,7 @@ class Agent:
                 self._children[child.agent_id] = child
             self.event_bus.emit(EventType.AGENT_SPAWNED,
                                parent_id=self.agent_id, child_id=child.agent_id,
-                               agent_name=agent_name, focus=focus,
+                               agent_name=agent_name, focus=focus_from_spec,
                                data_keys=list(resolved_data.keys()) if resolved_data else [])
             r = child.run()
             if child.budget_state:
