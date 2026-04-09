@@ -189,13 +189,13 @@ def run(
         if event == "orchestrator_root_agent":
             _root_agent_ref["agent"] = kw.get("agent")
 
-    event_handler = _make_event_handler(effective_model, live)
-
-    def _combined_handler(event: str, **kw):
-        _capture_event(event, **kw)
-        event_handler(event, **kw)
-
     with Live("", console=console, refresh_per_second=8, vertical_overflow="visible") as live:
+        event_handler = _make_event_handler(effective_model, live)
+
+        def _combined_handler(event: str, **kw):
+            _capture_event(event, **kw)
+            event_handler(event, **kw)
+
         findings, review_ctx = dg.review(
             diff_text,
             existing_comments=existing_comments,
