@@ -35,7 +35,7 @@ class TraceCollector:
                 cm = {"role": m.get("role", "?")}
                 content = m.get("content", "")
                 if content:
-                    cm["content"] = content[:2000] + ("…" if len(content) > 2000 else "")
+                    cm["content"] = content
                 if m.get("tool_calls"):
                     cm["tool_calls"] = [
                         {"name": tc.get("function", {}).get("name", "?"),

@@ -309,7 +309,7 @@ class Agent:
                 for tc in msg.tool_calls:
                     resp_tool_calls.append({
                         "name": tc.function.name,
-                        "arguments": tc.function.arguments[:500],
+                        "arguments": tc.function.arguments,
                     })
             uncached = max(0, tok_in - tok_cached)
             paid = uncached + int(tok_cached * self.budget_state.cache_discount) + tok_out
@@ -317,7 +317,7 @@ class Agent:
                                agent_id=self.agent_id, agent_name=self.config.name,
                                step=step,
                                tool_calls=resp_tool_calls,
-                               content=msg.content[:500] if msg.content else "",
+                               content=msg.content or "",
                                usage={"prompt_tokens": tok_in,
                                       "completion_tokens": tok_out,
                                       "cached_tokens": tok_cached,
