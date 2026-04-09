@@ -153,7 +153,7 @@ def _download_btn(filename: str, content: str) -> str:
     did = f"dl{_tab_counter}"
     safe_content = content.replace("</script>", "<\\/script>")
     _data_blocks.append(f'<script type="text/data" id="{did}">{safe_content}</script>')
-    return f'<span class="download-btn" onclick="downloadJSON(\'{esc(filename)}\', \'{did}\')">⬇ JSON</span>'
+    return f'<span class="download-btn" onclick="event.stopPropagation(); event.preventDefault(); downloadJSON(\'{esc(filename)}\', \'{did}\')">📋 JSON</span>'
 
 
 def _flush_data_blocks(h: _H):
