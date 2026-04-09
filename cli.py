@@ -415,15 +415,8 @@ def _make_event_handler(model: str, live: Optional[Live]):
     def _render_live_frame() -> Panel:
         body = Text()
 
-        # SGR section (top)
-        _render_sgr_section(body)
-
-        # Separator
-        if _sgr["conf_history"] or _actions:
-            body.append("\n")
-
-        # Actions section (bottom, last 12)
-        visible = _actions[-12:]
+        # Actions only (SGR shown in final summary when agent finishes)
+        visible = _actions[-15:]
         for line in visible:
             try:
                 rendered = Text.from_markup(f"  {line}")
