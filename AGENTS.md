@@ -4,97 +4,134 @@ This document describes the codebase for AI agents and coding assistants.
 
 ## What this project does
 
-DiffGraph is a multi-agent PR code reviewer. It takes a raw `git diff` (or fetches one
-from Bitbucket Server), runs a two-phase pipeline with two specialized agents, and produces
-structured `ReviewFinding` objects — optionally posted as inline PR comments.
+DiffGraph is a multi-agent PR code reviewer built on the Orchestra framework. It takes a raw `git diff` (or fetches one from Bitbucket Server), runs a three-phase review pipeline via prompt-defined agents, and produces structured `ReviewFinding` objects -- optionally posted as inline PR comments.
 
-**Agents:**
-- **Strategist** — one non-streaming LLM call; reads the diff summary and outputs a typed
-  review plan (system type + task list).
-- **Solver** — ReAct loop; uses 9 tools to explore the repo, calls `reflect()` for
-  self-guided reasoning, and submits findings via `done()`.
+**Agents (defined by `.prompt` files):**
+- **Strategist** (react) -- three-phase review lead: analyze the diff to form 3-5 high-level concerns, spawn reviewer(s) to investigate (one round), then consolidate findings and judge.
+- **Reviewer** (react with SGR) -- focused investigator. Gets one concern as focus, breaks it into sub-questions, explores the repo, returns findings. No spawning, no PR interaction.
 
-No pre-indexing, no database, no persistent state. One `DiffGraph.review()` call per diff.
+No pre-indexing, no database, no persistent state. One `run_review()` call per diff. The orchestrator is ~35 lines of logic -- all methodology lives in the `.prompt` files.
 
 ## Repository layout
 
 ```
-diffgraph/
-├── api.py               # DiffGraph public API class
-├── diff_parser.py       # parse_diff() — git diff text → DiffResult
-├── lang.py              # language detection + file extension map
-├── tools.py             # list_files, read_file, search_text — filesystem primitives
-├── outline.py           # get_outline() — tree-sitter structural outline
-├── streaming.py         # stream_llm() — shared streaming helper
-├── orchestrator.py      # run_review(): plan phase + ReAct solve phase
-├── bitbucket.py         # fetch_pr, post/get/reply/resolve PR comments
-└── prompts/
-    ├── __init__.py      # load(name) helper
-    ├── strategist_system.txt   # plan phase prompt
-    └── orchestrator_system.txt # solve phase ReAct + SGR prompt
+orchestra/                       Prompt-defined agent framework (~3,700 LOC)
++-- compiler.py                  LLM compiler: .prompt files -> agent registry
++-- trace.py                     HTML trace renderer with split-pane + tabs
++-- trace_db.py                  SQLite trace storage + reader
++-- types.py                     AgentConfig, BudgetConfig, LLMParamsConfig
++-- config.py                    YAML loading, env var expansion, validation
++-- events.py                    EventBus with typed events
++-- agent.py                     Agent: single + react, all meta-tools built-in
++-- budget.py                    BudgetState with cumulative_paid
++-- sgr.py                       SGR with question IDs + fuzzy matching
++-- handoff.py                   7 context handoff modes
++-- condensation.py              4 message condensation strategies
++-- streaming.py                 LLM streaming with param passthrough
++-- feedback.py                  Read-only behavioral signals
++-- merge.py                     Merge strategies (union, best_confidence, llm_merge, raw)
++-- prompts.py                   Template loading + regex interpolation
++-- tools/
+    +-- registry.py              @register decorator, schema generation
+    +-- builtin.py               Meta-tool schemas (spawn, adjust, observe, etc.)
+    +-- shared.py                AppendLog, MutexMap, Blackboard
+
+diffgraph/                       Code review domain
++-- api.py                       DiffGraph public API class
++-- orchestrator.py              One agent entry point (~35 lines of logic)
++-- orchestra_tools.py           Domain tools as closures
++-- diff_parser.py               git diff -> DiffResult
++-- lang.py                      Language detection + file extension map
++-- tools.py                     Filesystem primitives (list_files, read_file, search_text)
++-- outline.py                   tree-sitter structural outline
++-- bitbucket.py                 Bitbucket Server integration
++-- prompts/
+    +-- strategist.prompt        Three-phase review lead (analyze -> investigate -> judge)
+    +-- reviewer.prompt          Focused investigator with SGR
+
 tests/
-└── test_diff_parser.py
-cli.py              # Typer CLI: run / inspect
-config.yaml         # Committed defaults with ${VAR} placeholders
-config.local.yaml   # Local overrides — gitignored
-.env.example        # Environment variable template
++-- test_diff_parser.py
+
+cli.py                           Typer CLI: run / trace / inspect
+config.yaml                      Committed defaults with ${VAR} placeholders
+config.local.yaml                Local overrides (gitignored)
+.env.example                     Environment variable template
 ```
 
 ## Data flow
 
 ```
 parse_diff(diff_text)
-  └─► DiffResult
-        ├─ changed_files         → file paths with status
-        ├─ files[path].status    → "added"/"modified"/"deleted"/"renamed"
-        └─ files[path].after_changed_lines  → set of + line numbers
+  +-> DiffResult
+        +- changed_files         -> file paths with status
+        +- files[path].status    -> "added"/"modified"/"deleted"/"renamed"
+        +- files[path].after_changed_lines  -> set of + line numbers
 
 run_review(diff_text, repo_path, llm, model, existing_comments?)
-  ├─► _plan_phase()
-  │     └─► single LLM call (no tools) → JSON plan
-  │           ├─ system_type: "spring-service" | "react-app" | ...
-  │           └─ tasks: [{id, type, priority, focus, search_hints}]
-  │
-  └─► _solve_phase(plan)
-        └─► ReAct loop (up to max_steps)
-              ├─ find_files / read_file / read_outline / search / get_diff
-              ├─ reply_to_comment / resolve_comment
-              ├─ reflect()   ← SGR self-reflection, no side effects
-              └─ done(findings)  ← exits loop, returns ReviewFinding list
+  +-> compile_prompts()          -> agent registry from .prompt files
+  +-> register_diffgraph_tools() -> domain tools as closures over context
+  +-> build strategist config    -> inject diff_summary, existing_comments
+  +-> Agent(strategist).run()
+        |
+        Strategist (react):
+          Phase 1: ANALYZE -- read diff, form 3-5 concerns
+          Phase 2: INVESTIGATE -- spawn_agent("reviewer", focus=concern)
+              +-> Reviewer (react + SGR):
+                    ReAct loop: find_files, read_file, read_outline,
+                    search, get_diff, reflect(), done(findings)
+          Phase 3: JUDGE -- consolidate, deduplicate, done(findings)
+        |
+  +-> parse findings -> list[ReviewFinding]
+  +-> ReviewContext (comment_replies, comment_resolves)
 ```
+
+Data inheritance: parent's `data_scope` is auto-injected into child `{placeholders}`. No handoff context by default -- child gets everything via its system prompt.
 
 ## Key abstractions
 
 ### `DiffResult` (`diff_parser.py`)
 
-- `changed_files` — after-paths (excludes deleted)
-- `files[path].status` — `"added"` / `"modified"` / `"deleted"` / `"renamed"`
-- `files[path].after_changed_lines` — set of 1-indexed `+` line numbers
-- `files[path].hunks` — list of `HunkSnippet` with `before_lines` / `after_lines`
+- `changed_files` -- after-paths (excludes deleted)
+- `files[path].status` -- `"added"` / `"modified"` / `"deleted"` / `"renamed"`
+- `files[path].after_changed_lines` -- set of 1-indexed `+` line numbers
+- `files[path].hunks` -- list of `HunkSnippet` with `before_lines` / `after_lines`
 
 ### `ReviewFinding` (`orchestrator.py`)
 
-Output of the solve phase. Fields:
-- `file` — relative path
-- `line` — most relevant line number in the changed code
-- `severity` — `"BLOCKER"` / `"MAJOR"` / `"MINOR"` / `"COMMENT"`
-- `title` — one-line summary
-- `explanation` — what the problem is and why it matters
-- `evidence` — code evidence supporting the finding
-- `suggestion` — optional concrete fix
+Output of the review. Fields:
+- `file` -- relative path
+- `line` -- most relevant line number in the changed code
+- `severity` -- `"BLOCKER"` / `"MAJOR"` / `"MINOR"` / `"COMMENT"`
+- `title` -- one-line summary
+- `explanation` -- what the problem is and why it matters
+- `evidence` -- code evidence supporting the finding
+- `suggestion` -- optional concrete fix
 
 ### `ReviewContext` (`orchestrator.py`)
 
-Collected side-effectful actions from the solve phase:
-- `comment_replies` — `[{comment_id, text}]` to POST after the run
-- `comment_resolves` — `[comment_id]` to mark resolved after the run
+Side-effectful actions collected during the review:
+- `comment_replies` -- `[{comment_id, text}]` to POST after the run
+- `comment_resolves` -- `[comment_id]` to mark resolved after the run
 
-### `stream_llm` (`streaming.py`)
+### Agent (`orchestra/agent.py`)
 
-Shared helper for all LLM calls with tool use. Wraps `llm.chat.completions.create(stream=True)`
-and assembles a `StreamedResponse` compatible with the non-streaming OpenAI interface.
-Fires `on_token(tool_name, args_so_far, chunk_count)` per chunk for live display.
-Usage is extracted from the final chunk via `stream_options={"include_usage": True}`.
+Two modes:
+- **single** -- one LLM call, no tools
+- **react** -- non-deterministic tool loop with SGR
+
+All 9 meta-tools built in: `spawn_agent`, `spawn_many`, `plan`, `fork`, `adjust_agent`, `observe_agents`, `list_agents`, `reflect`, `done`.
+
+### SGR with question IDs (`orchestra/sgr.py`)
+
+Structured self-reflection. Each question gets a stable ID. Fuzzy matching links questions across reflect() calls even when wording drifts. Fields: `learned`, `questions_remaining`, `resolved_questions`, `confidence`, `next_action`.
+
+### Budget (`orchestra/budget.py`)
+
+Tracks cumulative paid (sum of per-step deltas) with cache discount. Agents use their own `.prompt` budget. Default pushers: 75% nudge + 100% force_done.
+
+### Trace system (`orchestra/trace_db.py`, `orchestra/trace.py`)
+
+SQLite DB persists events per-step (crash-safe). HTML renderer produces split-pane view: agent tree left, detail tabs right.
 
 ### `get_outline` (`outline.py`)
 
@@ -105,47 +142,7 @@ Tree-sitter structural outline of a source file. Returns plain text:
   [method] process  L15-40 *
   [method] validate  L42-60
 ```
-`*` marks symbols overlapping `changed_lines`. Session-cached (keyed by `repo_path/path`)
-for files without changed lines. Falls back to a line-count header when tree-sitter
-is unavailable or the language is unsupported.
-
-### Plan phase (`orchestrator._plan_phase`)
-
-Single non-streaming LLM call using `strategist_system.txt`. Input: compact diff summary
-(file list + `+N -N` totals + first 200 diff lines). Output: JSON plan with `system_type`
-and a list of typed tasks. Falls back to a default `business_logic` task on parse failure.
-
-### Solve phase (`orchestrator._solve_phase`)
-
-ReAct loop. Each iteration:
-1. `stream_llm(tools=_SOLVE_TOOLS, tool_choice="required")`
-2. Separate `done` from dispatchable tool calls
-3. Emit events for all tool calls (`orchestrator_step` / `orchestrator_reflect`)
-4. Execute dispatchable calls in parallel via `ThreadPoolExecutor`
-5. Append assistant + tool result messages
-6. If `done` was called → parse findings and return
-
-Adaptive budget: user-message nudges at 50% and 75% of `max_tokens`.
-Force-done at `max_steps`: re-calls with only `done` in the tool list.
-
-### SGR — Self-Guided Reasoning
-
-The `reflect` tool lets the agent structure its own reasoning mid-loop:
-```json
-{
-  "learned": "StoreCreditService.apply() is called from OrderController",
-  "resolved_questions": [
-    {"question": "Is apply() idempotent?", "resolution": "answered", "summary": "Yes — guarded by a unique constraint on credit_application_id"},
-    {"question": "Is there a retry loop?", "resolution": "dropped", "summary": "Out of scope for this diff"}
-  ],
-  "questions_remaining": ["Is the balance check atomic?"],
-  "confidence": "medium",
-  "next_action": "Read the transaction boundary around apply()"
-}
-```
-`resolved_questions` is required: every question open in the previous `reflect()` must be moved here as `"answered"` (with the answer) or `"dropped"` (with a reason). Questions must not silently disappear.
-
-Always returns `"Reflection noted."` — no side effects. The value is in forcing the agent to explicitly resolve prior questions and articulate its state before the next tool call.
+`*` marks symbols overlapping `changed_lines`. Session-cached for unchanged files. Falls back to a line-count header when tree-sitter is unavailable.
 
 ### `bitbucket.py`
 
@@ -157,58 +154,59 @@ Always returns `"Reflection noted."` — no side effects. The value is in forcin
 5. `git diff toRef...fromRef` (three-dot = merge-base diff matching PR UI)
 
 `post_review_comments(pr_url, comments, changed_lines?)`:
-- `changed_lines` maps `file → set[int]` from `diff_result`. Each comment's line is
-  snapped to the nearest changed line so the Bitbucket anchor is valid.
-- Falls back to a general (un-anchored) PR comment if the file has no changed lines.
-- Internal severity is mapped to Bitbucket's two values: `BLOCKER`/`MAJOR` → `BLOCKER`,
-  `MINOR`/`COMMENT` → `NORMAL`.
+- Snaps each comment's line to nearest changed line for valid Bitbucket anchor
+- Falls back to general PR comment if file has no changed lines
+- Severity mapping: `BLOCKER`/`MAJOR` -> `BLOCKER`, `MINOR`/`COMMENT` -> `NORMAL`
 
-`get_pr_comments(pr_url)` — fetches existing comment threads via the activities API.
-
-`reply_to_pr_comment(pr_url, comment_id, text)` — POST to `/comments` with `parent: {id}`.
-
-`resolve_pr_comment(pr_url, comment_id)` — PUT with `state: RESOLVED` (optimistic lock).
-
-## Event system
-
-All events are fired via `on_event(event, **kwargs)`. Unknown events are silently ignored.
-
-| Event | Key kwargs |
-|-------|-----------|
-| `orchestrator_plan_start` | — |
-| `orchestrator_plan_done` | `plan` |
-| `orchestrator_stream` | `step`, `tool_name`, `args_preview`, `tok` |
-| `orchestrator_step` | `step`, `tool`, `args`, `tok_in`, `tok_out`, `tok_cached` |
-| `orchestrator_reflect` | `step`, `learned`, `resolved_questions`, `questions_remaining`, `confidence`, `next_action` |
-| `orchestrator_result` | `step`, `tool`, `result_len` |
-| `orchestrator_done` | `findings`, `replies`, `resolves` |
-| `orchestrator_forced_done` | `reason`, `tok_in`, `tok_out`, `tok_cached` |
+`get_pr_comments`, `reply_to_pr_comment`, `resolve_pr_comment` -- thread interaction.
 
 ## Common tasks
 
-**Add a language:**
+### Add a language
+
 1. `lang.py`: add to `LANG_MAP` and `FILE_EXTENSIONS`
 2. `outline.py`: add to `_TS_LANG`, `_CONTAINERS`, `_MEMBERS`
 
-**Change what the agent looks for:**
-Edit `prompts/strategist_system.txt` — task types, system type examples, rules.
+### Add a new agent
 
-**Change agent behaviour / tool descriptions:**
-Edit `prompts/orchestrator_system.txt` — workflow, severity guide, rules.
-Prompts are loaded once at import time via `prompts/__init__.py:load()`.
+1. Create `diffgraph/prompts/<name>.prompt` with `@` headers (see README for format)
+2. The LLM compiler auto-discovers it -- no code changes needed
+3. Other agents can find it via `list_agents` and spawn it via `spawn_agent`
 
-**Add a new tool:**
-1. Add entry to `_SOLVE_TOOLS` list in `orchestrator.py`
-2. Handle it in `_dispatch()`
-3. Document it in `prompts/orchestrator_system.txt`
+### Add a new domain tool
 
-**Add a new event:**
-Emit `on_event("my_event", **kwargs)` anywhere. Handle it in `cli.py:_make_event_handler`.
-No schema — callers ignore unknown events.
+1. Add the tool function in `diffgraph/orchestra_tools.py` using `@registry.register`
+2. Reference the tool name in the agent's `@tools` header in its `.prompt` file
+3. The tool is a closure over the review context (`_Ctx`)
 
-**Add a new provider:**
+### Change review methodology
+
+Edit the `.prompt` files in `diffgraph/prompts/`:
+- `strategist.prompt` -- three-phase methodology, concern types, system type examples
+- `reviewer.prompt` -- investigation workflow, severity guide, tool usage rules
+
+All methodology lives in prompts, not in Python code. The orchestrator is ~35 lines.
+
+### Change agent behavior at runtime
+
+Parent agents can modify children via `adjust_agent`:
+- Change temperature, penalties, model
+- Inject a message into the child's conversation
+- Extend the child's step budget
+
+### Add a new provider
+
 Create `diffgraph/<provider>.py` following the pattern in `bitbucket.py`:
 `fetch_pr()` returns `(diff_text, repo_path, cleanup_fn, pr_meta)`.
+
+### Inspect a run
+
+```bash
+python cli.py trace --log        # console trace: call/result per step, agent tree
+python cli.py trace              # HTML trace in browser (split-pane)
+python cli.py trace --list       # recent runs table
+python cli.py trace --run ID     # specific run
+```
 
 ## Tests
 
@@ -217,5 +215,4 @@ source .venv/bin/activate
 pytest tests/
 ```
 
-Covers `diff_parser` without an LLM. To test the full pipeline, point at a real
-LLM endpoint and run `cli.py run` against a local diff.
+Covers `diff_parser` without an LLM. To test the full pipeline, point at a real LLM endpoint and run `cli.py run` against a local diff.

@@ -1,10 +1,10 @@
-# Orchestra — Technical Specification
+# Orchestra -- Technical Specification
 
 ## 1. Overview
 
-**Orchestra** is a prompt-defined agent framework. One primitive: the **Agent**. One source of truth: the **Prompt file**.
+**Orchestra** is a prompt-defined agent framework (~3,700 LOC). One primitive: the **Agent**. One source of truth: the **Prompt file**.
 
-No pipelines, no state machines, no DAGs. Agents are defined by `.prompt` files with structured `@` headers. The framework provides a runtime (ReAct loop + tools + budget), an LLM compiler that builds an agent registry from prompt files, and observability. All structure — coordination, delegation, feedback — emerges from agent decisions at runtime.
+No pipelines, no state machines, no DAGs. Agents are defined by `.prompt` files with structured `@` headers. The framework provides a runtime (ReAct loop + tools + budget), an LLM compiler that builds an agent registry from prompt files, and observability via SQLite traces. All structure -- coordination, delegation, feedback -- emerges from agent decisions at runtime.
 
 ### Control model
 
@@ -14,11 +14,11 @@ No pipelines, no state machines, no DAGs. Agents are defined by `.prompt` files 
 | **Params** | temperature, top_p, penalties | *How* the agent thinks | `.prompt` defaults, parent via `adjust_agent` |
 | **Model** | model switch | *Who* thinks | `.prompt` default, parent via `adjust_agent` |
 
-All three levels are mutable at runtime by other agents.
+All three levels are mutable at runtime by supervisor agents.
 
 ---
 
-## 2. Prompt File
+## 2. Prompt File Format
 
 Single source of truth for an agent. Contains structured `@` headers and a prompt body.
 
@@ -30,23 +30,35 @@ Single source of truth for an agent. Contains structured `@` headers and a promp
 @capabilities: sgr, spawn, spawn_many, plan, fork, adjust_agent, observe_agents, list_agents
 @tools: <comma-separated domain tool names>
 @budget: <tokens> tokens, <steps> steps[, <duration>]
-@sgr_interval: <N>
 @llm: model=<name> temperature=<float> [top_p=<float>] [frequency_penalty=<float>]
 @data:
-  <field>: <type> — <description>
+  <field>: <type> -- <description>
 @summary: <1-3 sentence description for agent discovery>
 ---
 <prompt body with {placeholder} variables matching @data fields>
 ```
 
+### Supported `@` headers
+
+| Header | Purpose |
+|---|---|
+| `@agent` | Agent name (unique identifier in registry) |
+| `@mode` | `single` (one LLM call) or `react` (non-deterministic tool loop) |
+| `@capabilities` | Which meta-tools the agent gets (see table below) |
+| `@tools` | Comma-separated list of domain tool names |
+| `@budget` | Token limit, step limit, optional wall time |
+| `@llm` | Default LLM parameters: model, temperature, top_p, penalties |
+| `@data` | Input schema fields with types and descriptions |
+| `@summary` | Short description shown in `list_agents` output |
+
 ### `@data` triple duty
 
 Each `@data` field simultaneously serves as:
-1. **Input schema** — what `spawn_agent` must provide
-2. **Template variable** — `{field}` in prompt body is replaced with actual value
-3. **Discovery docs** — shown in `list_agents` output
+1. **Input schema** -- what `spawn_agent` must provide
+2. **Template variable** -- `{field}` in prompt body is replaced with actual value
+3. **Discovery docs** -- shown in `list_agents` output
 
-### `@capabilities` → meta-tools
+### `@capabilities` to meta-tools mapping
 
 | Capability | Tools added |
 |---|---|
@@ -68,8 +80,8 @@ Every agent always gets `done`.
 Reads `.prompt` files and builds an **agent registry**.
 
 **Two-pass parsing:**
-1. Deterministic — regex extracts `@` headers. Fast, no LLM cost.
-2. LLM fallback — for prompts without formal headers, an LLM infers capabilities, data requirements, and summary.
+1. Deterministic -- regex extracts `@` headers. Fast, no LLM cost.
+2. LLM fallback -- for prompts without formal headers, an LLM infers capabilities, data requirements, and summary.
 
 **Output:** `AgentRegistry` mapping agent names to metadata (summary, capabilities, input schema, tools, budget, llm_params, prompt template).
 
@@ -77,25 +89,27 @@ Reads `.prompt` files and builds an **agent registry**.
 
 **Runtime access:** `list_agents` tool returns the registry. `spawn_agent` validates data against target's schema and injects into `{placeholders}`.
 
-**Data inheritance:** `spawn_agent(data={field: "inherit"})` copies the value from the parent's data scope. Zero token waste on re-transmitting shared context.
+**Data inheritance:** `spawn_agent(data={field: "inherit"})` copies the value from the parent's data scope. Parent's `data_scope` is auto-injected into child `{placeholders}`. Zero token waste on re-transmitting shared context.
+
+**No handoff context by default:** child agents get everything via their system prompt (with injected data), not from parent conversation history.
 
 ---
 
-## 4. Agent
+## 4. Agent Model
 
 Two modes:
 
-- **single** — one LLM call, no tools. For classification, extraction, summarization, planning.
-- **react** — non-deterministic ReAct loop. LLM decides which tools to call, when to reflect, when to spawn, when to stop. Only hard constraints are budget limits and tool availability.
+- **single** -- one LLM call, no tools. For classification, extraction, summarization, planning.
+- **react** -- non-deterministic ReAct loop. LLM decides which tools to call, when to reflect, when to spawn, when to stop. Only hard constraints are budget limits and tool availability.
 
 ### Execution model
 
 The agent manages its own children. No external runner.
 
-- `spawn_agent(wait=true)` — parent blocks, child runs, result returned as tool output
-- `spawn_agent(wait=false)` — child runs in background thread, parent continues
-- `spawn_many` — N children in parallel via ThreadPoolExecutor, merged result returned
-- `fork` — clone self into N branches, each with different focus, results merged
+- `spawn_agent(wait=true)` -- parent blocks, child runs, result returned as tool output
+- `spawn_agent(wait=false)` -- child runs in background thread, parent continues
+- `spawn_many` -- N children in parallel via ThreadPoolExecutor, merged result returned
+- `fork` -- clone self into N branches, each with different focus, results merged
 
 ### Mutable LLM params
 
@@ -121,12 +135,12 @@ Everything is a tool. Domain actions, meta-actions, agent control, coordination.
 
 Registered via Python `@registry.register` decorator or YAML config. Each agent only sees tools in its `@tools` list. Tool results auto-truncated. Multiple tool calls execute in parallel.
 
-### Meta-tools
+### Meta-tools (9 total)
 
 | Tool | Description |
 |---|---|
 | `done` | Submit output, stop the loop |
-| `reflect` | SGR self-reflection with question tracking |
+| `reflect` | SGR self-reflection with question ID tracking |
 | `spawn_agent(agent, data, focus, context_handoff, wait)` | Create child agent. Data injected into `{placeholders}`. `"inherit"` copies from parent. |
 | `spawn_many(agents[], context_handoff, merge)` | Fan-out N agents in parallel. Merge: `union`, `best_confidence`, `llm_merge`, `raw`. |
 | `plan(goal, constraints)` | Single-shot planner returning structured JSON |
@@ -147,7 +161,7 @@ Registered via Python `@registry.register` decorator or YAML config. Each agent 
 
 ## 6. Context Handoff
 
-When spawning or forking, the calling agent chooses what context to pass.
+When spawning or forking, the calling agent chooses what context to pass. By default, no handoff context is provided -- child agents get everything via their system prompt.
 
 | Mode | What is transferred |
 |---|---|
@@ -167,27 +181,41 @@ Modes are composable. Choice is per-call.
 
 Structured self-reflection. Backbone of inter-agent communication.
 
-**Schema:** `learned`, `questions_remaining`, `resolved_questions` (resolution + summary), `confidence` (low/medium/high), `next_action`. Extensible with custom fields per agent.
+### Schema
 
-**Accountability:** every open question from previous reflect must appear in `resolved_questions` (answered or dropped). No silent omissions.
+`learned`, `questions_remaining`, `resolved_questions` (resolution + summary), `confidence` (low/medium/high), `next_action`. Extensible with custom fields per agent.
 
-**Visibility:** readable via `observe_agents`, passable via handoff modes, logged in traces.
+### Question IDs
+
+Each question gets a stable ID. Fuzzy matching links questions across reflect() calls even when wording drifts between steps. This provides stability for tracking question lifecycle across the agent's execution.
+
+### Accountability
+
+Every open question from previous reflect must appear in `resolved_questions` (answered or dropped). No silent omissions.
+
+### Visibility
+
+Readable via `observe_agents`, passable via handoff modes, logged in traces, displayed in CLI live panels.
 
 ---
 
-## 8. Budget & Stability
+## 8. Budget and Stability
 
 ### Budget model
 
 Three dimensions tracked per agent: **tokens**, **steps**, **wall time**.
 
-Budget is mutable — `adjust_agent` can extend or reduce (bounded by `max_feedback_budget_delta`). When spawning children, budget partitioned from remaining. Parent debited by child's actual consumption.
+**Cumulative paid:** budget tracks the sum of per-step deltas with cache discount. Cached tokens are discounted so agents are not penalized for prompt caching.
+
+Agents use their own `.prompt` budget (not parent-allocated). Budget is mutable -- `adjust_agent` can extend or reduce (bounded by `max_feedback_budget_delta`).
 
 ### Pushers
 
+Default configuration: 75% nudge + 100% force_done.
+
 | Action | Effect |
 |---|---|
-| `nudge` | Inject user message |
+| `nudge` | Inject user message (e.g., "budget running low, wrap up") |
 | `force_reflect` | Next step: only reflect tool available |
 | `force_done` | Next step: only done tool available |
 | `custom` | Python hook |
@@ -224,11 +252,35 @@ SGR reflect() calls optionally exempt. System message never condensed.
 | `progress_score` | Files explored, questions resolved, findings produced |
 | `stuck` | High repetition + low progress |
 
-Available via `observe_agents`. Framework does not act on them.
+Available via `observe_agents`. Framework does not act on them -- supervisor agents decide.
 
 ---
 
-## 9. Observability
+## 9. Trace System
+
+### SQLite trace DB (`trace_db.py`)
+
+Events persisted per-step to a SQLite database. Crash-safe -- partial runs are recoverable.
+
+- Per agent: agent_id, parent_id, per-step tool calls + tokens + LLM params, SGR history, budget consumed, output
+- Full execution tree reconstructable from stored events
+- Reader API for querying runs, agents, and steps
+
+### HTML trace (`trace.py`)
+
+Split-pane layout:
+- **Left pane:** agent tree (hierarchical view of all agents in the run)
+- **Right pane:** detail tabs for selected agent (steps, SGR, budget, output)
+- `[open-in-panel]` button opens agent details in a dedicated panel
+- `[JSON copy]` button copies raw event data to clipboard
+
+### CLI trace commands
+
+- `cli.py trace` -- renders HTML and opens in browser (default)
+- `cli.py trace --log` -- console trace (call -> result per step, agent tree)
+- `cli.py trace --list` -- recent runs table
+- `cli.py trace --run ID` -- specific run
+- `cli.py trace -o file.html` -- save HTML to file
 
 ### Events
 
@@ -246,10 +298,6 @@ Available via `observe_agents`. Framework does not act on them.
 | `budget_threshold_hit` | agent_id, threshold, ratio |
 | `stuck_detected` | agent_id, repetition_score, progress_score |
 | `condensation_triggered` | agent_id, strategy |
-
-### Traces
-
-Per agent: agent_id, parent_id, per-step tool calls + tokens + LLM params, SGR history, budget consumed, output. Full execution tree reconstructable.
 
 ---
 
@@ -270,12 +318,14 @@ Per agent: agent_id, parent_id, per-step tool calls + tokens + LLM params, SGR h
 | Principle | Implication |
 |---|---|
 | **Prompt = config** | One `.prompt` file per agent. Headers declare capabilities, body defines behavior. |
-| **LLM compiler** | Reads prompt files → builds agent registry. Deterministic + LLM fallback. |
+| **LLM compiler** | Reads prompt files -> builds agent registry. Deterministic + LLM fallback. |
 | **Agent discovery** | Agents find each other by summary via `list_agents`. |
 | **Max non-determinism** | The react loop has no predetermined steps. The LLM decides everything. |
-| **Tools, not pipelines** | Spawn, fork, adjust — all tool calls. No topology runner. |
+| **Tools, not pipelines** | Spawn, fork, adjust -- all tool calls. No topology runner. |
 | **Mutable params** | LLM generation parameters are live state. Supervisor agents tune them. |
 | **Signals, not actions** | Framework computes behavioral signals but does not act on them. |
 | **Budget = only hard constraint** | Pushers are the only forced guardrails. Everything else is soft. |
 | **Data flows through `{placeholders}`** | `@data` = input schema = template variables = discovery docs. |
-| **Methodology in prompts** | Three-phase review (analyze → investigate → judge) is a prompt, not a pipeline. |
+| **Methodology in prompts** | Three-phase review (analyze -> investigate -> judge) is a prompt, not a pipeline. |
+| **Cumulative paid with cache discount** | Budget accounting reflects actual cost, not gross token counts. |
+| **Crash-safe traces** | SQLite persistence means partial runs are always inspectable. |
