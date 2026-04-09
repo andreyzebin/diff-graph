@@ -344,8 +344,10 @@ def _make_event_handler(model: str, live: Optional[Live]):
 
     # ── State ─────────────────────────────────────────────────────────────
 
-    # Agent identity (tracks which agent is currently displayed)
+    # Agent identity
     _active: dict = {"agent_id": "", "agent_name": "agent"}
+    _root_id: dict = {"val": ""}  # first agent = root, only show root events
+    _child_ids: set = set()       # IDs of spawned children (suppressed)
 
     # Action log (accumulated, shown in live frame)
     _actions: list[str] = []
@@ -548,10 +550,27 @@ def _make_event_handler(model: str, live: Optional[Live]):
         _active["agent_name"] = agent_name
 
     def on_event(event: str, **kw) -> None:
-        # Auto-switch active agent when agent_id changes on any event
         aid = kw.get("agent_id", "")
         aname = kw.get("agent_name", "")
-        if aid and aid != _active["agent_id"]:
+
+        # Track root agent (first agent that starts)
+        if event == "orchestrator_agent_started" and not _root_id["val"]:
+            _root_id["val"] = aid
+
+        # Register children
+        if event == "orchestrator_agent_spawned":
+            child_id = kw.get("child_id", "")
+            if child_id:
+                _child_ids.add(child_id)
+
+        # Suppress ALL events from child agents — they work silently.
+        # Their results appear in root's spawn_agent/spawn_many tool result.
+        is_child = aid in _child_ids
+        if is_child:
+            return
+
+        # Update active agent for root events
+        if aid and aid == _root_id["val"] and aid != _active["agent_id"]:
             _switch_agent(aid, aname or aid[:8])
 
         if event == "orchestrator_agent_compiled":
@@ -565,7 +584,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _log(f"[dim]  compiled [cyan]{name}[/cyan] \\[{mode}]  caps=\\[{caps}]  data=\\[{data}]  budget={bt}t/{bs}s[/dim]")
 
         elif event == "orchestrator_agent_started":
-            pass  # handled by auto-switch above
+            pass
 
         elif event == "orchestrator_plan_start":
             _log("[bold green]plan[/bold green]      strategist analyzing diff…")
