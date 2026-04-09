@@ -540,13 +540,16 @@ class Agent:
                 max_depth=agent_config.max_depth,
             )
 
-        from .handoff import get_handoff
-        handoff_mode = args.get("context_handoff", "sgr_outcomes")
-        handoff = get_handoff(handoff_mode)
-        context = handoff.apply(
-            [], self.sgr.history if self.sgr else [], None, self.llm, self.model
-        )
-        # Don't append focus as user message — it's already in the system prompt via {focus} interpolation
+        # No handoff context by default — child gets everything via {placeholders} in system prompt.
+        # Only pass handoff if explicitly requested (e.g. context_handoff: "full_history").
+        context: list[dict] = []
+        handoff_mode = args.get("context_handoff", "")
+        if handoff_mode:
+            from .handoff import get_handoff
+            handoff = get_handoff(handoff_mode)
+            context = handoff.apply(
+                [], self.sgr.history if self.sgr else [], None, self.llm, self.model
+            )
 
         child_budget = self.budget_tracker.allocate_child(self.budget_state, 0.3)
         # Override budget on the child config
@@ -626,10 +629,9 @@ class Agent:
         if self.depth >= self.config.max_depth:
             return json.dumps({"error": "max depth reached"})
 
-        from .handoff import get_handoff
         from .merge import get_merge_strategy
 
-        handoff_mode = args.get("context_handoff", "sgr_outcomes")
+        handoff_mode = args.get("context_handoff", "")
         merge_name = args.get("merge", "union")
 
         results: list[AgentResult] = []
@@ -661,11 +663,14 @@ class Agent:
                     llm_params=agent_config.llm_params, max_depth=agent_config.max_depth,
                 )
 
-            handoff = get_handoff(handoff_mode)
-            context = handoff.apply(
-                [], self.sgr.history if self.sgr else [], None, self.llm, self.model
-            )
-            # Don't append focus as user message — already in system prompt via {focus}
+            # No handoff by default — child gets everything via {placeholders}
+            context: list[dict] = []
+            if handoff_mode:
+                from .handoff import get_handoff
+                handoff = get_handoff(handoff_mode)
+                context = handoff.apply(
+                    [], self.sgr.history if self.sgr else [], None, self.llm, self.model
+                )
 
             n = len(agents_specs)
             child_budget = self.budget_tracker.allocate_child(self.budget_state, 0.8 / n)
