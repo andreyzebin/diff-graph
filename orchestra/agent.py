@@ -546,9 +546,7 @@ class Agent:
         context = handoff.apply(
             [], self.sgr.history if self.sgr else [], None, self.llm, self.model
         )
-        focus = args.get("focus", "")
-        if focus:
-            context.append({"role": "user", "content": focus})
+        # Don't append focus as user message — it's already in the system prompt via {focus} interpolation
 
         child_budget = self.budget_tracker.allocate_child(self.budget_state, 0.3)
         # Override budget on the child config
@@ -667,9 +665,7 @@ class Agent:
             context = handoff.apply(
                 [], self.sgr.history if self.sgr else [], None, self.llm, self.model
             )
-            focus = spec.get("focus", "")
-            if focus:
-                context.append({"role": "user", "content": focus})
+            # Don't append focus as user message — already in system prompt via {focus}
 
             n = len(agents_specs)
             child_budget = self.budget_tracker.allocate_child(self.budget_state, 0.8 / n)
