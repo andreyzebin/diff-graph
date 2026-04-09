@@ -512,9 +512,16 @@ class Agent:
         if self.depth >= self.config.max_depth:
             return json.dumps({"error": "max depth reached"})
 
-        # Data injection: resolve inheritance, inject into prompt {placeholders}
+        # Data injection: always inherit parent's data_scope, merge explicit data on top
         data = args.get("data", {})
-        resolved_data = self._resolve_data_inheritance(data) if data else {}
+        resolved_data = dict(self.data_scope)  # start with parent's scope
+        if data:
+            explicit = self._resolve_data_inheritance(data)
+            resolved_data.update(explicit)
+        # Also merge top-level focus if present and not in data
+        focus_arg = args.get("focus", "")
+        if focus_arg and "focus" not in resolved_data:
+            resolved_data["focus"] = focus_arg
 
         if resolved_data and "{" in agent_config.system_prompt:
             agent_config = AgentConfig(
@@ -635,9 +642,16 @@ class Agent:
             if not agent_config:
                 return AgentResult(agent_name=agent_name, output={"error": f"unknown: {agent_name}"})
 
-            # Data inheritance
+            # Data inheritance: always inherit parent scope, merge explicit data
             spec_data = spec.get("data", {})
-            resolved_data = self._resolve_data_inheritance(spec_data) if spec_data else {}
+            resolved_data = dict(self.data_scope)  # start with parent's scope
+            if spec_data:
+                explicit = self._resolve_data_inheritance(spec_data)
+                resolved_data.update(explicit)
+            # Merge top-level focus
+            focus_from_spec = spec.get("focus", "")
+            if focus_from_spec and "focus" not in resolved_data:
+                resolved_data["focus"] = focus_from_spec
             if resolved_data and "{" in agent_config.system_prompt:
                 agent_config = AgentConfig(
                     name=agent_config.name,
