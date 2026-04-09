@@ -450,23 +450,31 @@ def _make_event_handler(model: str, live: Optional[Live]):
             padding=(0, 1),
         )
 
-    import time as _time
-    _last_stream_update = {"t": 0.0}
-
-    def _update_live(force: bool = False) -> None:
+    def _update_live() -> None:
+        """Full panel re-render. Only call on meaningful state changes."""
         if not live:
             return
         live.update(_render_live_frame())
 
-    def _update_live_throttled() -> None:
-        """Throttled update for stream events — max ~5/sec."""
+    def _update_stream_only() -> None:
+        """Lightweight stream update — just the streaming line, no full re-render."""
         if not live:
             return
-        now = _time.monotonic()
-        if now - _last_stream_update["t"] < 0.2:
-            return
-        _last_stream_update["t"] = now
-        live.update(_render_live_frame())
+        # Build a minimal text showing just the stream status
+        agent_name = _active["agent_name"]
+        step = _budget["step"]
+        max_steps = _budget["max_steps"]
+        stream = _current_stream["text"]
+        tok_in = _budget["tok_in"]
+        last_conf = _sgr["conf_history"][-1][1] if _sgr["conf_history"] else ""
+        conf_str = f" · conf={last_conf}" if last_conf else ""
+        title = f"{agent_name} · step {step}/{max_steps} · ↑{tok_in}{conf_str}"
+        live.update(Text.assemble(
+            (f"╭─ {title} ", "dim blue"),
+            ("─" * 40, "dim blue"),
+            "\n",
+            (f"  ↳ {stream}", "dim"),
+        ))
 
     # ── Render final summary (SGR + compact actions, logged permanently) ────
 
@@ -596,7 +604,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
                 _actions.append(f"[bold cyan]spawn {name}[/bold cyan] → {focus_short}")
             else:
                 _actions.append(f"[bold cyan]spawn {name}[/bold cyan] ({child[:6]})")
-            _update_live(force=True)
+            _update_live()
 
         elif event == "orchestrator_agent_done":
             pass  # parent will resume, auto-switch handles it
@@ -632,7 +640,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             tok = kw.get("tok", 0)
             step = kw.get("step", 0)
             _current_stream["text"] = f"step {step}  {tool_name or '…'}({args_preview})  ↓{tok}…"
-            _update_live_throttled()
+            _update_stream_only()
 
         elif event == "orchestrator_step":
             tool = kw.get("tool", "")
@@ -650,7 +658,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             tok_str = _fmt_tok_short()
             _actions.append(f"step {step}  {tool}{count_str}  {tok_str}")
             _current_stream["text"] = ""
-            _update_live(force=True)
+            _update_live()
 
         elif event == "orchestrator_reflect":
             step = kw.get("step", 0)
@@ -690,7 +698,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             conf_color = {"low": "red", "medium": "yellow", "high": "green"}.get(conf, "white")
             _actions.append(f"step {step}  reflect()  conf=[{conf_color}]{conf}[/{conf_color}]")
             _current_stream["text"] = ""
-            _update_live(force=True)
+            _update_live()
 
         elif event == "orchestrator_done":
             # Clear live frame
