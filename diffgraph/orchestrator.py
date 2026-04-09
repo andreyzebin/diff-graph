@@ -21,6 +21,7 @@ from orchestra import (
     AgentConfig,
     BudgetConfig,
     EventBus,
+    EventType,
     ToolRegistry,
     compile_prompts,
 )
@@ -83,6 +84,7 @@ def run_review(
     max_steps: int = 50,
     max_tokens: int = 50000,
     on_event: OnEvent = None,
+    trace_writer: Optional[Callable] = None,
 ) -> tuple[list[ReviewFinding], ReviewContext]:
     _emit = on_event or (lambda *_, **__: None)
     diff_result = parse_diff(diff_text)
@@ -106,6 +108,15 @@ def run_review(
     # ── Event bus ─────────────────────────────────────────────────────────
     event_bus = EventBus()
     event_bus.set_passthrough(_adapt_events(_emit))
+
+    # Subscribe trace writer directly to raw events (not through adapter)
+    if trace_writer:
+        def _make_trace_handler(et_val):
+            def handler(**kw):
+                trace_writer(et_val, **kw)
+            return handler
+        for et in EventType:
+            event_bus.subscribe(et, _make_trace_handler(et.value))
 
     # ── Register domain tools ─────────────────────────────────────────────
     tool_registry = ToolRegistry()

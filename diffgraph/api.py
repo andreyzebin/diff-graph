@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional
+from typing import Callable, Optional
 
 from .diff_parser import parse_diff
 from .orchestrator import OnEvent, ReviewFinding, ReviewContext, run_review
@@ -7,7 +7,7 @@ from .orchestrator import OnEvent, ReviewFinding, ReviewContext, run_review
 
 class DiffGraph:
     """
-    Single-agent code review assistant.
+    Multi-agent code review assistant.
 
     Usage::
 
@@ -40,6 +40,7 @@ class DiffGraph:
         diff_text: str,
         existing_comments: Optional[list[dict]] = None,
         on_event: Optional[OnEvent] = None,
+        trace_writer: Optional[Callable] = None,
     ) -> tuple[list[ReviewFinding], ReviewContext]:
         """
         Run the agentic review pipeline.
@@ -57,4 +58,5 @@ class DiffGraph:
             max_steps=self.max_steps,
             max_tokens=self.max_tokens,
             on_event=on_event,
+            trace_writer=trace_writer,
         )

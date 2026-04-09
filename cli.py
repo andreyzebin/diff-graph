@@ -206,6 +206,7 @@ def run(
             diff_text,
             existing_comments=existing_comments,
             on_event=_combined_handler,
+            trace_writer=_trace_db.on_event,
         )
     console.print("")
 
