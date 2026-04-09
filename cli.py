@@ -398,13 +398,27 @@ def _print_trace_log(trace: dict, depth: int = 0):
         [e["step"] for e in sgr]
     ))
 
+    # Build step data: pair each response with tool results from next request
+    steps_data: list[dict] = []
     for step_num in all_steps:
         step_calls = [c for c in llm_calls if c["step"] == step_num]
         req = next((c for c in step_calls if c["type"] == "request"), None)
         resp = next((c for c in step_calls if c["type"] == "response"), None)
+        steps_data.append({"step": step_num, "req": req, "resp": resp})
 
-        if req or resp:
-            _print_llm_call_log(req, resp, step_num, indent)
+    for i, sd in enumerate(steps_data):
+        step_num = sd["step"]
+        resp = sd["resp"]
+        # Get tool results from NEXT step's request messages
+        tool_results = []
+        if i + 1 < len(steps_data) and steps_data[i + 1]["req"]:
+            next_msgs = steps_data[i + 1]["req"].get("messages", [])
+            for m in next_msgs:
+                if m.get("role") == "tool":
+                    tool_results.append(m.get("content", ""))
+
+        if resp or sd["req"]:
+            _print_llm_call_log(sd["req"], resp, step_num, indent, tool_results)
 
         if step_num in sgr_by_step:
             _print_sgr_log(sgr_by_step[step_num], indent)
@@ -434,11 +448,12 @@ def _print_trace_log(trace: dict, depth: int = 0):
             console.print(f"{indent}    [dim]{text}[/dim]")
 
 
-def _print_llm_call_log(req: dict | None, resp: dict | None, step: int, indent: str):
-    """Print one LLM call to console."""
-    import json as _json
+def _print_llm_call_log(req: dict | None, resp: dict | None, step: int, indent: str,
+                        tool_results: list[str] | None = None):
+    """Print one LLM step: call + result, no message history."""
+    tool_results = tool_results or []
 
-    # Tool names and cost from response
+    # Extract info from response
     tool_names = ""
     usage_str = ""
     if resp:
@@ -466,50 +481,23 @@ def _print_llm_call_log(req: dict | None, resp: dict | None, step: int, indent: 
     console.print(
         f"{indent}  [dim]step {step}[/dim]  "
         f"[cyan]{tool_names or '…'}[/cyan]  "
-        f"[dim]{usage_str}[/dim]  "
-        f"[dim]{model} {temp}[/dim]"
+        f"[dim]{usage_str}  {model} {temp}[/dim]"
     )
 
-    # Request: only show last 3 messages (not full history) — system shown only on step 0
-    if req:
-        msgs = req.get("messages", [])
-        # Show system only on first step, otherwise last 3 non-system messages
-        if step == 0:
-            show_msgs = msgs[:3]
-        else:
-            non_system = [m for m in msgs if m.get("role") != "system"]
-            show_msgs = non_system[-3:]
-
-        for m in show_msgs:
-            role = m.get("role", "?")
-            content = m.get("content", "")
-            tcs = m.get("tool_calls", [])
-            role_color = {"system": "yellow", "user": "green", "assistant": "cyan", "tool": "dim"}.get(role, "white")
-
-            if tcs:
-                tc_names = ", ".join(
-                    tc.get("name", "") or tc.get("function", {}).get("name", "?")
-                    for tc in tcs[:3]
-                )
-                console.print(f"{indent}    [{role_color}]{role}[/{role_color}]: [dim]→ {tc_names}[/dim]")
-            elif content:
-                # Tool results for meta-tools: show more
-                max_len = 300 if role == "tool" and ('"status"' in content or '"completed"' in content) else 120
-                preview = content[:max_len].replace("\n", "↵ ")
-                if len(content) > max_len:
-                    preview += "…"
-                console.print(f"{indent}    [{role_color}]{role}[/{role_color}]: [dim]{preview}[/dim]")
-
-    # Response (LLM output)
+    # Call: what the LLM decided (tool calls with args)
     if resp:
         for tc in resp.get("tool_calls", []):
             args = tc.get("arguments", "")
-            if isinstance(args, str) and len(args) > 150:
-                args = args[:150] + "…"
+            if isinstance(args, str) and len(args) > 200:
+                args = args[:200] + "…"
             console.print(f"{indent}    [cyan]→ {tc.get('name', '?')}[/cyan]([dim]{args}[/dim])")
-        content = resp.get("content", "")
-        if content:
-            console.print(f"{indent}    [dim]{content[:200]}[/dim]")
+
+    # Result: what the tool returned
+    for i, result in enumerate(tool_results):
+        preview = result[:250].replace("\n", "↵ ")
+        if len(result) > 250:
+            preview += "…"
+        console.print(f"{indent}    [dim]← {preview}[/dim]")
 
 
 def _print_sgr_log(entry: dict, indent: str):
