@@ -220,10 +220,10 @@ class TraceDBReader:
                     "usage": data.get("usage", {}),
                 })
                 usage = data.get("usage", {})
-                agent["tokens_in"] = usage.get("prompt_tokens", agent["tokens_in"])
-                agent["tokens_out"] = usage.get("completion_tokens", agent["tokens_out"])
-                agent["tokens_cached"] = usage.get("cached_tokens", agent["tokens_cached"])
-                agent["tokens_paid"] = usage.get("paid", agent["tokens_paid"])
+                agent["tokens_in"] += usage.get("prompt_tokens", 0)
+                agent["tokens_out"] += usage.get("completion_tokens", 0)
+                agent["tokens_cached"] += usage.get("cached_tokens", 0)
+                agent["tokens_paid"] += usage.get("paid", 0)
             elif etype == "agent_reflect":
                 agent["sgr"].append({
                     "step": step,
