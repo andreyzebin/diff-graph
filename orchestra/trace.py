@@ -121,6 +121,7 @@ def render_html(trace: dict, title: str = "Review Trace") -> str:
     h.line(f"<h1>{esc(title)}</h1>")
     _render_agent(h, trace, depth=0)
     h.line('</div>')
+    h.line('<div class="divider" id="divider"></div>')
     h.line('<div class="right-pane" id="detail-panel">')
     h.line('<div class="tab-bar" id="tab-bar"><span class="tab-hint">Click [⧉] to open details</span></div>')
     h.line('<div class="tab-content" id="tab-content"></div>')
@@ -494,11 +495,19 @@ _CSS = """
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
        background: #0d1117; color: #c9d1d9; padding: 0; }
 h1 { color: #58a6ff; margin-bottom: 20px; font-size: 1.4em; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #0d1117; }
+::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #484f58; }
+::-webkit-scrollbar-corner { background: #0d1117; }
+* { scrollbar-width: thin; scrollbar-color: #30363d #0d1117; }
 
 /* Split-pane layout */
 .layout { display: flex; height: 100vh; }
-.left-pane { flex: 1; overflow-y: auto; padding: 20px; min-width: 400px; }
-.right-pane { width: 50%; min-width: 300px; border-left: 1px solid #30363d;
+.left-pane { flex: 1; overflow-y: auto; padding: 20px; min-width: 200px; }
+.divider { width: 4px; cursor: col-resize; background: #30363d; flex-shrink: 0; transition: background 0.15s; }
+.divider:hover, .divider.dragging { background: #58a6ff; }
+.right-pane { width: 50%; min-width: 200px; border-left: none;
               display: flex; flex-direction: column; background: #0d1117; }
 .tab-bar { display: flex; gap: 0; overflow-x: auto; background: #161b22;
            border-bottom: 1px solid #30363d; min-height: 32px; align-items: center; flex-shrink: 0; }
@@ -739,4 +748,32 @@ function escHtml(s) {
   d.textContent = s;
   return d.innerHTML;
 }
+
+// Resizable split pane
+(function() {
+  const divider = document.getElementById('divider');
+  if (!divider) return;
+  const left = divider.previousElementSibling;
+  const right = divider.nextElementSibling;
+  if (!left || !right) return;
+  let dragging = false;
+  divider.addEventListener('mousedown', (e) => {
+    dragging = true; divider.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none'; e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const rect = divider.parentElement.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const leftW = Math.max(200, Math.min(rect.width - 200, x));
+    left.style.flex = 'none'; left.style.width = leftW + 'px';
+    right.style.width = (rect.width - leftW - 4) + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return; dragging = false;
+    divider.classList.remove('dragging');
+    document.body.style.cursor = ''; document.body.style.userSelect = '';
+  });
+})();
 """

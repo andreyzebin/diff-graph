@@ -119,3 +119,42 @@ function escHtml(s) {
   d.textContent = s;
   return d.innerHTML;
 }
+
+// Resizable split pane
+(function() {
+  const divider = document.getElementById('divider');
+  if (!divider) return;
+  const left = divider.previousElementSibling;
+  const right = divider.nextElementSibling;
+  if (!left || !right) return;
+
+  let dragging = false;
+
+  divider.addEventListener('mousedown', (e) => {
+    dragging = true;
+    divider.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const container = divider.parentElement;
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const total = rect.width;
+    const leftW = Math.max(200, Math.min(total - 200, x));
+    left.style.flex = 'none';
+    left.style.width = leftW + 'px';
+    right.style.width = (total - leftW - 4) + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
