@@ -17,8 +17,12 @@ No pre-indexing, no database, no persistent state. One `run_review()` call per d
 ```
 orchestra/                       Prompt-defined agent framework (~3,700 LOC)
 +-- compiler.py                  LLM compiler: .prompt files -> agent registry
-+-- trace.py                     HTML trace renderer with split-pane + tabs
++-- trace.py                     Trace data collection + template preparation
 +-- trace_db.py                  SQLite trace storage + reader
++-- trace_server/                FastAPI trace viewer (Alpine.js + Jinja2)
+    +-- app.py                   Routes, data API, WebSocket live updates
+    +-- templates/               Jinja2: trace.html, macros.html, runs.html, live.html
+    +-- static/                  trace.css
 +-- types.py                     AgentConfig, BudgetConfig, LLMParamsConfig
 +-- config.py                    YAML loading, env var expansion, validation
 +-- events.py                    EventBus with typed events
@@ -129,9 +133,15 @@ Structured self-reflection. Each question gets a stable ID. Fuzzy matching links
 
 Tracks cumulative paid (sum of per-step deltas) with cache discount. Agents use their own `.prompt` budget. Default pushers: 75% nudge + 100% force_done.
 
-### Trace system (`orchestra/trace_db.py`, `orchestra/trace.py`)
+### Trace system (`orchestra/trace_db.py`, `orchestra/trace.py`, `orchestra/trace_server/`)
 
-SQLite DB persists events per-step (crash-safe). HTML renderer produces split-pane view: agent tree left, detail tabs right.
+SQLite DB persists events per-step (crash-safe). FastAPI trace server with Alpine.js frontend:
+- Split-pane layout: agent tree left, detail tabs right (draggable divider)
+- `[⧉]` buttons load full data on demand from API (messages, tool calls, results)
+- Right panel toolbar: `📋 Copy` to clipboard, `{ } JSON` toggle between plain text and raw JSON
+- Tool call args shown as pretty-printed JSON; message content shown as plain text
+- WebSocket live view for running agents
+- Jinja2 templates with recursive macros for agent tree rendering
 
 ### `get_outline` (`outline.py`)
 
@@ -203,7 +213,7 @@ Create `diffgraph/<provider>.py` following the pattern in `bitbucket.py`:
 
 ```bash
 python cli.py trace --log        # console trace: call/result per step, agent tree
-python cli.py trace              # HTML trace in browser (split-pane)
+python cli.py trace              # open last run in browser (starts trace server)
 python cli.py trace --list       # recent runs table
 python cli.py trace --run ID     # specific run
 ```

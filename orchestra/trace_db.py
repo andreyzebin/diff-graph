@@ -193,7 +193,7 @@ class TraceDBReader:
                         "tokens_in": 0, "tokens_out": 0,
                         "tokens_cached": 0, "tokens_paid": 0,
                         "sgr": [],
-                        "llm_calls": [],
+                            "llm_calls": [],
                         "children": [],
                         "output": None,
                     }

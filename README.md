@@ -128,11 +128,10 @@ python cli.py run --repo . --diff my.diff --output findings.json
 ### `trace` -- inspect execution traces
 
 ```bash
-python cli.py trace              # open HTML trace in browser
+python cli.py trace              # open last run in browser (starts trace server)
 python cli.py trace --log        # print trace to console (call/result per step, agent tree)
 python cli.py trace --list       # list recent runs
 python cli.py trace --run ID     # specific run
-python cli.py trace -o trace.html  # save HTML to file
 ```
 
 ### `inspect` -- parse diff only (no LLM)
@@ -257,7 +256,7 @@ Every agent's generation parameters (temperature, penalties, model) are mutable 
 
 ### Trace system
 
-SQLite trace DB persists events per-step (crash-safe). HTML trace with split-pane (tree left, detail tabs right). Console trace via `--log`. See CLI section above for commands.
+SQLite trace DB persists events per-step (crash-safe). Web trace viewer (FastAPI + Alpine.js) with split-pane layout: agent tree left, detail tabs right. Click `[⧉]` to load full data on demand from the API. Right panel has `📋 Copy` and `{ } JSON` toggle per tab. Console trace via `--log`. See CLI section above for commands.
 
 ### Behavioral signals (read-only)
 
@@ -286,8 +285,12 @@ Java, Python, TypeScript / TSX, Go, Kotlin, Ruby, C#
 ```
 orchestra/                   Prompt-defined agent framework (~3,700 LOC)
 +-- compiler.py              LLM compiler: .prompt files -> agent registry
-+-- trace.py                 HTML trace renderer with split-pane + tabs
++-- trace.py                 Trace data collection + template preparation
 +-- trace_db.py              SQLite trace storage + reader
++-- trace_server/            FastAPI trace viewer (Alpine.js + Jinja2)
+    +-- app.py               Routes, data API, WebSocket live updates
+    +-- templates/            Jinja2 templates (trace, macros, runs, live)
+    +-- static/               CSS + JS
 +-- types.py                 AgentConfig, BudgetConfig, LLMParamsConfig
 +-- config.py                YAML loading, env var expansion, validation
 +-- events.py                EventBus with typed events

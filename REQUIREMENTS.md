@@ -273,21 +273,24 @@ Events persisted per-step to a SQLite database. Crash-safe -- partial runs are r
 - Full execution tree reconstructable from stored events
 - Reader API for querying runs, agents, and steps
 
-### HTML trace (`trace.py`)
+### Trace server (`trace_server/`)
 
-Split-pane layout:
-- **Left pane:** agent tree (hierarchical view of all agents in the run)
-- **Right pane:** detail tabs for selected agent (steps, SGR, budget, output)
-- `[open-in-panel]` button opens agent details in a dedicated panel
-- `[JSON copy]` button copies raw event data to clipboard
+FastAPI + Alpine.js web viewer with Jinja2 templates:
+
+- **Split-pane layout:** agent tree left (recursive Jinja2 macros), detail tabs right (draggable divider)
+- **On-demand data loading:** `[⧉]` buttons fetch full data from API endpoints (`/api/runs/{id}/step/{agent_id}/{step}/messages`, `/call`, `/result`)
+- **Right panel toolbar:** `📋 Copy` copies current view to clipboard; `{ } JSON` toggles between plain text and pretty-printed JSON
+- **Content display:** message content shown as plain text (system prompts, user messages), tool call arguments as pretty-printed JSON (escaped JSON strings auto-parsed), raw JSON available via toggle
+- **Result delta:** API returns only new tool messages per step (not accumulated), matching the paired-step delta logic
+- **WebSocket live view:** `/ws/live/{run_id}` pushes events in real-time for running agents
+- **Templates:** `macros.html` (recursive agent tree, LLM call steps, SGR entries, findings), `trace.html` (layout + Alpine.js), `runs.html` (run list with search), `live.html` (live view)
 
 ### CLI trace commands
 
-- `cli.py trace` -- renders HTML and opens in browser (default)
+- `cli.py trace` -- open last run in browser (starts trace server)
 - `cli.py trace --log` -- console trace (call -> result per step, agent tree)
 - `cli.py trace --list` -- recent runs table
 - `cli.py trace --run ID` -- specific run
-- `cli.py trace -o file.html` -- save HTML to file
 
 ### Events
 

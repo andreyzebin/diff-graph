@@ -114,22 +114,34 @@ async def api_step_call(run_id: str, agent_id: str, step: int):
 
 @app.get("/api/runs/{run_id}/step/{agent_id}/{step}/result", response_class=PlainTextResponse)
 async def api_step_result(run_id: str, agent_id: str, step: int):
-    """Full tool result for a specific step (from next step's messages)."""
+    """Full tool result for a specific step (delta tool messages only)."""
     conn = sqlite3.connect(str(DEFAULT_DB_PATH))
     conn.row_factory = sqlite3.Row
-    # Get the next step's request to find tool messages
-    row = conn.execute(
+
+    # Count tool messages in current step's request (= offset for previous steps)
+    cur_row = conn.execute(
+        "SELECT data_json FROM events WHERE run_id=? AND agent_id=? AND event_type='agent_llm_request' AND step=? LIMIT 1",
+        (run_id, agent_id, step),
+    ).fetchone()
+    prev_tool_count = 0
+    if cur_row:
+        cur_data = json.loads(cur_row["data_json"]) if cur_row["data_json"] else {}
+        prev_tool_count = sum(1 for m in cur_data.get("messages", []) if m.get("role") == "tool")
+
+    # Get next step's request to find new tool messages
+    next_row = conn.execute(
         "SELECT data_json FROM events WHERE run_id=? AND agent_id=? AND event_type='agent_llm_request' AND step>? ORDER BY step LIMIT 1",
         (run_id, agent_id, step),
     ).fetchone()
     conn.close()
-    if not row:
+    if not next_row:
         return PlainTextResponse("(no result captured)", status_code=404)
-    data = json.loads(row["data_json"]) if row["data_json"] else {}
+    data = json.loads(next_row["data_json"]) if next_row["data_json"] else {}
     messages = data.get("messages", [])
     tool_msgs = [m.get("content", "") for m in messages if m.get("role") == "tool"]
-    # Return last tool message(s) as combined text
-    return PlainTextResponse("\n---\n".join(tool_msgs[-3:]) if tool_msgs else "(no tool results)")
+    # Only return NEW tool messages (delta from current step)
+    new_msgs = tool_msgs[prev_tool_count:]
+    return PlainTextResponse("\n---\n".join(new_msgs) if new_msgs else "(no tool results)")
 
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────

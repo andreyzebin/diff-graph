@@ -1,3 +1,4 @@
+{% from "macros.html" import agent as _agent, llm_call, sgr_entry, findings %}
 <!DOCTYPE html>
 <html>
 <head>
@@ -10,10 +11,10 @@
 <div class="layout" x-data="splitPane()">
   <div class="left-pane" :style="'width:' + leftWidth + 'px'">
     <h1><a href="/" style="color:#8b949e;text-decoration:none">←</a> Trace · {{ title }}</h1>
-    {{ _agent(trace) }}
+    {{ _agent(trace, run_id) }}
   </div>
   <div class="divider" @mousedown="startDrag($event)"></div>
-  <div class="right-pane" x-data="tabPanel()" :style="'width:calc(100% - ' + $root.leftWidth + 'px - 4px)'">
+  <div class="right-pane" x-data="tabPanel()">
     <div class="tab-bar">
       <template x-if="tabs.length === 0">
         <span class="tab-hint">Click [⧉] to open details</span>
@@ -27,12 +28,20 @@
     </div>
     <div class="tab-content">
       <template x-if="active && getTab(active)">
-        <div>
+        <div style="display:flex;flex-direction:column;height:100%">
           <template x-if="getTab(active).loading">
             <span style="color:#8b949e">Loading…</span>
           </template>
           <template x-if="!getTab(active).loading">
-            <pre x-text="getTab(active).content"></pre>
+            <div style="display:flex;flex-direction:column;height:100%">
+              <div class="tab-toolbar">
+                <button class="toolbar-btn" @click="copyContent(getTab(active))">📋 Copy</button>
+                <button class="toolbar-btn" :class="{ active: getTab(active).jsonMode }"
+                        :disabled="!getTab(active).rawJson"
+                        @click="toggleJson(getTab(active))">{ } JSON</button>
+              </div>
+              <pre class="tab-pre" x-text="displayContent(getTab(active))"></pre>
+            </div>
           </template>
         </div>
       </template>
@@ -40,204 +49,13 @@
   </div>
 </div>
 
-{# ── Recursive agent macro ── #}
-{% macro _agent(a) %}
-<details {{ 'open' if a.depth == 0 }} class="agent depth-{{ [a.depth, 3] | min }}">
-  <summary class="agent-header">
-    <span class="agent-name">{{ a.agent_name }}</span>
-    <span class="agent-meta">{{ a.steps }} steps · paid {{ a.tokens_paid }} tok · id:{{ a.agent_id[:10] }}</span>
-    {% if a.conf_trail %}
-    <span class="conf-trail">
-      {% for c in a.conf_trail %}
-      <span class="conf-dot conf-{{ c }}" title="{{ c }}"></span>
-      {% endfor %}
-    </span>
-    {% endif %}
-  </summary>
-
-  {# Steps #}
-  {% for s in a.paired_steps %}
-    {{ _llm_call(s, a.agent_id) }}
-    {% if s.sgr %}
-      {{ _sgr_entry(s.sgr, s.sgr_index) }}
-    {% endif %}
-  {% endfor %}
-
-  {# Children #}
-  {% if a.children %}
-  <div class="children-section">
-    <div class="spawn-label">spawned {{ a.children | length }} agent(s)</div>
-    {% for child in a.children %}
-      {{ _agent(child) }}
-    {% endfor %}
-  </div>
-  {% endif %}
-
-  {# Output #}
-  {% if a.output %}
-    {{ _findings(a.output) }}
-  {% endif %}
-</details>
-{% endmacro %}
-
-{# ── LLM call step ── #}
-{% macro _llm_call(s, agent_id) %}
-{% set resp = s.resp %}
-{% set req = s.req %}
-{% if resp or req %}
-<details class="llm-call">
-  <summary class="llm-header">
-    <span class="llm-step">step {{ s.step }}</span>
-    {% if resp %}
-      {% set calls = resp.tool_calls or [] %}
-      {% if calls %}
-        <span class="llm-tools">{{ calls[:3] | map(attribute='name') | join(', ') }}{% if calls | length > 3 %} +{{ calls | length - 3 }}{% endif %}</span>
-      {% endif %}
-      {% set usage = resp.usage or {} %}
-      {% set sp = usage.get('step_paid', usage.get('paid', 0)) %}
-      {% if sp %}
-        <span class="llm-usage"> · paid:{{ sp }}{% if usage.get('cached_tokens') %} (cache:{{ usage.cached_tokens }}){% endif %}</span>
-      {% endif %}
-    {% endif %}
-    {% if req %}
-      {% set params = req.llm_params or {} %}
-      {% if params.get('model') %}
-        <span class="llm-model">{{ params.model }} t={{ params.get('temperature', '?') }}</span>
-      {% endif %}
-    {% endif %}
-  </summary>
-
-  {# Call: tool calls with truncated args + [⧉] fetch button #}
-  {% if resp and resp.tool_calls %}
-  <div class="llm-section">
-    {% for tc in resp.tool_calls %}
-      <div class="resp-tc">
-        {{ tc.name }}({{ (tc.arguments or '')[:200] }}{{ '…' if (tc.arguments or '') | length > 200 }})
-        <span class="open-btn" onclick="fetchTab('step {{ s.step }} Call: {{ tc.name }}', '/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/call')">⧉</span>
-      </div>
-    {% endfor %}
-    {% set usage = resp.usage or {} %}
-    {% set sp = usage.get('step_paid', usage.get('paid', 0)) %}
-    <div class="resp-usage">in:{{ usage.get('prompt_tokens', 0) }} out:{{ usage.get('completion_tokens', 0) }} cached:{{ usage.get('cached_tokens', 0) }} step_paid:{{ sp }}</div>
-  </div>
-  {% endif %}
-
-  {# Result: truncated + [⧉] fetch #}
-  {% if s.tool_results %}
-  <div class="llm-section">
-    <div class="llm-section-title">Result</div>
-    {% for r in s.tool_results %}
-      <pre class="msg-content">{{ r }}</pre>
-    {% endfor %}
-    <span class="open-btn" onclick="fetchTab('step {{ s.step }} Result', '/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/result')">⧉ full</span>
-  </div>
-  {% endif %}
-
-  {# Context: message count + [📋] fetch messages JSON #}
-  {% if req %}
-  <details class="llm-context">
-    <summary class="llm-section-title">
-      Context ({{ req.message_count or (req.messages or []) | length }} messages)
-      <span class="download-btn" onclick="event.stopPropagation(); event.preventDefault(); copyFromApi('/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/messages')">📋 JSON</span>
-    </summary>
-    {% for m in (req.messages or []) %}
-      <details class="msg-entry">
-        <summary class="msg-role msg-{{ m.role }}">
-          {{ m.role }}:
-          {% if m.content %}{{ m.content[:80] | replace('\n', '↵ ') }}{{ '…' if m.content | length > 80 }}
-          {% elif m.tool_calls %}→ {{ m.tool_calls[:3] | map(attribute='name') | join(', ') }}
-          {% else %}(empty){% endif %}
-          {% if m.content %}<span class="open-btn" onclick="event.stopPropagation(); fetchTab('{{ m.role }}', '/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/messages', {{ loop.index0 }})">⧉</span>{% endif %}
-        </summary>
-        {% if m.content %}<pre class="msg-content">{{ m.content[:1000] }}{{ '…' if m.content | length > 1000 }}</pre>{% endif %}
-        {% if m.tool_calls %}
-          {% for tc in m.tool_calls %}
-            <div class="msg-tc">{{ tc.name or tc.get('function', {}).get('name', '?') }}({{ (tc.args or tc.get('function', {}).get('arguments', ''))[:200] }})</div>
-          {% endfor %}
-        {% endif %}
-      </details>
-    {% endfor %}
-  </details>
-  {% endif %}
-</details>
-{% endif %}
-{% endmacro %}
-
-{# ── SGR entry ── #}
-{% macro _sgr_entry(entry, index) %}
-{% set conf = entry.confidence or '?' %}
-<details class="sgr-entry conf-{{ conf }}">
-  <summary class="sgr-header">
-    <span class="sgr-label">reflect #{{ (index or 0) + 1 }}</span>
-    <span class="sgr-step">step {{ entry.step }}</span>
-    <span class="conf-badge conf-{{ conf }}">{{ conf }}</span>
-    {% set resolved = entry.resolved_questions or [] %}
-    {% set answered = resolved | selectattr('resolution', 'equalto', 'answered') | list | length %}
-    {% set dropped = resolved | length - answered %}
-    {% if answered %}<span class="resolved-count">✓{{ answered }}</span>{% endif %}
-    {% if dropped %}<span class="dropped-count">✗{{ dropped }}</span>{% endif %}
-    {% if entry.questions_remaining %}<span class="open-count">●{{ entry.questions_remaining | length }}</span>{% endif %}
-  </summary>
-  {% if entry.learned %}
-    <div class="sgr-learned"><strong>Learned:</strong> {{ entry.learned[:500] }}</div>
-  {% endif %}
-  {% if resolved %}
-  <div class="sgr-resolved">
-    {% for rq in resolved %}
-    <div class="q-resolved {{ 'answered' if rq.resolution == 'answered' else 'dropped' }}">
-      <span class="q-icon">{{ '✓' if rq.resolution == 'answered' else '✗' }}</span>
-      <span class="q-id">{{ rq.id or rq.question or '?' }}</span>
-      {% if rq.summary %}<span class="q-summary"> → {{ rq.summary[:120] }}</span>{% endif %}
-    </div>
-    {% endfor %}
-  </div>
-  {% endif %}
-  {% if entry.questions_remaining %}
-  <div class="sgr-open">
-    {% for q in entry.questions_remaining %}
-    <div class="q-open">
-      <span class="q-dot">●</span>
-      {% if q is mapping %}
-        <span class="q-id">{{ q.id or '?' }}</span>: {{ q.text or '' }}
-      {% else %}
-        {{ q }}
-      {% endif %}
-    </div>
-    {% endfor %}
-  </div>
-  {% endif %}
-  {% if entry.next_action %}
-    <div class="sgr-next"><strong>Next:</strong> {{ entry.next_action[:200] }}</div>
-  {% endif %}
-</details>
-{% endmacro %}
-
-{# ── Findings ── #}
-{% macro _findings(output) %}
-<div class="output-section">
-  {% if output is iterable and output is not string %}
-    <div class="findings-header">{{ output | length }} finding(s)</div>
-    {% for f in output %}
-      {% if f is mapping %}
-      <div class="finding sev-{{ (f.severity or '?') | lower }}">
-        <span class="sev-badge">{{ f.severity or '?' }}</span>
-        <strong>{{ f.title or '?' }}</strong>
-        <span class="finding-loc">{{ f.file or '' }}:{{ f.line or '' }}</span>
-      </div>
-      {% endif %}
-    {% endfor %}
-  {% else %}
-    <pre class="output-raw">{{ output }}</pre>
-  {% endif %}
-</div>
-{% endmacro %}
-
 <script>
 function splitPane() {
   return {
     leftWidth: Math.floor(window.innerWidth * 0.5),
     startDrag(e) {
-      const onMove = (e) => { this.leftWidth = Math.max(200, Math.min(window.innerWidth - 204, e.clientX)); };
+      const self = this;
+      const onMove = (ev) => { self.leftWidth = Math.max(200, Math.min(window.innerWidth - 204, ev.clientX)); };
       const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.body.style.cursor = ''; document.body.style.userSelect = ''; };
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
@@ -252,9 +70,9 @@ function tabPanel() {
   return {
     tabs: [],
     active: null,
-    openTab(id, title, content) {
+    openTab(id, title, content, rawJson) {
       if (this.tabs.find(t => t.id === id)) { this.active = id; return; }
-      this.tabs.push({ id, title, content, loading: false });
+      this.tabs.push({ id, title, content, rawJson: rawJson || null, jsonMode: false, loading: false });
       this.active = id;
     },
     closeTab(id) {
@@ -262,6 +80,19 @@ function tabPanel() {
       if (this.active === id) this.active = this.tabs.length ? this.tabs[this.tabs.length-1].id : null;
     },
     getTab(id) { return this.tabs.find(t => t.id === id); },
+    toggleJson(tab) {
+      if (!tab.rawJson) return;
+      tab.jsonMode = !tab.jsonMode;
+    },
+    displayContent(tab) {
+      return tab.jsonMode && tab.rawJson ? tab.rawJson : tab.content;
+    },
+    async copyContent(tab) {
+      try {
+        await navigator.clipboard.writeText(this.displayContent(tab));
+        showToast('✓ Copied');
+      } catch(e) { showToast('Error: ' + e.message); }
+    },
   };
 }
 
@@ -274,20 +105,42 @@ async function fetchTab(title, url, msgIndex) {
   data.openTab(id, title, 'Loading…');
   try {
     const resp = await fetch(url);
-    let content = await resp.text();
-    // If msgIndex specified, extract that message
+    const raw = await resp.text();
+    let content = raw;
+    let rawJson = null;
     if (msgIndex !== undefined) {
       try {
-        const msgs = JSON.parse(content);
+        const msgs = JSON.parse(raw);
         if (Array.isArray(msgs) && msgs[msgIndex]) {
-          content = JSON.stringify(msgs[msgIndex], null, 2);
+          const msg = msgs[msgIndex];
+          rawJson = JSON.stringify(msg, null, 2);
+          content = typeof msg.content === 'string' && msg.content
+            ? msg.content
+            : rawJson;
         }
       } catch(e) {}
     } else {
-      try { content = JSON.stringify(JSON.parse(content), null, 2); } catch(e) {}
+      try {
+        const parsed = JSON.parse(raw);
+        rawJson = JSON.stringify(parsed, null, 2);
+        // Tool calls array: extract and pretty-print arguments
+        if (Array.isArray(parsed) && parsed.length && parsed[0].arguments !== undefined) {
+          const parts = parsed.map(tc => {
+            try { return JSON.stringify(JSON.parse(tc.arguments), null, 2); } catch(e) { return tc.arguments; }
+          });
+          content = parts.join('\n\n---\n\n');
+        } else {
+          content = rawJson;
+        }
+      } catch(e) {}
     }
     const tab = data.tabs.find(t => t.id === id);
-    if (tab) tab.content = content;
+    if (tab) {
+      tab.content = content;
+      tab.rawJson = rawJson;
+      // If content is same as rawJson, no toggle needed — rawJson stays for copy
+      if (content === rawJson) tab.rawJson = null;
+    }
   } catch(e) {
     const tab = data.tabs.find(t => t.id === id);
     if (tab) tab.content = 'Error: ' + e.message;
