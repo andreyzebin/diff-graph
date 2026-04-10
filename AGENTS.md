@@ -135,13 +135,24 @@ Tracks cumulative paid (sum of per-step deltas) with cache discount. Agents use 
 
 ### Trace system (`orchestra/trace_db.py`, `orchestra/trace.py`, `orchestra/trace_server/`)
 
-SQLite DB persists events per-step (crash-safe). FastAPI trace server with Alpine.js frontend:
-- Split-pane layout: agent tree left, detail tabs right (draggable divider)
+SQLite DB persists events per-step (crash-safe). FastAPI trace server with Alpine.js frontend. Two views:
+
+**Navigator** (`/runs/{id}/trace`):
+- Split-pane: agent tree left, detail tabs right (draggable divider)
 - `[⧉]` buttons load full data on demand from API (messages, tool calls, results)
-- Right panel toolbar: `📋 Copy` to clipboard, `{ } JSON` toggle between plain text and raw JSON
-- Tool call args shown as pretty-printed JSON; message content shown as plain text
-- WebSocket live view for running agents
-- Jinja2 templates with recursive macros for agent tree rendering
+- Right panel toolbar: `📋 Copy` to clipboard, `{ } JSON` toggle
+- Tool call args pretty-printed; message content shown as plain text
+- Token usage per step: `↑` new input, `↓` output, `©` cached
+- Agent header shows totals: `↑total_in ↓total_out ©total_cached`
+
+**Live** (`/runs/{id}/live`):
+- Real-time event stream via WebSocket
+- Bulk-loads existing events on open, then streams new ones
+- Child agents color-coded with `[reviewer:Focus]` tags
+- Tool args preview in event lines
+- Auto-scroll pauses when user scrolls up
+
+Runs list (`/`) auto-refreshes every 3s. Both views link to each other.
 
 ### `get_outline` (`outline.py`)
 

@@ -106,6 +106,25 @@ def prepare_for_template(trace: dict) -> dict:
     return _prepare_agent(trace, depth=0)
 
 
+_SKIP_ARGS = {"spawn_agent", "spawn_many", "reflect", "done"}
+
+def _tool_call_summary(tc: dict) -> str:
+    """Build a short display string like 'read_file(OrderService.java)'."""
+    name = tc.get("name", "?")
+    if name in _SKIP_ARGS:
+        return name
+    try:
+        args = json.loads(tc.get("arguments", "{}") or "{}")
+        vals = list(args.values())
+        if not vals:
+            return name
+        first = str(vals[0])[:40]
+        ellip = "…" if len(str(vals[0])) > 40 else ""
+        return f"{name}({first}{ellip})"
+    except (json.JSONDecodeError, TypeError):
+        return name
+
+
 def _prepare_agent(trace: dict, depth: int) -> dict:
     """Prepare one agent's data for template rendering."""
     sgr = trace.get("sgr", [])
@@ -116,6 +135,12 @@ def _prepare_agent(trace: dict, depth: int) -> dict:
         [e["step"] for e in sgr] +
         [c["step"] for c in llm_calls]
     ))
+
+    # Enrich tool calls with short argument summaries
+    for call in llm_calls:
+        if call["type"] == "response":
+            for tc in call.get("tool_calls", []):
+                tc["summary"] = _tool_call_summary(tc)
 
     # Build paired steps
     steps_list = []
@@ -163,11 +188,26 @@ def _prepare_agent(trace: dict, depth: int) -> dict:
     # Confidence trail
     conf_trail = [e.get("confidence", "?") for e in sgr]
 
+    # Compute totals from usage
+    total_in = 0
+    total_out = 0
+    total_cached = 0
+    for sd in paired_steps:
+        resp = sd.get("resp")
+        if resp:
+            usage = resp.get("usage", {})
+            total_in += usage.get("prompt_tokens", 0) - usage.get("cached_tokens", 0)
+            total_out += usage.get("completion_tokens", 0)
+            total_cached += usage.get("cached_tokens", 0)
+
     return {
         "agent_id": trace.get("agent_id", ""),
         "agent_name": trace.get("agent_name", ""),
         "steps": trace.get("steps", 0),
         "tokens_paid": trace.get("tokens_paid", 0),
+        "total_in": total_in,
+        "total_out": total_out,
+        "total_cached": total_cached,
         "conf_trail": conf_trail,
         "paired_steps": paired_steps,
         "children": [_prepare_agent(c, depth + 1) for c in trace.get("children", [])],

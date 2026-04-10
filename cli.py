@@ -236,8 +236,10 @@ def run(
             changed_lines=changed_lines,
         )
         console.print(f"\n[green]Posted {posted}/{len(comments_to_post)} comments[/green]")
+    elif post_comments and not pr_url:
+        console.print("[yellow]--post-comments requires --pr-url[/yellow]")
 
-        # Apply queued replies/resolves
+    if post_comments and pr_url:
         if review_ctx.comment_replies or review_ctx.comment_resolves:
             from diffgraph.bitbucket import reply_to_pr_comment, resolve_pr_comment
             for reply in review_ctx.comment_replies:
@@ -252,9 +254,6 @@ def run(
                     console.print(f"  [dim]resolved #{cid}[/dim]")
                 except Exception as exc:
                     console.print(f"  [yellow]resolve #{cid} failed: {exc}[/yellow]")
-
-    elif post_comments and not pr_url:
-        console.print("[yellow]--post-comments requires --pr-url[/yellow]")
 
     if output:
         Path(output).write_text(

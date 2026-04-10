@@ -275,15 +275,30 @@ Events persisted per-step to a SQLite database. Crash-safe -- partial runs are r
 
 ### Trace server (`trace_server/`)
 
-FastAPI + Alpine.js web viewer with Jinja2 templates:
+FastAPI + Alpine.js web viewer with Jinja2 templates. Two views accessible via separate routes:
 
-- **Split-pane layout:** agent tree left (recursive Jinja2 macros), detail tabs right (draggable divider)
-- **On-demand data loading:** `[⧉]` buttons fetch full data from API endpoints (`/api/runs/{id}/step/{agent_id}/{step}/messages`, `/call`, `/result`)
-- **Right panel toolbar:** `📋 Copy` copies current view to clipboard; `{ } JSON` toggles between plain text and pretty-printed JSON
-- **Content display:** message content shown as plain text (system prompts, user messages), tool call arguments as pretty-printed JSON (escaped JSON strings auto-parsed), raw JSON available via toggle
-- **Result delta:** API returns only new tool messages per step (not accumulated), matching the paired-step delta logic
-- **WebSocket live view:** `/ws/live/{run_id}` pushes events in real-time for running agents
-- **Templates:** `macros.html` (recursive agent tree, LLM call steps, SGR entries, findings), `trace.html` (layout + Alpine.js), `runs.html` (run list with search), `live.html` (live view)
+**Navigator** (`/runs/{id}/trace`):
+- Split-pane: agent tree left (recursive Jinja2 macros), detail tabs right (draggable divider)
+- `[⧉]` buttons fetch full data from API (`/api/runs/{id}/step/{agent_id}/{step}/messages`, `/call`, `/result`)
+- Right panel toolbar: `📋 Copy` + `{ } JSON` toggle (plain text vs pretty JSON)
+- Content display: message content as plain text, tool call arguments as pretty-printed JSON
+- Result delta: API returns only new tool messages per step (not accumulated)
+- Token usage per step: `↑` uncached input (`prompt_tokens - cached_tokens`), `↓` completion, `©` cached
+- Agent header totals: `↑total_in ↓total_out ©total_cached`
+- Step summaries show tool name + first argument preview (e.g. `read_file(OrderService.java)`)
+
+**Live** (`/runs/{id}/live`):
+- Real-time event stream via WebSocket (`/ws/live/{run_id}?after=N`)
+- Bulk-loads existing events via `GET /api/runs/{id}/events` on open, then WebSocket for incremental updates
+- Child agents color-coded with `[reviewer:Focus]` tags (6 rotating colors)
+- Tool args preview, token usage (`↑↓©`) in event lines
+- Auto-scroll pauses when user scrolls up, resumes at bottom
+
+**Runs list** (`/`): initial server render + polling `GET /api/runs` every 3s. New runs flash-highlighted.
+
+Both views link to each other. `/runs/{id}` redirects to `/live` if running, `/trace` if completed.
+
+**Templates:** `macros.html` (recursive agent tree, LLM call steps, SGR entries, findings), `trace.html` (navigator layout), `runs.html` (run list), `live.html` (live view)
 
 ### CLI trace commands
 

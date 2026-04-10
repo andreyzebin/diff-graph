@@ -27,6 +27,7 @@ h1 { margin-bottom: 16px; display: flex; align-items: center; gap: 12px; font-si
 .log-resolved { margin-left: 20px; }
 .log-resolved-answered { color: #56d364; }
 .log-resolved-dropped { color: #8b949e; }
+.log-agent-tag { font-size: 0.8em; font-weight: bold; opacity: 0.85; }
 .log-spawn { color: #58a6ff; font-style: italic; }
 .log-child { margin-left: 20px; color: #8b949e; }
 .log-child-done { color: #56d364; }
@@ -36,14 +37,19 @@ h1 { margin-bottom: 16px; display: flex; align-items: center; gap: 12px; font-si
 .log-sev-major { border-color: #9e6a0366; color: #c69026; }
 .log-sev-minor { border-color: #388bfd33; color: #79c0ff; }
 .log-separator { border-top: 1px solid #30363d; margin: 8px 0; }
+.nav-link { font-size: 0.6em; font-weight: normal; color: #8b949e; text-decoration: none;
+            border: 1px solid #30363d; border-radius: 4px; padding: 2px 8px; margin-left: auto; }
+.nav-link:hover { color: #58a6ff; border-color: #58a6ff; }
 </style>
 </head>
 <body>
 <h1>
   <span id="status-badge" class="live-badge">LIVE</span>
   Trace · {{ run_id[:12] }}
+  <a href="/runs/{{ run_id }}/trace" class="nav-link">Navigator ⧉</a>
 </h1>
 <div class="meta">
+  <a href="/" style="color:#8b949e;text-decoration:none">← runs</a> ·
   Model: {{ run_meta.get('model', '?') }} · Started: {{ (run_meta.get('started_at', '?'))[:19] }}
 </div>
 
@@ -52,23 +58,35 @@ h1 { margin-bottom: 16px; display: flex; align-items: center; gap: 12px; font-si
 <script>
 const runId = '{{ run_id }}';
 const log = document.getElementById('log');
-const agents = {};  // agent_id -> {name, steps, paid, children}
+const agents = {};  // agent_id -> {name, steps, paid, isChild, color}
 let rootAgent = null;
+const childColors = ['#d2a8ff', '#7ee787', '#ffa657', '#79c0ff', '#ff7b72', '#a5d6ff'];
+let nextColor = 0;
 
-function connect() {
+async function connect() {
+  // Bulk-load existing events first
+  let lastId = 0;
+  try {
+    const resp = await fetch(`/api/runs/${runId}/events`);
+    const events = await resp.json();
+    for (const ev of events) {
+      handleEvent(ev);
+      if (ev.id > lastId) lastId = ev.id;
+    }
+  } catch(e) {}
+
+  // Then subscribe to new events via WebSocket
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${proto}//${location.host}/ws/live/${runId}`);
+  const ws = new WebSocket(`${proto}//${location.host}/ws/live/${runId}?after=${lastId}`);
 
   ws.onmessage = (e) => {
     const ev = JSON.parse(e.data);
 
     if (ev.event_type === 'run_complete') {
       document.getElementById('status-badge').className = 'done-badge';
-      document.getElementById('status-badge').textContent = '✓ COMPLETED';
+      document.getElementById('status-badge').textContent = '✓ DONE';
       addLine('<div class="log-separator"></div>');
-      addLine('<span class="log-agent">Done</span> — <a href="/runs/' + runId + '" style="color:#58a6ff">View full trace</a>');
-      // Reload after brief delay to show full trace
-      setTimeout(() => location.reload(), 2000);
+      addLine('<span class="log-agent">Done</span> — <a href="/runs/' + runId + '/trace" style="color:#58a6ff">Open Navigator</a>');
       return;
     }
 
@@ -94,16 +112,21 @@ function handleEvent(ev) {
 
   // Track agents
   if (aid && !agents[aid]) {
-    agents[aid] = { name: aname, steps: 0, paid: 0, isChild: false };
+    agents[aid] = { name: aname, steps: 0, paid: 0, isChild: false, color: null, shortFocus: '' };
     if (!rootAgent) rootAgent = aid;
-    else agents[aid].isChild = true;
+    else {
+      agents[aid].isChild = true;
+      agents[aid].color = childColors[nextColor % childColors.length];
+      nextColor++;
+    }
   }
   if (aid && agents[aid]) {
     agents[aid].steps = Math.max(agents[aid].steps, (step || 0) + 1);
   }
 
-  const isChild = aid && agents[aid] && agents[aid].isChild;
-  const indent = isChild ? 'log-child' : '';
+  const ag = aid ? agents[aid] : null;
+  const isChild = ag && ag.isChild;
+  const tag = isChild ? `<span class="log-agent-tag" style="color:${ag.color}">[${esc(ag.name)}${ag.shortFocus ? ':' + esc(ag.shortFocus) : ''}]</span> ` : '';
 
   switch (ev.event_type) {
     case 'agent_started':
@@ -112,27 +135,51 @@ function handleEvent(ev) {
       }
       break;
 
-    case 'agent_spawned':
+    case 'agent_spawned': {
+      const childId = data.child_id || '';
       const childName = data.agent_name || '?';
-      const focus = (data.focus || '').substring(0, 80);
-      addLine(`<span class="log-spawn">spawn ${esc(childName)}</span> ${focus ? '→ ' + esc(focus) + '…' : ''}`);
+      const focus = data.focus || '';
+      const shortFocus = focus.split(/[\s:,]/)[0].substring(0, 12);
+      // Pre-register child so its events get the tag
+      if (childId && !agents[childId]) {
+        agents[childId] = { name: childName, steps: 0, paid: 0, isChild: true, color: childColors[nextColor % childColors.length], shortFocus };
+        nextColor++;
+      } else if (childId && agents[childId]) {
+        agents[childId].shortFocus = shortFocus;
+      }
+      addLine(`<span class="log-spawn">spawn ${esc(childName)}</span> ${focus ? '→ ' + esc(focus.substring(0, 80)) + '…' : ''}`);
       break;
+    }
 
-    case 'agent_llm_response':
+    case 'agent_llm_response': {
       const calls = data.tool_calls || [];
       const usage = data.usage || {};
-      const paid = usage.paid || 0;
-      if (aid && agents[aid]) agents[aid].paid += paid;
-      const toolNames = calls.map(c => c.name).join(', ');
-      if (toolNames) {
-        addLine(`<span class="${indent}"><span class="log-step">step ${step}</span> <span class="log-tool">${esc(toolNames)}</span> <span class="log-paid">paid:${paid}</span></span>`);
+      const uin = (usage.prompt_tokens || 0) - (usage.cached_tokens || 0);
+      const uout = usage.completion_tokens || 0;
+      const ucache = usage.cached_tokens || 0;
+      const toolSummary = calls.map(c => {
+        const name = c.name;
+        // Skip args preview for spawn/reflect/done — they have dedicated rendering
+        if (['spawn_agent', 'spawn_many', 'reflect', 'done'].includes(name)) return name;
+        try {
+          const args = JSON.parse(c.arguments || '{}');
+          const vals = Object.values(args);
+          if (!vals.length) return name;
+          const first = String(vals[0]).substring(0, 40);
+          return name + '(' + first + (String(vals[0]).length > 40 ? '…' : '') + ')';
+        } catch(e) { return name; }
+      }).join(', ');
+      if (toolSummary) {
+        addLine(`<span class="${isChild ? 'log-child' : ''}">${tag}<span class="log-step">step ${step}</span> <span class="log-tool">${esc(toolSummary)}</span> <span class="log-paid">↑${uin} ↓${uout}${ucache ? ' ©' + ucache : ''}</span></span>`);
       }
       break;
+    }
 
-    case 'agent_reflect':
+    case 'agent_reflect': {
       const conf = data.confidence || '?';
       const confCls = 'log-conf-' + conf;
-      addLine(`<span class="${indent}"><span class="log-step">step ${step}</span> <span class="log-reflect">reflect</span> <span class="log-conf ${confCls}">${conf}</span></span>`);
+      const childIndent = isChild ? 'log-child' : '';
+      addLine(`<span class="${childIndent}">${tag}<span class="log-step">step ${step}</span> <span class="log-reflect">reflect</span> <span class="log-conf ${confCls}">${conf}</span></span>`);
 
       // Show resolved
       const resolved = data.resolved_questions || [];
@@ -141,7 +188,7 @@ function handleEvent(ev) {
         const cls = rq.resolution === 'answered' ? 'log-resolved-answered' : 'log-resolved-dropped';
         const qid = rq.id || rq.question || '?';
         const summary = (rq.summary || '').substring(0, 80);
-        addLine(`<div class="log-resolved ${cls}">${icon} ${esc(qid)} ${summary ? '→ ' + esc(summary) : ''}</div>`);
+        addLine(`<div class="log-resolved ${childIndent} ${cls}">${icon} ${esc(qid)} ${summary ? '→ ' + esc(summary) : ''}</div>`);
       }
 
       // Show open questions
@@ -149,15 +196,16 @@ function handleEvent(ev) {
       for (const q of questions) {
         const qid = typeof q === 'object' ? (q.id || '?') : '?';
         const text = typeof q === 'object' ? (q.text || '') : String(q);
-        addLine(`<div class="log-question">● ${esc(qid)}: ${esc(text.substring(0, 70))}</div>`);
+        addLine(`<div class="log-question ${childIndent}">● ${esc(qid)}: ${esc(text.substring(0, 70))}</div>`);
       }
       break;
+    }
 
-    case 'agent_done':
+    case 'agent_done': {
       const output = data.output;
       if (isChild) {
         const nFindings = Array.isArray(output) ? output.length : 0;
-        addLine(`<span class="log-child-done">✓ ${esc(aname)} done · ${agents[aid]?.steps || '?'} steps · ${nFindings} findings</span>`);
+        addLine(`<span class="log-child-done">${tag}✓ done · ${ag?.steps || '?'} steps · ${nFindings} findings</span>`);
       } else {
         addLine('<div class="log-separator"></div>');
         addLine(`<span class="log-agent">${esc(aname)}</span> done · paid:${agents[aid]?.paid || 0}`);
@@ -169,20 +217,26 @@ function handleEvent(ev) {
         }
       }
       break;
+    }
 
     case 'agent_forced_done':
-      addLine(`<span class="${indent}" style="color:#c69026">forced: ${esc(data.reason || 'limit')}</span>`);
+      addLine(`<span class="${isChild ? 'log-child' : ''}" style="color:#c69026">${tag}forced: ${esc(data.reason || 'limit')}</span>`);
       break;
   }
 }
+
+let autoScroll = true;
+window.addEventListener('scroll', () => {
+  const atBottom = (window.innerHeight + window.scrollY) >= document.body.scrollHeight - 30;
+  autoScroll = atBottom;
+});
 
 function addLine(html) {
   const div = document.createElement('div');
   div.className = 'log-line';
   div.innerHTML = html;
   log.appendChild(div);
-  // Auto-scroll
-  window.scrollTo(0, document.body.scrollHeight);
+  if (autoScroll) window.scrollTo(0, document.body.scrollHeight);
 }
 
 function esc(s) {

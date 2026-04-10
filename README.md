@@ -256,7 +256,12 @@ Every agent's generation parameters (temperature, penalties, model) are mutable 
 
 ### Trace system
 
-SQLite trace DB persists events per-step (crash-safe). Web trace viewer (FastAPI + Alpine.js) with split-pane layout: agent tree left, detail tabs right. Click `[⧉]` to load full data on demand from the API. Right panel has `📋 Copy` and `{ } JSON` toggle per tab. Console trace via `--log`. See CLI section above for commands.
+SQLite trace DB persists events per-step (crash-safe). Two web views:
+
+- **Navigator** (`/runs/{id}/trace`) -- split-pane: agent tree left, detail tabs right. Click `[⧉]` to load full data from API. Right panel has `📋 Copy` and `{ } JSON` toggle. Steps show tool args preview, token usage (`↑` new input, `↓` output, `©` cached).
+- **Live** (`/runs/{id}/live`) -- real-time event stream via WebSocket. Bulk-loads existing events on open, then streams new ones. Child agents color-coded with `[reviewer:Focus]` tags. Auto-scroll pauses when scrolling up.
+
+Both views link to each other. Runs list (`/`) auto-refreshes every 3s. Console trace via `--log`.
 
 ### Behavioral signals (read-only)
 

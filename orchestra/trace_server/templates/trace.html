@@ -10,7 +10,7 @@
 <body>
 <div class="layout" x-data="splitPane()">
   <div class="left-pane" :style="'width:' + leftWidth + 'px'">
-    <h1><a href="/" style="color:#8b949e;text-decoration:none">←</a> Trace · {{ title }}</h1>
+    <h1><a href="/" style="color:#8b949e;text-decoration:none">←</a> Trace · {{ title }} <a href="/runs/{{ run_id }}/live" class="nav-link">Live ⧉</a></h1>
     {{ _agent(trace, run_id) }}
   </div>
   <div class="divider" @mousedown="startDrag($event)"></div>

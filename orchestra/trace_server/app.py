@@ -9,7 +9,7 @@ import sqlite3
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -43,22 +43,35 @@ async def index(request: Request):
     return templates.TemplateResponse(request, "runs.html", {"runs": runs})
 
 
-@app.get("/runs/{run_id}", response_class=HTMLResponse)
-async def run_detail(request: Request, run_id: str):
-    """Render trace — full if completed, live page if running."""
+@app.get("/runs/{run_id}")
+async def run_detail(run_id: str):
+    """Redirect to live if running, trace if completed."""
     reader = _get_reader()
     runs = reader.list_runs(limit=100)
     run_meta = next((r for r in runs if r["id"] == run_id), {})
-    status = run_meta.get("status", "completed")
+    reader.close()
+    if run_meta.get("status") == "running":
+        return RedirectResponse(f"/runs/{run_id}/live", status_code=302)
+    return RedirectResponse(f"/runs/{run_id}/trace", status_code=302)
 
-    if status == "running":
-        reader.close()
-        return templates.TemplateResponse(request, "live.html", {
-            "run_id": run_id,
-            "run_meta": run_meta,
-        })
 
-    # Completed — render via template
+@app.get("/runs/{run_id}/live", response_class=HTMLResponse)
+async def run_live(request: Request, run_id: str):
+    """Live event stream view."""
+    reader = _get_reader()
+    runs = reader.list_runs(limit=100)
+    run_meta = next((r for r in runs if r["id"] == run_id), {})
+    reader.close()
+    return templates.TemplateResponse(request, "live.html", {
+        "run_id": run_id,
+        "run_meta": run_meta,
+    })
+
+
+@app.get("/runs/{run_id}/trace", response_class=HTMLResponse)
+async def run_trace(request: Request, run_id: str):
+    """Trace navigator (snapshot)."""
+    reader = _get_reader()
     trace_data = reader.get_run_trace(run_id)
     reader.close()
     template_data = prepare_for_template(trace_data)
@@ -70,6 +83,18 @@ async def run_detail(request: Request, run_id: str):
 
 
 # ── Data API ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/runs")
+async def api_runs():
+    """List runs as JSON (for polling)."""
+    try:
+        reader = _get_reader()
+        runs = reader.list_runs(limit=50)
+        reader.close()
+    except FileNotFoundError:
+        runs = []
+    return JSONResponse(content=runs)
+
 
 @app.get("/api/runs/{run_id}/json")
 async def api_run_json(run_id: str):
@@ -144,13 +169,39 @@ async def api_step_result(run_id: str, agent_id: str, step: int):
     return PlainTextResponse("\n---\n".join(new_msgs) if new_msgs else "(no tool results)")
 
 
+@app.get("/api/runs/{run_id}/events")
+async def api_run_events(run_id: str):
+    """All events for a run as a flat array (for initial bulk load)."""
+    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT id, agent_id, agent_name, event_type, step, data_json, timestamp "
+        "FROM events WHERE run_id = ? ORDER BY id",
+        (run_id,),
+    ).fetchall()
+    conn.close()
+    events = []
+    for ev in rows:
+        data = json.loads(ev["data_json"]) if ev["data_json"] else {}
+        events.append({
+            "id": ev["id"],
+            "agent_id": ev["agent_id"] or "",
+            "agent_name": ev["agent_name"] or "",
+            "event_type": ev["event_type"],
+            "step": ev["step"],
+            "timestamp": ev["timestamp"],
+            "data": data,
+        })
+    return JSONResponse(content=events)
+
+
 # ── WebSocket ─────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/live/{run_id}")
-async def ws_live(websocket: WebSocket, run_id: str):
+async def ws_live(websocket: WebSocket, run_id: str, after: int = 0):
     """Push new events to browser in real-time."""
     await websocket.accept()
-    last_event_id = 0
+    last_event_id = after
 
     try:
         while True:

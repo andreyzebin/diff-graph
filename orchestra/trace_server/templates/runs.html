@@ -22,42 +22,81 @@ h1 { margin-bottom: 20px; }
           padding: 6px 12px; border-radius: 6px; width: 300px; margin-bottom: 16px;
           font-size: 0.9em; }
 .search:focus { outline: none; border-color: #58a6ff; }
+.new-row { animation: flash 1s; }
+@keyframes flash { from { background: #1f6feb33; } to { background: transparent; } }
 </style>
 </head>
 <body>
 <h1>DiffGraph Traces</h1>
 
-{% if runs %}
-<div x-data="{ search: '' }">
-  <input class="search" type="text" placeholder="Filter by run ID, model..." x-model="search">
-
-  <table class="runs-table">
-  <thead>
-  <tr>
-    <th>Run</th>
-    <th>Started</th>
-    <th>Model</th>
-    <th>Findings</th>
-    <th>Tokens</th>
-    <th>Status</th>
-  </tr>
-  </thead>
-  <tbody>
-  {% for run in runs %}
-  <tr x-show="!search || '{{ run.id }} {{ run.model or "" }}'.toLowerCase().includes(search.toLowerCase())">
-    <td><a class="run-link" href="/runs/{{ run.id }}">{{ run.id[:12] }}</a></td>
-    <td>{{ (run.started_at or "?")[:19] }}</td>
-    <td>{{ run.model or "?" }}</td>
-    <td>{{ run.findings_count or 0 }}</td>
-    <td>{{ run.total_tokens_paid or 0 }}</td>
-    <td class="status-{{ run.status or 'unknown' }}">{{ run.status or "?" }}</td>
-  </tr>
-  {% endfor %}
-  </tbody>
-  </table>
+<div x-data="runsPanel()" x-init="startPolling()">
+  <template x-if="runs.length > 0">
+    <div>
+      <input class="search" type="text" placeholder="Filter by run ID, model..." x-model="search">
+      <table class="runs-table">
+      <thead>
+      <tr>
+        <th>Run</th>
+        <th>Started</th>
+        <th>Model</th>
+        <th>Findings</th>
+        <th>Tokens</th>
+        <th>Status</th>
+      </tr>
+      </thead>
+      <tbody>
+      <template x-for="run in filtered()" :key="run.id">
+        <tr :class="run._new ? 'new-row' : ''">
+          <td><a class="run-link" :href="'/runs/' + run.id" x-text="run.id.substring(0, 12)"></a></td>
+          <td x-text="(run.started_at || '?').substring(0, 19)"></td>
+          <td x-text="run.model || '?'"></td>
+          <td x-text="run.findings_count || 0"></td>
+          <td x-text="run.total_tokens_paid || 0"></td>
+          <td :class="'status-' + (run.status || 'unknown')" x-text="run.status || '?'"></td>
+        </tr>
+      </template>
+      </tbody>
+      </table>
+    </div>
+  </template>
+  <template x-if="runs.length === 0">
+    <div class="empty">No traces found. Run a review first.</div>
+  </template>
 </div>
-{% else %}
-<div class="empty">No traces found. Run a review first.</div>
-{% endif %}
+
+<script>
+function runsPanel() {
+  return {
+    runs: {{ runs | tojson }},
+    search: '',
+    _timer: null,
+    filtered() {
+      if (!this.search) return this.runs;
+      const q = this.search.toLowerCase();
+      return this.runs.filter(r => ((r.id || '') + ' ' + (r.model || '')).toLowerCase().includes(q));
+    },
+    startPolling() {
+      this._timer = setInterval(() => this.refresh(), 3000);
+    },
+    async refresh() {
+      try {
+        const resp = await fetch('/api/runs');
+        const fresh = await resp.json();
+        const knownIds = new Set(this.runs.map(r => r.id));
+        // Mark new runs
+        for (const r of fresh) {
+          if (!knownIds.has(r.id)) r._new = true;
+        }
+        this.runs = fresh;
+        // Clear _new flag after animation
+        setTimeout(() => {
+          for (const r of this.runs) r._new = false;
+        }, 1200);
+      } catch(e) {}
+    },
+    destroy() { if (this._timer) clearInterval(this._timer); },
+  };
+}
+</script>
 </body>
 </html>

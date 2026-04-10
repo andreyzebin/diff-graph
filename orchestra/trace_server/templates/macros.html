@@ -1,0 +1,187 @@
+{# ── Recursive agent macro ── #}
+{% macro agent(a, run_id) %}
+<details {{ 'open' if a.depth == 0 }} class="agent depth-{{ [a.depth, 3] | min }}">
+  <summary class="agent-header">
+    <span class="agent-name">{{ a.agent_name }}</span>
+    <span class="agent-meta">{{ a.steps }} steps · ↑{{ a.total_in }} ↓{{ a.total_out }}{% if a.total_cached %} ©{{ a.total_cached }}{% endif %} · id:{{ a.agent_id[:10] }}</span>
+    {% if a.conf_trail %}
+    <span class="conf-trail">
+      {% for c in a.conf_trail %}
+      <span class="conf-dot conf-{{ c }}" title="{{ c }}"></span>
+      {% endfor %}
+    </span>
+    {% endif %}
+  </summary>
+
+  {% for s in a.paired_steps %}
+    {{ llm_call(s, a.agent_id, run_id) }}
+    {% if s.sgr %}
+      {{ sgr_entry(s.sgr, s.sgr_index) }}
+    {% endif %}
+  {% endfor %}
+
+  {% if a.children %}
+  <div class="children-section">
+    <div class="spawn-label">spawned {{ a.children | length }} agent(s)</div>
+    {% for child in a.children %}
+      {{ agent(child, run_id) }}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if a.output %}
+    {{ findings(a.output) }}
+  {% endif %}
+</details>
+{% endmacro %}
+
+{# ── LLM call step ── #}
+{% macro llm_call(s, agent_id, run_id) %}
+{% set resp = s.resp %}
+{% set req = s.req %}
+{% if resp or req %}
+<details class="llm-call">
+  <summary class="llm-header">
+    <span class="llm-step">step {{ s.step }}</span>
+    {% if resp %}
+      {% set calls = resp.tool_calls or [] %}
+      {% if calls %}
+        <span class="llm-tools">{{ calls[:3] | map(attribute='summary') | join(', ') }}{% if calls | length > 3 %} +{{ calls | length - 3 }}{% endif %}</span>
+      {% endif %}
+      {% set usage = resp.usage or {} %}
+      {% set uin = usage.get('prompt_tokens', 0) - usage.get('cached_tokens', 0) %}
+      {% set uout = usage.get('completion_tokens', 0) %}
+      {% set ucache = usage.get('cached_tokens', 0) %}
+      {% if uin or uout %}
+        <span class="llm-usage">↑{{ uin }} ↓{{ uout }}{% if ucache %} ©{{ ucache }}{% endif %}</span>
+      {% endif %}
+    {% endif %}
+    {% if req %}
+      {% set params = req.llm_params or {} %}
+      {% if params.get('temperature') is not none %}
+        <span class="llm-model">t={{ params.get('temperature', '?') }}</span>
+      {% endif %}
+    {% endif %}
+  </summary>
+
+  {% if resp and resp.tool_calls %}
+  <div class="llm-section">
+    {% for tc in resp.tool_calls %}
+      <div class="resp-tc">
+        {{ tc.name }}({{ (tc.arguments or '')[:200] }}{{ '…' if (tc.arguments or '') | length > 200 }})
+        <span class="open-btn" onclick="fetchTab('step {{ s.step }} Call: {{ tc.name }}', '/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/call')">⧉</span>
+      </div>
+    {% endfor %}
+    {% set usage = resp.usage or {} %}
+    {% set sp = usage.get('step_paid', usage.get('paid', 0)) %}
+    <div class="resp-usage">in:{{ usage.get('prompt_tokens', 0) }} out:{{ usage.get('completion_tokens', 0) }} cached:{{ usage.get('cached_tokens', 0) }} step_paid:{{ sp }}</div>
+  </div>
+  {% endif %}
+
+  {% if s.tool_results %}
+  <div class="llm-section">
+    <div class="llm-section-title">Result</div>
+    {% for r in s.tool_results %}
+      <pre class="msg-content">{{ r }}</pre>
+    {% endfor %}
+    <span class="open-btn" onclick="fetchTab('step {{ s.step }} Result', '/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/result')">⧉ full</span>
+  </div>
+  {% endif %}
+
+  {% if req %}
+  <details class="llm-context">
+    <summary class="llm-section-title">
+      Context ({{ req.message_count or (req.messages or []) | length }} messages)
+      <span class="download-btn" onclick="event.stopPropagation(); event.preventDefault(); copyFromApi('/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/messages')">📋 JSON</span>
+    </summary>
+    {% for m in (req.messages or []) %}
+      <details class="msg-entry">
+        <summary class="msg-role msg-{{ m.role }}">
+          {{ m.role }}:
+          {% if m.content %}{{ m.content[:80] | replace('\n', '↵ ') }}{{ '…' if m.content | length > 80 }}
+          {% elif m.tool_calls %}→ {{ m.tool_calls[:3] | map(attribute='name') | join(', ') }}
+          {% else %}(empty){% endif %}
+          {% if m.content %}<span class="open-btn" onclick="event.stopPropagation(); fetchTab('{{ m.role }}', '/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/messages', {{ loop.index0 }})">⧉</span>{% endif %}
+        </summary>
+        {% if m.content %}<pre class="msg-content">{{ m.content[:1000] }}{{ '…' if m.content | length > 1000 }}</pre>{% endif %}
+        {% if m.tool_calls %}
+          {% for tc in m.tool_calls %}
+            <div class="msg-tc">{{ tc.name }}({{ (tc.args or '')[:200] }})</div>
+          {% endfor %}
+        {% endif %}
+      </details>
+    {% endfor %}
+  </details>
+  {% endif %}
+</details>
+{% endif %}
+{% endmacro %}
+
+{# ── SGR entry ── #}
+{% macro sgr_entry(entry, index) %}
+{% set conf = entry.confidence or '?' %}
+<details class="sgr-entry conf-{{ conf }}">
+  <summary class="sgr-header">
+    <span class="sgr-label">reflect #{{ (index or 0) + 1 }}</span>
+    <span class="sgr-step">step {{ entry.step }}</span>
+    <span class="conf-badge conf-{{ conf }}">{{ conf }}</span>
+    {% set resolved = entry.resolved_questions or [] %}
+    {% set answered = resolved | selectattr('resolution', 'equalto', 'answered') | list | length %}
+    {% set dropped = resolved | length - answered %}
+    {% if answered %}<span class="resolved-count">✓{{ answered }}</span>{% endif %}
+    {% if dropped %}<span class="dropped-count">✗{{ dropped }}</span>{% endif %}
+    {% if entry.questions_remaining %}<span class="open-count">●{{ entry.questions_remaining | length }}</span>{% endif %}
+  </summary>
+  {% if entry.learned %}
+    <div class="sgr-learned"><strong>Learned:</strong> {{ entry.learned[:500] }}</div>
+  {% endif %}
+  {% if resolved %}
+  <div class="sgr-resolved">
+    {% for rq in resolved %}
+    <div class="q-resolved {{ 'answered' if rq.resolution == 'answered' else 'dropped' }}">
+      <span class="q-icon">{{ '✓' if rq.resolution == 'answered' else '✗' }}</span>
+      <span class="q-id">{{ rq.id or rq.question or '?' }}</span>
+      {% if rq.summary %}<span class="q-summary"> → {{ rq.summary[:120] }}</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if entry.questions_remaining %}
+  <div class="sgr-open">
+    {% for q in entry.questions_remaining %}
+    <div class="q-open">
+      <span class="q-dot">●</span>
+      {% if q is mapping %}
+        <span class="q-id">{{ q.id or '?' }}</span>: {{ q.text or '' }}
+      {% else %}
+        {{ q }}
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if entry.next_action %}
+    <div class="sgr-next"><strong>Next:</strong> {{ entry.next_action[:200] }}</div>
+  {% endif %}
+</details>
+{% endmacro %}
+
+{# ── Findings ── #}
+{% macro findings(output) %}
+<div class="output-section">
+  {% if output is iterable and output is not string %}
+    <div class="findings-header">{{ output | length }} finding(s)</div>
+    {% for f in output %}
+      {% if f is mapping %}
+      <div class="finding sev-{{ (f.severity or '?') | lower }}">
+        <span class="sev-badge">{{ f.severity or '?' }}</span>
+        <strong>{{ f.title or '?' }}</strong>
+        <span class="finding-loc">{{ f.file or '' }}:{{ f.line or '' }}</span>
+      </div>
+      {% endif %}
+    {% endfor %}
+  {% else %}
+    <pre class="output-raw">{{ output }}</pre>
+  {% endif %}
+</div>
+{% endmacro %}
