@@ -122,10 +122,16 @@ def _build_plain_file(ref: str, path: str, repo_path: str) -> VirtualFile:
     """Build VirtualFile for an unchanged file: L == old == new."""
     result = subprocess.run(
         ["git", "show", f"{ref}:{path}"],
-        cwd=repo_path, capture_output=True, text=True, check=True,
+        cwd=repo_path, capture_output=True,
     )
+    if result.returncode != 0:
+        return VirtualFile(path=path, lines=[])
+    try:
+        text = result.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return VirtualFile(path=path, lines=[])  # binary file
     lines = []
-    for i, content in enumerate(result.stdout.splitlines(), 1):
+    for i, content in enumerate(text.splitlines(), 1):
         lines.append(VirtualLine(content, " ", L=i, old=i, new=i))
     vf = VirtualFile(path=path, lines=lines)
     _build_mappings(vf)
@@ -187,6 +193,8 @@ def materialize_vfs(
     # Changed files: build virtual, write content, save metadata
     for path in changed:
         vf = build_virtual_file(base_ref, source_ref, path, repo_path)
+        if not vf.lines:
+            continue  # binary or empty file
         virtual_files[path] = vf
 
         # Write content (without markers) — line numbers in this file == L
@@ -227,8 +235,7 @@ def materialize_vfs(
             with open(meta_path, "w") as f:
                 json.dump(meta, f)
 
-    # Unchanged files: symlink to repo checkout
-    # First, checkout source ref to a temp location for symlink targets
+    # Unchanged files: write from git
     for path in all_files:
         if path in changed:
             continue
@@ -236,14 +243,18 @@ def materialize_vfs(
         if out_path.exists():
             continue
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        # Write file content from git (can't symlink to git objects)
         result = subprocess.run(
             ["git", "show", f"{source_ref}:{path}"],
-            cwd=repo_path, capture_output=True, text=True,
+            cwd=repo_path, capture_output=True,
         )
         if result.returncode == 0:
-            with open(out_path, "w") as f:
-                f.write(result.stdout)
+            # Skip binary files
+            try:
+                content = result.stdout.decode("utf-8")
+                with open(out_path, "w") as f:
+                    f.write(content)
+            except UnicodeDecodeError:
+                pass  # binary file, skip
 
     return target_dir
 
