@@ -39,7 +39,7 @@ async def index(request: Request):
         reader.close()
     except FileNotFoundError:
         runs = []
-    return templates.TemplateResponse("runs.html", {"request": request, "runs": runs})
+    return templates.TemplateResponse(request, "runs.html", {"runs": runs})
 
 
 @app.get("/runs/{run_id}", response_class=HTMLResponse)
