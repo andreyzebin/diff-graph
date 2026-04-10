@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>🔴 LIVE · {{ run_id[:12] }}</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/static/trace.css">
+<style>
+body { padding: 20px; max-width: 1000px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, monospace; background: #0d1117; color: #c9d1d9; }
+.live-badge { background: #da3633; color: #fff; padding: 2px 10px; border-radius: 10px; font-size: 0.8em; font-weight: bold; animation: pulse 2s infinite; }
+.done-badge { background: #238636; color: #fff; padding: 2px 10px; border-radius: 10px; font-size: 0.8em; font-weight: bold; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+h1 { margin-bottom: 16px; display: flex; align-items: center; gap: 12px; font-size: 1.3em; }
+.meta { color: #8b949e; font-size: 0.85em; margin-bottom: 20px; }
+
+#log { font-family: monospace; font-size: 0.85em; line-height: 1.6; }
+.log-line { padding: 1px 0; }
+.log-agent { color: #58a6ff; font-weight: bold; }
+.log-step { color: #8b949e; }
+.log-tool { color: #79c0ff; }
+.log-paid { color: #8b949e; font-size: 0.8em; }
+.log-reflect { color: #c69026; }
+.log-conf { font-weight: bold; padding: 1px 6px; border-radius: 8px; font-size: 0.8em; border: 1px solid; }
+.log-conf-low { border-color: #da363366; color: #f47067; }
+.log-conf-medium { border-color: #9e6a0366; color: #c69026; }
+.log-conf-high { border-color: #23863666; color: #56d364; }
+.log-question { color: #c69026; margin-left: 20px; }
+.log-resolved { margin-left: 20px; }
+.log-resolved-answered { color: #56d364; }
+.log-resolved-dropped { color: #8b949e; }
+.log-spawn { color: #58a6ff; font-style: italic; }
+.log-child { margin-left: 20px; color: #8b949e; }
+.log-child-done { color: #56d364; }
+.log-finding { margin-left: 10px; padding: 2px 0; }
+.log-sev { padding: 1px 5px; border-radius: 3px; font-size: 0.75em; font-weight: bold; border: 1px solid; }
+.log-sev-blocker { border-color: #da363366; color: #f47067; }
+.log-sev-major { border-color: #9e6a0366; color: #c69026; }
+.log-sev-minor { border-color: #388bfd33; color: #79c0ff; }
+.log-separator { border-top: 1px solid #30363d; margin: 8px 0; }
+</style>
+</head>
+<body>
+<h1>
+  <span id="status-badge" class="live-badge">LIVE</span>
+  Trace · {{ run_id[:12] }}
+</h1>
+<div class="meta">
+  Model: {{ run_meta.get('model', '?') }} · Started: {{ (run_meta.get('started_at', '?'))[:19] }}
+</div>
+
+<div id="log"></div>
+
+<script>
+const runId = '{{ run_id }}';
+const log = document.getElementById('log');
+const agents = {};  // agent_id -> {name, steps, paid, children}
+let rootAgent = null;
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws/live/${runId}`);
+
+  ws.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+
+    if (ev.event_type === 'run_complete') {
+      document.getElementById('status-badge').className = 'done-badge';
+      document.getElementById('status-badge').textContent = '✓ COMPLETED';
+      addLine('<div class="log-separator"></div>');
+      addLine('<span class="log-agent">Done</span> — <a href="/runs/' + runId + '" style="color:#58a6ff">View full trace</a>');
+      // Reload after brief delay to show full trace
+      setTimeout(() => location.reload(), 2000);
+      return;
+    }
+
+    handleEvent(ev);
+  };
+
+  ws.onclose = () => {
+    const badge = document.getElementById('status-badge');
+    if (badge.textContent === 'LIVE') {
+      badge.className = 'done-badge';
+      badge.textContent = 'DISCONNECTED';
+    }
+  };
+
+  ws.onerror = () => ws.close();
+}
+
+function handleEvent(ev) {
+  const aid = ev.agent_id;
+  const aname = ev.agent_name || aid.substring(0, 8);
+  const data = ev.data || {};
+  const step = ev.step;
+
+  // Track agents
+  if (aid && !agents[aid]) {
+    agents[aid] = { name: aname, steps: 0, paid: 0, isChild: false };
+    if (!rootAgent) rootAgent = aid;
+    else agents[aid].isChild = true;
+  }
+  if (aid && agents[aid]) {
+    agents[aid].steps = Math.max(agents[aid].steps, (step || 0) + 1);
+  }
+
+  const isChild = aid && agents[aid] && agents[aid].isChild;
+  const indent = isChild ? 'log-child' : '';
+
+  switch (ev.event_type) {
+    case 'agent_started':
+      if (!isChild) {
+        addLine(`<span class="log-agent">${esc(aname)}</span> started`);
+      }
+      break;
+
+    case 'agent_spawned':
+      const childName = data.agent_name || '?';
+      const focus = (data.focus || '').substring(0, 80);
+      addLine(`<span class="log-spawn">spawn ${esc(childName)}</span> ${focus ? '→ ' + esc(focus) + '…' : ''}`);
+      break;
+
+    case 'agent_llm_response':
+      const calls = data.tool_calls || [];
+      const usage = data.usage || {};
+      const paid = usage.paid || 0;
+      if (aid && agents[aid]) agents[aid].paid += paid;
+      const toolNames = calls.map(c => c.name).join(', ');
+      if (toolNames) {
+        addLine(`<span class="${indent}"><span class="log-step">step ${step}</span> <span class="log-tool">${esc(toolNames)}</span> <span class="log-paid">paid:${paid}</span></span>`);
+      }
+      break;
+
+    case 'agent_reflect':
+      const conf = data.confidence || '?';
+      const confCls = 'log-conf-' + conf;
+      addLine(`<span class="${indent}"><span class="log-step">step ${step}</span> <span class="log-reflect">reflect</span> <span class="log-conf ${confCls}">${conf}</span></span>`);
+
+      // Show resolved
+      const resolved = data.resolved_questions || [];
+      for (const rq of resolved) {
+        const icon = rq.resolution === 'answered' ? '✓' : '✗';
+        const cls = rq.resolution === 'answered' ? 'log-resolved-answered' : 'log-resolved-dropped';
+        const qid = rq.id || rq.question || '?';
+        const summary = (rq.summary || '').substring(0, 80);
+        addLine(`<div class="log-resolved ${cls}">${icon} ${esc(qid)} ${summary ? '→ ' + esc(summary) : ''}</div>`);
+      }
+
+      // Show open questions
+      const questions = data.questions_remaining || [];
+      for (const q of questions) {
+        const qid = typeof q === 'object' ? (q.id || '?') : '?';
+        const text = typeof q === 'object' ? (q.text || '') : String(q);
+        addLine(`<div class="log-question">● ${esc(qid)}: ${esc(text.substring(0, 70))}</div>`);
+      }
+      break;
+
+    case 'agent_done':
+      const output = data.output;
+      if (isChild) {
+        const nFindings = Array.isArray(output) ? output.length : 0;
+        addLine(`<span class="log-child-done">✓ ${esc(aname)} done · ${agents[aid]?.steps || '?'} steps · ${nFindings} findings</span>`);
+      } else {
+        addLine('<div class="log-separator"></div>');
+        addLine(`<span class="log-agent">${esc(aname)}</span> done · paid:${agents[aid]?.paid || 0}`);
+        if (Array.isArray(output)) {
+          for (const f of output) {
+            const sev = (f.severity || '?').toLowerCase();
+            addLine(`<div class="log-finding"><span class="log-sev log-sev-${sev}">${esc(f.severity || '?')}</span> ${esc(f.title || '?')} <span class="log-paid">${esc(f.file || '')}:${f.line || ''}</span></div>`);
+          }
+        }
+      }
+      break;
+
+    case 'agent_forced_done':
+      addLine(`<span class="${indent}" style="color:#c69026">forced: ${esc(data.reason || 'limit')}</span>`);
+      break;
+  }
+}
+
+function addLine(html) {
+  const div = document.createElement('div');
+  div.className = 'log-line';
+  div.innerHTML = html;
+  log.appendChild(div);
+  // Auto-scroll
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+connect();
+</script>
+</body>
+</html>
