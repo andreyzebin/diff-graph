@@ -367,6 +367,36 @@ def trace(
         console.print(f"[green]Opened in browser[/green] ({tmp_path})")
 
 
+@app.command()
+def serve(
+    port: int = typer.Option(8080, "--port", "-p", help="Port to listen on"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
+):
+    """
+    Start the trace web server for browsing review traces.
+
+    \b
+      python cli.py serve              # http://localhost:8080
+      python cli.py serve --port 9000  # custom port
+      python cli.py serve --host 0.0.0.0  # accessible from network
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        console.print("[red]uvicorn not installed.[/red] Run: pip install uvicorn fastapi jinja2")
+        raise typer.Exit(1)
+
+    from orchestra.trace_server.app import create_app
+
+    console.print(f"[bold green]Trace server[/bold green] starting on http://{host}:{port}")
+    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+
+    import webbrowser
+    webbrowser.open(f"http://{host}:{port}")
+
+    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+
+
 def _print_trace_log(trace: dict, depth: int = 0):
     """Print trace to console in a log-like format."""
     import json as _json

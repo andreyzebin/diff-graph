@@ -153,19 +153,71 @@ Don't include gradle wrapper, binary files, and other noise in diff_summary. Fil
 
 ---
 
-## 4. Trace Improvements
+## 4. Trace Web Server
 
-### 4.1 Trace comparison (diff two runs)
+### 4.1 FastAPI + HTMX trace server
 
-Compare two traces side-by-side:
+Replace static HTML with a web server for browsing, live viewing, and comparing traces.
+
+**Architecture:**
 ```
-python cli.py trace --diff run1 run2
+orchestra/
+  trace_server/
+    __init__.py          # create_app()
+    app.py               # FastAPI routes
+    live.py              # WebSocket for real-time trace
+    templates/
+      base.html          # layout + nav
+      runs.html          # run list (filter, search, sort)
+      trace.html         # trace detail (split-pane with tabs)
+      compare.html       # side-by-side diff
+    static/
+      trace.css          # extracted from current _CSS
+      trace.js           # extracted from current _JS
 ```
 
-Show: which concerns overlapped, which findings matched, cost difference.
+**Routes:**
+```
+GET  /                    → run list (filterable, searchable)
+GET  /runs/{id}           → trace detail (current split-pane UI)
+GET  /runs/{id}/json      → API: raw trace data
+GET  /compare?a=X&b=Y    → side-by-side comparison
+WS   /ws/live/{run_id}   → live trace updates via WebSocket
+```
 
-**Where:** `orchestra/trace.py` — new render mode.
-**Effort:** Medium.
+**CLI integration:**
+```bash
+python cli.py serve                        # start on localhost:8080
+python cli.py serve --port 9000            # custom port
+python cli.py run --pr-url ... --serve     # run + open live trace in browser
+```
+
+**Key features:**
+- **Live tracing** — WebSocket pushes new events during run. See lead analyzing, reviewers investigating, findings appearing in real-time.
+- **Run history** — browse, filter by model/severity/date, search by finding title
+- **Comparison** — diff two runs side-by-side (concerns, findings, cost)
+- **Team sharing** — `serve --host 0.0.0.0` → colleagues open the URL
+- **Code viewer** — show source files with findings highlighted inline
+- **CI integration** — `POST /api/runs` for automated reviews
+
+**Phase 1 (extract static files + basic server):**
+- Extract CSS/JS from trace.py into trace_server/static/
+- FastAPI app with GET / (runs list) and GET /runs/{id} (trace detail)
+- `cli.py serve` command
+- Reuse existing trace_db.py reader
+- **Effort:** Medium.
+
+**Phase 2 (live tracing):**
+- WebSocket endpoint reads new events from SQLite
+- Browser auto-updates trace as events arrive
+- **Effort:** Medium.
+
+**Phase 3 (comparison + search):**
+- Side-by-side comparison view
+- Search across runs by finding/file/severity
+- **Effort:** Medium.
+
+**Dependencies:** `fastapi`, `uvicorn`, `jinja2` (Python-only, no npm).
 
 ### 4.2 Trace export to JSON
 
@@ -173,14 +225,10 @@ Show: which concerns overlapped, which findings matched, cost difference.
 python cli.py trace --run ID --format json > trace.json
 ```
 
-For programmatic analysis, CI integration, dashboards.
-
 **Where:** `cli.py` trace command + `orchestra/trace_db.py`.
 **Effort:** Small.
 
-### 4.3 Trace search
-
-Search across runs by finding title, file, severity:
+### 4.3 Trace search (CLI)
 
 ```
 python cli.py trace --search "auth" --severity MAJOR
@@ -231,7 +279,9 @@ python cli.py run --pr-url ... --model gpt-4o --compare deepseek-chat
 | 1.2 | Smart pushers | Medium | Medium | Do third |
 | 1.5 | Historical cost tracking | Medium | Medium | Do third |
 | 2.2 | Live parallel progress | Medium | Medium | Do third |
-| 4.1 | Trace comparison | Low | Medium | Later |
+| 4.1 | Trace web server (Phase 1: extract + basic server) | **High** | Medium | **Do first** |
+| 4.1 | Trace web server (Phase 2: live WebSocket) | High | Medium | Do second |
+| 4.1 | Trace web server (Phase 3: comparison + search) | Medium | Medium | Do third |
 | 4.2 | Trace JSON export | Low | Small | Later |
-| 4.3 | Trace search | Low | Small | Later |
+| 4.3 | Trace search CLI | Low | Small | Later |
 | 5.2 | Model comparison | Low | Medium | Later |

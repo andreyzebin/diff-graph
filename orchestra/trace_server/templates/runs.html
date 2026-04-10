@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>DiffGraph Traces</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/static/trace.css">
+<style>
+body { padding: 20px; max-width: 1000px; margin: 0 auto; }
+h1 { margin-bottom: 20px; }
+.runs-table { width: 100%; border-collapse: collapse; }
+.runs-table th, .runs-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #30363d; }
+.runs-table th { color: #8b949e; font-size: 0.85em; font-weight: normal; }
+.runs-table tr:hover { background: #161b22; }
+.run-link { color: #58a6ff; text-decoration: none; }
+.run-link:hover { text-decoration: underline; }
+.status-completed { color: #56d364; }
+.status-running { color: #c69026; }
+.status-failed { color: #f47067; }
+.empty { color: #8b949e; padding: 40px; text-align: center; }
+</style>
+</head>
+<body>
+<h1>DiffGraph Traces</h1>
+
+{% if runs %}
+<table class="runs-table">
+<thead>
+<tr>
+  <th>Run</th>
+  <th>Started</th>
+  <th>Model</th>
+  <th>Findings</th>
+  <th>Tokens</th>
+  <th>Status</th>
+</tr>
+</thead>
+<tbody>
+{% for run in runs %}
+<tr>
+  <td><a class="run-link" href="/runs/{{ run.id }}">{{ run.id[:12] }}</a></td>
+  <td>{{ (run.started_at or "?")[:19] }}</td>
+  <td>{{ run.model or "?" }}</td>
+  <td>{{ run.findings_count or 0 }}</td>
+  <td>{{ run.total_tokens_paid or 0 }}</td>
+  <td class="status-{{ run.status or 'unknown' }}">{{ run.status or "?" }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<div class="empty">No traces found. Run a review first.</div>
+{% endif %}
+</body>
+</html>

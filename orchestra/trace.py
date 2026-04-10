@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+from pathlib import Path
 from collections import defaultdict
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -112,7 +113,8 @@ def render_html(trace: dict, title: str = "Review Trace") -> str:
     h.line("<!DOCTYPE html><html><head>")
     h.line(f"<title>{esc(title)}</title>")
     h.line("<meta charset='utf-8'>")
-    h.line(f"<style>{_CSS}</style>")
+    css = _get_css() or _CSS
+    h.line(f"<style>{css}</style>")
     h.line("</head><body>")
     h.line('<div class="layout">')
     h.line('<div class="left-pane">')
@@ -125,7 +127,8 @@ def render_html(trace: dict, title: str = "Review Trace") -> str:
     h.line('</div>')
     h.line('</div>')
     _flush_data_blocks(h)
-    h.line(f"<script>{_JS}</script>")
+    js = _get_js() or _JS
+    h.line(f"<script>{js}</script>")
     h.line("</body></html>")
     return h.build()
 
@@ -461,6 +464,31 @@ def _render_output(h: _H, output):
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 
+_STATIC_DIR = Path(__file__).parent / "trace_server" / "static"
+
+def _load_static(name: str) -> str:
+    p = _STATIC_DIR / name
+    if p.exists():
+        return p.read_text(encoding="utf-8")
+    return ""
+
+# Lazy-loaded from static files
+_CSS_CACHE: str = ""
+_JS_CACHE: str = ""
+
+def _get_css() -> str:
+    global _CSS_CACHE
+    if not _CSS_CACHE:
+        _CSS_CACHE = _load_static("trace.css")
+    return _CSS_CACHE
+
+def _get_js() -> str:
+    global _JS_CACHE
+    if not _JS_CACHE:
+        _JS_CACHE = _load_static("trace.js")
+    return _JS_CACHE
+
+# Fallback inline CSS/JS (used if static files not found)
 _CSS = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
