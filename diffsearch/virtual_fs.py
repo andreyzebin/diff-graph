@@ -242,23 +242,25 @@ def materialize_vfs(
             with open(meta_path, "w") as f:
                 json.dump(meta, f)
 
-    # Unchanged files: copy from working tree (faster than git show, works with blobless clones)
+    # Unchanged files: write from git
     for path in all_files:
         if path in changed:
             continue
         out_path = Path(target_dir) / path
         if out_path.exists():
             continue
-        src_path = Path(repo_path) / path
-        if not src_path.exists():
-            continue
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            content = src_path.read_text(encoding="utf-8")
-            with open(out_path, "w") as f:
-                f.write(content)
-        except (UnicodeDecodeError, OSError):
-            out_path.write_text("(binary file)\n")
+        result = subprocess.run(
+            ["git", "show", f"{source_ref}:{path}"],
+            cwd=repo_path, capture_output=True,
+        )
+        if result.returncode == 0:
+            try:
+                content = result.stdout.decode("utf-8")
+                with open(out_path, "w") as f:
+                    f.write(content)
+            except UnicodeDecodeError:
+                out_path.write_text("(binary file)\n")
 
     return target_dir
 
