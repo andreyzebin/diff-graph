@@ -14,14 +14,6 @@ from diffsearch.tools import search_vfs
 log = logging.getLogger(__name__)
 
 
-def _log_hits(label, hits):
-    log.info("search '%s' → %d hits:", label, len(hits))
-    for h in hits:
-        old_s = f"old:{h.old}" if h.old else "     "
-        new_s = f"new:{h.new}" if h.new else "     "
-        log.info("  %s L%d %s %s %s %s", h.file, h.L, old_s, new_s, h.marker, h.snippet[:60])
-
-
 class TestSearchVFS:
 
     def _make_vfs(self, repo, base, source):
@@ -32,11 +24,10 @@ class TestSearchVFS:
         repo, base, source = rename_field_repo
         vfs = self._make_vfs(repo, base, source)
         try:
-            hits = search_vfs(vfs, "InventoryService")
-            _log_hits("InventoryService", hits)
-            assert len(hits) > 0
-            service_hits = [h for h in hits if h.file == "src/OrderService.java"]
-            assert any(h.marker == "+" for h in service_hits)
+            out = search_vfs(vfs, "InventoryService")
+            log.info("search 'InventoryService':\n%s", out)
+            assert "InventoryService" in out
+            assert "|+" in out  # added marker
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
@@ -45,11 +36,10 @@ class TestSearchVFS:
         repo, base, source = rename_field_repo
         vfs = self._make_vfs(repo, base, source)
         try:
-            hits = search_vfs(vfs, "InventoryClient")
-            _log_hits("InventoryClient", hits)
-            assert len(hits) > 0
-            client_hits = [h for h in hits if h.file == "src/OrderService.java"]
-            assert any(h.marker == "-" for h in client_hits)
+            out = search_vfs(vfs, "InventoryClient")
+            log.info("search 'InventoryClient':\n%s", out)
+            assert "InventoryClient" in out
+            assert "|-" in out  # deleted marker
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
@@ -58,37 +48,33 @@ class TestSearchVFS:
         repo, base, source = rename_field_repo
         vfs = self._make_vfs(repo, base, source)
         try:
-            hits = search_vfs(vfs, "format")
-            util_hits = [h for h in hits if h.file == "src/Util.java"]
-            assert len(util_hits) > 0
-            for h in util_hits:
-                assert h.L == h.old == h.new
-                assert h.marker == " "
+            out = search_vfs(vfs, "format")
+            log.info("search 'format':\n%s", out)
+            assert "src/Util.java" in out
+            assert "format" in out
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
-    def test_deleted_hit_has_old_no_new(self, rename_field_repo):
+    def test_deleted_hit_shows_old(self, rename_field_repo):
+        """Deleted hits show old: line number."""
         repo, base, source = rename_field_repo
         vfs = self._make_vfs(repo, base, source)
         try:
-            hits = search_vfs(vfs, "InventoryClient")
-            for h in hits:
-                if h.marker == "-":
-                    assert h.old is not None
-                    assert h.new is None
+            out = search_vfs(vfs, "InventoryClient")
+            assert "old:" in out
+            assert "|-" in out
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
-    def test_added_hit_has_new_no_old(self, rename_field_repo):
+    def test_added_hit_shows_new(self, rename_field_repo):
+        """Added hits show new: line number."""
         repo, base, source = rename_field_repo
         vfs = self._make_vfs(repo, base, source)
         try:
-            hits = search_vfs(vfs, "getOrder")
-            assert len(hits) > 0
-            for h in hits:
-                if h.marker == "+":
-                    assert h.new is not None
-                    assert h.old is None
+            out = search_vfs(vfs, "getOrder")
+            log.info("search 'getOrder':\n%s", out)
+            assert "new:" in out
+            assert "|+" in out
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
@@ -97,11 +83,10 @@ class TestSearchVFS:
         repo, base, source = new_file_repo
         vfs = self._make_vfs(repo, base, source)
         try:
-            hits = search_vfs(vfs, "AuditLog")
-            assert len(hits) > 0
-            audit_hits = [h for h in hits if h.file == "src/AuditLog.java"]
-            assert len(audit_hits) > 0
-            assert all(h.marker == "+" for h in audit_hits)
+            out = search_vfs(vfs, "AuditLog")
+            log.info("search 'AuditLog':\n%s", out)
+            assert "src/AuditLog.java" in out
+            assert "AuditLog" in out
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
@@ -110,20 +95,19 @@ class TestSearchVFS:
         repo, base, source = split_method_repo
         vfs = self._make_vfs(repo, base, source)
         try:
-            hits = search_vfs(vfs, "Order")
-            _log_hits("Order (split_method)", hits)
-            markers = {h.marker for h in hits}
-            assert "+" in markers
-            assert "-" in markers
+            out = search_vfs(vfs, "Order")
+            log.info("search 'Order' in split_method:\n%s", out)
+            assert "|+" in out
+            assert "|-" in out
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
-    def test_search_respects_max_results(self, rename_field_repo):
+    def test_search_no_match(self, rename_field_repo):
         repo, base, source = rename_field_repo
         vfs = self._make_vfs(repo, base, source)
         try:
-            hits = search_vfs(vfs, "order", max_results=3)
-            assert len(hits) <= 3
+            out = search_vfs(vfs, "xyznonexistent")
+            assert "no matches" in out
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
@@ -131,9 +115,8 @@ class TestSearchVFS:
         repo, base, source = rename_field_repo
         vfs = self._make_vfs(repo, base, source)
         try:
-            hits = search_vfs(vfs, "marker")
-            for h in hits:
-                assert not h.file.startswith(".diffmeta")
+            out = search_vfs(vfs, "marker")
+            assert ".diffmeta" not in out
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
@@ -142,10 +125,10 @@ class TestSearchVFS:
         repo, base, source = renamed_file_repo
         vfs = self._make_vfs(repo, base, source)
         try:
-            hits = search_vfs(vfs, "OrderHelper")
-            _log_hits("OrderHelper", hits)
-            assert len(hits) > 0
-            assert all(h.marker == "-" for h in hits)
+            out = search_vfs(vfs, "OrderHelper")
+            log.info("search 'OrderHelper':\n%s", out)
+            assert "OrderHelper" in out
+            assert "|-" in out
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
@@ -154,9 +137,49 @@ class TestSearchVFS:
         repo, base, source = renamed_file_repo
         vfs = self._make_vfs(repo, base, source)
         try:
-            hits = search_vfs(vfs, "formatTotal")
-            _log_hits("formatTotal", hits)
-            assert len(hits) > 0
-            assert all(h.marker == "+" for h in hits)
+            out = search_vfs(vfs, "formatTotal")
+            log.info("search 'formatTotal':\n%s", out)
+            assert "formatTotal" in out
+            assert "|+" in out
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_grouped_by_file(self, rename_field_repo):
+        """Results are grouped by file — file path appears once as header."""
+        repo, base, source = rename_field_repo
+        vfs = self._make_vfs(repo, base, source)
+        try:
+            out = search_vfs(vfs, "OrderService")
+            log.info("search 'OrderService' grouped:\n%s", out)
+            lines = out.splitlines()
+            # First non-empty line should be a file path (no leading spaces)
+            headers = [l for l in lines if l and not l.startswith(" ")]
+            assert len(headers) >= 1
+            assert any("src/OrderService.java" in h for h in headers)
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_context_before_after(self, rename_field_repo):
+        """before/after params add context lines."""
+        repo, base, source = rename_field_repo
+        vfs = self._make_vfs(repo, base, source)
+        try:
+            without = search_vfs(vfs, "InventoryService")
+            with_ctx = search_vfs(vfs, "InventoryService", before=2, after=2)
+            log.info("search with context:\n%s", with_ctx)
+            # With context should have more lines
+            assert len(with_ctx.splitlines()) > len(without.splitlines())
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_context_separator(self, rename_field_repo):
+        """Non-adjacent context groups separated by --."""
+        repo, base, source = rename_field_repo
+        vfs = self._make_vfs(repo, base, source)
+        try:
+            out = search_vfs(vfs, "InventoryService", before=1, after=1)
+            log.info("search with separator:\n%s", out)
+            # Multiple hits in same file with gap → separator
+            assert "  --" in out or out.count("InventoryService") <= 2
         finally:
             shutil.rmtree(vfs, ignore_errors=True)

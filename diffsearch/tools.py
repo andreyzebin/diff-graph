@@ -108,12 +108,14 @@ def search_vfs(
     glob: str = "**/*",
     regex: bool = False,
     max_results: int = 30,
-) -> list[SearchHit]:
+    before: int = 0,
+    after: int = 0,
+) -> str:
     """
     Search across virtual FS files.
 
-    Uses grep on materialized files. Enriches results with old/new
-    from .diffmeta/ for changed files.
+    Returns grep-like text grouped by file with old/new coordinates.
+    Uses grep on materialized files, enriches with .diffmeta/.
     """
     vfs = Path(vfs_dir)
 
@@ -128,13 +130,13 @@ def search_vfs(
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode not in (0, 1):  # 1 = no matches
-        return []
+        return "(no matches)"
 
-    hits: list[SearchHit] = []
+    # Parse grep output into raw hits
+    raw_hits: list[SearchHit] = []
     for line in result.stdout.splitlines():
         if not line:
             continue
-        # Format: /path/to/vfs/dir/src/File.java:42:content
         match = re.match(r"^(.+?):(\d+):(.*)$", line)
         if not match:
             continue
@@ -143,39 +145,99 @@ def search_vfs(
         line_num = int(match.group(2))
         snippet = match.group(3)
 
-        # Convert to relative path
         try:
             rel_path = str(Path(abs_path).relative_to(vfs))
         except ValueError:
             continue
 
-        # Skip .diffmeta files and binary markers
         if rel_path.startswith(".diffmeta"):
             continue
         if snippet.strip() == "(binary file)":
             continue
 
-        # Enrich with old/new from metadata
         meta = load_diffmeta(vfs_dir, rel_path)
         if meta and line_num <= len(meta):
             m = meta[line_num - 1]
-            hits.append(SearchHit(
+            raw_hits.append(SearchHit(
                 file=rel_path, L=line_num,
                 old=m["old"], new=m["new"],
                 marker=m["marker"], snippet=snippet,
             ))
         else:
-            # Unchanged file: L == old == new
-            hits.append(SearchHit(
+            raw_hits.append(SearchHit(
                 file=rel_path, L=line_num,
                 old=line_num, new=line_num,
                 marker=" ", snippet=snippet,
             ))
 
-        if len(hits) >= max_results:
+        if len(raw_hits) >= max_results:
             break
 
-    return hits
+    if not raw_hits:
+        return "(no matches)"
+
+    # Format output: grouped by file, with context lines
+    return _format_search_results(vfs_dir, raw_hits, before, after)
+
+
+def _format_search_results(
+    vfs_dir: str, hits: list[SearchHit], before: int, after: int,
+) -> str:
+    """Format search hits as grep-like text grouped by file."""
+    # Group by file
+    from collections import OrderedDict
+    grouped: OrderedDict[str, list[SearchHit]] = OrderedDict()
+    for h in hits:
+        grouped.setdefault(h.file, []).append(h)
+
+    parts: list[str] = []
+    for file_path, file_hits in grouped.items():
+        parts.append(file_path)
+
+        # Load file lines + meta for context
+        file_full = Path(vfs_dir) / file_path
+        meta = load_diffmeta(vfs_dir, file_path)
+        try:
+            all_lines = file_full.read_text().splitlines()
+        except Exception:
+            all_lines = []
+
+        # Collect all line numbers to show (hits + context)
+        hit_lines = {h.L for h in file_hits}
+        show_lines: set[int] = set()
+        for L in hit_lines:
+            for offset in range(-before, after + 1):
+                candidate = L + offset
+                if 1 <= candidate <= len(all_lines):
+                    show_lines.add(candidate)
+
+        # Render lines in order with separators between groups
+        prev_L = 0
+        for L in sorted(show_lines):
+            if prev_L and L > prev_L + 1:
+                parts.append("  --")
+
+            content = all_lines[L - 1] if L <= len(all_lines) else ""
+
+            if meta and L <= len(meta):
+                m = meta[L - 1]
+                old_s = f"old:{m['old']}" if m["old"] is not None else ""
+                new_s = f"new:{m['new']}" if m["new"] is not None else ""
+                marker = m["marker"]
+            else:
+                old_s = f"old:{L}"
+                new_s = f"new:{L}"
+                marker = " "
+
+            coords = f"L{L} {old_s} {new_s}".rstrip()
+            marker_char = marker if marker != " " else " "
+            parts.append(f"  {coords} |{marker_char} {content}")
+
+            prev_L = L
+
+        parts.append("")  # blank line between files
+
+    return "\n".join(parts).rstrip()
 
 
 def list_files_vfs(vfs_dir: str, glob_pattern: str = "**/*") -> list[str]:

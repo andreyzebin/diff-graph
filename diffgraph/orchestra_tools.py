@@ -108,26 +108,27 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                 "query": {"type": "string"},
                 "glob": {"type": "string", "description": "File filter, e.g. '**/*.java'."},
                 "regex": {"type": "boolean"},
+                "before": {"type": "integer", "description": "Context lines before each match."},
+                "after": {"type": "integer", "description": "Context lines after each match."},
             },
             "required": ["query"],
         },
     )
-    def search_tool(query: str = "", glob: str = "**/*", regex: bool = False) -> list[dict]:
+    def search_tool(query: str = "", glob: str = "**/*", regex: bool = False,
+                    before: int = 0, after: int = 0) -> str:
         if use_vfs:
-            hits = search_vfs(ctx.vfs_dir, query, glob=glob, regex=regex)
-            return [
-                {"file": h.file, "L": h.L, "old": h.old, "new": h.new,
-                 "marker": h.marker, "snippet": h.snippet}
-                for h in hits
-                if not _skip_dir(h.file)
-            ][:30]
+            return search_vfs(
+                ctx.vfs_dir, query, glob=glob, regex=regex,
+                before=before, after=after,
+            )
         results = search_text(query, ctx.repo_path, glob=glob, regex=regex)
-        filtered = [
-            {"file": r.file, "line": r.line, "snippet": r.text, "context": r.context}
-            for r in results
-            if not _skip_dir(r.file)
-        ]
-        return filtered[:30]
+        filtered = [r for r in results if not _skip_dir(r.file)][:30]
+        if not filtered:
+            return "(no matches)"
+        lines = []
+        for r in filtered:
+            lines.append(f"{r.file}:{r.line}: {r.text}")
+        return "\n".join(lines)
 
     @registry.register(
         name="get_diff",
