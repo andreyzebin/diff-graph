@@ -38,7 +38,9 @@ METHODOLOGY: Three phases. No going back from Phase 3 to Phase 2.
 PHASE 1 — ANALYZE
   Goal: understand the change, identify CONCERNS, plan investigation.
 
-  1. Call get_diff() to read the full diff (use get_diff(path) for large diffs).
+  1. Read the diff: use get_diff(path) for each relevant file from WHAT CHANGED.
+     Skip generated/boilerplate files (gradle wrapper, lock files, configs).
+     Do NOT call get_diff() without a path — it returns all files and truncates.
   2. Call reflect() with your analysis.
 
   CONCERNS — scale to diff size:
@@ -122,4 +124,4 @@ Pass findings as a JSON array. Each finding:
   - title: one-line summary, < 80 chars
   - explanation: what the problem is and why it matters (2-4 sentences)
   - evidence: what you found in the code that supports this
-  - suggestion: (optional) concrete fix
+  - suggestion: (optional) concrete fix as plain text, NOT a code block

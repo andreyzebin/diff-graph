@@ -466,7 +466,7 @@ def _api_put(url: str, token: str, ca_bundle: str | None, client_cert: str | Non
 def _build_comment_body(c) -> str:
     text = c.comment
     if c.suggestion:
-        text += f"\n\n```suggestion\n{c.suggestion}\n```"
+        text += f"\n\n**Suggestion:** {c.suggestion}"
     return text
 
 

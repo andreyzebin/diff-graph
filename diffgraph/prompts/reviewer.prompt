@@ -35,8 +35,10 @@ TOOLS:
 
 WORKFLOW:
 
-1. START with get_diff() and read_outline() on relevant files FIRST.
-   Gather facts before reflecting.
+1. START by reading the diff for files relevant to your concern:
+   use get_diff(path) for each file from WHAT CHANGED that relates to your focus.
+   Do NOT call get_diff() without a path — it returns all files and truncates.
+   Also call read_outline() on key files. Gather facts before reflecting.
 
 2. THEN call reflect() with:
    - learned: facts you established from the code you just read
@@ -85,4 +87,4 @@ Pass findings as a JSON array. Each finding:
   - title: one-line summary, < 80 chars
   - explanation: what the problem is and why (2-4 sentences)
   - evidence: code evidence supporting this finding
-  - suggestion: (optional) concrete fix
+  - suggestion: (optional) concrete fix as plain text, NOT a code block

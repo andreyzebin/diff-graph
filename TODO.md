@@ -12,6 +12,7 @@
 - ~~Default pushers from compiler~~ — 75% nudge + 100% force_done for all agents
 - ~~SQLite trace DB~~ — events persisted per-step, crash-safe
 - ~~HTML trace~~ — split-pane, [⧉] detail tabs, [📋 JSON] copy, Call→Result→Context
+- ~~Trace web server~~ — FastAPI + Alpine.js, navigator + live views, separate routes, bulk load + WebSocket, color-coded child agents, auto-scroll, runs list polling, ↑↓© token display, tool args preview, Copy/JSON toolbar
 - ~~CLI trace command~~ — --log, --list, --run, browser auto-open
 - ~~Data inheritance~~ — parent data_scope auto-injected into child {placeholders}
 - ~~No handoff context by default~~ — child gets everything via system prompt
@@ -267,6 +268,286 @@ python cli.py run --pr-url ... --model gpt-4o --compare deepseek-chat
 
 ---
 
+## 6. Virtual Unified Diff Filesystem (ref-aware tools)
+
+Goal: agent sees code through a virtual filesystem where files can be viewed at any commit or as unified diffs between commits. Three coordinate systems:
+- **L** — virtual line number. Position in the unified diff view. Used for `start_line`/`end_line` in read_file, shown in outline, returned by search. The "working" coordinate for navigation.
+- **old** — left-commit line number. Shown in read_file output columns. For referencing the old version.
+- **new** — right-commit line number. Shown in read_file output columns. Used for Bitbucket comment anchoring and findings.
+
+Each line has: `+` lines → L + new (no old), `-` lines → L + old (no new), context lines → L + old + new.
+
+**Format (decided):** read_file shows two columns `old`/`new`. L is shown in outline and search results, used for read_file start/end. Outline shows `L` ranges for navigation + `old`/`new` ranges for reference. Search returns `L` + `old`/`new` per match.
+
+**Backward compatibility:** when `ref="source"` (default, or `diff_mode: plain`), everything behaves exactly as current code:
+- read_file shows plain file with line numbers (no old/new columns, no +/- markers)
+- read_outline shows structure with line numbers and `*` on changed lines (current behavior)
+- search returns file:line results (current behavior)
+- L == line number == new (all the same, no virtual file concept)
+- No prompt block injected
+- `get_diff` tool remains available
+
+The unified diff view (L, old/new, +/- markers, prompt block) only activates when `ref` is a range. Switching between modes = changing one yaml toggle. No code paths diverge at the tool level — `ref="source"` is just a degenerate case where VirtualFile has zero diff and L == new for all lines.
+
+### Agent prompt block (injected when diff_mode=unified)
+
+```
+FILE VIEWING:
+All files are shown as unified diffs between old and new versions.
+Each line is marked: + (added), - (deleted), or blank (unchanged).
+
+Line numbers:
+- L (in outline and search results): position in the unified diff view.
+  Use L for read_file(start_line, end_line) and to estimate read cost.
+  L range includes both + and - lines, so it may be larger than the
+  method appears in either version alone.
+- old/new (in read_file output): line numbers in old/new commit versions.
+  Use "new" line number for findings (Bitbucket comment anchoring).
+  Blank "old" = line was added. Blank "new" = line was deleted.
+
+Tools:
+- read_file("Order.java", 20, 38)  → lines L20-L38 of the unified view
+- read_outline("Order.java")       → methods with L ranges + old/new mapping
+- search("getItems")               → matches with L number + old/new numbers
+  Search covers both old (-) and new (+) content. You can find deleted code.
+
+Example workflow:
+  read_outline("Order.java")
+  → [method] cancelOrder L20-38 (old:18-26 → new:18-28) *
+  read_file("Order.java", 20, 38)   ← uses L range from outline
+  → shows 19 lines: old context, deleted lines, added lines
+  Finding: file="Order.java", line=25  ← uses "new" number for Bitbucket
+```
+
+Abstract ref names resolved at agent startup:
+- `"source"` — tip of PR source branch / working tree (default, equivalent to current behavior)
+- `"base"` — merge-base commit
+- Single SHA (e.g. `"a1b2c3d"`) — specific commit
+- Range with `..` (e.g. `"base..source"`, `"a1b..e4f"`) — unified diff mode
+
+### 6.0 Store base_ref and source_ref in context
+
+Pass merge-base SHA and source branch tip through `_Ctx` → tool closures.
+
+- `bitbucket.py`: `fetch_pr` already computes merge-base, expose it in return value
+- `cli.py`: for local diffs, compute base from git (e.g. `HEAD~1` or merge-base of branches)
+- `_Ctx` gets `base_ref: str` and `source_ref: str` fields
+- Tools resolve abstract names: `"source"` → `ctx.source_ref`, `"base"` → `ctx.base_ref`
+- No agent-visible changes
+
+**Where:** `diffgraph/orchestrator.py`, `diffgraph/bitbucket.py`, `cli.py`.
+**Effort:** Small.
+
+### 6.1 Add ref param to tools (hidden, default "source")
+
+Add `ref` parameter internally to `read_file`, `read_outline`, `search` but do NOT expose in agent tool schema yet.
+
+```
+read_file(path, start_line?, end_line?, ref="source", line_numbers=true)
+read_outline(path, ref="source")
+search(query, ref="source", glob?)
+```
+
+When `ref="source"`: read from filesystem — current behavior, full equivalence.
+When `ref` is a SHA: `git show <ref>:<path>` for read_file/outline, `git grep <ref>` for search.
+
+Ref set centrally at agent creation time, not by agent.
+
+**Test:** `ref="source"` produces identical results to current code.
+**Where:** `diffgraph/orchestra_tools.py`.
+**Effort:** Medium.
+
+### 6.2 Virtual unified diff file generation
+
+Core data structure. When `ref` contains `..` (range), generate virtual unified diff files.
+
+Virtual file = right-commit file content with deleted lines (`-`) inserted at correct positions. Own line numbering (vL) that includes both `+` and `-` lines.
+
+**Implementation:**
+1. Parse unified diff hunks for the file (`git diff <left> <right> -- <path>`)
+2. Walk right-commit file line by line
+3. At hunk positions, insert `-` lines from the diff
+4. Mark each line: `+` (added in right), `-` (deleted from left), ` ` (context/unchanged)
+5. Track triple mapping:
+   - `+` lines → vL + RC (no LC)
+   - `-` lines → vL + LC (no RC)
+   - context lines → vL + RC + LC
+6. Mappings: `vl_to_rc`, `rc_to_vl`, `vl_to_lc`, `lc_to_vl`
+
+```python
+@dataclass
+class VirtualLine:
+    content: str                       # line text (without +/- prefix)
+    marker: str                        # "+", "-", or " "
+    L: int                             # virtual position (always present)
+    old: int | None                    # left-commit line (None for `+` lines)
+    new: int | None                    # right-commit line (None for `-` lines)
+
+@dataclass
+class VirtualFile:
+    lines: list[VirtualLine]
+    L_to_new: dict[int, int]           # L → new (absent for `-`)
+    new_to_L: dict[int, int]           # new → L
+    L_to_old: dict[int, int]           # L → old (absent for `+`)
+    old_to_L: dict[int, int]           # old → L
+```
+
+**Special cases:**
+- `ref="base..source"` → `git diff <base_ref> <source_ref> -- <path>`
+- `ref="base"` shortcut for single ref (not a range) → read file at base_ref
+- File only in right commit (new file) → all lines are `+`, vL == RC, no LC
+- File only in left commit (deleted file) → all lines are `-`, vL == LC, no RC
+
+**Test:** virtual file with zero diff = identical to real file, vL == RC for all lines.
+**Where:** new `diffgraph/virtual_fs.py` or `orchestra/virtual_diff.py`.
+**Effort:** Medium-Large.
+
+### 6.3 read_file with ref range
+
+When `ref` is a range, `read_file` displays virtual unified diff file with `old`/`new` columns:
+
+```
+# OrderService.java  ref=a1b..e4f  lines L20-38
+  old  new
+   18   18 |     public void cancelOrder(Long orderId) {
+   19   19 |         Order order = orderRepository.findById(orderId)
+   20      | -           .orElseThrow(RuntimeException::new);
+        20 | +           .orElseThrow(() -> new OrderNotFoundException(orderId));
+        21 | +       if (order.getItems() != null) {
+   21   22 |             for (OrderItem item : order.getItems()) {
+```
+
+- `old` = line number in left (old) commit, blank for `+` lines
+- `new` = line number in right (new) commit, blank for `-` lines. **Use for findings/Bitbucket comments.**
+- `start_line`/`end_line` = L (virtual position, from outline). Header shows `lines L20-38`.
+- `line_numbers=true` shows old + new columns, `line_numbers=false` hides them
+- `+`/`-`/` ` markers always shown when ref is a range
+- Header shows file, ref, and L range so agent can orient
+
+**Where:** `diffgraph/orchestra_tools.py` `read_file_tool`.
+**Effort:** Medium.
+
+### 6.4 search over virtual unified diff files
+
+When `ref` is a range, `search` operates on virtual unified diff files.
+
+- Generate virtual files for all files changed in the range
+- Search across virtual file contents (includes both `+` and `-` lines)
+- Return results with L (virtual position) + `old`/`new` line numbers:
+  ```
+  OrderService.java L26 old:22      | -                 inventoryClient.release(item);
+  OrderService.java L27      new:23 | +                 inventoryService.releaseInventory(item);
+  PricingService.java L15 old:15 new:15 |       return order.getItems().stream()
+  ```
+- Agent uses L from search result to call `read_file(path, L-5, L+5, ref=...)` for context
+- Agent uses `new` number from search result for findings
+- Agent can find deleted code (in `-` lines) and added code (in `+` lines) in one search
+- Unchanged files: search falls through to right-commit version (no virtual file, no overhead)
+
+**Where:** `diffgraph/orchestra_tools.py` `search_tool`.
+**Effort:** Medium.
+
+### 6.5 read_outline with ref range
+
+When `ref` is a range, outline shows method positions mapped to the virtual unified diff file.
+
+**Implementation:**
+1. Run outline on RIGHT commit → methods with RC line numbers
+2. Run outline on LEFT commit → methods with old line numbers
+3. Use `rc_to_vl` mapping to convert RC positions → vL positions
+4. Mark `*` on methods whose body differs between left and right
+5. Optionally show which commit(s) touched the method
+
+**Output:**
+```
+# OrderService.java  ref=a1b..e4f
+[method] cancelOrder   L20-38 (old:18-26 → new:18-28) *
+[method] processOrder  L8-26  (old:8-26 → deleted) *
+[method] validateOrder L28-37 (added → new:8-17) *
+[method] executeOrder  L39-52 (added → new:19-32) *
+[method] auditLog      L54-57 (added → new:34-37) *
+[method] getOrder      L60-70 (old:80-90 → new:85-95)
+```
+
+- `L` = position range in unified diff view. **Use for read_file start/end.**
+- `old:N-M` = line range in left (old) commit. Blank/`deleted` for added methods.
+- `new:N-M` = line range in right (new) commit. Blank/`added` for deleted methods. **Use for findings.**
+- `*` = changed in this range
+- Agent calls `read_file("OrderService.java", 20, 38, ref="a1b..e4f")` using L range
+
+**Complexity:** Highest of all phases. Depends on virtual file mapping from 6.2.
+**Where:** `diffgraph/orchestra_tools.py` `read_outline_tool`.
+**Effort:** Large.
+
+### 6.6 Expose ref param to agent + yaml toggle
+
+Make `ref` visible in tool schemas so agents can use it directly.
+
+- Add `ref` to OpenAI tool schema for `read_file`, `read_outline`, `search`
+- `config.yaml` toggle:
+  ```yaml
+  review:
+    diff_mode: unified    # default ref="base..source" for all tools
+    # diff_mode: plain    # default ref="source" (current behavior)
+  ```
+- When `diff_mode: unified`, agent sees diff markers by default without setting ref
+- Agent can still override ref per-call (e.g. `ref="a1b..e4f"` for commit-by-commit)
+- Remove `get_diff` tool from agent prompts (replaced by `read_file` with ref range)
+- Update prompt instructions: explain ref, vL vs RC, when to use each
+
+**Where:** `diffgraph/orchestra_tools.py`, `config.yaml`, prompts.
+**Effort:** Medium.
+
+### 6.7 Commit list in agent prompt + commit-by-commit review
+
+Pass PR commit list to agents for incremental review within one session.
+
+- Fetch commit list from Bitbucket API (`/commits`) or `git log base..source`
+- Add COMMITS section to agent prompt:
+  ```
+  COMMITS (oldest → newest):
+    a1b2c3d  Add Promotion entity and repository
+    e4f5g6h  Add PricingService bulk discount logic
+    i7j8k9l  Add PromotionController endpoints
+    m0n1o2p  Add tests
+  ```
+- Agent uses `ref="a1b..e4f"` to review specific commit ranges
+- Lead decides strategy: whole diff vs commit-by-commit based on PR structure
+- Update `lead.prompt` and `reviewer.prompt` with instructions
+
+**Where:** `diffgraph/bitbucket.py`, `diffgraph/orchestrator.py`, prompts.
+**Effort:** Medium.
+
+### 6.8 Persistent PR review state (incremental across sessions)
+
+Store review state per PR for incremental review across multiple runs.
+
+- New SQLite table: `pr_state(pr_url, last_reviewed_commit, findings_json, context_summary, updated_at)`
+- On run: detect if same PR was reviewed before → load previous state
+- Agent prompt includes: `"Previously reviewed up to commit <SHA>. Previous findings: [...]"`
+- Agent reviews only new commits (`ref="<last_reviewed>..source"`)
+- Handle force-push/rebase: detect SHA mismatch → discard stale state, full review
+- Handle amended commits: compare tree SHA, not commit SHA
+
+**Future:** store state as Bitbucket PR comment (lives with the PR, visible to team).
+**Where:** `orchestra/trace_db.py` or new `diffgraph/pr_state.py`.
+**Effort:** Large.
+
+### Rollout strategy
+
+```
+Phase 0-1: infrastructure, ref="source" = full equivalence, nothing breaks
+Phase 2:   core — virtual unified diff with dual coordinates (vL + RC)
+Phase 3-5: tools work with virtual FS, agent still doesn't see ref param
+Phase 6:   yaml toggle diff_mode: unified — enable centrally, test end-to-end
+Phase 7:   agent gets ref in schema + commit list — commit-by-commit review
+Phase 8:   persistent state — incremental review across sessions
+```
+
+Each phase testable independently. Rollback at any stage: set `diff_mode: plain`.
+
+---
+
 ## Priority Order
 
 | # | Item | Impact | Effort | Priority |
@@ -276,6 +557,15 @@ python cli.py run --pr-url ... --model gpt-4o --compare deepseek-chat
 | 3.2 | Reviewer efficiency prompt | Medium | Small | **Do first** |
 | 3.3 | Diff filtering | Medium | Small | **Do first** |
 | 5.1 | Total cost summary | Medium | Small | **Do first** |
+| 6.0 | Store base_ref/source_ref in context | High | Small | **Do first** |
+| 6.1 | Add ref param to tools (hidden) | High | Medium | **Do first** |
+| 6.2 | Virtual unified diff file generation | **High** | Medium-Large | **Do second** |
+| 6.3 | read_file with ref range (dual line numbers) | **High** | Medium | Do second |
+| 6.4 | search over virtual unified diff files | High | Medium | Do second |
+| 6.5 | read_outline with ref range | High | Large | Do second |
+| 6.6 | Expose ref param + yaml toggle | High | Medium | Do third |
+| 6.7 | Commit list + commit-by-commit review | Medium | Medium | Do third |
+| 6.8 | Persistent PR review state | Medium | Large | Later |
 | 1.4 | budget_status tool | High | Small | Do second |
 | 1.3 | Pre-spawn validation | High | Medium | Do second |
 | 2.1 | Agent prefix in trace | Medium | Small | Do second |
@@ -284,7 +574,7 @@ python cli.py run --pr-url ... --model gpt-4o --compare deepseek-chat
 | 2.2 | Live parallel progress | Medium | Medium | Do third |
 | 4.1 | ~~Trace web server Phase 1 (basic server)~~ | ~~Done~~ | | |
 | 4.1 | ~~Trace web server Phase 2 (live WebSocket)~~ | ~~Done~~ | | |
-| 4.1 | Trace web server Phase 3 (Alpine.js + HTMX) | **High** | Medium | **Do first** |
+| 4.1 | ~~Trace web server Phase 3 (Alpine.js)~~ | ~~Done~~ | | |
 | 4.1 | Trace web server Phase 4 (comparison + search) | Medium | Medium | Do third |
 | 4.2 | Trace JSON export | Low | Small | Later |
 | 4.3 | Trace search CLI | Low | Small | Later |
