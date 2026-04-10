@@ -102,6 +102,18 @@ class TestSearchVFS:
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
+    def test_search_unchanged_file_by_glob(self, rename_field_repo):
+        """Search with glob targeting an unchanged file finds content."""
+        repo, base, source = rename_field_repo
+        vfs = self._make_vfs(repo, base, source)
+        try:
+            out = search_vfs(vfs, "format", glob="**/Util.java")
+            log.info("search 'format' in Util.java:\n%s", out)
+            assert "Util.java" in out
+            assert "format" in out
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
     def test_search_no_match(self, rename_field_repo):
         repo, base, source = rename_field_repo
         vfs = self._make_vfs(repo, base, source)
