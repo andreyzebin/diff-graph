@@ -1,9 +1,5 @@
 """
-FastAPI trace server with WebSocket live updates.
-
-Usage:
-    python cli.py serve              # start on localhost:8080
-    python cli.py serve --port 9000  # custom port
+FastAPI trace server with WebSocket live updates and data API.
 """
 from __future__ import annotations
 
@@ -13,12 +9,12 @@ import sqlite3
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..trace_db import TraceDBReader, DEFAULT_DB_PATH
-from ..trace import render_trace_body
+from ..trace import prepare_for_template
 
 _DIR = Path(__file__).parent
 
@@ -32,6 +28,8 @@ def _get_reader() -> TraceDBReader:
         raise FileNotFoundError("No trace DB")
     return TraceDBReader()
 
+
+# ── Pages ─────────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -54,43 +52,96 @@ async def run_detail(request: Request, run_id: str):
     status = run_meta.get("status", "completed")
 
     if status == "running":
-        # Serve live page with WebSocket
         reader.close()
         return templates.TemplateResponse(request, "live.html", {
             "run_id": run_id,
             "run_meta": run_meta,
         })
 
-    # Completed — render via Alpine.js template
+    # Completed — render via template
     trace_data = reader.get_run_trace(run_id)
     reader.close()
-    trace_html, data_blocks = render_trace_body(trace_data)
+    template_data = prepare_for_template(trace_data)
     return templates.TemplateResponse(request, "trace.html", {
         "title": run_id[:12],
-        "trace_html": trace_html,
-        "data_blocks": data_blocks,
+        "run_id": run_id,
+        "trace": template_data,
     })
 
 
-@app.get("/runs/{run_id}/json")
-async def run_json(run_id: str):
-    """Raw trace data as JSON."""
+# ── Data API ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/runs/{run_id}/json")
+async def api_run_json(run_id: str):
+    """Full trace data as JSON."""
     reader = _get_reader()
     trace_data = reader.get_run_trace(run_id)
     reader.close()
     return JSONResponse(content=trace_data)
 
 
+@app.get("/api/runs/{run_id}/step/{agent_id}/{step}/messages")
+async def api_step_messages(run_id: str, agent_id: str, step: int):
+    """Full messages array for a specific step (for [⧉] on-demand loading)."""
+    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT data_json FROM events WHERE run_id=? AND agent_id=? AND event_type='agent_llm_request' AND step=? LIMIT 1",
+        (run_id, agent_id, step),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return JSONResponse(content={"error": "not found"}, status_code=404)
+    data = json.loads(row["data_json"]) if row["data_json"] else {}
+    return JSONResponse(content=data.get("messages", []))
+
+
+@app.get("/api/runs/{run_id}/step/{agent_id}/{step}/call")
+async def api_step_call(run_id: str, agent_id: str, step: int):
+    """Full tool call arguments for a specific step."""
+    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT data_json FROM events WHERE run_id=? AND agent_id=? AND event_type='agent_llm_response' AND step=? LIMIT 1",
+        (run_id, agent_id, step),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return JSONResponse(content={"error": "not found"}, status_code=404)
+    data = json.loads(row["data_json"]) if row["data_json"] else {}
+    return JSONResponse(content=data.get("tool_calls", []))
+
+
+@app.get("/api/runs/{run_id}/step/{agent_id}/{step}/result", response_class=PlainTextResponse)
+async def api_step_result(run_id: str, agent_id: str, step: int):
+    """Full tool result for a specific step (from next step's messages)."""
+    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    # Get the next step's request to find tool messages
+    row = conn.execute(
+        "SELECT data_json FROM events WHERE run_id=? AND agent_id=? AND event_type='agent_llm_request' AND step>? ORDER BY step LIMIT 1",
+        (run_id, agent_id, step),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return PlainTextResponse("(no result captured)", status_code=404)
+    data = json.loads(row["data_json"]) if row["data_json"] else {}
+    messages = data.get("messages", [])
+    tool_msgs = [m.get("content", "") for m in messages if m.get("role") == "tool"]
+    # Return last tool message(s) as combined text
+    return PlainTextResponse("\n---\n".join(tool_msgs[-3:]) if tool_msgs else "(no tool results)")
+
+
+# ── WebSocket ─────────────────────────────────────────────────────────────────
+
 @app.websocket("/ws/live/{run_id}")
 async def ws_live(websocket: WebSocket, run_id: str):
     """Push new events to browser in real-time."""
     await websocket.accept()
-
     last_event_id = 0
 
     try:
         while True:
-            # Read new events from SQLite
             conn = sqlite3.connect(str(DEFAULT_DB_PATH))
             conn.row_factory = sqlite3.Row
 
@@ -100,15 +151,12 @@ async def ws_live(websocket: WebSocket, run_id: str):
                 (run_id, last_event_id),
             ).fetchall()
 
-            # Check run status
             run_row = conn.execute(
                 "SELECT status FROM runs WHERE id = ?", (run_id,)
             ).fetchone()
             run_status = run_row["status"] if run_row else "unknown"
-
             conn.close()
 
-            # Send new events
             for ev in new_events:
                 data = json.loads(ev["data_json"]) if ev["data_json"] else {}
                 await websocket.send_json({
@@ -122,7 +170,6 @@ async def ws_live(websocket: WebSocket, run_id: str):
                 })
                 last_event_id = ev["id"]
 
-            # Check if run completed
             if run_status in ("completed", "failed") and not new_events:
                 await websocket.send_json({"event_type": "run_complete", "status": run_status})
                 break
