@@ -41,6 +41,8 @@ class DiffGraph:
         existing_comments: Optional[list[dict]] = None,
         on_event: Optional[OnEvent] = None,
         trace_writer: Optional[Callable] = None,
+        base_ref: str = "",
+        source_ref: str = "",
     ) -> tuple[list[ReviewFinding], ReviewContext]:
         """
         Run the agentic review pipeline.
@@ -59,4 +61,6 @@ class DiffGraph:
             max_tokens=self.max_tokens,
             on_event=on_event,
             trace_writer=trace_writer,
+            base_ref=base_ref,
+            source_ref=source_ref,
         )

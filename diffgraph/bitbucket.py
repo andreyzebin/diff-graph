@@ -178,6 +178,8 @@ def fetch_pr(
         "from_branch": from_branch,
         "to_branch":   pr["toRef"]["displayId"],
         "pr_id":       pr_id,
+        "base_ref":    to_sha,
+        "source_ref":  from_sha,
     }
     log.debug("fromRef=%s (%s)  toRef sha=%s", from_branch, from_sha, to_sha)
 

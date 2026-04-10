@@ -1,8 +1,9 @@
 """
 Register diffgraph's domain-specific tools in an Orchestra ToolRegistry.
 
-Each tool is a closure over the review context (_Ctx), reusing the exact
-same logic as the original orchestrator._dispatch().
+Each tool is a closure over the review context (_Ctx). When a VFS directory
+is available (base_ref + source_ref), tools operate on the virtual unified
+diff filesystem. Otherwise they fall back to plain filesystem access.
 """
 from __future__ import annotations
 
@@ -28,6 +29,17 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     from .tools import list_files, read_file, search_text
     from .outline import get_outline
 
+    use_vfs = bool(ctx.vfs_dir)
+
+    if use_vfs:
+        from diffsearch.tools import (
+            read_file_vfs,
+            search_vfs,
+            list_files_vfs,
+            read_outline_vfs,
+        )
+        from diffsearch.virtual_fs import load_diffmeta
+
     @registry.register(
         name="find_files",
         description="List files matching a glob pattern. Returns relative paths.",
@@ -38,17 +50,20 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         },
     )
     def find_files(pattern: str = "**/*") -> list[str]:
-        files = list_files(pattern, ctx.repo_path)
+        if use_vfs:
+            files = list_files_vfs(ctx.vfs_dir, pattern)
+        else:
+            files = list_files(pattern, ctx.repo_path)
         return [f for f in files if not _skip_dir(f)][:50]
 
     @registry.register(
         name="read_file",
-        description="Read up to 100 lines of a file.",
+        description="Read up to 100 lines of a file. Shows old/new line numbers and +/- markers for changed files.",
         parameters={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
-                "start_line": {"type": "integer", "description": "1-indexed inclusive."},
+                "start_line": {"type": "integer", "description": "1-indexed inclusive (L position in unified view)."},
                 "end_line": {"type": "integer", "description": "1-indexed inclusive."},
             },
             "required": ["path"],
@@ -57,13 +72,19 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     def read_file_tool(path: str = "", start_line: int = None, end_line: int = None) -> str:
         if start_line is not None and end_line is not None and (end_line - start_line) > 100:
             end_line = start_line + 99
+        if use_vfs:
+            return read_file_vfs(
+                ctx.vfs_dir, path,
+                start_line=start_line or 1,
+                end_line=end_line,
+            )
         return read_file(path, ctx.repo_path, start_line, end_line) or "(file not found)"
 
     @registry.register(
         name="read_outline",
         description=(
             "Get the structural outline of a file — classes, methods, line ranges. "
-            "Use this before read_file to orient yourself."
+            "Changed symbols marked with *. Use this before read_file to orient yourself."
         ),
         parameters={
             "type": "object",
@@ -72,13 +93,15 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         },
     )
     def read_outline_tool(path: str = "") -> str:
+        if use_vfs:
+            return read_outline_vfs(ctx.vfs_dir, path, repo_path=ctx.repo_path)
         fd = ctx.diff_result.files.get(path)
         changed = set(fd.after_changed_lines) if fd else None
         return get_outline(path, ctx.repo_path, changed)
 
     @registry.register(
         name="search",
-        description="Search for a string or regex across repo files.",
+        description="Search for a string or regex across repo files. Finds both old (deleted) and new (added) code.",
         parameters={
             "type": "object",
             "properties": {
@@ -90,6 +113,14 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         },
     )
     def search_tool(query: str = "", glob: str = "**/*", regex: bool = False) -> list[dict]:
+        if use_vfs:
+            hits = search_vfs(ctx.vfs_dir, query, glob=glob, regex=regex)
+            return [
+                {"file": h.file, "L": h.L, "old": h.old, "new": h.new,
+                 "marker": h.marker, "snippet": h.snippet}
+                for h in hits
+                if not _skip_dir(h.file)
+            ][:30]
         results = search_text(query, ctx.repo_path, glob=glob, regex=regex)
         filtered = [
             {"file": r.file, "line": r.line, "snippet": r.text, "context": r.context}

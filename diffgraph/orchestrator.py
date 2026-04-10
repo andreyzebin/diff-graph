@@ -73,6 +73,9 @@ class _Ctx:
     repo_path: str
     existing_comments: list[dict]
     review_context: ReviewContext = field(default_factory=ReviewContext)
+    base_ref: str = ""
+    source_ref: str = ""
+    vfs_dir: str = ""
 
 
 def run_review(
@@ -85,13 +88,23 @@ def run_review(
     max_tokens: int = 50000,
     on_event: OnEvent = None,
     trace_writer: Optional[Callable] = None,
+    base_ref: str = "",
+    source_ref: str = "",
 ) -> tuple[list[ReviewFinding], ReviewContext]:
     _emit = on_event or (lambda *_, **__: None)
     diff_result = parse_diff(diff_text)
 
+    # Materialize virtual FS if refs available
+    vfs_dir = ""
+    if base_ref and source_ref:
+        from diffsearch.virtual_fs import materialize_vfs
+        vfs_dir = materialize_vfs(repo_path, base_ref, source_ref)
+        log.info("VFS materialized: %s", vfs_dir)
+
     ctx = _Ctx(
         diff_text=diff_text, diff_result=diff_result,
         repo_path=repo_path, existing_comments=existing_comments or [],
+        base_ref=base_ref, source_ref=source_ref, vfs_dir=vfs_dir,
     )
 
     # ── Compile agents from .prompt files ─────────────────────────────────
@@ -190,6 +203,11 @@ def run_review(
           findings=len(findings),
           replies=len(ctx.review_context.comment_replies),
           resolves=len(ctx.review_context.comment_resolves))
+
+    # Clean up VFS temp dir
+    if vfs_dir:
+        import shutil
+        shutil.rmtree(vfs_dir, ignore_errors=True)
 
     return findings, ctx.review_context
 

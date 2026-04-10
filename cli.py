@@ -202,11 +202,17 @@ def run(
             _capture_event(event, **kw)
             event_handler(event, **kw)
 
+        # Pass git refs for VFS when available (PR mode)
+        _base_ref = pr_meta.get("base_ref", "") if pr_url else ""
+        _source_ref = pr_meta.get("source_ref", "") if pr_url else ""
+
         findings, review_ctx = dg.review(
             diff_text,
             existing_comments=existing_comments,
             on_event=_combined_handler,
             trace_writer=_trace_db.on_event,
+            base_ref=_base_ref,
+            source_ref=_source_ref,
         )
     console.print("")
 
