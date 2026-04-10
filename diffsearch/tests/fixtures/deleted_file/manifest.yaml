@@ -1,0 +1,7 @@
+name: deleted_file
+description: Delete LegacyService.java, keep Order.java unchanged
+commits:
+  - ref: base
+    message: "initial with LegacyService"
+  - ref: source
+    message: "remove LegacyService"

@@ -1,0 +1,7 @@
+name: rename_field
+description: Rename InventoryClient → InventoryService, add null check in cancelOrder
+commits:
+  - ref: base
+    message: "initial OrderService"
+  - ref: source
+    message: "rename inventory field, add null check"

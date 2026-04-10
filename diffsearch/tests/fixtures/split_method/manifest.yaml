@@ -1,0 +1,7 @@
+name: split_method
+description: Split processOrder into validateOrder + executeOrder, add auditLog
+commits:
+  - ref: base
+    message: "initial with processOrder"
+  - ref: source
+    message: "split processOrder into validate + execute, add audit"
