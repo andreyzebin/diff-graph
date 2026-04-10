@@ -93,7 +93,6 @@ def run(
     api_url:       Optional[str] = typer.Option(None,  "--api-url",            help="OpenAI-compatible API base URL override"),
     api_key:       Optional[str] = typer.Option(None,  "--api-key",            help="API key override"),
     output:        Optional[str] = typer.Option(None,  "--output",       "-o", help="Write findings as JSON to file"),
-    trace_file:    Optional[str] = typer.Option(None,  "--trace",        "-t", help="Write HTML trace to file for post-run analysis"),
     post_comments: bool          = typer.Option(False, "--post-comments",      help="Post findings to the PR as inline comments (requires --pr-url)"),
     max_steps:     Optional[int] = typer.Option(None,  "--max-steps",          help="Max ReAct steps (default: from config)"),
     max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
@@ -221,23 +220,7 @@ def run(
     )
     _trace_db.close()
     console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")
-
-    # Write HTML trace if --trace flag given
-    if trace_file:
-        if _root_agent_ref["agent"]:
-            from orchestra.trace import collect_trace, render_html
-            trace_data = collect_trace(_root_agent_ref["agent"], collector=_trace_collector)
-        else:
-            # Fallback: render from DB
-            from orchestra.trace_db import TraceDBReader
-            from orchestra.trace import render_html
-            reader = TraceDBReader()
-            trace_data = reader.get_run_trace(_trace_db.run_id)
-            reader.close()
-        trace_html = render_html(trace_data, title=f"Review Trace · {effective_model}")
-        from pathlib import Path
-        Path(trace_file).write_text(trace_html, encoding="utf-8")
-        console.print(f"[dim]  html:  {trace_file}[/dim]")
+    console.print(f"[dim]  view:  python cli.py trace --log  |  python cli.py serve[/dim]")
 
     if post_comments and pr_url:
         from diffgraph.bitbucket import post_review_comments
@@ -285,23 +268,20 @@ def run(
 
 @app.command()
 def trace(
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write HTML to file"),
     run_id: Optional[str] = typer.Option(None, "--run", help="Specific run ID (default: last run)"),
     list_runs: bool = typer.Option(False, "--list", "-l", help="List recent runs"),
-    log_mode: bool = typer.Option(False, "--log", help="Print trace to console instead of HTML"),
+    log_mode: bool = typer.Option(False, "--log", help="Print trace to console"),
 ):
     """
-    Render trace from the last run (or a specific run).
+    View traces from the CLI. Use 'serve' for the web UI.
 
     \b
-      python cli.py trace --log        # print to console
-      python cli.py trace              # open HTML in browser
-      python cli.py trace -o trace.html  # save HTML to file
       python cli.py trace --list       # list recent runs
-      python cli.py trace --run abc123 # specific run
+      python cli.py trace --log        # print last run to console
+      python cli.py trace --log --run X  # print specific run
+      python cli.py serve              # web UI for browsing traces
     """
     from orchestra.trace_db import TraceDBReader, DEFAULT_DB_PATH
-    from orchestra.trace import render_html
 
     if not DEFAULT_DB_PATH.exists():
         console.print("[red]No trace database found.[/red] Run a review first.")
@@ -336,7 +316,7 @@ def trace(
         reader.close()
         raise typer.Exit(0)
 
-    # Get run ID
+    # Default: --log mode
     target_id = run_id
     if not target_id:
         target_id = reader.get_last_run_id()
@@ -348,23 +328,7 @@ def trace(
     trace_data = reader.get_run_trace(target_id)
     reader.close()
 
-    if log_mode:
-        _print_trace_log(trace_data, depth=0)
-        return
-
-    trace_html = render_html(trace_data, title=f"Trace · {target_id}")
-
-    if output:
-        from pathlib import Path
-        Path(output).write_text(trace_html, encoding="utf-8")
-        console.print(f"[green]Written to {output}[/green]")
-    else:
-        import tempfile, webbrowser
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w") as f:
-            f.write(trace_html)
-            tmp_path = f.name
-        webbrowser.open(f"file://{tmp_path}")
-        console.print(f"[green]Opened in browser[/green] ({tmp_path})")
+    _print_trace_log(trace_data, depth=0)
 
 
 @app.command()

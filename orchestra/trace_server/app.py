@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..trace_db import TraceDBReader, DEFAULT_DB_PATH
-from ..trace import render_html, render_trace_body
+from ..trace import render_trace_body
 
 _DIR = Path(__file__).parent
 

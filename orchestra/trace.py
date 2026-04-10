@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import html
 import json
-from pathlib import Path
 from collections import defaultdict
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -106,8 +105,8 @@ def collect_trace(agent: "Agent", collector: Optional[TraceCollector] = None) ->
 # ── HTML Renderer ─────────────────────────────────────────────────────────────
 
 def render_trace_body(trace: dict) -> tuple[str, str]:
-    """Render just the trace tree HTML + data blocks (no page wrapper).
-    Returns (trace_html, data_blocks_html) for use in templates."""
+    """Render the trace tree HTML + data blocks for template injection.
+    Returns (trace_html, data_blocks_html)."""
     global _tab_counter
     _tab_counter = 0
     _data_blocks.clear()
@@ -116,33 +115,6 @@ def render_trace_body(trace: dict) -> tuple[str, str]:
     data_h = _H()
     _flush_data_blocks(data_h)
     return h.build(), data_h.build()
-
-
-def render_html(trace: dict, title: str = "Review Trace") -> str:
-    global _tab_counter
-    _tab_counter = 0
-    _data_blocks.clear()
-    h = _H()
-    h.line("<!DOCTYPE html><html><head>")
-    h.line(f"<title>{esc(title)}</title>")
-    h.line("<meta charset='utf-8'>")
-    h.line(f"<style>{_get_css()}</style>")
-    h.line("</head><body>")
-    h.line('<div class="layout">')
-    h.line('<div class="left-pane">')
-    h.line(f"<h1>{esc(title)}</h1>")
-    _render_agent(h, trace, depth=0)
-    h.line('</div>')
-    h.line('<div class="divider" id="divider"></div>')
-    h.line('<div class="right-pane" id="detail-panel">')
-    h.line('<div class="tab-bar" id="tab-bar"><span class="tab-hint">Click [⧉] to open details</span></div>')
-    h.line('<div class="tab-content" id="tab-content"></div>')
-    h.line('</div>')
-    h.line('</div>')
-    _flush_data_blocks(h)
-    h.line(f"<script>{_get_js()}</script>")
-    h.line("</body></html>")
-    return h.build()
 
 
 _tab_counter = 0
@@ -475,28 +447,4 @@ def _render_output(h: _H, output):
 
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
-
-_STATIC_DIR = Path(__file__).parent / "trace_server" / "static"
-
-def _load_static(name: str) -> str:
-    p = _STATIC_DIR / name
-    if p.exists():
-        return p.read_text(encoding="utf-8")
-    return ""
-
-# Lazy-loaded from static files
-_CSS_CACHE: str = ""
-_JS_CACHE: str = ""
-
-def _get_css() -> str:
-    global _CSS_CACHE
-    if not _CSS_CACHE:
-        _CSS_CACHE = _load_static("trace.css")
-    return _CSS_CACHE
-
-def _get_js() -> str:
-    global _JS_CACHE
-    if not _JS_CACHE:
-        _JS_CACHE = _load_static("trace.js")
-    return _JS_CACHE
 
