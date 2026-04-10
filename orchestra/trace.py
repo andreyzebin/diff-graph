@@ -105,6 +105,19 @@ def collect_trace(agent: "Agent", collector: Optional[TraceCollector] = None) ->
 
 # ── HTML Renderer ─────────────────────────────────────────────────────────────
 
+def render_trace_body(trace: dict) -> tuple[str, str]:
+    """Render just the trace tree HTML + data blocks (no page wrapper).
+    Returns (trace_html, data_blocks_html) for use in templates."""
+    global _tab_counter
+    _tab_counter = 0
+    _data_blocks.clear()
+    h = _H()
+    _render_agent(h, trace, depth=0)
+    data_h = _H()
+    _flush_data_blocks(data_h)
+    return h.build(), data_h.build()
+
+
 def render_html(trace: dict, title: str = "Review Trace") -> str:
     global _tab_counter
     _tab_counter = 0

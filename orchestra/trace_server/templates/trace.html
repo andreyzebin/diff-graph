@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Trace · {{ title }}</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/static/trace.css">
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body>
+<div class="layout" x-data="splitPane()">
+  <!-- Left pane: trace tree -->
+  <div class="left-pane" :style="'width:' + leftWidth + 'px'">
+    <h1><a href="/" style="color:#8b949e;text-decoration:none">←</a> {{ title }}</h1>
+    {{ trace_html | safe }}
+  </div>
+
+  <!-- Draggable divider -->
+  <div class="divider" @mousedown="startDrag($event)"></div>
+
+  <!-- Right pane: detail tabs -->
+  <div class="right-pane" x-data="tabPanel()" :style="'width:' + $root.rightWidth + 'px'">
+    <div class="tab-bar">
+      <template x-if="tabs.length === 0">
+        <span class="tab-hint">Click [⧉] to open details</span>
+      </template>
+      <template x-for="tab in tabs" :key="tab.id">
+        <div class="tab-btn" :class="{ active: active === tab.id }" @click="active = tab.id">
+          <span x-text="tab.title.substring(0, 30)"></span>
+          <span class="tab-close" @click.stop="closeTab(tab.id)">×</span>
+        </div>
+      </template>
+    </div>
+    <div class="tab-content">
+      <template x-if="active && getTab(active)">
+        <pre x-text="formatContent(getTab(active).content)"></pre>
+      </template>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden data blocks for [⧉] buttons -->
+{{ data_blocks | safe }}
+
+<script>
+// Split pane resize
+function splitPane() {
+  return {
+    leftWidth: Math.floor(window.innerWidth * 0.5),
+    rightWidth: Math.floor(window.innerWidth * 0.5) - 4,
+    dragging: false,
+    startDrag(e) {
+      this.dragging = true;
+      const onMove = (e) => {
+        if (!this.dragging) return;
+        const total = window.innerWidth;
+        this.leftWidth = Math.max(200, Math.min(total - 204, e.clientX));
+        this.rightWidth = total - this.leftWidth - 4;
+      };
+      const onUp = () => {
+        this.dragging = false;
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    }
+  };
+}
+
+// Tab panel
+function tabPanel() {
+  return {
+    tabs: [],
+    active: null,
+    openTab(title, content, id) {
+      const existing = this.tabs.find(t => t.id === id);
+      if (existing) { this.active = id; return; }
+      this.tabs.push({ id, title, content });
+      this.active = id;
+    },
+    closeTab(id) {
+      this.tabs = this.tabs.filter(t => t.id !== id);
+      if (this.active === id) {
+        this.active = this.tabs.length > 0 ? this.tabs[this.tabs.length - 1].id : null;
+      }
+    },
+    getTab(id) { return this.tabs.find(t => t.id === id); },
+    formatContent(content) {
+      try { return JSON.stringify(JSON.parse(content), null, 2); }
+      catch(e) { return content; }
+    }
+  };
+}
+
+// Global function called by [⧉] buttons in trace HTML
+function openTabById(title, dataId) {
+  const el = document.getElementById(dataId);
+  if (!el) return;
+  const content = el.textContent;
+  // Find the Alpine tabPanel component
+  const panel = document.querySelector('[x-data="tabPanel()"]');
+  if (panel && panel.__x) {
+    panel.__x.$data.openTab(title, content, dataId);
+  } else if (panel && panel._x_dataStack) {
+    // Alpine v3
+    const data = Alpine.$data(panel);
+    data.openTab(title, content, dataId);
+  }
+}
+
+// Copy to clipboard
+function downloadJSON(filename, dataId) {
+  const el = document.getElementById(dataId);
+  if (!el) return;
+  let content = el.textContent;
+  try { content = JSON.stringify(JSON.parse(content), null, 2); } catch(e) {}
+  navigator.clipboard.writeText(content).then(() => showToast('✓ Copied to clipboard'));
+}
+
+function showToast(msg) {
+  const t = document.createElement('div');
+  t.className = 'toast show';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 1500);
+}
+
+// Auto-expand agents with findings
+document.querySelectorAll('.output-section').forEach(el => {
+  let details = el.closest('details');
+  if (details) details.open = true;
+});
+</script>
+</body>
+</html>

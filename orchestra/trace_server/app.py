@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..trace_db import TraceDBReader, DEFAULT_DB_PATH
-from ..trace import render_html
+from ..trace import render_html, render_trace_body
 
 _DIR = Path(__file__).parent
 
@@ -61,11 +61,15 @@ async def run_detail(request: Request, run_id: str):
             "run_meta": run_meta,
         })
 
-    # Completed — full trace render
+    # Completed — render via Alpine.js template
     trace_data = reader.get_run_trace(run_id)
     reader.close()
-    html = render_html(trace_data, title=f"Trace · {run_id[:12]}")
-    return HTMLResponse(content=html)
+    trace_html, data_blocks = render_trace_body(trace_data)
+    return templates.TemplateResponse(request, "trace.html", {
+        "title": run_id[:12],
+        "trace_html": trace_html,
+        "data_blocks": data_blocks,
+    })
 
 
 @app.get("/runs/{run_id}/json")

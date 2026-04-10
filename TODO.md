@@ -200,24 +200,27 @@ python cli.py run --pr-url ... --serve     # run + open live trace in browser
 - **Code viewer** — show source files with findings highlighted inline
 - **CI integration** — `POST /api/runs` for automated reviews
 
-**Phase 1 (extract static files + basic server):**
-- Extract CSS/JS from trace.py into trace_server/static/
-- FastAPI app with GET / (runs list) and GET /runs/{id} (trace detail)
-- `cli.py serve` command
-- Reuse existing trace_db.py reader
+**Phase 1 (extract static files + basic server):** ✅ Done
+**Phase 2 (live tracing via WebSocket):** ✅ Done
+**Phase 2.5 (custom scrollbars + draggable divider):** ✅ Done
+
+**Phase 3 (Alpine.js + HTMX):**
+- Replace vanilla JS with Alpine.js (~15KB) for declarative client interactivity
+- Add HTMX for server-rendered navigation (run list filtering, pagination)
+- Tabs: `x-data` + `x-for` instead of manual DOM manipulation
+- WebSocket live view: Alpine store + `x-for` rendering
+- Copy/toast: `x-show` + `x-transition`
+- Resizable divider: Alpine `x-on:mousedown`
+- No build step — CDN or vendored scripts
 - **Effort:** Medium.
 
-**Phase 2 (live tracing):**
-- WebSocket endpoint reads new events from SQLite
-- Browser auto-updates trace as events arrive
-- **Effort:** Medium.
-
-**Phase 3 (comparison + search):**
+**Phase 4 (comparison + search):**
 - Side-by-side comparison view
 - Search across runs by finding/file/severity
+- HTMX-powered filtering on run list
 - **Effort:** Medium.
 
-**Dependencies:** `fastapi`, `uvicorn`, `jinja2` (Python-only, no npm).
+**Dependencies:** `fastapi`, `uvicorn`, `jinja2`, Alpine.js (CDN), HTMX (CDN).
 
 ### 4.2 Trace export to JSON
 
@@ -279,9 +282,10 @@ python cli.py run --pr-url ... --model gpt-4o --compare deepseek-chat
 | 1.2 | Smart pushers | Medium | Medium | Do third |
 | 1.5 | Historical cost tracking | Medium | Medium | Do third |
 | 2.2 | Live parallel progress | Medium | Medium | Do third |
-| 4.1 | Trace web server (Phase 1: extract + basic server) | **High** | Medium | **Do first** |
-| 4.1 | Trace web server (Phase 2: live WebSocket) | High | Medium | Do second |
-| 4.1 | Trace web server (Phase 3: comparison + search) | Medium | Medium | Do third |
+| 4.1 | ~~Trace web server Phase 1 (basic server)~~ | ~~Done~~ | | |
+| 4.1 | ~~Trace web server Phase 2 (live WebSocket)~~ | ~~Done~~ | | |
+| 4.1 | Trace web server Phase 3 (Alpine.js + HTMX) | **High** | Medium | **Do first** |
+| 4.1 | Trace web server Phase 4 (comparison + search) | Medium | Medium | Do third |
 | 4.2 | Trace JSON export | Low | Small | Later |
 | 4.3 | Trace search CLI | Low | Small | Later |
 | 5.2 | Model comparison | Low | Medium | Later |
