@@ -48,6 +48,10 @@ def read_file_vfs(
     with open(file_path) as f:
         all_lines = f.readlines()
 
+    # Binary file marker
+    if len(all_lines) == 1 and all_lines[0].strip() == "(binary file)":
+        return f"# {path}\n(binary file)"
+
     meta = load_diffmeta(vfs_dir, path)
 
     if end_line is None:
@@ -145,8 +149,10 @@ def search_vfs(
         except ValueError:
             continue
 
-        # Skip .diffmeta files
+        # Skip .diffmeta files and binary markers
         if rel_path.startswith(".diffmeta"):
+            continue
+        if snippet.strip() == "(binary file)":
             continue
 
         # Enrich with old/new from metadata

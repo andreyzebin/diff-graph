@@ -190,11 +190,18 @@ def materialize_vfs(
 
     virtual_files: dict[str, VirtualFile] = {}
 
+    binary_files: set[str] = set()
+
     # Changed files: build virtual, write content, save metadata
     for path in changed:
         vf = build_virtual_file(base_ref, source_ref, path, repo_path)
         if not vf.lines:
-            continue  # binary or empty file
+            # Binary file — create marker file for list/read visibility
+            binary_files.add(path)
+            out_path = Path(target_dir) / path
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text("(binary file)\n")
+            continue
         virtual_files[path] = vf
 
         # Write content (without markers) — line numbers in this file == L
@@ -248,13 +255,12 @@ def materialize_vfs(
             cwd=repo_path, capture_output=True,
         )
         if result.returncode == 0:
-            # Skip binary files
             try:
                 content = result.stdout.decode("utf-8")
                 with open(out_path, "w") as f:
                     f.write(content)
             except UnicodeDecodeError:
-                pass  # binary file, skip
+                out_path.write_text("(binary file)\n")
 
     return target_dir
 
