@@ -61,43 +61,65 @@ def read_file_vfs(
     end_line = min(end_line, len(all_lines))
 
     if not meta:
-        # Unchanged file — plain output
-        out = []
-        if line_numbers:
-            header = f"# {path}  lines {start_line}-{end_line}\n"
-        else:
-            header = f"# {path}\n"
-        out.append(header)
+        # Unchanged file — plain output, single column
+        w = len(str(end_line))
+        out = [f"# {path}  L{start_line}-L{end_line}"]
         for i in range(start_line - 1, end_line):
             ln = i + 1
             content = all_lines[i].rstrip("\n")
             if line_numbers:
-                out.append(f"  {ln:>4} | {content}")
+                out.append(f"{ln:>{w}} | {content}")
             else:
                 out.append(f"  {content}")
         return "\n".join(out)
 
-    # Changed file — show old/new columns + markers
-    out = []
-    header = f"# {path}  lines L{start_line}-L{end_line}  (old=left commit, new=right commit)"
-    out.append(header)
+    # Changed file — detect which columns are needed
+    slice_meta = meta[start_line - 1:end_line]
+    has_old = any(m["old"] is not None for m in slice_meta)
+    has_new = any(m["new"] is not None for m in slice_meta)
+    all_plus = all(m["marker"] == "+" for m in slice_meta)
+    all_minus = all(m["marker"] == "-" for m in slice_meta)
+
+    # Dynamic column widths
+    max_old = max((m["old"] for m in slice_meta if m["old"] is not None), default=0)
+    max_new = max((m["new"] for m in slice_meta if m["new"] is not None), default=0)
+    w_old = len(str(max_old)) if max_old else 0
+    w_new = len(str(max_new)) if max_new else 0
+
+    # Header
+    if all_plus:
+        tag = "(new file)"
+    elif all_minus:
+        tag = "(deleted)"
+    else:
+        tag = "(old=base, new=source)"
+    out = [f"# {path}  L{start_line}-L{end_line} {tag}"]
+
     if line_numbers:
-        out.append("   old  new")
+        cols = []
+        if has_old:
+            cols.append(f"{'old':>{w_old}}")
+        if has_new:
+            cols.append(f"{'new':>{w_new}}")
+        if cols:
+            out.append(" ".join(cols))
 
     for i in range(start_line - 1, end_line):
         if i >= len(meta):
             break
         m = meta[i]
         content = all_lines[i].rstrip("\n")
-        marker = m["marker"]
-        marker_char = marker if marker != " " else " "
+        marker = m["marker"] if m["marker"] != " " else " "
 
         if line_numbers:
-            old_s = f"{m['old']:>5}" if m["old"] is not None else "     "
-            new_s = f"{m['new']:>5}" if m["new"] is not None else "     "
-            out.append(f"  {old_s}{new_s} |{marker_char}{content}")
+            parts = []
+            if has_old:
+                parts.append(f"{m['old']:>{w_old}}" if m["old"] is not None else " " * w_old)
+            if has_new:
+                parts.append(f"{m['new']:>{w_new}}" if m["new"] is not None else " " * w_new)
+            out.append(f"{' '.join(parts)} |{marker} {content}")
         else:
-            out.append(f"  {marker_char}{content}")
+            out.append(f"|{marker} {content}")
 
     return "\n".join(out)
 
