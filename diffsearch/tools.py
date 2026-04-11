@@ -120,7 +120,7 @@ def search_vfs(
     vfs = Path(vfs_dir)
 
     # Use grep on the vfs directory
-    cmd = ["grep", "-rn"]
+    cmd = ["grep", "-rni"]
     if not regex:
         cmd.append("-F")  # fixed string
     # --include with grep uses shell glob (not **), so convert
