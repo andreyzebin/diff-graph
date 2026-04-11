@@ -68,10 +68,8 @@ summary:hover { background: #161b22; }
 .agent { border: 1px solid #30363d; border-radius: 6px; margin: 8px 0; background: #0d1117; }
 .agent-header { padding: 8px 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .agent-name { font-weight: bold; color: #58a6ff; font-size: 1.1em; }
+.agent-parent { color: #8b949e; font-size: 0.85em; font-style: italic; }
 .agent-meta { color: #8b949e; font-size: 0.85em; }
-.depth-1 { margin-left: 16px; border-color: #1f6feb33; }
-.depth-2 { margin-left: 32px; border-color: #1f6feb22; }
-.depth-3 { margin-left: 48px; border-color: #1f6feb11; }
 
 .conf-trail { display: flex; gap: 3px; align-items: center; }
 .conf-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }

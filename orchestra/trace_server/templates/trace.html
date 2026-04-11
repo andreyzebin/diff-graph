@@ -1,4 +1,4 @@
-{% from "macros.html" import agent as _agent, llm_call, sgr_entry, findings %}
+{% from "macros.html" import agent_list, llm_call, sgr_entry, findings %}
 <!DOCTYPE html>
 <html>
 <head>
@@ -11,7 +11,7 @@
 <div class="layout" x-data="splitPane()">
   <div class="left-pane" :style="'width:' + leftWidth + 'px'">
     <h1><a href="/" style="color:#8b949e;text-decoration:none">←</a> Trace · {{ title }} <a href="/runs/{{ run_id }}/live" class="nav-link">Live ⧉</a></h1>
-    {{ _agent(trace, run_id) }}
+    {{ agent_list(trace, run_id) }}
   </div>
   <div class="divider" @mousedown="startDrag($event)"></div>
   <div class="right-pane" x-data="tabPanel()">

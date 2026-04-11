@@ -1,8 +1,9 @@
-{# ── Recursive agent macro ── #}
-{% macro agent(a, run_id) %}
-<details {{ 'open' if a.depth == 0 }} class="agent depth-{{ [a.depth, 3] | min }}">
+{# ── Single agent (no children rendering) ── #}
+{% macro agent_single(a, run_id, parent_name) %}
+<details open class="agent">
   <summary class="agent-header">
     <span class="agent-name">{{ a.agent_name }}</span>
+    {% if parent_name %}<span class="agent-parent">← {{ parent_name }}</span>{% endif %}
     <span class="agent-meta">{{ a.steps }} steps · ↑{{ a.total_in }} ↓{{ a.total_out }}{% if a.total_cached %} ©{{ a.total_cached }}{% endif %} · id:{{ a.agent_id[:10] }}</span>
     {% if a.conf_trail %}
     <span class="conf-trail">
@@ -21,18 +22,27 @@
   {% endfor %}
 
   {% if a.children %}
-  <div class="children-section">
-    <div class="spawn-label">spawned {{ a.children | length }} agent(s)</div>
-    {% for child in a.children %}
-      {{ agent(child, run_id) }}
-    {% endfor %}
-  </div>
+  <div class="spawn-label">spawned {{ a.children | length }} agent(s)</div>
   {% endif %}
 
   {% if a.output %}
     {{ findings(a.output) }}
   {% endif %}
 </details>
+{% endmacro %}
+
+{# ── Flat agent list: root + all children at same level ── #}
+{% macro agent_list(root, run_id) %}
+  {{ agent_single(root, run_id, "") }}
+  {{ _render_children(root, run_id) }}
+{% endmacro %}
+
+{# ── Recursively collect children flat ── #}
+{% macro _render_children(a, run_id) %}
+  {% for child in a.children %}
+    {{ agent_single(child, run_id, a.agent_name) }}
+    {{ _render_children(child, run_id) }}
+  {% endfor %}
 {% endmacro %}
 
 {# ── LLM call step ── #}
