@@ -34,12 +34,15 @@ def read_file_vfs(
     start_line: int = 1,
     end_line: int | None = None,
     line_numbers: bool = True,
+    changes_only: bool = False,
+    context: int = 3,
 ) -> str:
     """
     Read a file from the virtual FS.
 
     start_line/end_line are L (virtual position, 1-indexed).
     Output shows old/new columns when metadata exists (changed file).
+    changes_only=True shows only lines near +/- markers (±context lines).
     """
     file_path = Path(vfs_dir) / path
     if not file_path.exists():
@@ -53,6 +56,12 @@ def read_file_vfs(
         return f"# {path}\n(binary file)"
 
     meta = load_diffmeta(vfs_dir, path)
+
+    # changes_only: show only lines near +/- markers
+    if changes_only and meta:
+        return _render_changes_only(path, all_lines, meta, line_numbers, context)
+    if changes_only and not meta:
+        return f"# {path}\n(no changes)"
 
     if end_line is None:
         end_line = min(start_line + 99, len(all_lines))
@@ -120,6 +129,82 @@ def read_file_vfs(
             out.append(f"{' '.join(parts)} |{marker} {content}")
         else:
             out.append(f"|{marker} {content}")
+
+    return "\n".join(out)
+
+
+def _render_changes_only(
+    path: str, all_lines: list[str], meta: list[dict],
+    line_numbers: bool, context: int,
+) -> str:
+    """Render only lines near +/- markers with ±context."""
+    # Find L positions of changed lines
+    changed_Ls: set[int] = set()
+    for m in meta:
+        if m["marker"] in ("+", "-"):
+            changed_Ls.add(m["L"])
+
+    if not changed_Ls:
+        return f"# {path}\n(no changes)"
+
+    # Expand with context
+    show_Ls: set[int] = set()
+    for L in changed_Ls:
+        for offset in range(-context, context + 1):
+            candidate = L + offset
+            if 1 <= candidate <= len(meta):
+                show_Ls.add(candidate)
+
+    # Detect columns needed
+    show_meta = [meta[L - 1] for L in sorted(show_Ls)]
+    has_old = any(m["old"] is not None for m in show_meta)
+    has_new = any(m["new"] is not None for m in show_meta)
+
+    max_old = max((m["old"] for m in show_meta if m["old"] is not None), default=0)
+    max_new = max((m["new"] for m in show_meta if m["new"] is not None), default=0)
+    w_old = len(str(max_old)) if max_old else 0
+    w_new = len(str(max_new)) if max_new else 0
+
+    all_plus = all(m["marker"] == "+" for m in meta)
+    all_minus = all(m["marker"] == "-" for m in meta)
+    if all_plus:
+        tag = "(new file)"
+    elif all_minus:
+        tag = "(deleted)"
+    else:
+        tag = "(old=base, new=source)"
+
+    out = [f"# {path}  changes only {tag}"]
+
+    if line_numbers:
+        cols = []
+        if has_old:
+            cols.append(f"{'old':>{w_old}}")
+        if has_new:
+            cols.append(f"{'new':>{w_new}}")
+        if cols:
+            out.append(" ".join(cols))
+
+    prev_L = 0
+    for L in sorted(show_Ls):
+        if prev_L and L > prev_L + 1:
+            out.append("  --")
+
+        m = meta[L - 1]
+        content = all_lines[L - 1].rstrip("\n") if L <= len(all_lines) else ""
+        marker = m["marker"] if m["marker"] != " " else " "
+
+        if line_numbers:
+            parts = []
+            if has_old:
+                parts.append(f"{m['old']:>{w_old}}" if m["old"] is not None else " " * w_old)
+            if has_new:
+                parts.append(f"{m['new']:>{w_new}}" if m["new"] is not None else " " * w_new)
+            out.append(f"{' '.join(parts)} |{marker} {content}")
+        else:
+            out.append(f"|{marker} {content}")
+
+        prev_L = L
 
     return "\n".join(out)
 

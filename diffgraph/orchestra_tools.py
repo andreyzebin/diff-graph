@@ -58,25 +58,28 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
 
     @registry.register(
         name="read_file",
-        description="Read up to 100 lines of a file. Shows old/new line numbers and +/- markers for changed files.",
+        description="Read up to 100 lines of a file. Shows old/new line numbers and +/- markers for changed files. Use changes_only=true to see just the diff hunks.",
         parameters={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "start_line": {"type": "integer", "description": "1-indexed inclusive (L position in unified view)."},
                 "end_line": {"type": "integer", "description": "1-indexed inclusive."},
+                "changes_only": {"type": "boolean", "description": "Show only changed lines with context. Replaces get_diff."},
             },
             "required": ["path"],
         },
     )
-    def read_file_tool(path: str = "", start_line: int = None, end_line: int = None) -> str:
-        if start_line is not None and end_line is not None and (end_line - start_line) > 100:
+    def read_file_tool(path: str = "", start_line: int = None, end_line: int = None,
+                       changes_only: bool = False) -> str:
+        if not changes_only and start_line is not None and end_line is not None and (end_line - start_line) > 100:
             end_line = start_line + 99
         if use_vfs:
             return read_file_vfs(
                 ctx.vfs_dir, path,
                 start_line=start_line or 1,
                 end_line=end_line,
+                changes_only=changes_only,
             )
         return read_file(path, ctx.repo_path, start_line, end_line) or "(file not found)"
 
