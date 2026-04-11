@@ -1,7 +1,7 @@
 @agent: lead
 @mode: react
 @capabilities: sgr, spawn, spawn_many, observe_agents, adjust_agent
-@tools: get_diff, reply_to_comment, resolve_comment
+@tools: read_file, read_outline, reply_to_comment, resolve_comment
 @budget: 50000 tokens, 50 steps
 @sgr_interval: 5
 @llm: temperature=0.2
