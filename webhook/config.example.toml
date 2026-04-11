@@ -1,0 +1,45 @@
+# ── Server ──────────────────────────────────────────────
+[server]
+port = 8000
+# secret = "webhook-secret"  # optional: x-hub-signature verification
+
+# ── Agents ──────────────────────────────────────────────
+[agents.dg2]
+trigger = "cli"
+command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --post-comments'
+timeout = 600
+
+[agents.dg1]
+trigger = "cli"
+command = 'cd ~/repos/diff-graph-v1 && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --post-comments'
+timeout = 600
+
+[agents.pra]
+trigger = "cli"
+command = 'cd ~/repos/pr-agent && python -m pr_agent.cli --pr_url="{pr_url}" review'
+timeout = 300
+
+# ── Events → commands ───────────────────────────────────
+[events]
+"pr:opened" = ["review"]
+"pr:comment:added" = "parse"         # extract /command from comment text
+"repo:refs_changed" = []              # nothing on push
+
+# ── Routes (first match wins) ──────────────────────────
+# eval context: project, repo, author, branch, target, pr_url, pr_id, title
+
+[[routes]]
+name = "orderflow-canary"
+when = "repo == 'code-review-example-orderflow'"
+agent = "dg2"
+
+[[routes]]
+name = "sbloom-ab"
+when = "project == 'SBLOOM'"
+agent = { dg2 = 30, dg1 = 70 }       # A/B: 30% dg2, 70% dg1 (by pr_url hash)
+improve = "pra"                        # except /improve → always pra
+
+[[routes]]
+name = "default"
+when = "true"
+agent = "dg1"
