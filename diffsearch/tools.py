@@ -36,6 +36,8 @@ def read_file_vfs(
     line_numbers: bool = True,
     changes_only: bool = False,
     context: int = 3,
+    context_before: int | None = None,
+    context_after: int | None = None,
 ) -> str:
     """
     Read a file from the virtual FS.
@@ -58,8 +60,10 @@ def read_file_vfs(
     meta = load_diffmeta(vfs_dir, path)
 
     # changes_only: show only lines near +/- markers
+    cb = context_before if context_before is not None else context
+    ca = context_after if context_after is not None else context
     if changes_only and meta:
-        return _render_changes_only(path, all_lines, meta, line_numbers, context)
+        return _render_changes_only(path, all_lines, meta, line_numbers, cb, ca)
     if changes_only and not meta:
         return f"# {path}\n(no changes)"
 
@@ -135,9 +139,9 @@ def read_file_vfs(
 
 def _render_changes_only(
     path: str, all_lines: list[str], meta: list[dict],
-    line_numbers: bool, context: int,
+    line_numbers: bool, before: int, after: int,
 ) -> str:
-    """Render only lines near +/- markers with ±context."""
+    """Render only lines near +/- markers with before/after context."""
     # Find L positions of changed lines
     changed_Ls: set[int] = set()
     for m in meta:
@@ -150,7 +154,7 @@ def _render_changes_only(
     # Expand with context
     show_Ls: set[int] = set()
     for L in changed_Ls:
-        for offset in range(-context, context + 1):
+        for offset in range(-before, after + 1):
             candidate = L + offset
             if 1 <= candidate <= len(meta):
                 show_Ls.add(candidate)

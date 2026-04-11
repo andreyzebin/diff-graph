@@ -26,18 +26,18 @@ EXISTING REVIEW COMMENTS:
 
 TOOLS:
 - find_files(pattern) — glob the repo, get matching paths
-- read_file(path, start_line?, end_line?) — read up to 100 lines
-- read_outline(path) — structural outline (classes, methods, line ranges)
-- search(query, glob?, regex?) — search for text across files
-- get_diff(path?) — get the full diff or per-file section
+- read_file(path, changes_only=true, before=3, after=3) — view diff hunks for a file
+- read_file(path, start_line, end_line) — read a range of lines with full context
+- read_outline(path) — structural outline (classes, methods, line ranges, * = changed)
+- search(query, glob?, regex?, before?, after?) — search for text across files
 - reflect(...) — structured self-reflection
 - done(findings) — submit findings and stop
 
 WORKFLOW:
 
-1. START by reading the diff for files relevant to your concern:
-   use get_diff(path) for each file from WHAT CHANGED that relates to your focus.
-   Do NOT call get_diff() without a path — it returns all files and truncates.
+1. START by reading changes for files relevant to your concern:
+   use read_file(path, changes_only=true, before=3, after=3) for each file
+   from WHAT CHANGED that relates to your focus. This shows only diff hunks.
    Also call read_outline() on key files. Gather facts before reflecting.
 
 2. THEN call reflect() with:

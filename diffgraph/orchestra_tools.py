@@ -66,12 +66,14 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                 "start_line": {"type": "integer", "description": "1-indexed inclusive (L position in unified view)."},
                 "end_line": {"type": "integer", "description": "1-indexed inclusive."},
                 "changes_only": {"type": "boolean", "description": "Show only changed lines with context. Replaces get_diff."},
+                "before": {"type": "integer", "description": "Context lines before each change (for changes_only). Default 3."},
+                "after": {"type": "integer", "description": "Context lines after each change (for changes_only). Default 3."},
             },
             "required": ["path"],
         },
     )
     def read_file_tool(path: str = "", start_line: int = None, end_line: int = None,
-                       changes_only: bool = False) -> str:
+                       changes_only: bool = False, before: int = 3, after: int = 3) -> str:
         if not changes_only and start_line is not None and end_line is not None and (end_line - start_line) > 100:
             end_line = start_line + 99
         if use_vfs:
@@ -80,6 +82,8 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                 start_line=start_line or 1,
                 end_line=end_line,
                 changes_only=changes_only,
+                context_before=before,
+                context_after=after,
             )
         return read_file(path, ctx.repo_path, start_line, end_line) or "(file not found)"
 
