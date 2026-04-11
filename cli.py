@@ -96,7 +96,6 @@ def run(
     post_comments: bool          = typer.Option(False, "--post-comments",      help="Post findings to the PR as inline comments (requires --pr-url)"),
     max_steps:     Optional[int] = typer.Option(None,  "--max-steps",          help="Max ReAct steps (default: from config)"),
     max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
-    diff_mode:     Optional[str] = typer.Option(None,  "--diff-mode",          help="'unified' (VFS with old/new markers) or 'plain' (current files only)"),
 ):
     """
     Run a multi-agent PR review and print structured findings.
@@ -118,7 +117,6 @@ def run(
     effective_model     = llm_cfg.get("model", "gpt-4o-mini")
     effective_steps     = max_steps  if max_steps  is not None else review_cfg.get("max_steps",  40)
     effective_tokens    = max_tokens if max_tokens is not None else review_cfg.get("max_tokens", 40000)
-    effective_diff_mode = diff_mode or review_cfg.get("diff_mode", "unified")
 
     cleanup_fn = None
     pr_title = pr_description = ""
@@ -204,12 +202,9 @@ def run(
             _capture_event(event, **kw)
             event_handler(event, **kw)
 
-        # Pass git refs for VFS when diff_mode=unified and PR mode
-        _base_ref = ""
-        _source_ref = ""
-        if effective_diff_mode == "unified" and pr_url:
-            _base_ref = pr_meta.get("base_ref", "")
-            _source_ref = pr_meta.get("source_ref", "")
+        # Pass git refs for VFS (PR mode only)
+        _base_ref = pr_meta.get("base_ref", "") if pr_url else ""
+        _source_ref = pr_meta.get("source_ref", "") if pr_url else ""
 
         findings, review_ctx = dg.review(
             diff_text,

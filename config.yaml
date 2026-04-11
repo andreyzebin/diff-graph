@@ -8,4 +8,3 @@ llm:
 review:
   max_steps: 40          # max ReAct tool calls per review
   max_tokens: 40000      # stop agent if cumulative token usage exceeds this
-  diff_mode: unified     # "unified" = VFS with old/new/+/- markers; "plain" = current files only
