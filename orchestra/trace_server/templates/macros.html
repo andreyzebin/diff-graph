@@ -52,7 +52,6 @@
 {% if resp or req %}
 <details class="llm-call">
   <summary class="llm-header">
-    <span class="llm-step">step {{ s.step }}</span>
     {% if resp %}
       {% set calls = resp.tool_calls or [] %}
       {% if calls %}

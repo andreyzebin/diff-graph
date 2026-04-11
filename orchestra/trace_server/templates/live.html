@@ -170,7 +170,7 @@ function handleEvent(ev) {
         } catch(e) { return name; }
       }).join(', ');
       if (toolSummary) {
-        addLine(`<span class="${isChild ? 'log-child' : ''}">${tag}<span class="log-step">step ${step}</span> <span class="log-tool">${esc(toolSummary)}</span> <span class="log-paid">↑${uin} ↓${uout}${ucache ? ' ©' + ucache : ''}</span></span>`);
+        addLine(`<span class="${isChild ? 'log-child' : ''}">${tag}<span class="log-tool">${esc(toolSummary)}</span> <span class="log-paid">↑${uin} ↓${uout}${ucache ? ' ©' + ucache : ''}</span></span>`);
       }
       break;
     }
@@ -179,7 +179,7 @@ function handleEvent(ev) {
       const conf = data.confidence || '?';
       const confCls = 'log-conf-' + conf;
       const childIndent = isChild ? 'log-child' : '';
-      addLine(`<span class="${childIndent}">${tag}<span class="log-step">step ${step}</span> <span class="log-reflect">reflect</span> <span class="log-conf ${confCls}">${conf}</span></span>`);
+      addLine(`<span class="${childIndent}">${tag}<span class="log-reflect">reflect</span> <span class="log-conf ${confCls}">${conf}</span></span>`);
 
       // Show resolved
       const resolved = data.resolved_questions || [];
