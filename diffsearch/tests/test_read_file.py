@@ -98,3 +98,45 @@ class TestReadFileVFS:
                 assert "OrderHelper" in out
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_changes_only(self, rename_field_repo):
+        """changes_only shows only hunks with context."""
+        repo, base, source = rename_field_repo
+        vfs = self._make_vfs(repo, base, source)
+        try:
+            full = read_file_vfs(vfs, "src/OrderService.java")
+            diff = read_file_vfs(vfs, "src/OrderService.java", changes_only=True)
+            log.info("read_file changes_only:\n%s", diff)
+            # Should be shorter than full file
+            assert len(diff.splitlines()) < len(full.splitlines())
+            # Should contain +/- markers
+            assert "|+" in diff
+            assert "|-" in diff
+            # Should have separators between hunks
+            assert "  --" in diff
+            # Should have header
+            assert "changes only" in diff
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_changes_only_unchanged_file(self, rename_field_repo):
+        """changes_only on unchanged file returns no changes."""
+        repo, base, source = rename_field_repo
+        vfs = self._make_vfs(repo, base, source)
+        try:
+            out = read_file_vfs(vfs, "src/Util.java", changes_only=True)
+            assert "no changes" in out
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_changes_only_new_file(self, new_file_repo):
+        """changes_only on new file shows all lines as +."""
+        repo, base, source = new_file_repo
+        vfs = self._make_vfs(repo, base, source)
+        try:
+            out = read_file_vfs(vfs, "src/AuditLog.java", changes_only=True)
+            log.info("read_file changes_only new file:\n%s", out)
+            assert "new file" in out
+            assert "|+" in out
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)

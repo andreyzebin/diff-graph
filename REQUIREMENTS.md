@@ -89,7 +89,9 @@ Reads `.prompt` files and builds an **agent registry**.
 
 **Runtime access:** `list_agents` tool returns the registry. `spawn_agent` validates data against target's schema and injects into `{placeholders}`.
 
-**Data inheritance:** `spawn_agent(data={field: "inherit"})` copies the value from the parent's data scope. Parent's `data_scope` is auto-injected into child `{placeholders}`. Zero token waste on re-transmitting shared context.
+**Data inheritance:** Parent's `data_scope` is auto-injected into child `{placeholders}` when the child's `@data` field matches a key in the parent's scope. The child does not need to explicitly request `"inherit"` — matching fields are injected automatically.
+
+Example: the orchestrator sets `data_scope = {diff_summary, existing_comments, commits}` on the lead agent. When the lead spawns a reviewer, the reviewer's `@data` declares the same fields (`diff_summary`, `existing_comments`, `commits`, `focus`). The matching fields are copied from the lead's scope into the reviewer's prompt `{placeholders}`. The `focus` field comes from the `spawn_agent` call. Zero token waste on re-transmitting shared context.
 
 **No handoff context by default:** child agents get everything via their system prompt (with injected data), not from parent conversation history.
 

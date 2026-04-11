@@ -73,6 +73,9 @@ class _Ctx:
     repo_path: str
     existing_comments: list[dict]
     review_context: ReviewContext = field(default_factory=ReviewContext)
+    base_ref: str = ""
+    source_ref: str = ""
+    vfs_cache: dict = field(default_factory=dict)  # ref → vfs_dir
 
 
 def run_review(
@@ -85,6 +88,8 @@ def run_review(
     max_tokens: int = 50000,
     on_event: OnEvent = None,
     trace_writer: Optional[Callable] = None,
+    base_ref: str = "",
+    source_ref: str = "",
 ) -> tuple[list[ReviewFinding], ReviewContext]:
     _emit = on_event or (lambda *_, **__: None)
     diff_result = parse_diff(diff_text)
@@ -92,6 +97,7 @@ def run_review(
     ctx = _Ctx(
         diff_text=diff_text, diff_result=diff_result,
         repo_path=repo_path, existing_comments=existing_comments or [],
+        base_ref=base_ref, source_ref=source_ref,
     )
 
     # ── Compile agents from .prompt files ─────────────────────────────────
@@ -131,10 +137,12 @@ def run_review(
     # Inject data into prompt placeholders
     diff_summary = _make_diff_summary(diff_result)
     existing_comments_str = _format_existing_comments(ctx.existing_comments)
+    commits_str = _get_commit_list(repo_path, base_ref, source_ref) if base_ref and source_ref else "(unavailable)"
     config.system_prompt = interpolate(
         config.system_prompt,
         diff_summary=diff_summary,
         existing_comments=existing_comments_str,
+        commits=commits_str,
     )
 
     # Override budget from CLI params
@@ -167,6 +175,7 @@ def run_review(
     agent.data_scope = {
         "diff_summary": diff_summary,
         "existing_comments": existing_comments_str,
+        "commits": commits_str,
     }
 
     result = agent.run()
@@ -190,6 +199,12 @@ def run_review(
           findings=len(findings),
           replies=len(ctx.review_context.comment_replies),
           resolves=len(ctx.review_context.comment_resolves))
+
+    # Clean up VFS temp dirs
+    if ctx.vfs_cache:
+        import shutil
+        for vfs_dir in ctx.vfs_cache.values():
+            shutil.rmtree(vfs_dir, ignore_errors=True)
 
     return findings, ctx.review_context
 
@@ -264,6 +279,20 @@ def _parse_findings(raw: list) -> list[ReviewFinding]:
             suggestion=f.get("suggestion", ""),
         ))
     return sorted(findings, key=lambda f: _order.get(f.severity, 2))
+
+
+def _get_commit_list(repo_path: str, base_ref: str, source_ref: str) -> str:
+    """Get oneline commit list between base and source."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", "--reverse", f"{base_ref}..{source_ref}"],
+            cwd=repo_path, capture_output=True, text=True, check=True,
+        )
+        lines = result.stdout.strip()
+        return lines if lines else "(single commit)"
+    except Exception:
+        return "(unavailable)"
 
 
 def _make_diff_summary(diff_result: DiffResult) -> str:
