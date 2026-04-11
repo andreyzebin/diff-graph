@@ -13,7 +13,8 @@ from typing import Any
 class AgentConfig:
     name: str
     trigger: str  # "cli" or "http"
-    command: str = ""
+    command: str = ""  # default command template
+    commands: dict[str, str] = field(default_factory=dict)  # per-command overrides
     base_url: str = ""
     api_key: str = ""
     timeout: int = 600
@@ -44,10 +45,14 @@ def load_config(path: str | Path) -> WebhookConfig:
     # Agents
     agents = {}
     for name, cfg in raw.get("agents", {}).items():
+        per_cmd = {}
+        for k, v in cfg.get("commands", {}).items():
+            per_cmd[k] = str(v)
         agents[name] = AgentConfig(
             name=name,
             trigger=cfg.get("trigger", "cli"),
             command=cfg.get("command", ""),
+            commands=per_cmd,
             base_url=cfg.get("base_url", ""),
             api_key=cfg.get("api_key", ""),
             timeout=cfg.get("timeout", 600),

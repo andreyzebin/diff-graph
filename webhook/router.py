@@ -14,20 +14,20 @@ import logging
 from dataclasses import dataclass
 
 from .config import WebhookConfig, Route
-from .bitbucket import PRMeta
+from .bitbucket import PRMeta, CommandRequest
 
 log = logging.getLogger(__name__)
 
 
 @dataclass
 class RoutingDecision:
-    command: str
+    command: CommandRequest
     agent_name: str
     route_name: str
 
 
 def route_commands(
-    commands: list[str],
+    commands: list[CommandRequest],
     pr: PRMeta,
     config: WebhookConfig,
 ) -> list[RoutingDecision]:
@@ -39,19 +39,19 @@ def route_commands(
     """
     decisions = []
 
-    for command in commands:
-        decision = _route_single(command, pr, config)
+    for cmd in commands:
+        decision = _route_single(cmd, pr, config)
         if decision:
             decisions.append(decision)
         else:
             log.warning("no route for command=%s project=%s repo=%s",
-                        command, pr.project, pr.repo)
+                        cmd.name, pr.project, pr.repo)
 
     return decisions
 
 
 def _route_single(
-    command: str, pr: PRMeta, config: WebhookConfig,
+    cmd: CommandRequest, pr: PRMeta, config: WebhookConfig,
 ) -> RoutingDecision | None:
     """Find first matching route for a command."""
     ctx = {
@@ -70,7 +70,7 @@ def _route_single(
             continue
 
         # Per-command override takes priority
-        agent_spec = route.commands.get(command)
+        agent_spec = route.commands.get(cmd.name)
 
         # Fall back to default agent
         if agent_spec is None:
@@ -84,9 +84,9 @@ def _route_single(
         if agent_name and agent_name in config.agents:
             log.info('PR #%s %s/%s → route "%s" → %s:%s',
                      pr.pr_id, pr.project, pr.repo,
-                     route.name, command, agent_name)
+                     route.name, cmd.name, agent_name)
             return RoutingDecision(
-                command=command,
+                command=cmd,
                 agent_name=agent_name,
                 route_name=route.name,
             )

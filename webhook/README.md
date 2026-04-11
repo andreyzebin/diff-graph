@@ -20,9 +20,10 @@ trigger = "cli"
 command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --post-comments'
 timeout = 600
 
-[agents.dg1]
-trigger = "cli"
-command = 'cd ~/repos/diff-graph-v1 && .venv/bin/python cli.py run --pr-url="{pr_url}" --post-comments'
+# Per-command templates (override default for specific commands)
+[agents.dg2.commands]
+ask = '... cli.py ask --pr-url="{pr_url}" --question="{args}"'
+improve = '... cli.py improve --pr-url="{pr_url}" --comment-id={comment_id}'
 
 [events]
 "pr:opened" = ["review"]           # auto-run on PR creation
@@ -46,6 +47,68 @@ when = "true"
 agent = "dg1"
 ```
 
+## Commands from PR comments
+
+Users invoke commands by commenting on a PR:
+
+```
+@diffgraph /review
+@diffgraph /ask What about null safety in this method?
+@diffgraph /improve
+@diffgraph /help How do I fix this?
+```
+
+The `@mention` part is optional — `/review` alone works too. The router extracts:
+
+| Part | Extracted as |
+|---|---|
+| `/review` | command name = `review` |
+| `/ask What about null safety?` | command = `ask`, args = `What about null safety?` |
+| `/improve` in a thread reply | command = `improve`, comment_id = parent comment ID |
+
+### Threaded commands
+
+When `/improve` or `/ask` is posted as a reply to an existing comment thread, the router captures the **parent comment ID**. This lets the agent know which specific code comment to address.
+
+```
+Thread:
+  [reviewer] "This null check is inconsistent"     ← comment #150
+    [user] "@diffgraph /improve"                    ← reply, parent=#150
+```
+
+The router sends `command=improve, comment_id=150` to the agent.
+
+## Placeholders
+
+Command templates support these placeholders:
+
+| Placeholder | Value | Available |
+|---|---|---|
+| `{pr_url}` | Full PR URL | Always |
+| `{pr_id}` | PR number | Always |
+| `{project}` | Bitbucket project key | Always |
+| `{repo}` | Repository slug | Always |
+| `{command}` | Command name (review, ask, ...) | Always |
+| `{args}` | Text after command (/ask **question**, /help **topic**) | When present |
+| `{comment_id}` | Parent comment ID (threaded replies) | When reply in thread |
+
+### Per-command templates
+
+Different commands may need different CLI invocations. Use `[agents.<name>.commands]` to override the default `command` for specific commands:
+
+```toml
+[agents.dg2]
+trigger = "cli"
+command = '... cli.py run --pr-url="{pr_url}" --post-comments'
+
+[agents.dg2.commands]
+ask = '... cli.py ask --pr-url="{pr_url}" --question="{args}"'
+improve = '... cli.py improve --pr-url="{pr_url}" --comment-id={comment_id}'
+help = '... cli.py help --pr-url="{pr_url}" --topic="{args}"'
+```
+
+If no per-command template exists, the default `command` is used.
+
 ## Routing
 
 Routes evaluated top to bottom, first match wins.
@@ -60,11 +123,11 @@ Routes evaluated top to bottom, first match wins.
 
 **`agent`** — default for all commands:
 - `"dg2"` — 100% to this agent
-- `{ dg2 = 30, dg1 = 70 }` — A/B split, deterministic by `hash(pr_url)`. Same PR always gets same agent.
+- `{ dg2 = 30, dg1 = 70 }` — A/B split, deterministic by `hash(pr_url)`. Same PR always gets same agent across all events.
 
 **Per-command override** — any key besides `name`, `when`, `agent`:
 ```toml
-agent = "dg2"          # default
+agent = "dg2"          # default for all commands
 improve = "pra"         # /improve goes to pra instead
 ```
 
@@ -73,15 +136,16 @@ improve = "pra"         # /improve goes to pra instead
 | Bitbucket event | Config | Behavior |
 |---|---|---|
 | `pr:opened` | `["review", "describe"]` | Auto-run listed commands |
-| `pr:comment:added` | `"parse"` | Extract `/command` from comment text |
-| `repo:refs_changed` | `[]` | Ignore |
+| `pr:comment:added` | `"parse"` | Extract `/command` from comment text (with optional `@mention`) |
+| `repo:refs_changed` | `["review"]` or `[]` | Auto-run on push, or ignore |
 
 ## Agents
 
 | Field | Description |
 |---|---|
 | `trigger` | `"cli"` (subprocess) or `"http"` (POST to API) |
-| `command` | Shell command with `{pr_url}`, `{pr_id}`, `{project}`, `{repo}` placeholders |
+| `command` | Default shell command template with `{placeholder}` substitution |
+| `commands.<name>` | Per-command template overrides |
 | `base_url` | For http trigger |
 | `timeout` | Seconds (default 600) |
 
@@ -97,4 +161,4 @@ improve = "pra"         # /improve goes to pra instead
 pytest webhook/tests/ -v --log-cli-level=INFO
 ```
 
-30 tests covering config loading, event parsing, command extraction, route matching, A/B distribution, per-command overrides.
+34 tests covering config loading, event parsing, @mention extraction, command args, threaded comment_id, route matching, A/B distribution, per-command overrides, args/comment_id preservation through routing.

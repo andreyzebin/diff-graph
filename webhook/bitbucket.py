@@ -1,10 +1,16 @@
 """
 Parse Bitbucket Server webhook payloads into PR metadata + commands.
+
+Supports:
+- Auto commands on pr:opened (from config)
+- /command extraction from comments (with @mention filtering)
+- Command arguments (/ask "question", /help "topic")
+- Parent comment ID for threaded replies (/improve in a thread)
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -20,10 +26,20 @@ class PRMeta:
 
 
 @dataclass
+class CommandRequest:
+    """A parsed command with its arguments and context."""
+    name: str                    # "review", "ask", "improve", etc.
+    args: str = ""               # text after command: question, instructions
+    comment_id: int | None = None  # parent comment ID (for threaded replies)
+
+
+@dataclass
 class WebhookEvent:
     event_key: str  # pr:opened, pr:comment:added, repo:refs_changed
     pr: PRMeta
-    comment_text: str = ""  # only for pr:comment:added
+    comment_text: str = ""
+    comment_id: int | None = None      # ID of the comment itself
+    parent_comment_id: int | None = None  # parent ID if reply in thread
 
 
 def parse_event(data: dict, server_url: str = "") -> WebhookEvent | None:
@@ -48,7 +64,6 @@ def parse_event(data: dict, server_url: str = "") -> WebhookEvent | None:
     if server_url:
         pr_url = f"{server_url}/projects/{project}/repos/{repo}/pull-requests/{pr_id}"
     else:
-        # Try to infer from links
         links = pr_data.get("links", {}).get("self", [{}])
         pr_url = links[0].get("href", "") if links else ""
 
@@ -64,20 +79,43 @@ def parse_event(data: dict, server_url: str = "") -> WebhookEvent | None:
     )
 
     comment_text = ""
+    comment_id = None
+    parent_comment_id = None
+
     if event_key == "pr:comment:added":
-        comment_text = data.get("comment", {}).get("text", "")
+        comment_data = data.get("comment", {})
+        comment_text = comment_data.get("text", "")
+        comment_id = comment_data.get("id")
+        # Bitbucket nests parent in comment.parent.id for thread replies
+        parent = comment_data.get("parent")
+        if parent:
+            parent_comment_id = parent.get("id")
 
-    return WebhookEvent(event_key=event_key, pr=pr, comment_text=comment_text)
+    return WebhookEvent(
+        event_key=event_key, pr=pr,
+        comment_text=comment_text,
+        comment_id=comment_id,
+        parent_comment_id=parent_comment_id,
+    )
 
 
-_COMMAND_RE = re.compile(r"^/(\w+)(?:\s+(.*))?$", re.DOTALL)
+# Match: optional @mention, then /command, then optional args
+# Examples:
+#   /review
+#   @diffgraph /review
+#   @diffgraph /ask What about null safety?
+#   /improve --focus=security
+_COMMAND_RE = re.compile(
+    r"(?:@\w+\s+)?/(\w+)(?:\s+(.*))?$",
+    re.DOTALL,
+)
 
 
-def extract_commands(event: WebhookEvent, events_config: dict) -> list[str]:
+def extract_commands(event: WebhookEvent, events_config: dict) -> list[CommandRequest]:
     """
     Determine which commands to run for this event.
 
-    Returns list of command names like ["review", "describe"].
+    Returns list of CommandRequest with name, args, and context.
     """
     cfg = events_config.get(event.event_key)
 
@@ -90,11 +128,17 @@ def extract_commands(event: WebhookEvent, events_config: dict) -> list[str]:
             return []
         m = _COMMAND_RE.match(event.comment_text.strip())
         if m:
-            return [m.group(1)]
+            name = m.group(1)
+            args = (m.group(2) or "").strip()
+            return [CommandRequest(
+                name=name,
+                args=args,
+                comment_id=event.parent_comment_id,
+            )]
         return []
 
     # List of auto-commands
     if isinstance(cfg, list):
-        return list(cfg)
+        return [CommandRequest(name=cmd) for cmd in cfg]
 
     return []

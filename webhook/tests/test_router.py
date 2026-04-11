@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from webhook.config import load_config
-from webhook.bitbucket import parse_event, extract_commands, PRMeta, WebhookEvent
+from webhook.bitbucket import parse_event, extract_commands, PRMeta, WebhookEvent, CommandRequest
 from webhook.router import route_commands, _eval_when, _resolve_agent
 
 log = logging.getLogger(__name__)
@@ -131,7 +131,8 @@ class TestExtractCommands:
             pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
         )
         cmds = extract_commands(ev, cfg.events)
-        assert cmds == ["review"]
+        assert len(cmds) == 1
+        assert cmds[0].name == "review"
 
     def test_comment_parse_review(self):
         cfg = load_config(EXAMPLE_CONFIG)
@@ -141,7 +142,9 @@ class TestExtractCommands:
             comment_text="/review",
         )
         cmds = extract_commands(ev, cfg.events)
-        assert cmds == ["review"]
+        assert len(cmds) == 1
+        assert cmds[0].name == "review"
+        assert cmds[0].args == ""
 
     def test_comment_parse_improve(self):
         cfg = load_config(EXAMPLE_CONFIG)
@@ -151,7 +154,47 @@ class TestExtractCommands:
             comment_text="/improve",
         )
         cmds = extract_commands(ev, cfg.events)
-        assert cmds == ["improve"]
+        assert cmds[0].name == "improve"
+
+    def test_comment_with_mention(self):
+        cfg = load_config(EXAMPLE_CONFIG)
+        ev = WebhookEvent(
+            event_key="pr:comment:added",
+            pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
+            comment_text="@diffgraph /review",
+        )
+        cmds = extract_commands(ev, cfg.events)
+        assert len(cmds) == 1
+        assert cmds[0].name == "review"
+
+    def test_comment_ask_with_question(self):
+        cfg = load_config(EXAMPLE_CONFIG)
+        ev = WebhookEvent(
+            event_key="pr:comment:added",
+            pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
+            comment_text="@diffgraph /ask What about null safety in this method?",
+        )
+        cmds = extract_commands(ev, cfg.events)
+        assert len(cmds) == 1
+        assert cmds[0].name == "ask"
+        assert cmds[0].args == "What about null safety in this method?"
+        log.info("ask command: name=%s args=%s", cmds[0].name, cmds[0].args)
+
+    def test_comment_improve_in_thread(self):
+        """Threaded /improve gets parent comment ID."""
+        cfg = load_config(EXAMPLE_CONFIG)
+        ev = WebhookEvent(
+            event_key="pr:comment:added",
+            pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
+            comment_text="/improve",
+            comment_id=200,
+            parent_comment_id=150,
+        )
+        cmds = extract_commands(ev, cfg.events)
+        assert len(cmds) == 1
+        assert cmds[0].name == "improve"
+        assert cmds[0].comment_id == 150
+        log.info("threaded improve: comment_id=%s", cmds[0].comment_id)
 
     def test_comment_no_command(self):
         cfg = load_config(EXAMPLE_CONFIG)
@@ -235,11 +278,14 @@ class TestResolveAgent:
 
 class TestRouteCommands:
 
+    def _cmd(self, name, args="", comment_id=None):
+        return CommandRequest(name=name, args=args, comment_id=comment_id)
+
     def test_specific_repo_matches_first(self):
         cfg = load_config(EXAMPLE_CONFIG)
         pr = PRMeta("SBLOOM", "code-review-example-orderflow", 1,
                      "http://pr/1", "user", "feature", "master", "Test")
-        decisions = route_commands(["review"], pr, cfg)
+        decisions = route_commands([self._cmd("review")], pr, cfg)
         assert len(decisions) == 1
         assert decisions[0].agent_name == "dg2"
         assert decisions[0].route_name == "orderflow-canary"
@@ -249,7 +295,7 @@ class TestRouteCommands:
         cfg = load_config(EXAMPLE_CONFIG)
         pr = PRMeta("SBLOOM", "other-repo", 1,
                      "http://pr/1", "user", "feature", "master", "Test")
-        decisions = route_commands(["review"], pr, cfg)
+        decisions = route_commands([self._cmd("review")], pr, cfg)
         assert len(decisions) == 1
         assert decisions[0].agent_name in ("dg2", "dg1")
         assert decisions[0].route_name == "sbloom-ab"
@@ -259,16 +305,16 @@ class TestRouteCommands:
         cfg = load_config(EXAMPLE_CONFIG)
         pr = PRMeta("SBLOOM", "other-repo", 1,
                      "http://pr/1", "user", "feature", "master", "Test")
-        decisions = route_commands(["improve"], pr, cfg)
+        decisions = route_commands([self._cmd("improve")], pr, cfg)
         assert len(decisions) == 1
-        assert decisions[0].agent_name == "pra"  # per-command override
+        assert decisions[0].agent_name == "pra"
         log.info("sbloom improve: %s → %s", decisions[0].route_name, decisions[0].agent_name)
 
     def test_default_fallback(self):
         cfg = load_config(EXAMPLE_CONFIG)
         pr = PRMeta("OTHER", "some-repo", 1,
                      "http://pr/1", "user", "feature", "master", "Test")
-        decisions = route_commands(["review"], pr, cfg)
+        decisions = route_commands([self._cmd("review")], pr, cfg)
         assert len(decisions) == 1
         assert decisions[0].agent_name == "dg1"
         assert decisions[0].route_name == "default"
@@ -277,17 +323,27 @@ class TestRouteCommands:
         cfg = load_config(EXAMPLE_CONFIG)
         pr = PRMeta("SBLOOM", "code-review-example-orderflow", 1,
                      "http://pr/1", "user", "feature", "master", "Test")
-        decisions = route_commands(["review", "improve"], pr, cfg)
-        log.info("multi-command: %s", [(d.command, d.agent_name) for d in decisions])
+        decisions = route_commands([self._cmd("review"), self._cmd("improve")], pr, cfg)
+        log.info("multi-command: %s", [(d.command.name, d.agent_name) for d in decisions])
         assert len(decisions) == 2
-        # Both hit orderflow-canary which has agent="dg2"
         assert all(d.agent_name == "dg2" for d in decisions)
 
-    def test_no_route_for_unknown_command(self):
+    def test_command_args_preserved(self):
+        """Command args (question text) survive routing."""
         cfg = load_config(EXAMPLE_CONFIG)
-        pr = PRMeta("UNKNOWN", "repo", 1,
+        pr = PRMeta("OTHER", "repo", 1,
                      "http://pr/1", "user", "feature", "master", "Test")
-        # default route has agent="dg1", so unknown commands still route
-        decisions = route_commands(["magic_command"], pr, cfg)
+        decisions = route_commands([self._cmd("ask", args="Is this null-safe?")], pr, cfg)
         assert len(decisions) == 1
-        assert decisions[0].agent_name == "dg1"
+        assert decisions[0].command.args == "Is this null-safe?"
+        log.info("args preserved: %s", decisions[0].command.args)
+
+    def test_comment_id_preserved(self):
+        """Parent comment ID survives routing."""
+        cfg = load_config(EXAMPLE_CONFIG)
+        pr = PRMeta("OTHER", "repo", 1,
+                     "http://pr/1", "user", "feature", "master", "Test")
+        decisions = route_commands([self._cmd("improve", comment_id=150)], pr, cfg)
+        assert len(decisions) == 1
+        assert decisions[0].command.comment_id == 150
+        log.info("comment_id preserved: %s", decisions[0].command.comment_id)

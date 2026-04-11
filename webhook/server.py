@@ -86,7 +86,8 @@ async def handle_webhook(request: Request):
     return {
         "status": "accepted",
         "decisions": [
-            {"command": d.command, "agent": d.agent_name, "route": d.route_name}
+            {"command": d.command.name, "args": d.command.args,
+             "agent": d.agent_name, "route": d.route_name}
             for d in decisions
         ],
     }
@@ -97,10 +98,10 @@ async def _run_agent(agent, event, decision):
     try:
         result = await trigger_agent(agent, event.pr, decision.command)
         log.info("PR #%s %s:%s → %s", event.pr.pr_id,
-                 decision.command, decision.agent_name, result)
+                 decision.command.name, decision.agent_name, result)
     except Exception as exc:
         log.error("PR #%s %s:%s failed: %s", event.pr.pr_id,
-                  decision.command, decision.agent_name, exc)
+                  decision.command.name, decision.agent_name, exc)
 
 
 @app.get("/health")

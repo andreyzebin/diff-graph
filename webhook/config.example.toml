@@ -4,10 +4,16 @@ port = 8000
 # secret = "webhook-secret"  # optional: x-hub-signature verification
 
 # ── Agents ──────────────────────────────────────────────
+
 [agents.dg2]
 trigger = "cli"
 command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --post-comments'
 timeout = 600
+
+# Per-command templates (override default `command` for specific commands)
+[agents.dg2.commands]
+ask = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py ask --pr-url="{pr_url}" --question="{args}"'
+improve = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py improve --pr-url="{pr_url}" --comment-id={comment_id}'
 
 [agents.dg1]
 trigger = "cli"
