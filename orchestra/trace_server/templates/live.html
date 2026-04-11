@@ -27,6 +27,8 @@ h1 { margin-bottom: 16px; display: flex; align-items: center; gap: 12px; font-si
 .log-resolved { margin-left: 20px; }
 .log-resolved-answered { color: #56d364; }
 .log-resolved-dropped { color: #8b949e; }
+.log-tool-name { color: #79c0ff; }
+.log-tool-args { color: #8b949e; }
 .log-agent-tag { font-size: 0.8em; font-weight: bold; opacity: 0.85; }
 .log-spawn { color: #58a6ff; font-style: italic; }
 .log-child { margin-left: 20px; color: #8b949e; }
@@ -157,20 +159,27 @@ function handleEvent(ev) {
       const uin = (usage.prompt_tokens || 0) - (usage.cached_tokens || 0);
       const uout = usage.completion_tokens || 0;
       const ucache = usage.cached_tokens || 0;
+      const skipParams = new Set(['changes_only', 'before', 'after', 'line_numbers', 'ref', 'regex']);
       const toolSummary = calls.map(c => {
         const name = c.name;
-        // Skip args preview for spawn/reflect/done — they have dedicated rendering
-        if (['spawn_agent', 'spawn_many', 'reflect', 'done'].includes(name)) return name;
+        if (['spawn_agent', 'spawn_many', 'reflect', 'done'].includes(name)) return esc(name);
         try {
           const args = JSON.parse(c.arguments || '{}');
-          const vals = Object.values(args);
-          if (!vals.length) return name;
-          const first = String(vals[0]).substring(0, 40);
-          return name + '(' + first + (String(vals[0]).length > 40 ? '…' : '') + ')';
-        } catch(e) { return name; }
+          const display = Object.entries(args).filter(([k]) => !skipParams.has(k));
+          if (!display.length) return esc(name);
+          let first = String(display[0][1]);
+          // Smart truncate paths: keep right part
+          if (first.includes('/') && first.length > 30) {
+            const parts = first.split('/');
+            first = '…/' + parts.slice(-2).join('/');
+          } else if (first.length > 40) {
+            first = first.substring(0, 40) + '…';
+          }
+          return `<span class="log-tool-name">${esc(name)}</span>(<span class="log-tool-args">${esc(first)}</span>)`;
+        } catch(e) { return esc(name); }
       }).join(', ');
       if (toolSummary) {
-        addLine(`<span class="${isChild ? 'log-child' : ''}">${tag}<span class="log-tool">${esc(toolSummary)}</span> <span class="log-paid">↑${uin} ↓${uout}${ucache ? ' ©' + ucache : ''}</span></span>`);
+        addLine(`<span class="${isChild ? 'log-child' : ''}">${tag}${toolSummary} <span class="log-paid">↑${uin} ↓${uout}${ucache ? ' ©' + ucache : ''}</span></span>`);
       }
       break;
     }

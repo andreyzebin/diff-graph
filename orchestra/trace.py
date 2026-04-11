@@ -107,22 +107,43 @@ def prepare_for_template(trace: dict) -> dict:
 
 
 _SKIP_ARGS = {"spawn_agent", "spawn_many", "reflect", "done"}
+_SKIP_PARAMS = {"changes_only", "before", "after", "line_numbers", "ref", "regex"}
 
-def _tool_call_summary(tc: dict) -> str:
-    """Build a short display string like 'read_file(OrderService.java)'."""
+
+def _smart_truncate_path(path: str, max_len: int = 30) -> str:
+    """Truncate path keeping the right (filename) part: …/model/Order.java."""
+    if len(path) <= max_len or "/" not in path:
+        return path
+    parts = path.split("/")
+    # Keep last 2 segments
+    tail = "/".join(parts[-2:])
+    if len(tail) + 2 <= max_len:
+        return f"…/{tail}"
+    # Just filename
+    return f"…/{parts[-1]}"
+
+
+def _tool_call_summary(tc: dict) -> dict:
+    """Build summary with separate name and args for display."""
     name = tc.get("name", "?")
     if name in _SKIP_ARGS:
-        return name
+        return {"name": name, "args": ""}
     try:
         args = json.loads(tc.get("arguments", "{}") or "{}")
-        vals = list(args.values())
+        # Filter out boilerplate params
+        display_args = {k: v for k, v in args.items() if k not in _SKIP_PARAMS}
+        vals = list(display_args.values())
         if not vals:
-            return name
-        first = str(vals[0])[:40]
-        ellip = "…" if len(str(vals[0])) > 40 else ""
-        return f"{name}({first}{ellip})"
+            return {"name": name, "args": ""}
+        first = str(vals[0])
+        # Smart truncate if it looks like a path
+        if "/" in first:
+            first = _smart_truncate_path(first)
+        elif len(first) > 40:
+            first = first[:40] + "…"
+        return {"name": name, "args": first}
     except (json.JSONDecodeError, TypeError):
-        return name
+        return {"name": name, "args": ""}
 
 
 def _prepare_agent(trace: dict, depth: int) -> dict:

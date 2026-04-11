@@ -86,7 +86,9 @@ summary:hover { background: #161b22; }
 .llm-call { margin: 2px 12px; border-left: 2px solid #30363d; }
 .llm-header { padding: 4px 10px; display: flex; gap: 8px; align-items: center; font-size: 0.85em; }
 .llm-step { color: #8b949e; }
-.llm-tools { color: #79c0ff; }
+.llm-tools { }
+.tool-name { color: #79c0ff; }
+.tool-args { color: #8b949e; }
 .llm-usage { color: #8b949e; }
 .llm-model { color: #8b949e; font-size: 0.8em; }
 .llm-section { padding: 4px 12px; }

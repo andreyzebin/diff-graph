@@ -55,7 +55,7 @@
     {% if resp %}
       {% set calls = resp.tool_calls or [] %}
       {% if calls %}
-        <span class="llm-tools">{{ calls[:3] | map(attribute='summary') | join(', ') }}{% if calls | length > 3 %} +{{ calls | length - 3 }}{% endif %}</span>
+        <span class="llm-tools">{% for tc in calls[:3] %}{% if not loop.first %}, {% endif %}<span class="tool-name">{{ tc.summary.name }}</span>{% if tc.summary.args %}(<span class="tool-args">{{ tc.summary.args }}</span>){% endif %}{% endfor %}{% if calls | length > 3 %} +{{ calls | length - 3 }}{% endif %}</span>
       {% endif %}
       {% set usage = resp.usage or {} %}
       {% set uin = usage.get('prompt_tokens', 0) - usage.get('cached_tokens', 0) %}
