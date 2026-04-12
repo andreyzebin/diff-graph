@@ -1,13 +1,13 @@
 #!/bin/bash
 set -e
 
-# ── Write certs from base64 env vars ────────────────────
-if [[ -n "$BB_CA_BUNDLE_B64" ]]; then
+# ── Write certs from base64 env vars (if not already set as paths) ────
+if [[ -n "$BB_CA_BUNDLE_B64" && -z "$REQUESTS_CA_BUNDLE" ]]; then
     echo "$BB_CA_BUNDLE_B64" | base64 -d > /app/certs/ca.pem
     export REQUESTS_CA_BUNDLE=/app/certs/ca.pem
 fi
 
-if [[ -n "$BB_CLIENT_CERT_B64" ]]; then
+if [[ -n "$BB_CLIENT_CERT_B64" && -z "$BITBUCKET_SERVER_CLIENT_CERT" ]]; then
     echo "$BB_CLIENT_CERT_B64" | base64 -d > /app/certs/client.pem
     export BITBUCKET_SERVER_CLIENT_CERT=/app/certs/client.pem
 fi
