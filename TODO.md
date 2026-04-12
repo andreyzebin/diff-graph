@@ -583,154 +583,255 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 4.2 | Trace JSON export | Low | Small | Later |
 | 4.3 | Trace search CLI | Low | Small | Later |
 | 5.2 | Model comparison | Low | Medium | Later |
-| 7.1 | Feedback collector | **Critical** | Medium | **Do first** |
-| 7.2 | Benchmark integration | High | Medium | **Do first** |
-| 7.3 | Comparison dashboard | High | Medium-Large | Do second |
-| 7.4 | Structured mutation axes | High | Small | Do second |
-| 7.5 | Prompt mutation generator | High | Medium | Do third |
-| 7.6 | Safety guardrails | High | Medium | Do third |
+| 7.1 | Bridge: trace DB ↔ pr-analytics | **Critical** | Small-Medium | **Do first** |
+| 7.2 | Benchmark gate for mutations | High | Medium | **Do first** |
+| 7.3 | Structured mutation axes | High | Small | Do second |
+| 7.4 | Mutation generator | High | Medium | Do second |
+| 7.5 | Evolution dashboard (3 data sources) | High | Medium-Large | Do second |
+| 7.6 | Safety guardrails + auto-rollback | High | Medium | Do third |
 | 7.7 | Cross-run memory | Medium | Medium | Later |
-| 7.8 | Cost budget for evolution | Medium | Small | Later |
+| 7.8 | Cost budget + early stopping | Medium | Small | Later |
 
 ---
 
 ## 7. Evolutionary Prompt Development
 
-Infrastructure for automated prompt evolution with A/B testing.
+Self-sustaining cycle: generate prompt mutations → evaluate → select winners → promote.
 
-### Foundations (done)
+### Existing tools
 
-- **Resource providers** — prompts loadable from file:// or bitbucket:// URIs
-- **--prompts CLI flag** — each agent version can load different prompts
-- **Webhook router** — A/B routing with sample% cascade, per-project rules
-- **Prompt tracking** — prompt_source + prompt_hash stored per run in trace DB
-- **Runs UI** — generation name + mutation hash visible, filterable
+| Tool | What it provides | Repo |
+|---|---|---|
+| **DiffGraph trace DB** | Per-run: prompt_hash, model, tokens, findings_count, steps | diff-graph |
+| **DiffGraph webhook** | A/B routing with sample%, forward/command modes | diff-graph |
+| **DiffGraph resource providers** | Load prompts from file:// or bitbucket:// URIs | diff-graph |
+| **pr-analytics** | Bitbucket cache (PR, comments, reactions) in SQLite | pr-analytics |
+| **pr-analytics analyze-feedback** | LLM-judge: acceptance verdict (yes/no/unclear) per comment | pr-analytics |
+| **pr-analytics semantic_acceptance_rate** | % accepted findings (with feedback) | pr-analytics |
+| **pr-analytics agent funnel** | agent_comments → feedback_rate → acceptance_rate | pr-analytics |
+| **code-review-benchmarks** | Scenarios with expected findings, LLM-judge scoring | code-review-benchmarks |
+| **code-review-benchmarks A/B** | `ab --agent-a --agent-b`, compare reports | code-review-benchmarks |
 
-### 7.1 Feedback collector (critical — without it evolution is blind)
+### 7.1 Bridge: trace DB ↔ pr-analytics (critical first step)
 
-Periodically check Bitbucket for outcomes of posted findings:
+Link prompt_hash to business outcomes. Currently trace DB and pr-analytics are separate.
 
-- Comment resolved after merge → finding was useful (true positive)
-- Comment ignored, PR merged without changes → likely false positive
-- PR rejected / changes requested on our findings → high-value finding
-- Thumbs up/down reactions on comments
+**Option A: enrich pr-analytics with prompt_hash**
+- Agent posts comment with metadata tag: `<!-- prompt:a1b2c3d -->` (invisible in rendered comment)
+- pr-analytics extracts tag → joins comment outcomes with prompt generation
+- Aggregate: per prompt_hash, what is acceptance_rate?
+
+**Option B: enrich trace DB with feedback**
+- After run: poll Bitbucket for comment status (resolved/ignored/reactions)
+- Write feedback into trace DB alongside run
+- Dashboard queries trace DB only
+
+Option A is simpler — pr-analytics already caches comments and has the analysis pipeline. Just need the metadata tag in posted comments and extraction in pr-analytics.
+
+**Effort:** Small-Medium.
+**Priority:** **Do first.**
+
+### 7.2 Metrics
+
+#### Business metrics (from pr-analytics, production PRs)
+
+| Metric | Source | Formula | What it measures |
+|---|---|---|---|
+| **semantic_acceptance_rate** | pr-analytics analyze-feedback | yes / (yes + no) | Are findings accepted by developers? |
+| **semantic_acceptance_rate_all** | pr-analytics | yes / total_comments | Real impact including silent findings |
+| **feedback_rate** | pr-analytics | comments_with_reactions / total | Are developers engaging at all? |
+| **agent_comments** | pr-analytics | count(root comments by agent) | Volume of output |
+| **false_positive_rate** | pr-analytics | no / (yes + no) | How much noise? |
+| **time_to_merge_delta** | pr-analytics | median(cycle_time with agent) - median(without) | Does agent speed up or slow down PRs? |
+
+Segmented by: prompt_hash, project, severity, time period.
+
+#### Quality metrics (from code-review-benchmarks, controlled PRs)
+
+| Metric | Source | Formula | What it measures |
+|---|---|---|---|
+| **benchmark_score** | benchmarks judge | weighted score across scenarios | Overall quality |
+| **required_found** | benchmarks | count(expected findings detected) | Coverage of known issues |
+| **false_positives** | benchmarks | count(agent comments not in expected) | Noise on known code |
+| **regression_count** | benchmarks compare | findings lost vs previous run | What broke? |
+| **scenario_pass_rate** | benchmarks | scenarios passed / total | Reliability |
+
+#### Efficiency metrics (from trace DB, any run)
+
+| Metric | Source | Formula | What it measures |
+|---|---|---|---|
+| **tokens_per_finding** | trace DB | avg(total_tokens_paid / findings_count) | Cost efficiency |
+| **steps_per_finding** | trace DB | avg(total_steps / findings_count) | Convergence speed |
+| **cache_hit_ratio** | trace DB events | sum(cached_tokens) / sum(prompt_tokens) | Cache optimization |
+| **tool_waste_ratio** | trace DB events | redundant tool calls / total calls | Tool usage quality |
+| **convergence_steps** | trace DB events | steps to last confidence=high reflect | How fast does agent settle? |
+
+All metrics queryable by prompt_hash → compare generations directly.
+
+### 7.3 Benchmark gate
+
+Every mutation must pass benchmark before touching real PRs.
+
+```
+Mutation branch → benchmark runner (CliTrigger with --prompts=bitbucket://...ref/mut-001)
+  → SCEN-009: score 0.85 (pass)
+  → SCEN-010: score 0.70 (pass)
+  → SCEN-011: score 0.90 (pass)
+  → Regression: no findings lost vs stable
+  → Gate: PASS → enter A/B
+```
 
 **Implementation:**
-- Cron job or background task: poll Bitbucket for comment status on recent runs
-- New trace DB table: `feedback(run_id, comment_id, outcome, checked_at)`
-- Outcomes: `resolved`, `ignored`, `changes_requested`, `thumbs_up`, `thumbs_down`
-- Join with runs: per prompt_hash aggregate resolved-rate, false-positive-rate
+- Script: iterate mutations × scenarios, run benchmark with `--prompts` override
+- Compare each mutation vs stable: require score ≥ stable - epsilon
+- Reject on regression: any required_found decrease = fail
+- Store results in benchmark DB, linked to prompt_hash
 
-**Where:** new `diffgraph/feedback.py` + cron in webhook or CLI.
-**Effort:** Medium.
-**Priority:** **Do first** — everything else depends on this signal.
-
-### 7.2 Benchmark integration
-
-Automated evaluation of mutations on known PRs with expected findings.
-
-- Connect to `code-review-benchmarks` runner
-- Each mutation: run full benchmark suite → score against expectations
-- Regression detection: mutation that loses a known finding = reject
-- Cheap pre-screening: small PR + fast model → discard obviously bad mutations before full eval
-- Early stopping: mutation worse than stable after K runs → stop wasting budget
-
-**Gate:** mutation must pass benchmark before entering A/B on real PRs.
-**Where:** integrate with benchmark runner's `CliTrigger` + scoring.
-**Effort:** Medium.
-
-### 7.3 Comparison dashboard
-
-Runs list shows individual runs. Evolution needs aggregation:
-
-- Side-by-side: mutation A vs mutation B (findings, cost, convergence)
-- Aggregate view: "mut-001 on 50 runs → avg 2.3 findings, 85% resolved-rate, $0.12/run"
-- Statistical significance: is the difference real or noise? (chi-square / t-test)
-- Trend chart: system quality over time (generations on X axis)
-- Regression alerts: new stable worse than previous → flag
-
-**Where:** new trace server views + trace DB aggregate queries.
-**Effort:** Medium-Large.
+**Early stopping:** if 2/3 scenarios fail, skip remaining.
+**Cheap screening:** run SCEN-011 (smallest) first.
 
 ### 7.4 Structured mutation axes
 
-Not random prompt rewording — each mutation changes ONE axis with a hypothesis.
+Each mutation = ONE change along ONE axis with a testable hypothesis.
 
-| Axis | Examples | Measured by |
+| Axis | Mutation examples | Primary metric |
 |---|---|---|
-| Methodology | concerns count (3→5), investigation depth | findings quality, cost |
-| Tool patterns | changes_only default, search context=2 | convergence speed, tool waste |
-| SGR discipline | reflect frequency, question formulation | reasoning quality |
-| Budget | reviewer budget (15k→20k), pusher thresholds | findings per token |
-| Severity calibration | BLOCKER criteria, evidence requirements | resolved-rate per severity |
-| System type awareness | Java/Spring patterns, Python/Django patterns | domain-specific finding accuracy |
+| **Methodology** | concerns 3→5, one-round→two-round | benchmark_score, acceptance_rate |
+| **Tool usage** | changes_only default, search before=2/after=2 | convergence_steps, tool_waste |
+| **SGR** | reflect every 3→5 steps, stricter question rules | reasoning quality |
+| **Budget** | reviewer 15k→20k, lead 50k→40k | tokens_per_finding |
+| **Severity** | stricter BLOCKER criteria, evidence requirements | false_positive_rate |
+| **Domain** | Java/Spring patterns, null-safety heuristics | domain-specific acceptance_rate |
 
-Each mutation = branch in prompts repo with:
+Mutations stored as branches:
 ```
-refs/main              — stable
-refs/mut-001-budget    — hypothesis: "more budget → better findings"
-refs/mut-002-concerns  — hypothesis: "fewer concerns → more focused"
-refs/mut-003-tools     — hypothesis: "default changes_only → faster convergence"
+refs/main              — current stable
+refs/mut-001-budget    — "reviewer budget 15k→20k"
+refs/mut-002-concerns  — "max concerns 5→3"
+refs/mut-003-tools     — "recommend search(before=2, after=2)"
 ```
 
-One axis per mutation. Combine winners from different axes into next stable.
+Commit message = hypothesis. One axis per branch. Combine winners into next stable.
 
 ### 7.5 Prompt mutation generator
 
-Generate mutations programmatically:
+1. Pick axis + direction from backlog (manual or automated)
+2. LLM generates prompt diff with specific change
+3. Validate: diff stable vs mutation, confirm only one axis changed
+4. Push as branch to prompts repo
+5. Run benchmark gate
+6. If pass: register in webhook router with sample%
 
-1. Pick axis + direction (e.g. "increase reviewer budget")
-2. LLM generates prompt variant with specific change + hypothesis
-3. Validate: diff against stable, check only one axis changed
-4. Push as branch in prompts repo
-5. Register in webhook router with sample%
+### 7.6 Evolution dashboard
 
-Store mutations as branches in a Bitbucket prompts repo. Commit message = hypothesis.
+Unified view across all three data sources.
 
-### 7.6 Safety guardrails
-
-- **Rate limit:** experimental mutation posts max N comments per PR
-- **Confidence gate:** mutation needs K benchmark runs before real PRs
-- **Auto-rollback:** if resolved-rate drops below threshold → revert to previous stable
-- **Human approval:** mutation → benchmark → metrics → human approves → sample on real PRs
-- **Blast radius:** sample=5-10% for new mutations, never 100% until proven
-
-### 7.7 Cross-run memory
-
-Agent is stateless between runs. For self-improvement:
-
-- "On past runs you often missed @Transactional issues" → inject into prompt
-- "This codebase (Spring Boot + Lombok) typically has patterns X, Y" → learned patterns
-- Per-repo knowledge base from trace DB, injected as context section
-
-**Implementation:**
-- Aggregate findings by repo/technology from trace DB
-- Generate "lessons learned" section for system prompt
-- Update periodically (not every run — too expensive)
-
-**Where:** new section in orchestrator, injected alongside diff_summary.
-**Effort:** Medium.
-
-### 7.8 Cost budget for evolution
-
-- Budget cap per experiment (total tokens across all mutation runs)
-- Cheap pre-screening: smallest benchmark PR + fastest model → reject bad mutations early
-- Early stopping: mutation statistically worse after K runs → stop
-- ROI tracking: cost of evolution experiments vs improvement in finding quality
-
-### Evolution cycle (full)
-
+**Per-generation view:**
 ```
-1. Pick mutation axis + generate hypothesis
-2. LLM generates prompt variant → push as branch
-3. Benchmark gate: run on known PRs → pass/fail
-4. A/B gate: webhook router sample=5% on real PRs
-5. Feedback collector: wait for comment outcomes
-6. Fitness scoring: aggregate metrics vs stable
-7. Statistical test: is improvement significant?
-8. Human review: approve promotion
-9. Winner → merge to main (new stable)
-10. Repeat from 1
+Generation: mut-002-concerns (a1b2c3d)
+Hypothesis: "fewer concerns (max 3) → more focused investigation"
+
+Benchmark:
+  SCEN-009: 0.85 (stable: 0.82) ✓
+  SCEN-010: 0.75 (stable: 0.70) ✓
+  SCEN-011: 0.90 (stable: 0.90) =
+  Regressions: 0
+
+Production (47 runs, 12 days):
+  acceptance_rate: 78% (stable: 71%) ↑
+  false_positive_rate: 15% (stable: 22%) ↓
+  tokens_per_finding: 4200 (stable: 5100) ↓
+  feedback_rate: 45% (stable: 40%) ↑
+
+Verdict: PROMOTE (statistically significant, p<0.05)
 ```
 
-Traceability: every run links to exact prompt commit SHA → can always reproduce, compare, and rollback.
+**Trend view:** generations on X axis, key metrics on Y. See improvement over time.
+
+**Data sources:**
+- trace DB: runs table (prompt_hash, tokens, findings) + events
+- pr-analytics: comment_analysis (acceptance verdicts), comment_reactions
+- benchmarks: scenario scores, regressions
+
+**Implementation:** new page in trace server, queries all three SQLite DBs.
+
+### 7.7 Safety guardrails
+
+| Guard | Trigger | Action |
+|---|---|---|
+| Benchmark gate | mutation fails any scenario | Block from A/B |
+| Rate limit | mutation > N comments on any PR | Reduce sample or pause |
+| Regression alert | acceptance_rate drops > 10% vs stable | Auto-pause mutation, notify |
+| Auto-rollback | acceptance_rate below absolute threshold | Revert webhook to stable |
+| Human approval | before promoting mutation to stable | Manual merge to main |
+| Blast radius | initial deployment | sample=5%, increase gradually |
+
+### 7.8 Cross-run memory
+
+Per-repo learned patterns injected into system prompt:
+
+- "This codebase uses @Builder.Default for collections — null checks are likely false positives"
+- "Team prefers explicit error handling over @SneakyThrows"
+- "Previous runs found 3 @Transactional issues — check for missing annotations"
+
+**Source:** aggregate findings + acceptance from trace DB + pr-analytics by repo.
+**Update:** weekly or on N new runs.
+**Inject:** new `{learned_patterns}` section in prompts.
+
+### 7.9 Cost budget for evolution
+
+| Phase | Cost control |
+|---|---|
+| Mutation generation | 1 LLM call per mutation (cheap) |
+| Benchmark gate | 3 scenarios × 1 run = 3 runs per mutation |
+| A/B production | sample=5% → 1 in 20 PRs. Cap at 50 runs per mutation |
+| Feedback wait | No cost (pr-analytics cron) |
+| Total budget cap | Configurable per experiment, default 500k tokens |
+
+**Early stopping:** mutation statistically worse after 15 runs → stop, save budget.
+
+### Full evolution cycle
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 1. GENERATE                                             │
+│    Pick axis → LLM generates prompt mutation             │
+│    Push as branch: refs/mut-NNN-axis                     │
+│                                                         │
+│ 2. BENCHMARK GATE                                       │
+│    Run all scenarios with --prompts=bitbucket://mut-NNN  │
+│    Compare vs stable. Reject on regression.              │
+│                                                         │
+│ 3. A/B DEPLOY                                           │
+│    Webhook router: add route with sample=5%              │
+│    Mutation runs on real PRs alongside stable            │
+│                                                         │
+│ 4. COLLECT FEEDBACK                                     │
+│    pr-analytics caches comments + reactions              │
+│    analyze-feedback: LLM-judge acceptance verdicts       │
+│    trace DB: link prompt_hash to outcomes via tag        │
+│                                                         │
+│ 5. EVALUATE                                             │
+│    Dashboard: mutation vs stable on all metrics          │
+│    Statistical test: is difference significant?          │
+│    Business: acceptance_rate, false_positive_rate        │
+│    Quality: benchmark_score, regressions                 │
+│    Efficiency: tokens_per_finding, convergence           │
+│                                                         │
+│ 6. DECIDE                                               │
+│    Auto: pass thresholds → recommend promote             │
+│    Human: review dashboard → approve/reject              │
+│                                                         │
+│ 7. PROMOTE                                              │
+│    Winner → merge to main in prompts repo               │
+│    Webhook router: update stable agent config            │
+│    New prompt_hash becomes baseline for next cycle       │
+│                                                         │
+│ 8. REPEAT                                               │
+│    Combine winners from different axes                    │
+│    Generate next generation of mutations                  │
+│    System continuously improves                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+Traceability at every step: prompt commit SHA → trace DB runs → pr-analytics comments → benchmark scores. Any generation can be reproduced, compared, or rolled back.
