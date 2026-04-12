@@ -196,6 +196,7 @@ def run(
         if event == "orchestrator_prompts_compiled":
             _prompt_info["source"] = kw.get("prompt_source", "")
             _prompt_info["hash"] = kw.get("prompt_hash", "")
+            _trace_db.set_prompt_info(_prompt_info["source"], _prompt_info["hash"])
         _trace_collector.on_event(event, **kw)
         # Note: _trace_db gets raw events via direct EventBus subscription
         # in orchestrator.py — no need to call it here (would duplicate)

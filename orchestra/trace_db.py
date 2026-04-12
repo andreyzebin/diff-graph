@@ -74,6 +74,15 @@ class TraceDBWriter:
         )
         self.conn.commit()
 
+    def set_prompt_info(self, prompt_source: str, prompt_hash: str):
+        """Set prompt source/hash early (before run finishes)."""
+        with self._lock:
+            self.conn.execute(
+                "UPDATE runs SET prompt_source=?, prompt_hash=? WHERE id=?",
+                (prompt_source, prompt_hash, self.run_id),
+            )
+            self.conn.commit()
+
     def on_event(self, event_type: str, **kw):
         """Called on every event. Writes to DB immediately."""
         aid = kw.get("agent_id", "") or kw.get("parent_id", "")
