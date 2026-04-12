@@ -583,9 +583,14 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 4.2 | Trace JSON export | Low | Small | Later |
 | 4.3 | Trace search CLI | Low | Small | Later |
 | 5.2 | Model comparison | Low | Medium | Later |
-| 7.1 | Prompt mutation generator | High | Medium | Later |
-| 7.2 | Fitness function from traces | High | Medium | Later |
-| 7.3 | Selection + merge winning mutations | High | Large | Later |
+| 7.1 | Feedback collector | **Critical** | Medium | **Do first** |
+| 7.2 | Benchmark integration | High | Medium | **Do first** |
+| 7.3 | Comparison dashboard | High | Medium-Large | Do second |
+| 7.4 | Structured mutation axes | High | Small | Do second |
+| 7.5 | Prompt mutation generator | High | Medium | Do third |
+| 7.6 | Safety guardrails | High | Medium | Do third |
+| 7.7 | Cross-run memory | Medium | Medium | Later |
+| 7.8 | Cost budget for evolution | Medium | Small | Later |
 
 ---
 
@@ -601,48 +606,131 @@ Infrastructure for automated prompt evolution with A/B testing.
 - **Prompt tracking** — prompt_source + prompt_hash stored per run in trace DB
 - **Runs UI** — generation name + mutation hash visible, filterable
 
-### 7.1 Prompt mutation generator
+### 7.1 Feedback collector (critical — without it evolution is blind)
 
-Generate variant prompts programmatically. Mutations could be:
-- Wording changes (rephrase instructions)
-- Methodology tweaks (number of concerns, investigation depth)
-- Tool usage hints (when to use changes_only, search context)
-- Budget allocation (reviewer budget, pusher thresholds)
+Periodically check Bitbucket for outcomes of posted findings:
 
-Store mutations as branches in a Bitbucket prompts repo:
+- Comment resolved after merge → finding was useful (true positive)
+- Comment ignored, PR merged without changes → likely false positive
+- PR rejected / changes requested on our findings → high-value finding
+- Thumbs up/down reactions on comments
+
+**Implementation:**
+- Cron job or background task: poll Bitbucket for comment status on recent runs
+- New trace DB table: `feedback(run_id, comment_id, outcome, checked_at)`
+- Outcomes: `resolved`, `ignored`, `changes_requested`, `thumbs_up`, `thumbs_down`
+- Join with runs: per prompt_hash aggregate resolved-rate, false-positive-rate
+
+**Where:** new `diffgraph/feedback.py` + cron in webhook or CLI.
+**Effort:** Medium.
+**Priority:** **Do first** — everything else depends on this signal.
+
+### 7.2 Benchmark integration
+
+Automated evaluation of mutations on known PRs with expected findings.
+
+- Connect to `code-review-benchmarks` runner
+- Each mutation: run full benchmark suite → score against expectations
+- Regression detection: mutation that loses a known finding = reject
+- Cheap pre-screening: small PR + fast model → discard obviously bad mutations before full eval
+- Early stopping: mutation worse than stable after K runs → stop wasting budget
+
+**Gate:** mutation must pass benchmark before entering A/B on real PRs.
+**Where:** integrate with benchmark runner's `CliTrigger` + scoring.
+**Effort:** Medium.
+
+### 7.3 Comparison dashboard
+
+Runs list shows individual runs. Evolution needs aggregation:
+
+- Side-by-side: mutation A vs mutation B (findings, cost, convergence)
+- Aggregate view: "mut-001 on 50 runs → avg 2.3 findings, 85% resolved-rate, $0.12/run"
+- Statistical significance: is the difference real or noise? (chi-square / t-test)
+- Trend chart: system quality over time (generations on X axis)
+- Regression alerts: new stable worse than previous → flag
+
+**Where:** new trace server views + trace DB aggregate queries.
+**Effort:** Medium-Large.
+
+### 7.4 Structured mutation axes
+
+Not random prompt rewording — each mutation changes ONE axis with a hypothesis.
+
+| Axis | Examples | Measured by |
+|---|---|---|
+| Methodology | concerns count (3→5), investigation depth | findings quality, cost |
+| Tool patterns | changes_only default, search context=2 | convergence speed, tool waste |
+| SGR discipline | reflect frequency, question formulation | reasoning quality |
+| Budget | reviewer budget (15k→20k), pusher thresholds | findings per token |
+| Severity calibration | BLOCKER criteria, evidence requirements | resolved-rate per severity |
+| System type awareness | Java/Spring patterns, Python/Django patterns | domain-specific finding accuracy |
+
+Each mutation = branch in prompts repo with:
 ```
-refs/main          — current stable
-refs/mut-001       — "increase reviewer budget to 20000"
-refs/mut-002       — "add explicit search examples"
-refs/mut-003       — "reduce concerns to max 3"
+refs/main              — stable
+refs/mut-001-budget    — hypothesis: "more budget → better findings"
+refs/mut-002-concerns  — hypothesis: "fewer concerns → more focused"
+refs/mut-003-tools     — hypothesis: "default changes_only → faster convergence"
 ```
 
-### 7.2 Fitness function from traces
+One axis per mutation. Combine winners from different axes into next stable.
 
-Score each prompt generation from trace DB metrics:
-- Finding quality: severity distribution, evidence completeness
-- Convergence: steps to high confidence, wasted tool calls
-- Cost efficiency: tokens per finding, cache hit ratio
-- Consistency: same finding across multiple runs on same PR
+### 7.5 Prompt mutation generator
 
-Query:
-```sql
-SELECT prompt_hash,
-       AVG(findings_count) as avg_findings,
-       AVG(total_tokens_paid) as avg_cost
-FROM runs
-WHERE prompt_source LIKE '%/prompts'
-GROUP BY prompt_hash
+Generate mutations programmatically:
+
+1. Pick axis + direction (e.g. "increase reviewer budget")
+2. LLM generates prompt variant with specific change + hypothesis
+3. Validate: diff against stable, check only one axis changed
+4. Push as branch in prompts repo
+5. Register in webhook router with sample%
+
+Store mutations as branches in a Bitbucket prompts repo. Commit message = hypothesis.
+
+### 7.6 Safety guardrails
+
+- **Rate limit:** experimental mutation posts max N comments per PR
+- **Confidence gate:** mutation needs K benchmark runs before real PRs
+- **Auto-rollback:** if resolved-rate drops below threshold → revert to previous stable
+- **Human approval:** mutation → benchmark → metrics → human approves → sample on real PRs
+- **Blast radius:** sample=5-10% for new mutations, never 100% until proven
+
+### 7.7 Cross-run memory
+
+Agent is stateless between runs. For self-improvement:
+
+- "On past runs you often missed @Transactional issues" → inject into prompt
+- "This codebase (Spring Boot + Lombok) typically has patterns X, Y" → learned patterns
+- Per-repo knowledge base from trace DB, injected as context section
+
+**Implementation:**
+- Aggregate findings by repo/technology from trace DB
+- Generate "lessons learned" section for system prompt
+- Update periodically (not every run — too expensive)
+
+**Where:** new section in orchestrator, injected alongside diff_summary.
+**Effort:** Medium.
+
+### 7.8 Cost budget for evolution
+
+- Budget cap per experiment (total tokens across all mutation runs)
+- Cheap pre-screening: smallest benchmark PR + fastest model → reject bad mutations early
+- Early stopping: mutation statistically worse after K runs → stop
+- ROI tracking: cost of evolution experiments vs improvement in finding quality
+
+### Evolution cycle (full)
+
+```
+1. Pick mutation axis + generate hypothesis
+2. LLM generates prompt variant → push as branch
+3. Benchmark gate: run on known PRs → pass/fail
+4. A/B gate: webhook router sample=5% on real PRs
+5. Feedback collector: wait for comment outcomes
+6. Fitness scoring: aggregate metrics vs stable
+7. Statistical test: is improvement significant?
+8. Human review: approve promotion
+9. Winner → merge to main (new stable)
+10. Repeat from 1
 ```
 
-### 7.3 Selection + merge winning mutations
-
-Evolution cycle:
-1. Generate N mutations → push as branches
-2. Webhook router: sample=10% per mutation, rest on stable
-3. Collect metrics over K runs per mutation
-4. Score mutations with fitness function
-5. Winning mutation → merge to main (new stable)
-6. Repeat
-
-Traceability: every run links to exact prompt commit SHA → can always reproduce and compare.
+Traceability: every run links to exact prompt commit SHA → can always reproduce, compare, and rollback.
