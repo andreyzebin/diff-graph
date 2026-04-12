@@ -201,7 +201,10 @@ def _compile_from_resource(
         except Exception as e:
             log.warning("  failed to fetch %s: %s", file_uri, e)
 
-    combined_hash = hashlib.md5("".join(sorted(contents.values())).encode()).hexdigest()
+    # Use provider's hash (commit SHA for bitbucket) or content hash as fallback
+    combined_hash = provider.resolve_hash(uri)
+    if not combined_hash:
+        combined_hash = hashlib.md5("".join(sorted(contents.values())).encode()).hexdigest()
     if use_cache and combined_hash in _CACHE:
         return _CACHE[combined_hash]
 

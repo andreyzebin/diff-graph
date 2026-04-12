@@ -29,6 +29,10 @@ class ResourceProvider(ABC):
     def list(self, uri: str) -> list[str]:
         """List child resource URIs."""
 
+    def resolve_hash(self, uri: str) -> str:
+        """Resolve URI to a content-addressable hash. Default: empty."""
+        return ""
+
 
 class FileProvider(ResourceProvider):
     """Local filesystem provider. Handles file:// URIs and plain paths."""
@@ -76,6 +80,24 @@ class BitbucketProvider(ResourceProvider):
         base = f"bitbucket://{server}/{project}/{repo}/refs/{ref}/{path}"
         base = base.rstrip("/")
         return [f"{base}/{f}" for f in data.get("values", [])]
+
+    def resolve_hash(self, uri: str) -> str:
+        """Resolve to the latest commit SHA on this ref."""
+        import json
+        server, project, repo, ref, _path = _parse_bitbucket_uri(uri)
+        url = (
+            f"https://{server}/rest/api/1.0/projects/{project}/repos/{repo}"
+            f"/commits?until={ref}&limit=1"
+        )
+        try:
+            body = _http_get(url, self._token, self._ca_bundle, self._client_cert)
+            data = json.loads(body)
+            values = data.get("values", [])
+            if values:
+                return values[0].get("id", "")
+        except Exception:
+            pass
+        return ""
 
 
 # ── Registry ─────────────────────────────────────────────────────────────────
