@@ -126,32 +126,37 @@ def compile_prompts(
     use_cache: bool = True,
 ) -> AgentRegistry:
     """
-    Compile all prompt files in a directory into an agent registry.
+    Compile prompt files into an agent registry.
 
     Args:
-        prompt_dir: directory containing .prompt files
-        pattern: glob pattern for prompt files
+        prompt_dir: directory path, file:// URI, or bitbucket:// URI
+        pattern: glob pattern for prompt files (used for local dirs)
         llm: optional LLM client for fallback parsing
         model: model name for LLM fallback
         use_cache: skip recompilation if files unchanged
     """
-    prompt_dir = Path(prompt_dir)
-    if not prompt_dir.is_dir():
-        log.warning("prompt directory does not exist: %s", prompt_dir)
+    uri = str(prompt_dir)
+
+    # Resource URI (bitbucket://, explicit file://)
+    if "://" in uri:
+        return _compile_from_resource(uri, pattern, llm, model, use_cache)
+
+    # Plain path (relative or absolute) — original behavior
+    prompt_path = Path(prompt_dir)
+    if not prompt_path.is_dir():
+        log.warning("prompt directory does not exist: %s", prompt_path)
         return AgentRegistry()
 
-    files = sorted(prompt_dir.glob(pattern))
+    files = sorted(prompt_path.glob(pattern))
     if not files:
         return AgentRegistry()
 
-    # Check cache
     combined_hash = _hash_files(files)
     if use_cache and combined_hash in _CACHE:
         return _CACHE[combined_hash]
 
     registry = AgentRegistry(source_hash=combined_hash)
-
-    log.info("compiling %d prompt files from %s", len(files), prompt_dir)
+    log.info("compiling %d prompt files from %s", len(files), prompt_path)
 
     for filepath in files:
         try:
@@ -159,14 +164,7 @@ def compile_prompts(
             entry = _parse_prompt_file(text, filepath, llm, model)
             if entry:
                 registry.entries[entry.name] = entry
-                caps = ", ".join(entry.capabilities) if entry.capabilities else "none"
-                tools = ", ".join(entry.tools[:5]) if entry.tools else "none"
-                data_fields = ", ".join(entry.input_schema.keys()) if entry.input_schema else "none"
-                log.info(
-                    "  compiled agent '%s' [%s] — capabilities=[%s] tools=[%s] data=[%s] budget=%dt/%ds",
-                    entry.name, entry.mode.value, caps, tools, data_fields,
-                    entry.budget.max_tokens, entry.budget.max_steps,
-                )
+                _log_compiled(entry)
             else:
                 log.warning("  skipped %s — no @agent header found", filepath.name)
         except Exception as e:
@@ -174,9 +172,68 @@ def compile_prompts(
 
     if use_cache:
         _CACHE[combined_hash] = registry
-
-    log.info("compiled %d agents from %s", len(registry.entries), prompt_dir)
     return registry
+
+
+def _compile_from_resource(
+    uri: str, pattern: str, llm: Any, model: str, use_cache: bool,
+) -> AgentRegistry:
+    """Compile prompts from a resource URI (file://, bitbucket://)."""
+    from .resource import get_provider
+
+    provider = get_provider(uri)
+    file_uris = provider.list(uri)
+
+    # Filter by pattern
+    if pattern != "*":
+        import fnmatch
+        file_uris = [u for u in file_uris if fnmatch.fnmatch(u.split("/")[-1], pattern)]
+
+    if not file_uris:
+        log.warning("no prompt files found at %s", uri)
+        return AgentRegistry()
+
+    # Cache by URI + content hash
+    contents = {}
+    for file_uri in file_uris:
+        try:
+            contents[file_uri] = provider.get(file_uri)
+        except Exception as e:
+            log.warning("  failed to fetch %s: %s", file_uri, e)
+
+    combined_hash = hashlib.md5("".join(sorted(contents.values())).encode()).hexdigest()
+    if use_cache and combined_hash in _CACHE:
+        return _CACHE[combined_hash]
+
+    registry = AgentRegistry(source_hash=combined_hash)
+    log.info("compiling %d prompt files from %s", len(contents), uri)
+
+    for file_uri, text in contents.items():
+        name = file_uri.split("/")[-1]
+        try:
+            entry = _parse_prompt_file(text, name, llm, model)
+            if entry:
+                registry.entries[entry.name] = entry
+                _log_compiled(entry)
+            else:
+                log.warning("  skipped %s — no @agent header found", name)
+        except Exception as e:
+            log.warning("  failed to compile %s: %s", name, e)
+
+    if use_cache:
+        _CACHE[combined_hash] = registry
+    return registry
+
+
+def _log_compiled(entry) -> None:
+    caps = ", ".join(entry.capabilities) if entry.capabilities else "none"
+    tools = ", ".join(entry.tools[:5]) if entry.tools else "none"
+    data_fields = ", ".join(entry.input_schema.keys()) if entry.input_schema else "none"
+    log.info(
+        "  compiled agent '%s' [%s] — capabilities=[%s] tools=[%s] data=[%s] budget=%dt/%ds",
+        entry.name, entry.mode.value, caps, tools, data_fields,
+        entry.budget.max_tokens, entry.budget.max_steps,
+    )
 
 
 def compile_prompt_text(

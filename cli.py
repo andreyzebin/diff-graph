@@ -96,6 +96,7 @@ def run(
     post_comments: bool          = typer.Option(False, "--post-comments",      help="Post findings to the PR as inline comments (requires --pr-url)"),
     max_steps:     Optional[int] = typer.Option(None,  "--max-steps",          help="Max ReAct steps (default: from config)"),
     max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
+    prompts:       Optional[str] = typer.Option(None,  "--prompts",            help="Prompt resource URI (path, file://, bitbucket://)"),
 ):
     """
     Run a multi-agent PR review and print structured findings.
@@ -213,6 +214,7 @@ def run(
             trace_writer=_trace_db.on_event,
             base_ref=_base_ref,
             source_ref=_source_ref,
+            prompt_resource=prompts,
         )
     console.print("")
 

@@ -90,6 +90,7 @@ def run_review(
     trace_writer: Optional[Callable] = None,
     base_ref: str = "",
     source_ref: str = "",
+    prompt_resource: Optional[str] = None,
 ) -> tuple[list[ReviewFinding], ReviewContext]:
     _emit = on_event or (lambda *_, **__: None)
     diff_result = parse_diff(diff_text)
@@ -101,7 +102,8 @@ def run_review(
     )
 
     # ── Compile agents from .prompt files ─────────────────────────────────
-    agent_registry = compile_prompts(_PROMPT_DIR, pattern="*.prompt")
+    prompt_source = prompt_resource or _PROMPT_DIR
+    agent_registry = compile_prompts(prompt_source, pattern="*.prompt")
     for entry in agent_registry.entries.values():
         caps = ", ".join(entry.capabilities) if entry.capabilities else "–"
         data_fields = ", ".join(entry.input_schema.keys()) if entry.input_schema else "–"

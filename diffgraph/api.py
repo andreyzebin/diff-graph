@@ -43,6 +43,7 @@ class DiffGraph:
         trace_writer: Optional[Callable] = None,
         base_ref: str = "",
         source_ref: str = "",
+        prompt_resource: Optional[str] = None,
     ) -> tuple[list[ReviewFinding], ReviewContext]:
         """
         Run the agentic review pipeline.
@@ -63,4 +64,5 @@ class DiffGraph:
             trace_writer=trace_writer,
             base_ref=base_ref,
             source_ref=source_ref,
+            prompt_resource=prompt_resource,
         )
