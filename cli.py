@@ -69,45 +69,14 @@ def _make_llm_client(llm_cfg: dict):
     return OpenAI(**kwargs)
 
 
-def _read_diff(diff_path: Optional[str]) -> str:
-    if diff_path is None or diff_path == "-":
-        if sys.stdin.isatty():
-            console.print("[red]No diff provided. Pass --diff <file> or pipe via stdin.[/red]")
-            raise typer.Exit(1)
-        return sys.stdin.read()
-    p = Path(diff_path)
-    if not p.exists():
-        console.print(f"[red]Diff file not found: {diff_path}[/red]")
-        raise typer.Exit(1)
-    return p.read_text()
-
-
-def _infer_git_refs(repo_path: str) -> tuple[str, str]:
-    """Try to infer base and source refs from git. Returns ("", "") on failure."""
-    import subprocess
-    try:
-        # source = HEAD
-        source = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_path, capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        # base = HEAD~1 (for `git diff HEAD~1` style diffs)
-        base = subprocess.run(
-            ["git", "rev-parse", "HEAD~1"],
-            cwd=repo_path, capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        return base, source
-    except Exception:
-        return "", ""
-
-
 # ── commands ──────────────────────────────────────────────────────────────────
 
 @app.command()
 def run(
-    repo:          Optional[str] = typer.Option(None,  "--repo",         "-r", help="Path to the repository"),
-    diff:          Optional[str] = typer.Option(None,  "--diff",         "-d", help="Path to .diff file, or '-' for stdin"),
     pr_url:        Optional[str] = typer.Option(None,  "--pr-url",             help="Bitbucket Server PR URL — clones repo and fetches diff automatically"),
+    repo:          Optional[str] = typer.Option(None,  "--repo",         "-r", help="Path to local repository"),
+    base:          Optional[str] = typer.Option(None,  "--base",               help="Base ref (commit/branch to merge into). Required with --repo."),
+    source:        Optional[str] = typer.Option(None,  "--source",             help="Source ref (commit/branch being reviewed). Default: HEAD."),
     model:         Optional[str] = typer.Option(None,  "--model",        "-m", help="LLM model override"),
     api_url:       Optional[str] = typer.Option(None,  "--api-url",            help="OpenAI-compatible API base URL override"),
     api_key:       Optional[str] = typer.Option(None,  "--api-key",            help="API key override"),
@@ -121,10 +90,10 @@ def run(
     Run a multi-agent PR review and print structured findings.
 
     \b
-      git diff HEAD~1 | python cli.py run --repo .
-      python cli.py run --repo ./my-service --diff changes.diff
-      python cli.py run --pr-url https://bitbucket.example.com/projects/X/repos/Y/pull-requests/42
+      python cli.py run --pr-url https://bitbucket.example.com/.../pull-requests/42
       python cli.py run --pr-url ... --post-comments
+      python cli.py run --repo . --base HEAD~1
+      python cli.py run --repo . --base main --source feature/my-branch
     """
     cfg = _load_config()
     llm_cfg    = cfg.get("llm", {})
@@ -160,8 +129,31 @@ def run(
         if not repo:
             console.print("[red]Provide --repo or --pr-url.[/red]")
             raise typer.Exit(1)
-        diff_text = _read_diff(diff)
+        if not base:
+            console.print("[red]Provide --base (e.g. --base HEAD~1 or --base main).[/red]")
+            raise typer.Exit(1)
         repo_path = str(Path(repo).resolve())
+        _source_ref = source or "HEAD"
+        _base_ref = base
+        # Resolve to SHAs
+        import subprocess
+        try:
+            _base_ref = subprocess.run(
+                ["git", "rev-parse", _base_ref], cwd=repo_path,
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            _source_ref = subprocess.run(
+                ["git", "rev-parse", _source_ref], cwd=repo_path,
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+        except subprocess.CalledProcessError as exc:
+            console.print(f"[red]Failed to resolve refs: {exc.stderr.strip()}[/red]")
+            raise typer.Exit(1)
+        # Compute diff from refs
+        diff_text = subprocess.run(
+            ["git", "diff", f"{_base_ref}...{_source_ref}"],
+            cwd=repo_path, capture_output=True, text=True,
+        ).stdout
 
     if not diff_text.strip():
         console.print("[yellow]Diff is empty — nothing to do.[/yellow]")
@@ -227,13 +219,10 @@ def run(
             _capture_event(event, **kw)
             event_handler(event, **kw)
 
-        # Pass git refs for VFS
+        # Refs: from PR metadata or from CLI args (already resolved above)
         if pr_url:
             _base_ref = pr_meta.get("base_ref", "")
             _source_ref = pr_meta.get("source_ref", "")
-        else:
-            # Local mode: try to infer refs from git
-            _base_ref, _source_ref = _infer_git_refs(repo_path)
 
         findings, review_ctx = dg.review(
             diff_text,
