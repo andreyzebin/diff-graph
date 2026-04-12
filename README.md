@@ -53,10 +53,11 @@ cp config.yaml config.local.yaml
 # edit config.local.yaml -- set api_url and model if not using OpenAI
 ```
 
-Run against a local diff:
+Run against a local repo:
 
 ```bash
-git diff HEAD~1 | python cli.py run --repo . --diff -
+python cli.py run --repo . --base HEAD~1
+python cli.py run --repo . --base main --source feature/my-branch
 ```
 
 Run against a Bitbucket Server PR:
@@ -64,11 +65,6 @@ Run against a Bitbucket Server PR:
 ```bash
 source .env
 python cli.py run --pr-url https://bitbucket.example.com/projects/X/repos/Y/pull-requests/42
-```
-
-Post findings as inline PR comments:
-
-```bash
 python cli.py run --pr-url ... --post-comments
 ```
 
@@ -103,27 +99,35 @@ review:
 
 ## CLI
 
-### `run` -- review a diff
+### `run` -- review code changes
+
+Two modes: PR (fetches everything from Bitbucket) or local repo (you specify refs).
 
 ```bash
-python cli.py run --repo ./my-service --diff changes.diff
+# PR mode — clones repo, computes diff, fetches existing comments
 python cli.py run --pr-url https://bitbucket.example.com/.../pull-requests/42
 python cli.py run --pr-url ... --post-comments
-python cli.py run --repo . --diff my.diff --output findings.json
+
+# Local mode — diff computed from git refs, repo not modified
+python cli.py run --repo . --base HEAD~1
+python cli.py run --repo . --base main --source feature/my-branch
+python cli.py run --repo /path/to/service --base abc123 --source def456 --output findings.json
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--repo` / `-r` | Path to repository |
-| `--diff` / `-d` | Diff file path, or `-` for stdin |
-| `--pr-url` | Bitbucket Server PR URL |
-| `--post-comments` | Post findings as inline PR comments |
+| `--pr-url` | Bitbucket Server PR URL (PR mode) |
+| `--repo` / `-r` | Path to local repository (local mode) |
+| `--base` | Base ref — commit/branch to merge into. Required for local mode. |
+| `--source` | Source ref — commit/branch being reviewed. Default: HEAD. |
+| `--post-comments` | Post findings as inline PR comments (requires `--pr-url`) |
 | `--model` / `-m` | LLM model override |
 | `--api-url` | API base URL override |
 | `--api-key` | API key override |
 | `--output` / `-o` | Write findings as JSON |
 | `--max-steps` | Max ReAct tool calls |
 | `--max-tokens` | Max token budget |
+| `--prompts` | Prompt resource URI (path, `file://`, `bitbucket://`) |
 
 ### `trace` -- inspect execution traces
 
