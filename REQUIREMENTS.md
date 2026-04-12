@@ -85,7 +85,16 @@ Reads `.prompt` files and builds an **agent registry**.
 
 **Output:** `AgentRegistry` mapping agent names to metadata (summary, capabilities, input schema, tools, budget, llm_params, prompt template).
 
-**Caching:** by combined file hash. Recompiled only when files change.
+**Caching:** by combined file hash (file provider) or commit SHA (Bitbucket provider). Recompiled only when content changes.
+
+**Resource providers:** `compile_prompts()` accepts plain paths, `file://` URIs, or `bitbucket://` URIs. Prompt source is decoupled from the codebase — different agent versions can load prompts from different locations.
+
+| Provider | URI | Hash (mutation ID) |
+|---|---|---|
+| File | `diffgraph/prompts` or `file:///path/to/prompts/v2` | md5 of file contents |
+| Bitbucket | `bitbucket://server/PROJECT/repo/refs/branch/prompts` | commit SHA from API |
+
+CLI: `--prompts` flag overrides default prompt directory. Enables A/B testing at the prompt level via webhook router — each agent config specifies its own `--prompts` URI.
 
 **Runtime access:** `list_agents` tool returns the registry. `spawn_agent` validates data against target's schema and injects into `{placeholders}`.
 
@@ -272,8 +281,10 @@ Available via `observe_agents`. Framework does not act on them -- supervisor age
 Events persisted per-step to a SQLite database. Crash-safe -- partial runs are recoverable.
 
 - Per agent: agent_id, parent_id, per-step tool calls + tokens + LLM params, SGR history, budget consumed, output
+- Per run: model, prompt_source (URI/path), prompt_hash (commit SHA or content md5)
 - Full execution tree reconstructable from stored events
 - Reader API for querying runs, agents, and steps
+- Auto-migration: new columns added on connect if missing (existing DBs)
 
 ### Trace server (`trace_server/`)
 
@@ -296,7 +307,7 @@ FastAPI + Alpine.js web viewer with Jinja2 templates. Two views accessible via s
 - Tool args preview, token usage (`↑↓©`) in event lines
 - Auto-scroll pauses when user scrolls up, resumes at bottom
 
-**Runs list** (`/`): initial server render + polling `GET /api/runs` every 3s. New runs flash-highlighted.
+**Runs list** (`/`): initial server render + polling `GET /api/runs` every 3s. New runs flash-highlighted. Prompts column shows generation name + mutation hash (e.g. `main (a1b2c3d)`, `v2 (b7c)`).
 
 Both views link to each other. `/runs/{id}` redirects to `/live` if running, `/trace` if completed.
 

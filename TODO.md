@@ -23,6 +23,10 @@
 - ~~Thread-safe trace DB~~ — threading.Lock on SQLite writes for parallel agents
 - ~~Orphan agents in trace~~ — unlinked agents attached to root, all visible
 - ~~strategist → lead rename~~ — everywhere in code, prompts, docs
+- ~~DiffSearch VFS~~ — virtual unified diff filesystem with ref= param, lazy materialization, 105 tests
+- ~~Webhook router~~ — Bitbucket webhook with A/B routing, forward/command modes, sample cascade, 31 tests
+- ~~Resource providers~~ — file:// and bitbucket:// for prompt loading, --prompts CLI flag
+- ~~Prompt generations in runs UI~~ — prompt_source + prompt_hash (commit SHA or content md5) in trace DB, visible in runs list
 
 ---
 
@@ -579,3 +583,66 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 4.2 | Trace JSON export | Low | Small | Later |
 | 4.3 | Trace search CLI | Low | Small | Later |
 | 5.2 | Model comparison | Low | Medium | Later |
+| 7.1 | Prompt mutation generator | High | Medium | Later |
+| 7.2 | Fitness function from traces | High | Medium | Later |
+| 7.3 | Selection + merge winning mutations | High | Large | Later |
+
+---
+
+## 7. Evolutionary Prompt Development
+
+Infrastructure for automated prompt evolution with A/B testing.
+
+### Foundations (done)
+
+- **Resource providers** — prompts loadable from file:// or bitbucket:// URIs
+- **--prompts CLI flag** — each agent version can load different prompts
+- **Webhook router** — A/B routing with sample% cascade, per-project rules
+- **Prompt tracking** — prompt_source + prompt_hash stored per run in trace DB
+- **Runs UI** — generation name + mutation hash visible, filterable
+
+### 7.1 Prompt mutation generator
+
+Generate variant prompts programmatically. Mutations could be:
+- Wording changes (rephrase instructions)
+- Methodology tweaks (number of concerns, investigation depth)
+- Tool usage hints (when to use changes_only, search context)
+- Budget allocation (reviewer budget, pusher thresholds)
+
+Store mutations as branches in a Bitbucket prompts repo:
+```
+refs/main          — current stable
+refs/mut-001       — "increase reviewer budget to 20000"
+refs/mut-002       — "add explicit search examples"
+refs/mut-003       — "reduce concerns to max 3"
+```
+
+### 7.2 Fitness function from traces
+
+Score each prompt generation from trace DB metrics:
+- Finding quality: severity distribution, evidence completeness
+- Convergence: steps to high confidence, wasted tool calls
+- Cost efficiency: tokens per finding, cache hit ratio
+- Consistency: same finding across multiple runs on same PR
+
+Query:
+```sql
+SELECT prompt_hash,
+       AVG(findings_count) as avg_findings,
+       AVG(total_tokens_paid) as avg_cost
+FROM runs
+WHERE prompt_source LIKE '%/prompts'
+GROUP BY prompt_hash
+```
+
+### 7.3 Selection + merge winning mutations
+
+Evolution cycle:
+1. Generate N mutations → push as branches
+2. Webhook router: sample=10% per mutation, rest on stable
+3. Collect metrics over K runs per mutation
+4. Score mutations with fitness function
+5. Winning mutation → merge to main (new stable)
+6. Repeat
+
+Traceability: every run links to exact prompt commit SHA → can always reproduce and compare.
