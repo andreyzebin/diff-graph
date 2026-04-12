@@ -23,9 +23,11 @@ class AgentConfig:
 @dataclass
 class Route:
     name: str
-    when: str  # Python expression
-    agent: str | dict[str, int] | None = None  # default for all commands
-    commands: dict[str, str | dict[str, int]] = field(default_factory=dict)  # per-command overrides
+    when: str                     # Python expression
+    agent: str | None = None      # command-level routing: agent for all commands
+    forward: str | None = None    # event-level routing: forward raw event to this agent
+    sample: int = 100             # percentage of PRs this route matches (by url hash)
+    commands: dict[str, str] = field(default_factory=dict)  # per-command overrides
 
 
 @dataclass
@@ -69,17 +71,17 @@ def load_config(path: str | Path) -> WebhookConfig:
     # Routes
     routes = []
     for r in raw.get("routes", []):
-        # Separate agent (default) from per-command overrides
-        agent_default = r.get("agent")
         commands = {}
-        known_keys = {"name", "when", "agent"}
+        known_keys = {"name", "when", "agent", "forward", "sample"}
         for k, v in r.items():
             if k not in known_keys:
                 commands[k] = v
         routes.append(Route(
             name=r.get("name", ""),
             when=r.get("when", "true"),
-            agent=agent_default,
+            agent=r.get("agent"),
+            forward=r.get("forward"),
+            sample=r.get("sample", 100),
             commands=commands,
         ))
 

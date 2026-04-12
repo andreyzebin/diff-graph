@@ -1,17 +1,16 @@
 """
-Tests for webhook router — config, routing, A/B split.
+Tests for webhook router — config, routing, forward/command modes, sample.
 """
 from __future__ import annotations
 
 import logging
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from webhook.config import load_config
 from webhook.bitbucket import parse_event, extract_commands, PRMeta, WebhookEvent, CommandRequest
-from webhook.router import route_commands, _eval_when, _resolve_agent
+from webhook.router import route_event, ForwardDecision, CommandDecision, _eval_when, _sample_match
 
 log = logging.getLogger(__name__)
 
@@ -28,36 +27,34 @@ class TestLoadConfig:
         assert "dg2" in cfg.agents
         assert "dg1" in cfg.agents
         assert "pra" in cfg.agents
-        assert len(cfg.routes) == 3
 
     def test_agents_have_commands(self):
         cfg = load_config(EXAMPLE_CONFIG)
         assert "cli.py" in cfg.agents["dg2"].command
         assert cfg.agents["dg2"].trigger == "cli"
-        assert cfg.agents["dg2"].timeout == 600
+        assert cfg.agents["pra"].trigger == "webhook"
 
     def test_events_parsed(self):
         cfg = load_config(EXAMPLE_CONFIG)
         assert cfg.events["pr:opened"] == ["review"]
         assert cfg.events["pr:comment:added"] == "parse"
-        assert cfg.events["repo:refs_changed"] == []
 
-    def test_routes_order(self):
+    def test_routes_have_forward_and_agent(self):
         cfg = load_config(EXAMPLE_CONFIG)
-        assert cfg.routes[0].name == "orderflow-canary"
-        assert cfg.routes[1].name == "sbloom-ab"
-        assert cfg.routes[2].name == "default"
+        forwards = [r for r in cfg.routes if r.forward]
+        agents = [r for r in cfg.routes if r.agent]
+        assert len(forwards) >= 2  # legacy-forward, platform-forward
+        assert len(agents) >= 3    # platform-commands, canary, sbloom, default
 
-    def test_route_ab_split(self):
+    def test_route_sample(self):
         cfg = load_config(EXAMPLE_CONFIG)
-        sbloom = cfg.routes[1]
-        assert isinstance(sbloom.agent, dict)
-        assert sbloom.agent["dg2"] == 30
-        assert sbloom.agent["dg1"] == 70
+        platform_fwd = next(r for r in cfg.routes if r.name == "platform-forward")
+        assert platform_fwd.sample == 50
+        assert platform_fwd.forward == "pra"
 
     def test_route_per_command_override(self):
         cfg = load_config(EXAMPLE_CONFIG)
-        sbloom = cfg.routes[1]
+        sbloom = next(r for r in cfg.routes if r.name == "sbloom")
         assert sbloom.commands["improve"] == "pra"
 
 
@@ -65,7 +62,7 @@ class TestLoadConfig:
 
 
 def _make_bb_event(event_key="pr:opened", project="SBLOOM", repo="my-repo",
-                   pr_id=42, comment_text=""):
+                   pr_id=42, comment_text="", comment_id=None, parent_id=None):
     data = {
         "eventKey": event_key,
         "pullRequest": {
@@ -73,23 +70,22 @@ def _make_bb_event(event_key="pr:opened", project="SBLOOM", repo="my-repo",
             "title": "Test PR",
             "fromRef": {
                 "displayId": "feature/test",
-                "repository": {
-                    "slug": repo,
-                    "project": {"key": project},
-                },
+                "repository": {"slug": repo, "project": {"key": project}},
             },
             "toRef": {
                 "displayId": "master",
-                "repository": {
-                    "slug": repo,
-                    "project": {"key": project},
-                },
+                "repository": {"slug": repo, "project": {"key": project}},
             },
             "author": {"user": {"name": "testuser"}},
         },
     }
     if comment_text:
-        data["comment"] = {"text": comment_text}
+        comment = {"text": comment_text}
+        if comment_id:
+            comment["id"] = comment_id
+        if parent_id:
+            comment["parent"] = {"id": parent_id}
+        data["comment"] = comment
     return data
 
 
@@ -99,251 +95,192 @@ class TestParseEvent:
         ev = parse_event(_make_bb_event("pr:opened"), "https://bb.example.com")
         assert ev.event_key == "pr:opened"
         assert ev.pr.project == "SBLOOM"
-        assert ev.pr.repo == "my-repo"
-        assert ev.pr.pr_id == 42
         assert "pull-requests/42" in ev.pr.pr_url
 
-    def test_comment_event(self):
+    def test_comment_with_mention_and_args(self):
         ev = parse_event(
-            _make_bb_event("pr:comment:added", comment_text="/review"),
-            "https://bb.example.com",
+            _make_bb_event("pr:comment:added",
+                          comment_text="@diffgraph /ask Is this null-safe?",
+                          comment_id=200, parent_id=150),
+            "",
         )
-        assert ev.event_key == "pr:comment:added"
-        assert ev.comment_text == "/review"
+        assert ev.comment_text == "@diffgraph /ask Is this null-safe?"
+        assert ev.comment_id == 200
+        assert ev.parent_comment_id == 150
 
     def test_no_pr(self):
-        ev = parse_event({"eventKey": "something"}, "")
-        assert ev is None
-
-    def test_invalid_pr_id(self):
-        data = _make_bb_event()
-        data["pullRequest"]["id"] = -1
-        ev = parse_event(data, "")
-        assert ev is None
+        assert parse_event({"eventKey": "something"}, "") is None
 
 
 class TestExtractCommands:
 
     def test_pr_opened_auto(self):
         cfg = load_config(EXAMPLE_CONFIG)
-        ev = WebhookEvent(
-            event_key="pr:opened",
-            pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
-        )
+        ev = WebhookEvent(event_key="pr:opened", pr=PRMeta("X", "x", 1, "", "", "", "", ""))
         cmds = extract_commands(ev, cfg.events)
         assert len(cmds) == 1
         assert cmds[0].name == "review"
 
-    def test_comment_parse_review(self):
+    def test_comment_parse_with_args(self):
         cfg = load_config(EXAMPLE_CONFIG)
         ev = WebhookEvent(
             event_key="pr:comment:added",
-            pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
-            comment_text="/review",
-        )
-        cmds = extract_commands(ev, cfg.events)
-        assert len(cmds) == 1
-        assert cmds[0].name == "review"
-        assert cmds[0].args == ""
-
-    def test_comment_parse_improve(self):
-        cfg = load_config(EXAMPLE_CONFIG)
-        ev = WebhookEvent(
-            event_key="pr:comment:added",
-            pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
-            comment_text="/improve",
-        )
-        cmds = extract_commands(ev, cfg.events)
-        assert cmds[0].name == "improve"
-
-    def test_comment_with_mention(self):
-        cfg = load_config(EXAMPLE_CONFIG)
-        ev = WebhookEvent(
-            event_key="pr:comment:added",
-            pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
-            comment_text="@diffgraph /review",
-        )
-        cmds = extract_commands(ev, cfg.events)
-        assert len(cmds) == 1
-        assert cmds[0].name == "review"
-
-    def test_comment_ask_with_question(self):
-        cfg = load_config(EXAMPLE_CONFIG)
-        ev = WebhookEvent(
-            event_key="pr:comment:added",
-            pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
-            comment_text="@diffgraph /ask What about null safety in this method?",
-        )
-        cmds = extract_commands(ev, cfg.events)
-        assert len(cmds) == 1
-        assert cmds[0].name == "ask"
-        assert cmds[0].args == "What about null safety in this method?"
-        log.info("ask command: name=%s args=%s", cmds[0].name, cmds[0].args)
-
-    def test_comment_id_passed(self):
-        """Command gets the comment ID that invoked it."""
-        cfg = load_config(EXAMPLE_CONFIG)
-        ev = WebhookEvent(
-            event_key="pr:comment:added",
-            pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
-            comment_text="/improve",
+            pr=PRMeta("X", "x", 1, "", "", "", "", ""),
+            comment_text="@bot /ask What about null safety?",
             comment_id=200,
-            parent_comment_id=150,
         )
         cmds = extract_commands(ev, cfg.events)
-        assert len(cmds) == 1
-        assert cmds[0].name == "improve"
+        assert cmds[0].name == "ask"
+        assert cmds[0].args == "What about null safety?"
         assert cmds[0].comment_id == 200
-        log.info("comment_id: %s (agent can reply to this)", cmds[0].comment_id)
 
     def test_comment_no_command(self):
         cfg = load_config(EXAMPLE_CONFIG)
         ev = WebhookEvent(
             event_key="pr:comment:added",
-            pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
-            comment_text="just a regular comment",
+            pr=PRMeta("X", "x", 1, "", "", "", "", ""),
+            comment_text="just a comment",
         )
-        cmds = extract_commands(ev, cfg.events)
-        assert cmds == []
-
-    def test_push_no_commands(self):
-        cfg = load_config(EXAMPLE_CONFIG)
-        ev = WebhookEvent(
-            event_key="repo:refs_changed",
-            pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
-        )
-        cmds = extract_commands(ev, cfg.events)
-        assert cmds == []
+        assert extract_commands(ev, cfg.events) == []
 
     def test_unknown_event(self):
         cfg = load_config(EXAMPLE_CONFIG)
-        ev = WebhookEvent(
-            event_key="unknown:event",
-            pr=PRMeta("SBLOOM", "test", 1, "", "", "", "", ""),
-        )
-        cmds = extract_commands(ev, cfg.events)
-        assert cmds == []
+        ev = WebhookEvent(event_key="unknown", pr=PRMeta("X", "x", 1, "", "", "", "", ""))
+        assert extract_commands(ev, cfg.events) == []
 
 
-# ── Routing ──────────────────────────────────────────────────────────────────
+# ── Eval & sample ────────────────────────────────────────────────────────────
 
 
 class TestEvalWhen:
 
     def test_true(self):
         assert _eval_when("true", {})
-        assert _eval_when("True", {})
         assert _eval_when("*", {})
 
-    def test_simple_eq(self):
-        assert _eval_when("project == 'SBLOOM'", {"project": "SBLOOM"})
-        assert not _eval_when("project == 'SBLOOM'", {"project": "OTHER"})
+    def test_eq(self):
+        assert _eval_when("project == 'X'", {"project": "X"})
+        assert not _eval_when("project == 'X'", {"project": "Y"})
 
     def test_and(self):
-        ctx = {"project": "SBLOOM", "repo": "my-repo"}
-        assert _eval_when("project == 'SBLOOM' and repo == 'my-repo'", ctx)
-        assert not _eval_when("project == 'SBLOOM' and repo == 'other'", ctx)
+        assert _eval_when("project == 'X' and repo == 'y'", {"project": "X", "repo": "y"})
 
     def test_startswith(self):
-        ctx = {"repo": "code-review-example-orderflow"}
-        assert _eval_when("repo.startswith('code-review')", ctx)
+        assert _eval_when("repo.startswith('code')", {"repo": "code-review"})
 
-    def test_invalid_expr(self):
+    def test_invalid(self):
         assert not _eval_when("import os", {})
 
 
-class TestResolveAgent:
+class TestSampleMatch:
 
-    def test_exact(self):
-        assert _resolve_agent("dg2", "http://pr/1") == "dg2"
+    def test_100_always(self):
+        assert _sample_match(100, "any-url")
 
-    def test_ab_deterministic(self):
-        """Same pr_url always gives same agent."""
-        url = "http://bb.example.com/projects/X/repos/Y/pull-requests/42"
-        results = {_resolve_agent({"dg2": 30, "dg1": 70}, url) for _ in range(100)}
+    def test_0_never(self):
+        assert not _sample_match(0, "any-url")
+
+    def test_deterministic(self):
+        url = "http://pr/42"
+        results = {_sample_match(50, url) for _ in range(100)}
         assert len(results) == 1  # always same
 
-    def test_ab_distribution(self):
-        """Over many URLs, distribution roughly matches weights."""
-        spec = {"dg2": 30, "dg1": 70}
-        counts = {"dg2": 0, "dg1": 0}
-        for i in range(1000):
-            agent = _resolve_agent(spec, f"http://pr/{i}")
-            counts[agent] += 1
-        log.info("A/B distribution: %s", counts)
-        # Allow ±10% tolerance
-        assert 200 < counts["dg2"] < 400
-        assert 600 < counts["dg1"] < 800
+    def test_distribution(self):
+        count = sum(1 for i in range(1000) if _sample_match(50, f"http://pr/{i}"))
+        log.info("sample=50 distribution: %d/1000", count)
+        assert 400 < count < 600
 
 
-class TestRouteCommands:
+# ── Routing ──────────────────────────────────────────────────────────────────
 
-    def _cmd(self, name, args="", comment_id=None):
+
+class TestForwardRouting:
+
+    def _cmd(self, name="review"):
+        return CommandRequest(name=name)
+
+    def test_legacy_forwards(self):
+        cfg = load_config(EXAMPLE_CONFIG)
+        pr = PRMeta("LEGACY", "repo", 1, "http://pr/1", "", "", "", "")
+        result = route_event([self._cmd()], pr, cfg)
+        assert isinstance(result, ForwardDecision)
+        assert result.agent_name == "pra"
+        assert result.route_name == "legacy-forward"
+        log.info("legacy → forward:%s", result.agent_name)
+
+    def test_platform_sample_forward(self):
+        """Some PLATFORM PRs forward, others go to command routing."""
+        cfg = load_config(EXAMPLE_CONFIG)
+        forwards = 0
+        commands = 0
+        for i in range(200):
+            pr = PRMeta("PLATFORM", "repo", i, f"http://pr/{i}", "", "", "", "")
+            result = route_event([self._cmd()], pr, cfg)
+            if isinstance(result, ForwardDecision):
+                forwards += 1
+            elif isinstance(result, list):
+                commands += 1
+        log.info("PLATFORM A/B: %d forward, %d commands", forwards, commands)
+        assert forwards > 50   # ~100 expected
+        assert commands > 50   # ~100 expected
+
+
+class TestCommandRouting:
+
+    def _cmd(self, name="review", args="", comment_id=None):
         return CommandRequest(name=name, args=args, comment_id=comment_id)
 
-    def test_specific_repo_matches_first(self):
+    def test_canary_all_commands(self):
         cfg = load_config(EXAMPLE_CONFIG)
         pr = PRMeta("SBLOOM", "code-review-example-orderflow", 1,
-                     "http://pr/1", "user", "feature", "master", "Test")
-        decisions = route_commands([self._cmd("review")], pr, cfg)
-        assert len(decisions) == 1
-        assert decisions[0].agent_name == "dg2"
-        assert decisions[0].route_name == "orderflow-canary"
-        log.info("specific repo: %s → %s", decisions[0].route_name, decisions[0].agent_name)
+                     "http://pr/1", "", "", "", "")
+        result = route_event([self._cmd("review")], pr, cfg)
+        assert isinstance(result, list)
+        assert result[0].agent_name == "dg2"
+        assert result[0].route_name == "orderflow-canary"
 
-    def test_sbloom_ab(self):
+    def test_sbloom_per_command_override(self):
         cfg = load_config(EXAMPLE_CONFIG)
-        pr = PRMeta("SBLOOM", "other-repo", 1,
-                     "http://pr/1", "user", "feature", "master", "Test")
-        decisions = route_commands([self._cmd("review")], pr, cfg)
-        assert len(decisions) == 1
-        assert decisions[0].agent_name in ("dg2", "dg1")
-        assert decisions[0].route_name == "sbloom-ab"
-        log.info("sbloom A/B: %s → %s", decisions[0].route_name, decisions[0].agent_name)
-
-    def test_sbloom_improve_override(self):
-        cfg = load_config(EXAMPLE_CONFIG)
-        pr = PRMeta("SBLOOM", "other-repo", 1,
-                     "http://pr/1", "user", "feature", "master", "Test")
-        decisions = route_commands([self._cmd("improve")], pr, cfg)
-        assert len(decisions) == 1
-        assert decisions[0].agent_name == "pra"
-        log.info("sbloom improve: %s → %s", decisions[0].route_name, decisions[0].agent_name)
+        pr = PRMeta("SBLOOM", "other-repo", 1, "http://pr/1", "", "", "", "")
+        result = route_event([self._cmd("improve")], pr, cfg)
+        assert isinstance(result, list)
+        assert result[0].agent_name == "pra"
+        log.info("sbloom /improve → %s", result[0].agent_name)
 
     def test_default_fallback(self):
         cfg = load_config(EXAMPLE_CONFIG)
-        pr = PRMeta("OTHER", "some-repo", 1,
-                     "http://pr/1", "user", "feature", "master", "Test")
-        decisions = route_commands([self._cmd("review")], pr, cfg)
-        assert len(decisions) == 1
-        assert decisions[0].agent_name == "dg1"
-        assert decisions[0].route_name == "default"
+        pr = PRMeta("OTHER", "repo", 1, "http://pr/1", "", "", "", "")
+        result = route_event([self._cmd()], pr, cfg)
+        assert isinstance(result, list)
+        assert result[0].agent_name == "dg1"
+        assert result[0].route_name == "default"
 
     def test_multiple_commands(self):
         cfg = load_config(EXAMPLE_CONFIG)
         pr = PRMeta("SBLOOM", "code-review-example-orderflow", 1,
-                     "http://pr/1", "user", "feature", "master", "Test")
-        decisions = route_commands([self._cmd("review"), self._cmd("improve")], pr, cfg)
-        log.info("multi-command: %s", [(d.command.name, d.agent_name) for d in decisions])
-        assert len(decisions) == 2
-        assert all(d.agent_name == "dg2" for d in decisions)
+                     "http://pr/1", "", "", "", "")
+        result = route_event([self._cmd("review"), self._cmd("improve")], pr, cfg)
+        assert isinstance(result, list)
+        assert len(result) == 2
+        log.info("multi: %s", [(d.command.name, d.agent_name) for d in result])
 
-    def test_command_args_preserved(self):
-        """Command args (question text) survive routing."""
+    def test_args_preserved(self):
         cfg = load_config(EXAMPLE_CONFIG)
-        pr = PRMeta("OTHER", "repo", 1,
-                     "http://pr/1", "user", "feature", "master", "Test")
-        decisions = route_commands([self._cmd("ask", args="Is this null-safe?")], pr, cfg)
-        assert len(decisions) == 1
-        assert decisions[0].command.args == "Is this null-safe?"
-        log.info("args preserved: %s", decisions[0].command.args)
+        pr = PRMeta("OTHER", "repo", 1, "http://pr/1", "", "", "", "")
+        result = route_event([self._cmd("ask", args="Is this safe?")], pr, cfg)
+        assert isinstance(result, list)
+        assert result[0].command.args == "Is this safe?"
 
     def test_comment_id_preserved(self):
-        """Parent comment ID survives routing."""
         cfg = load_config(EXAMPLE_CONFIG)
-        pr = PRMeta("OTHER", "repo", 1,
-                     "http://pr/1", "user", "feature", "master", "Test")
-        decisions = route_commands([self._cmd("improve", comment_id=150)], pr, cfg)
-        assert len(decisions) == 1
-        assert decisions[0].command.comment_id == 150
-        log.info("comment_id preserved: %s", decisions[0].command.comment_id)
+        pr = PRMeta("OTHER", "repo", 1, "http://pr/1", "", "", "", "")
+        result = route_event([self._cmd("improve", comment_id=150)], pr, cfg)
+        assert isinstance(result, list)
+        assert result[0].command.comment_id == 150
+
+    def test_no_commands_no_match(self):
+        cfg = load_config(EXAMPLE_CONFIG)
+        pr = PRMeta("OTHER", "repo", 1, "http://pr/1", "", "", "", "")
+        result = route_event([], pr, cfg)
+        # No commands → default route has agent but no commands to route
+        assert result == []

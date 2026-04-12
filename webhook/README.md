@@ -1,45 +1,127 @@
 # Webhook Router
 
-Bitbucket Server webhook receiver with A/B agent routing. Routes PR events to different agent versions based on TOML config rules.
+Bitbucket Server webhook receiver with two-level routing: event-level (forward) and command-level (per-command agent selection). Supports A/B testing via `sample` percentage.
 
 ## Quick start
 
 ```bash
 cp webhook/config.example.toml webhook.toml
-# edit webhook.toml — set agents, routes
+# edit webhook.toml
 python -m webhook --config webhook.toml
 ```
 
-Configure Bitbucket webhook URL: `http://your-host:8000/webhook`
+## Architecture
+
+```
+Bitbucket event
+  │
+  ▼
+Layer 1: Event → Commands
+  "pr:opened" = ["review"]         ← auto-run commands
+  "pr:comment:added" = "parse"     ← extract /command from comment
+  │
+  ▼
+Layer 2: Routes (first match wins, cascade via sample)
+  ┌─ forward = "pra"  → event-level: forward raw event, done
+  └─ agent = "dg2"    → command-level: route each command
+       ├─ review → dg2
+       └─ improve → pra  (per-command override)
+  │
+  ▼
+Layer 3: Agent trigger
+  cli     → subprocess with {pr_url}, {args}, {comment_id}
+  http    → POST to agent API
+  webhook → forward raw Bitbucket event
+```
+
+## Two routing modes
+
+Each route is **either `forward` or `agent`**, never both:
+
+| Key | Mode | Behavior |
+|-----|------|----------|
+| `forward = "pra"` | Event-level | Forward raw Bitbucket event to agent. No command extraction. Agent handles everything internally. |
+| `agent = "dg2"` | Command-level | Extract commands from `[events]` config, route each command to agent. Per-command overrides possible. |
+
+## Cascading with `sample`
+
+`sample` controls what percentage of PRs a route matches (deterministic by `hash(pr_url)`). Unmatched PRs fall through to the next route.
+
+```toml
+# 50% of PLATFORM PRs → forward to pr-agent
+[[routes]]
+name = "platform-forward"
+when = "project == 'PLATFORM'"
+forward = "pra"
+sample = 50
+
+# Remaining 50% → command routing to dg2
+[[routes]]
+name = "platform-commands"
+when = "project == 'PLATFORM'"
+agent = "dg2"
+```
+
+Same PR always gets the same route (hash is deterministic). Three-way split:
+
+```toml
+[[routes]]
+name = "v3-canary"
+when = "project == 'X'"
+agent = "dg3"
+sample = 10                    # 10%
+
+[[routes]]
+name = "v2-rollout"
+when = "project == 'X'"
+agent = "dg2"
+sample = 50                    # 50% of remaining 90% ≈ 45%
+
+[[routes]]
+name = "v1-stable"
+when = "project == 'X'"
+agent = "dg1"                  # rest ≈ 45%
+```
 
 ## Config
 
 ```toml
+[server]
+port = 8000
+
 [agents.dg2]
 trigger = "cli"
-command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --post-comments'
+command = '... cli.py run --pr-url="{pr_url}" --post-comments'
 timeout = 600
 
-# Per-command templates (override default for specific commands)
 [agents.dg2.commands]
 ask = '... cli.py ask --pr-url="{pr_url}" --question="{args}"'
 improve = '... cli.py improve --pr-url="{pr_url}" --comment-id={comment_id}'
 
+[agents.pra]
+trigger = "webhook"
+base_url = "http://pr-agent-host:3000"
+
 [events]
-"pr:opened" = ["review"]           # auto-run on PR creation
-"pr:comment:added" = "parse"       # extract /command from comment
-"repo:refs_changed" = []            # nothing on push
+"pr:opened" = ["review"]
+"pr:comment:added" = "parse"
+"repo:refs_changed" = []
+
+[[routes]]
+name = "legacy-forward"
+when = "project == 'LEGACY'"
+forward = "pra"
 
 [[routes]]
 name = "canary"
 when = "repo == 'my-service'"
-agent = "dg2"                       # all commands → dg2
+agent = "dg2"
 
 [[routes]]
-name = "ab-test"
-when = "project == 'MYPROJECT'"
-agent = { dg2 = 30, dg1 = 70 }    # 30/70 A/B split
-improve = "pra"                     # except /improve → pra
+name = "sbloom"
+when = "project == 'SBLOOM'"
+agent = "dg2"
+improve = "pra"
 
 [[routes]]
 name = "default"
@@ -49,111 +131,51 @@ agent = "dg1"
 
 ## Commands from PR comments
 
-Users invoke commands by commenting on a PR:
-
 ```
 @diffgraph /review
-@diffgraph /ask What about null safety in this method?
+@diffgraph /ask What about null safety?
 @diffgraph /improve
-@diffgraph /help How do I fix this?
 ```
-
-The `@mention` part is optional — `/review` alone works too. The router extracts:
 
 | Part | Extracted as |
 |---|---|
-| `/review` | command name = `review` |
-| `/ask What about null safety?` | command = `ask`, args = `What about null safety?` |
-| `/improve` in a thread reply | command = `improve`, comment_id = parent comment ID |
+| `/review` | command = `review` |
+| `/ask What about null?` | command = `ask`, args = `What about null?` |
+| `/improve` (as reply in thread) | command = `improve`, comment_id = invoking comment ID |
 
-### Threaded commands
-
-When `/improve` or `/ask` is posted as a reply to an existing comment thread, the router captures the **parent comment ID**. This lets the agent know which specific code comment to address.
-
-```
-Thread:
-  [reviewer] "This null check is inconsistent"     ← comment #150
-    [user] "@diffgraph /improve"                    ← reply, parent=#150
-```
-
-The router sends `command=improve, comment_id=150` to the agent.
+`@mention` is optional. `comment_id` is the ID of the comment containing the /command — agent can reply directly to it.
 
 ## Placeholders
 
-Command templates support these placeholders:
+Command templates (`command`, `commands.<name>`) support:
 
-| Placeholder | Value | Available |
-|---|---|---|
-| `{pr_url}` | Full PR URL | Always |
-| `{pr_id}` | PR number | Always |
-| `{project}` | Bitbucket project key | Always |
-| `{repo}` | Repository slug | Always |
-| `{command}` | Command name (review, ask, ...) | Always |
-| `{args}` | Text after command (/ask **question**, /help **topic**) | When present |
-| `{comment_id}` | Parent comment ID (threaded replies) | When reply in thread |
-
-### Per-command templates
-
-Different commands may need different CLI invocations. Use `[agents.<name>.commands]` to override the default `command` for specific commands:
-
-```toml
-[agents.dg2]
-trigger = "cli"
-command = '... cli.py run --pr-url="{pr_url}" --post-comments'
-
-[agents.dg2.commands]
-ask = '... cli.py ask --pr-url="{pr_url}" --question="{args}"'
-improve = '... cli.py improve --pr-url="{pr_url}" --comment-id={comment_id}'
-help = '... cli.py help --pr-url="{pr_url}" --topic="{args}"'
-```
-
-If no per-command template exists, the default `command` is used.
-
-## Routing
-
-Routes evaluated top to bottom, first match wins.
-
-**`when`** — Python expression evaluated against PR metadata:
-- `project` — Bitbucket project key (e.g. "SBLOOM")
-- `repo` — repository slug
-- `author` — PR author username
-- `branch` — source branch
-- `target` — target branch
-- `pr_url`, `pr_id`, `title`
-
-**`agent`** — default for all commands:
-- `"dg2"` — 100% to this agent
-- `{ dg2 = 30, dg1 = 70 }` — A/B split, deterministic by `hash(pr_url)`. Same PR always gets same agent across all events.
-
-**Per-command override** — any key besides `name`, `when`, `agent`:
-```toml
-agent = "dg2"          # default for all commands
-improve = "pra"         # /improve goes to pra instead
-```
-
-## Events
-
-| Bitbucket event | Config | Behavior |
-|---|---|---|
-| `pr:opened` | `["review", "describe"]` | Auto-run listed commands |
-| `pr:comment:added` | `"parse"` | Extract `/command` from comment text (with optional `@mention`) |
-| `repo:refs_changed` | `["review"]` or `[]` | Auto-run on push, or ignore |
-
-## Agents
-
-| Field | Description |
+| Placeholder | Value |
 |---|---|
-| `trigger` | `"cli"` (subprocess) or `"http"` (POST to API) |
-| `command` | Default shell command template with `{placeholder}` substitution |
-| `commands.<name>` | Per-command template overrides |
-| `base_url` | For http trigger |
-| `timeout` | Seconds (default 600) |
+| `{pr_url}` | Full PR URL |
+| `{pr_id}` | PR number |
+| `{project}` | Bitbucket project key |
+| `{repo}` | Repository slug |
+| `{command}` | Command name |
+| `{args}` | Text after /command |
+| `{comment_id}` | Invoking comment ID |
+
+## Route matching
+
+**`when`** — Python expression against PR metadata: `project`, `repo`, `author`, `branch`, `target`, `pr_url`, `pr_id`, `title`.
+
+**`sample`** — percentage (0-100). Only this % of PRs (by hash) match. Default 100. Unmatched fall through.
+
+**Per-command override** — any key besides `name`, `when`, `agent`, `forward`, `sample` is a command override:
+```toml
+agent = "dg2"          # default
+improve = "pra"         # /improve → pra instead
+```
 
 ## Endpoints
 
 - `POST /webhook` — Bitbucket webhook receiver
-- `GET /health` — health check with agent/route counts
-- `GET /routes` — show configured routes (debugging)
+- `GET /health` — health check
+- `GET /routes` — show configured routes
 
 ## Tests
 
@@ -161,4 +183,4 @@ improve = "pra"         # /improve goes to pra instead
 pytest webhook/tests/ -v --log-cli-level=INFO
 ```
 
-34 tests covering config loading, event parsing, @mention extraction, command args, threaded comment_id, route matching, A/B distribution, per-command overrides, args/comment_id preservation through routing.
+31 tests: config, event parsing, @mention, args, comment_id, forward routing, command routing, sample distribution, per-command overrides, cascade.

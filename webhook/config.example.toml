@@ -10,10 +10,8 @@ trigger = "cli"
 command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --post-comments'
 timeout = 600
 
-# Per-command templates (override default `command` for specific commands)
 [agents.dg2.commands]
 ask = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py ask --pr-url="{pr_url}" --question="{args}"'
-improve = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py improve --pr-url="{pr_url}" --comment-id={comment_id}'
 
 [agents.dg1]
 trigger = "cli"
@@ -22,12 +20,8 @@ timeout = 600
 
 [agents.pra]
 trigger = "webhook"
-base_url = "http://pr-agent-host:3000"    # forward raw BB event to pr-agent's webhook
+base_url = "http://pr-agent-host:3000"    # forward raw BB event
 timeout = 300
-
-# [agents.pra-cli]
-# trigger = "cli"
-# command = 'cd ~/repos/pr-agent && python -m pr_agent.cli --pr_url="{pr_url}" review'
 
 # ── Events → commands ───────────────────────────────────
 [events]
@@ -35,20 +29,40 @@ timeout = 300
 "pr:comment:added" = "parse"         # extract /command from comment text
 "repo:refs_changed" = []              # nothing on push
 
-# ── Routes (first match wins) ──────────────────────────
-# eval context: project, repo, author, branch, target, pr_url, pr_id, title
+# ── Routes (first match wins, each route is forward OR agent) ────
 
+# Legacy project → forward everything to pr-agent
+[[routes]]
+name = "legacy-forward"
+when = "project == 'LEGACY'"
+forward = "pra"
+
+# PLATFORM → 50% forward to pr-agent, 50% command routing to dg2
+[[routes]]
+name = "platform-forward"
+when = "project == 'PLATFORM'"
+forward = "pra"
+sample = 50
+
+[[routes]]
+name = "platform-commands"
+when = "project == 'PLATFORM'"
+agent = "dg2"
+
+# Canary repo → always dg2
 [[routes]]
 name = "orderflow-canary"
 when = "repo == 'code-review-example-orderflow'"
 agent = "dg2"
 
+# SBLOOM → command routing, /improve overridden
 [[routes]]
-name = "sbloom-ab"
+name = "sbloom"
 when = "project == 'SBLOOM'"
-agent = { dg2 = 30, dg1 = 70 }       # A/B: 30% dg2, 70% dg1 (by pr_url hash)
-improve = "pra"                        # except /improve → always pra
+agent = "dg2"
+improve = "pra"
 
+# Default
 [[routes]]
 name = "default"
 when = "true"

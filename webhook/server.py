@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request, Response
 
 from .config import load_config, WebhookConfig
 from .bitbucket import parse_event, extract_commands
-from .router import route_commands
+from .router import route_event, ForwardDecision, CommandDecision
 from .triggers import trigger_agent
 
 log = logging.getLogger(__name__)
@@ -70,31 +70,50 @@ async def handle_webhook(request: Request):
 
     # Extract commands
     commands = extract_commands(event, _config.events)
-    if not commands:
-        return {"status": "ignored", "reason": "no commands for event"}
 
-    # Route commands to agents
-    decisions = route_commands(commands, event.pr, _config)
-    if not decisions:
-        return {"status": "ignored", "reason": "no routes matched"}
+    # Route
+    result = route_event(commands, event.pr, _config)
 
-    # Trigger agents (in background — don't block webhook response)
-    for d in decisions:
-        agent = _config.agents[d.agent_name]
-        asyncio.create_task(_run_agent(agent, event, d, data))
+    # Forward decision — event-level
+    if isinstance(result, ForwardDecision):
+        agent = _config.agents[result.agent_name]
+        asyncio.create_task(_run_forward(agent, event, result, data))
+        return {
+            "status": "accepted",
+            "mode": "forward",
+            "agent": result.agent_name,
+            "route": result.route_name,
+        }
 
-    return {
-        "status": "accepted",
-        "decisions": [
-            {"command": d.command.name, "args": d.command.args,
-             "agent": d.agent_name, "route": d.route_name}
-            for d in decisions
-        ],
-    }
+    # Command decisions — command-level
+    if isinstance(result, list) and result:
+        for d in result:
+            agent = _config.agents[d.agent_name]
+            asyncio.create_task(_run_command(agent, event, d, data))
+        return {
+            "status": "accepted",
+            "mode": "commands",
+            "decisions": [
+                {"command": d.command.name, "args": d.command.args,
+                 "agent": d.agent_name, "route": d.route_name}
+                for d in result
+            ],
+        }
+
+    return {"status": "ignored", "reason": "no route matched"}
 
 
-async def _run_agent(agent, event, decision, raw_event=None):
-    """Run agent in background, log result."""
+async def _run_forward(agent, event, decision, raw_event):
+    """Forward raw event to agent."""
+    try:
+        result = await trigger_agent(agent, event.pr, None, raw_event)
+        log.info("PR #%s forward:%s → %s", event.pr.pr_id, decision.agent_name, result)
+    except Exception as exc:
+        log.error("PR #%s forward:%s failed: %s", event.pr.pr_id, decision.agent_name, exc)
+
+
+async def _run_command(agent, event, decision, raw_event):
+    """Run command on agent."""
     try:
         result = await trigger_agent(agent, event.pr, decision.command, raw_event)
         log.info("PR #%s %s:%s → %s", event.pr.pr_id,
@@ -126,7 +145,9 @@ async def show_routes():
             {
                 "name": r.name,
                 "when": r.when,
+                "forward": r.forward,
                 "agent": r.agent,
+                "sample": r.sample,
                 **r.commands,
             }
             for r in _config.routes
