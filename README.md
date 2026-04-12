@@ -138,12 +138,6 @@ python cli.py trace --list       # list recent runs
 python cli.py trace --run ID     # specific run
 ```
 
-### `inspect` -- parse diff only (no LLM)
-
-```bash
-python cli.py inspect changes.diff
-```
-
 ### Prompt versioning
 
 Load prompts from different sources for A/B testing:

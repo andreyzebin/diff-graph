@@ -570,28 +570,6 @@ def _print_sgr_log(entry: dict, indent: str):
             console.print(f"{indent}    [yellow]● {q}[/yellow]")
 
 
-@app.command()
-def inspect(
-    diff: Optional[str] = typer.Argument(None, help="Path to .diff file, or '-' for stdin"),
-):
-    """
-    Parse a diff and show what changed — no LLM required.
-
-    \b
-      python cli.py inspect changes.diff
-      git diff HEAD~1 | python cli.py inspect -
-    """
-    diff_text = _read_diff(diff)
-    if not diff_text.strip():
-        console.print("[yellow]Diff is empty.[/yellow]")
-        raise typer.Exit(0)
-
-    sys.path.insert(0, str(BASE_DIR))
-    from diffgraph.diff_parser import parse_diff
-
-    result = parse_diff(diff_text)
-    _print_diff_summary(result, verbose=True)
-
 
 # ── display helpers ───────────────────────────────────────────────────────────
 
