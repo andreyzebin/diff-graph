@@ -583,255 +583,294 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 4.2 | Trace JSON export | Low | Small | Later |
 | 4.3 | Trace search CLI | Low | Small | Later |
 | 5.2 | Model comparison | Low | Medium | Later |
-| 7.1 | Bridge: trace DB ↔ pr-analytics | **Critical** | Small-Medium | **Do first** |
-| 7.2 | Benchmark gate for mutations | High | Medium | **Do first** |
-| 7.3 | Structured mutation axes | High | Small | Do second |
-| 7.4 | Mutation generator | High | Medium | Do second |
-| 7.5 | Evolution dashboard (3 data sources) | High | Medium-Large | Do second |
-| 7.6 | Safety guardrails + auto-rollback | High | Medium | Do third |
-| 7.7 | Cross-run memory | Medium | Medium | Later |
-| 7.8 | Cost budget + early stopping | Medium | Small | Later |
+| 7.1 | `dg:` tag in comments (done) | **Done** | | |
+| 7.2 | Tracing subproject CLI | High | Medium | **Do first** |
+| 7.3 | pr-analytics `dg:` tag extraction | **Critical** | Small | **Do first** |
+| 7.4 | BenchmarkConnector + capability breakdown | High | Medium | **Do first** |
+| 7.5 | Evolution core: Branch, Population, tick() | **High** | Large | Do second |
+| 7.6 | MutationAgent (capability-driven) | High | Medium | Do second |
+| 7.7 | MergeAgent (semantic prompt merge) | High | Medium | Do third |
+| 7.8 | Evolution dashboard + capability heatmap | High | Medium-Large | Do third |
+| 7.9 | Evolution meta-agent (gardener) | Medium | Medium | Later |
+| 7.10 | Cross-run memory per repo | Medium | Medium | Later |
 
 ---
 
-## 7. Evolutionary Prompt Development
+## 7. Evolution — Self-Sustaining Agent Development
 
-Self-sustaining cycle: generate prompt mutations → evaluate → select winners → promote.
+Subproject `evolution/` — population of long-running prompt branches competing continuously. Branches spawn children, accumulate fitness from benchmarks + business metrics, and converge when one dominates.
 
-### Existing tools
-
-| Tool | What it provides | Repo |
-|---|---|---|
-| **DiffGraph trace DB** | Per-run: prompt_hash, model, tokens, findings_count, steps | diff-graph |
-| **DiffGraph webhook** | A/B routing with sample%, forward/command modes | diff-graph |
-| **DiffGraph resource providers** | Load prompts from file:// or bitbucket:// URIs | diff-graph |
-| **pr-analytics** | Bitbucket cache (PR, comments, reactions) in SQLite | pr-analytics |
-| **pr-analytics analyze-feedback** | LLM-judge: acceptance verdict (yes/no/unclear) per comment | pr-analytics |
-| **pr-analytics semantic_acceptance_rate** | % accepted findings (with feedback) | pr-analytics |
-| **pr-analytics agent funnel** | agent_comments → feedback_rate → acceptance_rate | pr-analytics |
-| **code-review-benchmarks** | Scenarios with expected findings, LLM-judge scoring | code-review-benchmarks |
-| **code-review-benchmarks A/B** | `ab --agent-a --agent-b`, compare reports | code-review-benchmarks |
-
-### 7.1 Bridge: trace DB ↔ pr-analytics (critical first step)
-
-Link prompt_hash to business outcomes. Currently trace DB and pr-analytics are separate.
-
-**Option A: enrich pr-analytics with prompt_hash**
-- Agent posts comment with metadata tag: `<!-- prompt:a1b2c3d -->` (invisible in rendered comment)
-- pr-analytics extracts tag → joins comment outcomes with prompt generation
-- Aggregate: per prompt_hash, what is acceptance_rate?
-
-**Option B: enrich trace DB with feedback**
-- After run: poll Bitbucket for comment status (resolved/ignored/reactions)
-- Write feedback into trace DB alongside run
-- Dashboard queries trace DB only
-
-Option A is simpler — pr-analytics already caches comments and has the analysis pipeline. Just need the metadata tag in posted comments and extraction in pr-analytics.
-
-**Effort:** Small-Medium.
-**Priority:** **Do first.**
-
-### 7.2 Metrics
-
-#### Business metrics (from pr-analytics, production PRs)
-
-| Metric | Source | Formula | What it measures |
-|---|---|---|---|
-| **semantic_acceptance_rate** | pr-analytics analyze-feedback | yes / (yes + no) | Are findings accepted by developers? |
-| **semantic_acceptance_rate_all** | pr-analytics | yes / total_comments | Real impact including silent findings |
-| **feedback_rate** | pr-analytics | comments_with_reactions / total | Are developers engaging at all? |
-| **agent_comments** | pr-analytics | count(root comments by agent) | Volume of output |
-| **false_positive_rate** | pr-analytics | no / (yes + no) | How much noise? |
-| **time_to_merge_delta** | pr-analytics | median(cycle_time with agent) - median(without) | Does agent speed up or slow down PRs? |
-
-Segmented by: prompt_hash, project, severity, time period.
-
-#### Quality metrics (from code-review-benchmarks, controlled PRs)
-
-| Metric | Source | Formula | What it measures |
-|---|---|---|---|
-| **benchmark_score** | benchmarks judge | weighted score across scenarios | Overall quality |
-| **required_found** | benchmarks | count(expected findings detected) | Coverage of known issues |
-| **false_positives** | benchmarks | count(agent comments not in expected) | Noise on known code |
-| **regression_count** | benchmarks compare | findings lost vs previous run | What broke? |
-| **scenario_pass_rate** | benchmarks | scenarios passed / total | Reliability |
-
-#### Efficiency metrics (from trace DB, any run)
-
-| Metric | Source | Formula | What it measures |
-|---|---|---|---|
-| **tokens_per_finding** | trace DB | avg(total_tokens_paid / findings_count) | Cost efficiency |
-| **steps_per_finding** | trace DB | avg(total_steps / findings_count) | Convergence speed |
-| **cache_hit_ratio** | trace DB events | sum(cached_tokens) / sum(prompt_tokens) | Cache optimization |
-| **tool_waste_ratio** | trace DB events | redundant tool calls / total calls | Tool usage quality |
-| **convergence_steps** | trace DB events | steps to last confidence=high reflect | How fast does agent settle? |
-
-All metrics queryable by prompt_hash → compare generations directly.
-
-### 7.3 Benchmark gate
-
-Every mutation must pass benchmark before touching real PRs.
+### 7.1 Architecture
 
 ```
-Mutation branch → benchmark runner (CliTrigger with --prompts=bitbucket://...ref/mut-001)
-  → SCEN-009: score 0.85 (pass)
-  → SCEN-010: score 0.70 (pass)
-  → SCEN-011: score 0.90 (pass)
-  → Regression: no findings lost vs stable
-  → Gate: PASS → enter A/B
+                    ┌──────────────────┐
+                    │   evolution.py    │
+                    │   tick() loop     │
+                    │   Population      │
+                    │   Bandit          │
+                    └────────┬─────────┘
+                             │
+        ┌────────┬───────┬───┴───┬────────┬────────┐
+        ▼        ▼       ▼       ▼        ▼        ▼
+   Tracing    Analytics Bench  Webhook  Mutation  Merge
+   CLI        CLI       CLI    API      Agent     Agent
+        │        │       │       │        │        │
+        ▼        ▼       ▼       ▼        ▼        ▼
+   traces.db  pr-ana   bench-  webhook  Orchestra Orchestra
+              lytics   marks   .toml    agent     agent
 ```
 
-**Implementation:**
-- Script: iterate mutations × scenarios, run benchmark with `--prompts` override
-- Compare each mutation vs stable: require score ≥ stable - epsilon
-- Reject on regression: any required_found decrease = fail
-- Store results in benchmark DB, linked to prompt_hash
+Six connectors. Three are CLIs, one is API, two are Orchestra agents.
 
-**Early stopping:** if 2/3 scenarios fail, skip remaining.
-**Cheap screening:** run SCEN-011 (smallest) first.
+### 7.2 Connectors
 
-### 7.4 Structured mutation axes
-
-Each mutation = ONE change along ONE axis with a testable hypothesis.
-
-| Axis | Mutation examples | Primary metric |
-|---|---|---|
-| **Methodology** | concerns 3→5, one-round→two-round | benchmark_score, acceptance_rate |
-| **Tool usage** | changes_only default, search before=2/after=2 | convergence_steps, tool_waste |
-| **SGR** | reflect every 3→5 steps, stricter question rules | reasoning quality |
-| **Budget** | reviewer 15k→20k, lead 50k→40k | tokens_per_finding |
-| **Severity** | stricter BLOCKER criteria, evidence requirements | false_positive_rate |
-| **Domain** | Java/Spring patterns, null-safety heuristics | domain-specific acceptance_rate |
-
-Mutations stored as branches:
+**TracingConnector** — subproject `tracing/` with its own CLI:
+```bash
+tracing metrics --hash abc123 --since 2026-04-01
+tracing compare --a abc123 --b def456
+tracing runs --hash abc123 --format json
 ```
-refs/main              — current stable
-refs/mut-001-budget    — "reviewer budget 15k→20k"
-refs/mut-002-concerns  — "max concerns 5→3"
-refs/mut-003-tools     — "recommend search(before=2, after=2)"
+Returns: tokens_per_finding, convergence_steps, findings_avg, cache_ratio, tool_waste.
+
+**AnalyticsConnector** — existing `pr-analytics` CLI:
+```bash
+pr-analytics acceptance --dg-hash abc123
+pr-analytics compare --dg-hash-a abc123 --dg-hash-b def456
+```
+Returns: acceptance_rate, false_positive_rate, feedback_rate. Linked via `dg:` tag in comments.
+
+**BenchmarkConnector** — existing `code-review-benchmarks` CLI:
+```bash
+benchmark run --prompts=bitbucket://...refs/mut-042/prompts
+benchmark ab --a URI_A --b URI_B
+```
+Returns: overall_score, by_capability breakdown, by_scenario scores, regressions.
+
+**WebhookConnector** — webhook router API:
+```bash
+curl POST /api/routes -d '{name, when, agent, prompts_uri, sample}'
+curl PATCH /api/routes/mut-042 -d '{sample: 15}'
+curl DELETE /api/routes/mut-042
+```
+Manages traffic allocation per branch.
+
+**MutationAgent** — Orchestra agent that generates prompt mutations:
+- Reads current prompt + traces + metrics
+- Analyzes weaknesses (driven by benchmark capability scores)
+- Proposes mutation with hypothesis
+- Generates prompt diff, validates single-axis change
+
+**MergeAgent** — Orchestra agent for semantic prompt merge:
+- Git merge doesn't work for prompts (text conflicts = nonsense)
+- Reads ancestor + branch A + branch B
+- Understands each branch's improvement semantically
+- Combines both coherently, resolves conflicts with reasoning
+- Validates: no contradictions, improvements preserved
+
+### 7.3 Entities and lifecycle
+
+```python
+class Branch:
+    id: str                    # "mut-042-budget"
+    parent_id: str | None      # "main" or "mut-031-tools"
+    prompt_ref: str            # bitbucket://...refs/mut-042/prompts
+    prompt_hash: str           # commit SHA
+    axis: str                  # "budget", "security", "methodology"
+    hypothesis: str            # "reviewer budget 15k→20k"
+    status: Status             # BORN → BENCHMARKED → ACTIVE → DOMINANT → MERGED | EXTINCT
+    sample_pct: float          # current traffic (0-100)
+    generation: int            # distance from main (0, 1, 2...)
+
+class Status:
+    BORN          # created, no data yet
+    BENCHMARKED   # passed benchmark gate
+    ACTIVE        # receiving traffic, accumulating metrics
+    DOMINANT      # consistently best, merge candidate
+    MERGED        # became new main
+    EXTINCT       # fitness too low, traffic removed
 ```
 
-Commit message = hypothesis. One axis per branch. Combine winners into next stable.
-
-### 7.5 Prompt mutation generator
-
-1. Pick axis + direction from backlog (manual or automated)
-2. LLM generates prompt diff with specific change
-3. Validate: diff stable vs mutation, confirm only one axis changed
-4. Push as branch to prompts repo
-5. Run benchmark gate
-6. If pass: register in webhook router with sample%
-
-### 7.6 Evolution dashboard
-
-Unified view across all three data sources.
-
-**Per-generation view:**
+Lifecycle:
 ```
-Generation: mut-002-concerns (a1b2c3d)
-Hypothesis: "fewer concerns (max 3) → more focused investigation"
-
-Benchmark:
-  SCEN-009: 0.85 (stable: 0.82) ✓
-  SCEN-010: 0.75 (stable: 0.70) ✓
-  SCEN-011: 0.90 (stable: 0.90) =
-  Regressions: 0
-
-Production (47 runs, 12 days):
-  acceptance_rate: 78% (stable: 71%) ↑
-  false_positive_rate: 15% (stable: 22%) ↓
-  tokens_per_finding: 4200 (stable: 5100) ↓
-  feedback_rate: 45% (stable: 40%) ↑
-
-Verdict: PROMOTE (statistically significant, p<0.05)
+BORN ─── benchmark ───→ BENCHMARKED ─── deploy(5%) ───→ ACTIVE
+  │       (fail)             │                            │
+  ▼                          │                    measure() daily
+EXTINCT                      │              ┌──────┼──────┐
+                             │          fitness↑  breed()  fitness↓
+                             │          sample↑    │       sample↓
+                             │              │      │         │
+                             │          DOMINANT  children  EXTINCT
+                             │              │      BORN
+                             │     converge (p<0.01, >14d)
+                             │              │
+                             │           MERGED (→ new main)
 ```
 
-**Trend view:** generations on X axis, key metrics on Y. See improvement over time.
+### 7.4 Fitness model
 
-**Data sources:**
-- trace DB: runs table (prompt_hash, tokens, findings) + events
-- pr-analytics: comment_analysis (acceptance verdicts), comment_reactions
-- benchmarks: scenario scores, regressions
+Benchmark is an equal signal to business metrics — fast, precise, tests deep capabilities.
 
-**Implementation:** new page in trace server, queries all three SQLite DBs.
+```
+fitness = 0.35 × benchmark_score        # deep capability (fast, precise)
+        + 0.35 × acceptance_rate         # real-world impact (slow, noisy)
+        + 0.20 × (1 / tokens_per_finding) # cost efficiency
+        + 0.10 × feedback_rate            # developer engagement
+```
 
-### 7.7 Safety guardrails
+Weights adjustable by evolution agent. Benchmark provides immediate signal; business metrics confirm over weeks.
+
+### 7.5 Benchmark as capability map
+
+Golden PRs test specific deep capabilities. Benchmark score breaks down by capability:
+
+```
+by_capability:
+  business_logic:     0.85
+  security:           0.70  ← weakest
+  architecture:       0.60  ← weakest
+  null_safety:        0.90
+  transaction_safety: 0.75
+```
+
+**Capability-driven mutation:** MutationAgent sees "security=0.60" → proposes mutation targeting security awareness. New golden PRs expand the capability map — adding "ops_knowledge" scenario immediately reveals all branches score 0 there → stimulus for new mutations.
+
+Golden PR suite evolves alongside agent:
+- New capabilities (tools, sub-agents, knowledge bases) → new scenarios testing them
+- Scenarios get harder as agent improves
+- Historical bugs, architectural patterns, deployment risks — all testable
+
+### 7.6 Metrics (three categories)
+
+#### Business (pr-analytics, via `dg:` tag, slow signal)
+
+| Metric | What it measures |
+|---|---|
+| acceptance_rate | Are findings accepted by developers? |
+| false_positive_rate | How much noise? |
+| feedback_rate | Are developers engaging? |
+| time_to_merge_delta | Speed impact on PRs |
+
+#### Quality (benchmarks, fast precise signal)
+
+| Metric | What it measures |
+|---|---|
+| benchmark_score | Overall quality |
+| by_capability.{X} | Per-capability depth |
+| required_found | Coverage of known issues |
+| regressions | What broke vs previous |
+
+#### Efficiency (tracing CLI)
+
+| Metric | What it measures |
+|---|---|
+| tokens_per_finding | Cost per result |
+| convergence_steps | How fast agent settles |
+| cache_ratio | Prompt caching efficiency |
+| tool_waste_ratio | Redundant tool calls |
+
+### 7.7 Core loop: `tick()`
+
+Called daily by cron. Evolution agent can adjust parameters.
+
+```python
+def tick(self):
+    measurements = self.measure_all()  # tracing + analytics + benchmark
+
+    # 1. Rebalance traffic (Thompson sampling bandit)
+    allocations = bandit(self.branches, measurements)
+    for branch, pct in allocations.items():
+        self.webhook.update_sample(branch.route_name, pct)
+
+    # 2. Breed high-fitness branches
+    for branch in self.top_branches(n=2):
+        if branch.fitness > config.breed_threshold:
+            # MutationAgent analyzes weaknesses, proposes child
+            analysis = self.mutation.analyze(branch)
+            # Benchmark capability scores drive mutation axis
+            weakest = min(analysis.by_capability, key=lambda k: analysis.by_capability[k])
+            child = self.mutation.propose(branch, axis=weakest)
+            self.create_child(branch, child)
+
+    # 3. Kill low-fitness branches
+    for branch in self.active_branches():
+        if branch.fitness < config.extinct_threshold:
+            self.kill(branch)  # → EXTINCT, sample→0
+
+    # 4. Detect convergence
+    for branch in self.active_branches():
+        if (branch.fitness > main.fitness
+            and self.significant(branch, main, p=0.01)
+            and self.dominant_days(branch) >= 14):
+            branch.status = DOMINANT  # candidate for merge
+
+    # 5. Merge dominant pairs (semantic merge)
+    for a, b in self.dominant_pairs():
+        merged = self.merge_agent.merge(ancestor="main", a=a, b=b)
+        self.create_child(main, merged)  # new branch with both improvements
+```
+
+### 7.8 Evolution agent (meta-controller)
+
+Does not manage mutations directly — adjusts automation knobs:
+
+```python
+# Tools available to evolution agent
+evolution_status()              # population tree + measurements
+evolution_set_config(           # adjust automation
+    w_benchmark=0.4,            # "benchmark matters more now"
+    breed_threshold=0.6,        # "breed more aggressively"
+    max_branches=7,             # "allow more diversity"
+)
+evolution_spawn(                # manual spawn
+    parent="main",
+    axis="security",
+    hypothesis="add OWASP top-10 checklist to reviewer prompt"
+)
+evolution_approve_merge(        # human-in-the-loop
+    branch_id="mut-042"
+)
+```
+
+Sees: population tree with fitness, capability heatmap, metric trends.
+Decides: weight adjustments, strategic spawns, merge approvals.
+`tick()` runs automatically. Agent is the gardener, not the engine.
+
+### 7.9 Safety guardrails
 
 | Guard | Trigger | Action |
 |---|---|---|
-| Benchmark gate | mutation fails any scenario | Block from A/B |
-| Rate limit | mutation > N comments on any PR | Reduce sample or pause |
-| Regression alert | acceptance_rate drops > 10% vs stable | Auto-pause mutation, notify |
-| Auto-rollback | acceptance_rate below absolute threshold | Revert webhook to stable |
-| Human approval | before promoting mutation to stable | Manual merge to main |
-| Blast radius | initial deployment | sample=5%, increase gradually |
+| Benchmark regression | any capability score drops >10% | Block deployment |
+| Rate limit | mutation > N comments on PR | Reduce sample, alert |
+| Fitness collapse | acceptance_rate < 50% for 7 days | Auto-kill branch |
+| Population cap | > max_branches active | Cull lowest fitness |
+| Main protection | main always ≥ 30% traffic | Bandit constraint |
+| Merge approval | DOMINANT → MERGED | Requires human/agent approval |
 
-### 7.8 Cross-run memory
+### 7.10 Cross-run memory
 
-Per-repo learned patterns injected into system prompt:
-
-- "This codebase uses @Builder.Default for collections — null checks are likely false positives"
+Per-repo learned patterns injected into prompts:
+- "This codebase uses @Builder.Default — null checks are false positives"
 - "Team prefers explicit error handling over @SneakyThrows"
-- "Previous runs found 3 @Transactional issues — check for missing annotations"
+- Aggregated from trace DB + pr-analytics acceptance by repo.
+- New `{learned_patterns}` placeholder in prompts, updated weekly.
 
-**Source:** aggregate findings + acceptance from trace DB + pr-analytics by repo.
-**Update:** weekly or on N new runs.
-**Inject:** new `{learned_patterns}` section in prompts.
-
-### 7.9 Cost budget for evolution
-
-| Phase | Cost control |
-|---|---|
-| Mutation generation | 1 LLM call per mutation (cheap) |
-| Benchmark gate | 3 scenarios × 1 run = 3 runs per mutation |
-| A/B production | sample=5% → 1 in 20 PRs. Cap at 50 runs per mutation |
-| Feedback wait | No cost (pr-analytics cron) |
-| Total budget cap | Configurable per experiment, default 500k tokens |
-
-**Early stopping:** mutation statistically worse after 15 runs → stop, save budget.
-
-### Full evolution cycle
+### 7.11 Population visualization
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ 1. GENERATE                                             │
-│    Pick axis → LLM generates prompt mutation             │
-│    Push as branch: refs/mut-NNN-axis                     │
-│                                                         │
-│ 2. BENCHMARK GATE                                       │
-│    Run all scenarios with --prompts=bitbucket://mut-NNN  │
-│    Compare vs stable. Reject on regression.              │
-│                                                         │
-│ 3. A/B DEPLOY                                           │
-│    Webhook router: add route with sample=5%              │
-│    Mutation runs on real PRs alongside stable            │
-│                                                         │
-│ 4. COLLECT FEEDBACK                                     │
-│    pr-analytics caches comments + reactions              │
-│    analyze-feedback: LLM-judge acceptance verdicts       │
-│    trace DB: link prompt_hash to outcomes via tag        │
-│                                                         │
-│ 5. EVALUATE                                             │
-│    Dashboard: mutation vs stable on all metrics          │
-│    Statistical test: is difference significant?          │
-│    Business: acceptance_rate, false_positive_rate        │
-│    Quality: benchmark_score, regressions                 │
-│    Efficiency: tokens_per_finding, convergence           │
-│                                                         │
-│ 6. DECIDE                                               │
-│    Auto: pass thresholds → recommend promote             │
-│    Human: review dashboard → approve/reject              │
-│                                                         │
-│ 7. PROMOTE                                              │
-│    Winner → merge to main in prompts repo               │
-│    Webhook router: update stable agent config            │
-│    New prompt_hash becomes baseline for next cycle       │
-│                                                         │
-│ 8. REPEAT                                               │
-│    Combine winners from different axes                    │
-│    Generate next generation of mutations                  │
-│    System continuously improves                          │
-└─────────────────────────────────────────────────────────┘
+main (gen-0) ─────────────────────────────────── 40%  fitness=0.72
+  ├── mut-042-budget ──────────────────────────── 20%  fitness=0.78 ↑ ACTIVE
+  │     ├── mut-042a-budget+tools ─────────────── 8%  fitness=0.81 ↑ ACTIVE
+  │     └── mut-042b-budget+severity ──────────── 5%  fitness=0.74   ACTIVE
+  ├── mut-051-security ────────────────────────── 15%  fitness=0.76 ↑ ACTIVE
+  └── mut-053-methodology ─────────────────────── 0%  fitness=0.65 ↓ EXTINCT
+                                                  └── killed: fitness below threshold
+
+Capability heatmap:
+              main  mut-042  mut-042a  mut-051
+business_logic 0.85   0.85     0.87     0.83
+security       0.60   0.62     0.65     0.78  ← mut-051 wins here
+architecture   0.70   0.72     0.75     0.68
+null_safety    0.90   0.92     0.93     0.88
 ```
 
-Traceability at every step: prompt commit SHA → trace DB runs → pr-analytics comments → benchmark scores. Any generation can be reproduced, compared, or rolled back.
+Evolution is continuous. Branches compete for weeks. Best spawn children. Weakest die. Dominant branches merge. System improves generation by generation, driven by benchmark capabilities + business metrics + efficiency.
