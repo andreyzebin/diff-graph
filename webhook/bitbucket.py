@@ -30,7 +30,7 @@ class CommandRequest:
     """A parsed command with its arguments and context."""
     name: str                    # "review", "ask", "improve", etc.
     args: str = ""               # text after command: question, instructions
-    comment_id: int | None = None  # parent comment ID (for threaded replies)
+    comment_id: int | None = None  # ID of the comment that invoked the command
 
 
 @dataclass
@@ -133,7 +133,7 @@ def extract_commands(event: WebhookEvent, events_config: dict) -> list[CommandRe
             return [CommandRequest(
                 name=name,
                 args=args,
-                comment_id=event.parent_comment_id,
+                comment_id=event.comment_id,
             )]
         return []
 

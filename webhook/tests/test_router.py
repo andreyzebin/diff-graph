@@ -180,8 +180,8 @@ class TestExtractCommands:
         assert cmds[0].args == "What about null safety in this method?"
         log.info("ask command: name=%s args=%s", cmds[0].name, cmds[0].args)
 
-    def test_comment_improve_in_thread(self):
-        """Threaded /improve gets parent comment ID."""
+    def test_comment_id_passed(self):
+        """Command gets the comment ID that invoked it."""
         cfg = load_config(EXAMPLE_CONFIG)
         ev = WebhookEvent(
             event_key="pr:comment:added",
@@ -193,8 +193,8 @@ class TestExtractCommands:
         cmds = extract_commands(ev, cfg.events)
         assert len(cmds) == 1
         assert cmds[0].name == "improve"
-        assert cmds[0].comment_id == 150
-        log.info("threaded improve: comment_id=%s", cmds[0].comment_id)
+        assert cmds[0].comment_id == 200
+        log.info("comment_id: %s (agent can reply to this)", cmds[0].comment_id)
 
     def test_comment_no_command(self):
         cfg = load_config(EXAMPLE_CONFIG)
