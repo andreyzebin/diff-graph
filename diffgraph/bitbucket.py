@@ -404,7 +404,7 @@ def reply_to_pr_comment(
         gen = comment_meta.get("gen", "")
         h = comment_meta.get("hash", "")
         run = comment_meta.get("run", "")
-text += f"\n\n`dg:{gen}:{h}:{run}`"
+        text += f"\n\n`dg:{gen}:{h}:{run}`"
 
     server_url, project, repo, pr_id = parse_pr_url(pr_url)
     endpoint = (
@@ -479,7 +479,7 @@ def _build_comment_body(c, meta: dict | None = None) -> str:
         gen = meta.get("gen", "")
         h = meta.get("hash", "")
         run = meta.get("run", "")
-text += f"\n\n`dg:{gen}:{h}:{run}`"
+        text += f"\n\n`dg:{gen}:{h}:{run}`"
     return text
 
 
