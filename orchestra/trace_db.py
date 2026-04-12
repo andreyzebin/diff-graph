@@ -60,6 +60,12 @@ class TraceDBWriter:
             CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id);
             CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id);
         """)
+        # Migrate: add columns if missing (existing DBs)
+        try:
+            self.conn.execute("SELECT prompt_source FROM runs LIMIT 0")
+        except sqlite3.OperationalError:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN prompt_source TEXT")
+            self.conn.execute("ALTER TABLE runs ADD COLUMN prompt_hash TEXT")
 
     def _insert_run(self):
         self.conn.execute(
@@ -140,6 +146,12 @@ class TraceDBReader:
             raise FileNotFoundError(f"No trace DB at {self.db_path}")
         self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
+        # Migrate: add columns if missing (existing DBs)
+        try:
+            self.conn.execute("SELECT prompt_source FROM runs LIMIT 0")
+        except sqlite3.OperationalError:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN prompt_source TEXT")
+            self.conn.execute("ALTER TABLE runs ADD COLUMN prompt_hash TEXT")
 
     def list_runs(self, limit: int = 10) -> list[dict]:
         """List recent runs."""
