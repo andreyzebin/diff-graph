@@ -24,9 +24,9 @@ When `ref` is a range (contains `..`), each line in a virtual file has:
 
 | Coord | Present on | Meaning |
 |-------|-----------|---------|
-| **L** | all lines | Position in the virtual file. Use for `start_line`/`end_line` in read_file. |
-| **old** | `-` and context lines | Line number in the left (base) commit. |
-| **new** | `+` and context lines | Line number in the right (source) commit. Use for findings/Bitbucket comments. |
+| **L** | all lines | Position in the unified diff file (VFS). Use for `start_line`/`end_line` in read_file and outline. Includes both `+` and `-` lines, so always ≥ max(old, new). |
+| **old** | `-` and context lines | Line number in the left (base/destination) commit. The version being merged INTO. |
+| **new** | `+` and context lines | Line number in the right (source) commit. The branch being reviewed. Use for findings/Bitbucket comments. |
 
 Line markers: `+` = added in source, `-` = deleted from base, ` ` = unchanged context.
 
