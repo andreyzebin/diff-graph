@@ -184,6 +184,7 @@ def run(
     )
 
     _root_agent_ref: dict = {"agent": None}
+    _prompt_info: dict = {"source": "", "hash": ""}
     from orchestra.trace import TraceCollector
     from orchestra.trace_db import TraceDBWriter
     _trace_collector = TraceCollector()
@@ -192,6 +193,9 @@ def run(
     def _capture_event(event: str, **kw):
         if event == "orchestrator_root_agent":
             _root_agent_ref["agent"] = kw.get("agent")
+        if event == "orchestrator_prompts_compiled":
+            _prompt_info["source"] = kw.get("prompt_source", "")
+            _prompt_info["hash"] = kw.get("prompt_hash", "")
         _trace_collector.on_event(event, **kw)
         # Note: _trace_db gets raw events via direct EventBus subscription
         # in orchestrator.py — no need to call it here (would duplicate)
@@ -225,6 +229,8 @@ def run(
         model=effective_model,
         pr_url=pr_url or "",
         findings_count=len(findings),
+        prompt_source=_prompt_info["source"],
+        prompt_hash=_prompt_info["hash"],
     )
     _trace_db.close()
     console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")

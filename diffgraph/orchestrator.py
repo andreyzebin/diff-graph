@@ -104,6 +104,9 @@ def run_review(
     # ── Compile agents from .prompt files ─────────────────────────────────
     prompt_source = prompt_resource or _PROMPT_DIR
     agent_registry = compile_prompts(prompt_source, pattern="*.prompt")
+    _emit("orchestrator_prompts_compiled",
+          prompt_source=str(prompt_source),
+          prompt_hash=agent_registry.source_hash or "")
     for entry in agent_registry.entries.values():
         caps = ", ".join(entry.capabilities) if entry.capabilities else "–"
         data_fields = ", ".join(entry.input_schema.keys()) if entry.input_schema else "–"

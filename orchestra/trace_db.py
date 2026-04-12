@@ -43,7 +43,9 @@ class TraceDBWriter:
                 diff_summary TEXT,
                 total_tokens_paid INTEGER,
                 findings_count INTEGER,
-                status TEXT DEFAULT 'running'
+                status TEXT DEFAULT 'running',
+                prompt_source TEXT,
+                prompt_hash TEXT
             );
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,13 +114,16 @@ class TraceDBWriter:
             pass  # never crash the agent due to tracing
 
     def finish_run(self, model: str = "", pr_url: str = "", diff_summary: str = "",
-                   findings_count: int = 0, total_tokens_paid: int = 0):
+                   findings_count: int = 0, total_tokens_paid: int = 0,
+                   prompt_source: str = "", prompt_hash: str = ""):
         """Mark run as completed."""
         self.conn.execute(
             "UPDATE runs SET finished_at=?, model=?, pr_url=?, diff_summary=?, "
-            "findings_count=?, total_tokens_paid=?, status='completed' WHERE id=?",
+            "findings_count=?, total_tokens_paid=?, status='completed', "
+            "prompt_source=?, prompt_hash=? WHERE id=?",
             (datetime.now().isoformat(), model, pr_url, diff_summary,
-             findings_count, total_tokens_paid, self.run_id),
+             findings_count, total_tokens_paid,
+             prompt_source, prompt_hash, self.run_id),
         )
         self.conn.commit()
 
@@ -140,7 +145,7 @@ class TraceDBReader:
         """List recent runs."""
         rows = self.conn.execute(
             "SELECT id, started_at, finished_at, model, pr_url, diff_summary, "
-            "findings_count, total_tokens_paid, status "
+            "findings_count, total_tokens_paid, status, prompt_source, prompt_hash "
             "FROM runs ORDER BY started_at DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]

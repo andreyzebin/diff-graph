@@ -22,6 +22,7 @@ h1 { margin-bottom: 20px; }
           padding: 6px 12px; border-radius: 6px; width: 300px; margin-bottom: 16px;
           font-size: 0.9em; }
 .search:focus { outline: none; border-color: #58a6ff; }
+.prompt-gen { color: #d2a8ff; font-size: 0.85em; }
 .new-row { animation: flash 1s; }
 @keyframes flash { from { background: #1f6feb33; } to { background: transparent; } }
 </style>
@@ -39,6 +40,7 @@ h1 { margin-bottom: 20px; }
         <th>Run</th>
         <th>Started</th>
         <th>Model</th>
+        <th>Prompts</th>
         <th>Findings</th>
         <th>Tokens</th>
         <th>Status</th>
@@ -50,6 +52,7 @@ h1 { margin-bottom: 20px; }
           <td><a class="run-link" :href="'/runs/' + run.id" x-text="run.id.substring(0, 12)"></a></td>
           <td x-text="(run.started_at || '?').substring(0, 19)"></td>
           <td x-text="run.model || '?'"></td>
+          <td><span class="prompt-gen" x-text="formatPrompts(run)"></span></td>
           <td x-text="run.findings_count || 0"></td>
           <td x-text="run.total_tokens_paid || 0"></td>
           <td :class="'status-' + (run.status || 'unknown')" x-text="run.status || '?'"></td>
@@ -73,7 +76,7 @@ function runsPanel() {
     filtered() {
       if (!this.search) return this.runs;
       const q = this.search.toLowerCase();
-      return this.runs.filter(r => ((r.id || '') + ' ' + (r.model || '')).toLowerCase().includes(q));
+      return this.runs.filter(r => ((r.id || '') + ' ' + (r.model || '') + ' ' + formatPrompts(r)).toLowerCase().includes(q));
     },
     startPolling() {
       this._timer = setInterval(() => this.refresh(), 3000);
@@ -96,6 +99,22 @@ function runsPanel() {
     },
     destroy() { if (this._timer) clearInterval(this._timer); },
   };
+}
+
+function formatPrompts(run) {
+  const src = run.prompt_source || '';
+  const hash = run.prompt_hash || '';
+  if (!src) return '';
+  // Extract generation name from URI: last meaningful segment
+  let gen = src;
+  if (src.includes('/')) {
+    const parts = src.replace(/\/+$/, '').split('/');
+    gen = parts[parts.length - 1];
+    // If it's "prompts", go one level up
+    if (gen === 'prompts' && parts.length > 1) gen = parts[parts.length - 2];
+  }
+  const hashPrefix = hash ? ` (${hash.substring(0, 3)})` : '';
+  return gen + hashPrefix;
 }
 </script>
 </body>
