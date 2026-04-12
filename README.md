@@ -148,6 +148,31 @@ python cli.py run --pr-url ... --prompts file:///absolute/path/to/prompts
 python cli.py run --pr-url ... --prompts bitbucket://server/PROJECT/prompts-repo/refs/main/prompts
 ```
 
+### Comment traceability
+
+Every posted comment includes a metadata tag at the end:
+
+```
+`dg:prompts:f7917d6:ae0bd23d-8d9`
+```
+
+Format: `` `dg:<generation>:<prompt_hash>:<run_id>` ``
+
+- **generation** — prompt source name (last segment of `--prompts` URI or directory)
+- **prompt_hash** — first 7 chars of content hash (md5) or commit SHA (Bitbucket provider)
+- **run_id** — trace DB run ID
+
+Extract from raw comment text (Bitbucket API):
+
+```python
+import re
+m = re.search(r'`dg:(\S+):(\w+):([\w-]+)`', comment_text)
+if m:
+    gen, prompt_hash, run_id = m.group(1), m.group(2), m.group(3)
+```
+
+Enables pr-analytics to correlate comment acceptance rates with prompt generations. Same `gen:hash` across comments = same prompt version. Different hash = prompt was modified (mutation).
+
 ---
 
 ## How it works
