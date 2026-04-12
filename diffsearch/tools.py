@@ -372,74 +372,9 @@ def read_outline_vfs(
     """
     Structural outline of a file in the virtual FS.
 
-    For changed files: shows L ranges + old/new mapping.
-    For unchanged files: shows plain line numbers (L == old == new).
-
-    Uses tree-sitter if available, falls back to line count.
+    For changed files: two-pass parsing (blank +/- lines), merged with Lold/Lnew.
+    For unchanged files: single-pass, plain L numbers.
     """
-    file_path = Path(vfs_dir) / path
-    if not file_path.exists():
-        return f"(file not found: {path})"
-
+    from .outline import parse_outline_vfs as _parse
     meta = load_diffmeta(vfs_dir, path)
-
-    # Try tree-sitter outline
-    try:
-        from diffgraph.outline import get_outline as _ts_outline
-        # Read the virtual file (contains both old+new content for changed files)
-        outline_text = _ts_outline(
-            path=str(file_path),
-            repo_path=vfs_dir,
-            changed_lines=None,  # we'll annotate ourselves
-        )
-    except (ImportError, Exception):
-        # Fallback: line count
-        with open(file_path) as f:
-            total = sum(1 for _ in f)
-        return f"# {path}  ({total} lines)\n(tree-sitter unavailable)"
-
-    if not meta:
-        # Unchanged file — return plain outline
-        return outline_text
-
-    # Enrich: replace "L10-50" with "L10-50 (old:10-50 → new:10-50)"
-    # and mark changed methods with *
-    changed_Ls = {m["L"] for m in meta if m["marker"] != " "}
-    enriched_lines = []
-
-    for line in outline_text.splitlines():
-        # Match outline entries like "[method] name  L10-50" or "[class] name  L10-50"
-        m = re.match(r"^(\s*\[.+?\]\s+\S+\s+)L(\d+)-(\d+)(.*)", line)
-        if m:
-            prefix = m.group(1)
-            l_start = int(m.group(2))
-            l_end = int(m.group(3))
-            suffix = m.group(4)
-
-            # Look up old/new ranges from metadata
-            old_start = _L_to_linenum(meta, l_start, "old")
-            old_end = _L_to_linenum(meta, l_end, "old")
-            new_start = _L_to_linenum(meta, l_start, "new")
-            new_end = _L_to_linenum(meta, l_end, "new")
-
-            old_range = f"old:{old_start}-{old_end}" if old_start and old_end else ("deleted" if not new_start else "")
-            new_range = f"new:{new_start}-{new_end}" if new_start and new_end else ("added" if not old_start else "")
-
-            # Check if any L in range is changed
-            is_changed = any(L in changed_Ls for L in range(l_start, l_end + 1))
-            star = " *" if is_changed else ""
-
-            enriched_lines.append(
-                f"{prefix}L{l_start}-{l_end} ({old_range} → {new_range}){star}{suffix}"
-            )
-        else:
-            enriched_lines.append(line)
-
-    return "\n".join(enriched_lines)
-
-
-def _L_to_linenum(meta: list[dict], L: int, which: str) -> int | None:
-    """Get old or new line number for a given L position."""
-    if L < 1 or L > len(meta):
-        return None
-    return meta[L - 1].get(which)
+    return _parse(vfs_dir, path, meta)
