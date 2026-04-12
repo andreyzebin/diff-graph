@@ -138,10 +138,14 @@ python cli.py trace --list       # list recent runs
 python cli.py trace --run ID     # specific run
 ```
 
-### `inspect` -- parse diff only (no LLM)
+### Prompt versioning
+
+Load prompts from different sources for A/B testing:
 
 ```bash
-python cli.py inspect changes.diff
+python cli.py run --pr-url ... --prompts /path/to/prompts/v2
+python cli.py run --pr-url ... --prompts file:///absolute/path/to/prompts
+python cli.py run --pr-url ... --prompts bitbucket://server/PROJECT/prompts-repo/refs/main/prompts
 ```
 
 ---
