@@ -82,6 +82,25 @@ def _read_diff(diff_path: Optional[str]) -> str:
     return p.read_text()
 
 
+def _infer_git_refs(repo_path: str) -> tuple[str, str]:
+    """Try to infer base and source refs from git. Returns ("", "") on failure."""
+    import subprocess
+    try:
+        # source = HEAD
+        source = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        # base = HEAD~1 (for `git diff HEAD~1` style diffs)
+        base = subprocess.run(
+            ["git", "rev-parse", "HEAD~1"],
+            cwd=repo_path, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        return base, source
+    except Exception:
+        return "", ""
+
+
 # ── commands ──────────────────────────────────────────────────────────────────
 
 @app.command()
@@ -208,9 +227,13 @@ def run(
             _capture_event(event, **kw)
             event_handler(event, **kw)
 
-        # Pass git refs for VFS (PR mode only)
-        _base_ref = pr_meta.get("base_ref", "") if pr_url else ""
-        _source_ref = pr_meta.get("source_ref", "") if pr_url else ""
+        # Pass git refs for VFS
+        if pr_url:
+            _base_ref = pr_meta.get("base_ref", "")
+            _source_ref = pr_meta.get("source_ref", "")
+        else:
+            # Local mode: try to infer refs from git
+            _base_ref, _source_ref = _infer_git_refs(repo_path)
 
         findings, review_ctx = dg.review(
             diff_text,
