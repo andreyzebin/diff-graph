@@ -22,7 +22,10 @@ from .bitbucket import PRMeta, CommandRequest
 log = logging.getLogger(__name__)
 
 
-async def trigger_agent(agent: AgentConfig, pr: PRMeta, cmd: CommandRequest) -> str:
+async def trigger_agent(
+    agent: AgentConfig, pr: PRMeta, cmd: CommandRequest,
+    raw_event: dict | None = None,
+) -> str:
     """
     Trigger an agent for a PR command. Returns output summary.
     """
@@ -30,6 +33,8 @@ async def trigger_agent(agent: AgentConfig, pr: PRMeta, cmd: CommandRequest) -> 
         return await _trigger_cli(agent, pr, cmd)
     elif agent.trigger == "http":
         return await _trigger_http(agent, pr, cmd)
+    elif agent.trigger == "webhook":
+        return await _trigger_webhook(agent, raw_event)
     else:
         raise ValueError(f"unknown trigger type: {agent.trigger}")
 
@@ -116,5 +121,33 @@ async def _trigger_http(agent: AgentConfig, pr: PRMeta, cmd: CommandRequest) -> 
             return f"agent {agent.name} responded {resp.status}"
     except Exception as exc:
         msg = f"agent {agent.name} http error: {exc}"
+        log.error(msg)
+        return msg
+
+
+async def _trigger_webhook(agent: AgentConfig, raw_event: dict | None) -> str:
+    """Forward raw Bitbucket event to another webhook endpoint."""
+    import urllib.request
+    import json
+
+    if not raw_event:
+        return f"agent {agent.name}: no raw event to forward"
+
+    url = agent.base_url.rstrip("/") + "/webhook"
+    payload = json.dumps(raw_event).encode()
+
+    headers = {"Content-Type": "application/json"}
+    if agent.api_key:
+        headers["x-hub-signature"] = agent.api_key
+
+    log.info("forward webhook [%s]: %s", agent.name, url)
+
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+
+    try:
+        with urllib.request.urlopen(req, timeout=agent.timeout) as resp:
+            return f"agent {agent.name} webhook forwarded ({resp.status})"
+    except Exception as exc:
+        msg = f"agent {agent.name} webhook forward error: {exc}"
         log.error(msg)
         return msg

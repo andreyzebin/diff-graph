@@ -81,7 +81,7 @@ async def handle_webhook(request: Request):
     # Trigger agents (in background — don't block webhook response)
     for d in decisions:
         agent = _config.agents[d.agent_name]
-        asyncio.create_task(_run_agent(agent, event, d))
+        asyncio.create_task(_run_agent(agent, event, d, data))
 
     return {
         "status": "accepted",
@@ -93,10 +93,10 @@ async def handle_webhook(request: Request):
     }
 
 
-async def _run_agent(agent, event, decision):
+async def _run_agent(agent, event, decision, raw_event=None):
     """Run agent in background, log result."""
     try:
-        result = await trigger_agent(agent, event.pr, decision.command)
+        result = await trigger_agent(agent, event.pr, decision.command, raw_event)
         log.info("PR #%s %s:%s → %s", event.pr.pr_id,
                  decision.command.name, decision.agent_name, result)
     except Exception as exc:
