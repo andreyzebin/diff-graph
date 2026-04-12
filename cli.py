@@ -249,6 +249,19 @@ def run(
     console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")
     console.print(f"[dim]  view:  python cli.py trace --log  |  python cli.py serve[/dim]")
 
+    # Build comment metadata tag for traceability
+    _comment_meta = None
+    if _prompt_info["source"] or _prompt_info["hash"]:
+        src = _prompt_info["source"]
+        gen = src.rstrip("/").rsplit("/", 1)[-1] if "/" in src else src
+        if gen == "prompts" and "/" in src:
+            gen = src.rstrip("/").rsplit("/", 2)[-2]
+        _comment_meta = {
+            "gen": gen,
+            "hash": _prompt_info["hash"][:7] if _prompt_info["hash"] else "",
+            "run": _trace_db.run_id,
+        }
+
     if post_comments and pr_url:
         from diffgraph.bitbucket import post_review_comments
         comments_to_post = [_finding_to_comment(f) for f in findings]
@@ -261,6 +274,7 @@ def run(
             pr_url, comments_to_post,
             on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
             changed_lines=changed_lines,
+            comment_meta=_comment_meta,
         )
         console.print(f"\n[green]Posted {posted}/{len(comments_to_post)} comments[/green]")
     elif post_comments and not pr_url:
@@ -271,7 +285,8 @@ def run(
             from diffgraph.bitbucket import reply_to_pr_comment, resolve_pr_comment
             for reply in review_ctx.comment_replies:
                 try:
-                    reply_to_pr_comment(pr_url, reply["comment_id"], reply["text"])
+                    reply_to_pr_comment(pr_url, reply["comment_id"], reply["text"],
+                                        comment_meta=_comment_meta)
                     console.print(f"  [dim]replied to #{reply['comment_id']}[/dim]")
                 except Exception as exc:
                     console.print(f"  [yellow]reply #{reply['comment_id']} failed: {exc}[/yellow]")

@@ -248,6 +248,7 @@ def post_review_comments(
     client_cert: str | None = None,
     on_status: Callable[[str], None] | None = None,
     changed_lines: dict | None = None,
+    comment_meta: dict | None = None,
 ) -> int:
     """
     Post review comments to a Bitbucket Server PR as inline anchored comments.
@@ -277,7 +278,7 @@ def post_review_comments(
 
     posted = 0
     for c in comments:
-        body = _build_comment_body(c)
+        body = _build_comment_body(c, meta=comment_meta)
         anchor = _make_anchor(c.file, c.line, changed_lines)
         payload: dict = {"text": body, "severity": _SEV.get(c.severity, "NORMAL")}
         if anchor:
@@ -389,6 +390,7 @@ def reply_to_pr_comment(
     token: str | None = None,
     ca_bundle: str | None = None,
     client_cert: str | None = None,
+    comment_meta: dict | None = None,
 ) -> None:
     """Post a reply to an existing PR comment thread."""
     token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
@@ -398,9 +400,13 @@ def reply_to_pr_comment(
     if not token:
         raise ValueError("BITBUCKET_SERVER_BEARER_TOKEN is required")
 
+    if comment_meta:
+        gen = comment_meta.get("gen", "")
+        h = comment_meta.get("hash", "")
+        run = comment_meta.get("run", "")
+        text += f"\n\n<!-- diffgraph:gen={gen},hash={h},run={run} -->"
+
     server_url, project, repo, pr_id = parse_pr_url(pr_url)
-    # Replies are posted to the base comments endpoint with a parent reference,
-    # not to /comments/{id} (that endpoint is for GET/PUT/DELETE on the comment itself).
     endpoint = (
         f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
         f"/pull-requests/{pr_id}/comments"
@@ -465,10 +471,15 @@ def _api_put(url: str, token: str, ca_bundle: str | None, client_cert: str | Non
         raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
 
 
-def _build_comment_body(c) -> str:
+def _build_comment_body(c, meta: dict | None = None) -> str:
     text = c.comment
     if c.suggestion:
         text += f"\n\n**Suggestion:** {c.suggestion}"
+    if meta:
+        gen = meta.get("gen", "")
+        h = meta.get("hash", "")
+        run = meta.get("run", "")
+        text += f"\n\n<!-- diffgraph:gen={gen},hash={h},run={run} -->"
     return text
 
 
