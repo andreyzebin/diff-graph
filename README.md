@@ -129,7 +129,7 @@ python cli.py run --repo /path/to/service --base abc123 --source def456 --output
 | `--max-tokens` | Max token budget |
 | `--prompts` | Prompt resource URI (path, `file://`, `bitbucket://`) |
 
-### `trace` -- inspect execution traces
+### `trace` -- view execution traces
 
 ```bash
 python cli.py trace              # open last run in browser (starts trace server)

@@ -220,7 +220,7 @@ Parent agents can modify children via `adjust_agent`:
 Create `diffgraph/<provider>.py` following the pattern in `bitbucket.py`:
 `fetch_pr()` returns `(diff_text, repo_path, cleanup_fn, pr_meta)`.
 
-### Inspect a run
+### View a run
 
 ```bash
 python cli.py trace --log        # console trace: call/result per step, agent tree
