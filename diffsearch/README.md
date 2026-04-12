@@ -152,26 +152,79 @@ files = list_files_vfs(vfs_dir, "**/*.java")
 
 ### `read_outline_vfs(vfs_dir, path, repo_path?)`
 
-Structural outline via tree-sitter. For changed files, enriches with L ranges and old/new mapping.
+Structural outline via tree-sitter. For changed files, shows method positions in unified diff coordinates with old/new mapping.
 
-**Changed file outline:**
+#### Two-pass parsing (for changed files)
+
+The virtual file contains both `+` and `-` lines mixed together — invalid code that tree-sitter can't parse directly. Solution: two passes with line blanking.
+
+**New-side pass:** replace all `-` lines with empty lines → tree-sitter sees valid source code, line numbers = L positions in unified file.
+
+**Old-side pass:** replace all `+` lines with empty lines → tree-sitter sees valid base code, line numbers = L positions in unified file.
+
 ```
-# src/.../OrderService.java  (45 lines)
-[class] OrderService  L6-45 (old:6-32 → new:6-39) *
-  [field] orderRepository  L8-8 (old:8-8 → new:8-8)
-  [field] inventoryClient  L9-9 (old:9-9 → ) *
-  [field] inventoryService  L10-10 ( → new:9-9) *
-  [method] createOrder  L19-24 (old:16-21 → new:16-21)
-  [method] cancelOrder  L26-39 (old:23-31 → new:23-33) *
-  [method] getOrder  L41-44 ( → new:35-38) *
+Virtual file:         New-side (blank -):     Old-side (blank +):
+L52 |- for (...)      L52 (empty)             L52    for (...)
+L53 |-   release()    L53 (empty)             L53      release()
+L54 |+ if (!=null) {  L54  if (!=null) {      L54 (empty)
+L55 |+   for (...)    L55    for (...)        L55 (empty)
+L56 |+     release()  L56      release()      L56 (empty)
 ```
 
-- `L` range = position in virtual file (use for `read_file` start/end)
-- `old → new` = mapping between commit versions
-- `*` = symbol changed in this diff
-- Empty old = added, empty new = deleted
+Empty lines preserve line count → L coordinates are exact in both passes. Tree-sitter tolerates blank lines inside methods.
 
-**Unchanged file outline:** plain line numbers, no old/new mapping.
+**Merge** by method name:
+- Found in both → changed method: show Lold + Lnew ranges
+- Only in new-side → added method
+- Only in old-side → deleted method
+- `*` if any `+`/`-` line within L range
+
+#### Output format
+
+**Changed method** (Lold ≠ Lnew — show both for targeted reading):
+```
+[method] cancelOrder  Lold:44-57 Lnew:50-71 (old:44-67 → new:44-69) *
+```
+- `Lold:44-57` — old version position in unified file. `read_file(44, 57)` shows old code.
+- `Lnew:50-71` — new version position in unified file. `read_file(50, 71)` shows new code.
+- `read_file(44, 71)` shows everything (old + new + context).
+- `old:44-67 → new:44-69` — real line numbers in base/source commits.
+
+**Unchanged method** (Lold == Lnew — single L):
+```
+[method] findById  L64-67 (old:60-63 → new:64-67)
+```
+
+**Deleted method** (only in old-side):
+```
+[method] processOrder  L8-26 (old:8-26 → deleted) *
+```
+
+**Added method** (only in new-side):
+```
+[method] getOrder  L41-44 (added → new:35-38) *
+```
+
+**Full example:**
+```
+# src/.../OrderService.java  (72 lines)
+[class] OrderService  Lold:15-68 Lnew:15-72 (old:15-68 → new:15-70) *
+  [field] orderRepository  L19-19 (old:19-19 → new:19-19)
+  [field] pricingService   L20-20 (old:20-20 → new:20-20)
+  [method] createOrder     L22-32 (old:22-32 → new:22-32)
+  [method] confirmOrder    L34-42 (old:34-42 → new:34-42)
+  [method] cancelOrder     Lold:44-57 Lnew:50-71 (old:44-67 → new:44-69) *
+  [method] findById        L64-67 (old:60-63 → new:64-67)
+  [method] releaseInventory L69-71 (old:65-67 → new:69-71)
+```
+
+Agent workflow:
+1. `read_outline("OrderService.java")` → see structure, `cancelOrder` has `*`
+2. `read_file("OrderService.java", 44, 71)` → see full change (old + new)
+3. `read_file("OrderService.java", 50, 71)` → see only new version
+4. Finding: `file="OrderService.java", line=52` (use `new` number for Bitbucket)
+
+**Unchanged file outline:** plain line numbers, no Lold/Lnew, no old/new mapping.
 
 ## Integration with DiffGraph agent
 
