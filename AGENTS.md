@@ -56,7 +56,7 @@ diffgraph/                       Code review domain
 tests/
 +-- test_diff_parser.py
 
-cli.py                           Typer CLI: run / trace / inspect
+cli.py                           Typer CLI: run / trace / serve
 config.yaml                      Committed defaults with ${VAR} placeholders
 config.local.yaml                Local overrides (gitignored)
 .env.example                     Environment variable template
