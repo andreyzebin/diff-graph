@@ -391,7 +391,7 @@ def serve(
         console.print("[red]uvicorn not installed.[/red] Run: pip install uvicorn fastapi jinja2")
         raise typer.Exit(1)
 
-    from orchestra.trace_server.app import create_app
+    from tracing.server.app import create_app
 
     console.print(f"[bold green]Trace server[/bold green] starting on http://{host}:{port}")
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")

@@ -14,8 +14,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from ..trace_db import TraceDBReader, DEFAULT_DB_PATH
-from ..trace import prepare_for_template
+from orchestra.trace_db import TraceDBReader, DEFAULT_DB_PATH
+from orchestra.trace import prepare_for_template
 
 _DIR = Path(__file__).parent
 BASE_PATH = os.environ.get("TRACE_BASE_PATH", "").rstrip("/")

@@ -61,7 +61,7 @@ export BITBUCKET_SERVER_BEARER_TOKEN="${BB_TOKEN:-${BITBUCKET_SERVER_BEARER_TOKE
 echo "Starting trace server on port ${TRACE_PORT:-8080}..."
 python -c "
 import uvicorn
-from orchestra.trace_server.app import app
+from tracing.server.app import app
 uvicorn.run(app, host='0.0.0.0', port=${TRACE_PORT:-8080}, log_level='warning')
 " &
 

@@ -286,7 +286,7 @@ Events persisted per-step to a SQLite database. Crash-safe -- partial runs are r
 - Reader API for querying runs, agents, and steps
 - Auto-migration: new columns added on connect if missing (existing DBs)
 
-### Trace server (`trace_server/`)
+### Trace server (`tracing/server/`)
 
 FastAPI + Alpine.js web viewer with Jinja2 templates. Two views accessible via separate routes:
 

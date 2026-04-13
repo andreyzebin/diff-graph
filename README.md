@@ -325,7 +325,8 @@ orchestra/                   Prompt-defined agent framework (~3,700 LOC)
 +-- compiler.py              LLM compiler: .prompt files -> agent registry
 +-- trace.py                 Trace data collection + template preparation
 +-- trace_db.py              SQLite trace storage + reader
-+-- trace_server/            FastAPI trace viewer (Alpine.js + Jinja2)
+tracing/                     Trace CLI + web server
++-- server/                  FastAPI trace viewer (Alpine.js + Jinja2)
     +-- app.py               Routes, data API, WebSocket live updates
     +-- templates/            Jinja2 templates (trace, macros, runs, live)
     +-- static/               CSS + JS

@@ -19,7 +19,8 @@ orchestra/                       Prompt-defined agent framework (~3,700 LOC)
 +-- compiler.py                  LLM compiler: .prompt files -> agent registry
 +-- trace.py                     Trace data collection + template preparation
 +-- trace_db.py                  SQLite trace storage + reader
-+-- trace_server/                FastAPI trace viewer (Alpine.js + Jinja2)
+tracing/                         Trace CLI + web server
+    +-- server/                  FastAPI trace viewer (Alpine.js + Jinja2)
     +-- app.py                   Routes, data API, WebSocket live updates
     +-- templates/               Jinja2: trace.html, macros.html, runs.html, live.html
     +-- static/                  trace.css
@@ -133,7 +134,7 @@ Structured self-reflection. Each question gets a stable ID. Fuzzy matching links
 
 Tracks cumulative paid (sum of per-step deltas) with cache discount. Agents use their own `.prompt` budget. Default pushers: 75% nudge + 100% force_done.
 
-### Trace system (`orchestra/trace_db.py`, `orchestra/trace.py`, `orchestra/trace_server/`)
+### Trace system (`orchestra/trace_db.py`, `orchestra/trace.py`, `tracing/`)
 
 SQLite DB persists events per-step (crash-safe). FastAPI trace server with Alpine.js frontend. Two views:
 
