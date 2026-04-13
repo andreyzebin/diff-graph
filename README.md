@@ -123,16 +123,36 @@ openssl pkcs12 -in bundle.p12 -cacerts -nokeys -out ca-chain.pem
 openssl s_client -connect llm-endpoint.company.com:443 -CAfile corporate-ca.pem
 ```
 
-**Test connection:**
+**Extract full CA chain from a live server:**
+
 ```bash
-# Check if LLM endpoint is reachable with your CA
+# Grab all certificates from the TLS handshake
+openssl s_client -connect your-llm-endpoint.com:443 -showcerts </dev/null 2>/dev/null \
+  | awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{print}' > corporate-ca.pem
+
+# Verify it works
+openssl s_client -connect your-llm-endpoint.com:443 -CAfile corporate-ca.pem </dev/null 2>&1 \
+  | grep "Verify return code"
+# Should show: Verify return code: 0 (ok)
+```
+
+This captures the entire chain (server cert + intermediates + root) as seen by the connection — works even when you don't know which CA issued the cert.
+
+**Test connection from Python:**
+
+```bash
 python -c "
 import httpx
 r = httpx.get('https://your-llm-endpoint.com/v1/models',
-              verify='/path/to/ca.pem',
+              verify='corporate-ca.pem',
               headers={'Authorization': 'Bearer YOUR_KEY'})
 print(r.status_code)
 "
+```
+
+**If still failing** — use `--no-verify-ssl` as a quick workaround:
+```bash
+python cli.py run --pr-url=... --no-verify-ssl
 ```
 
 ---
