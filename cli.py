@@ -72,6 +72,8 @@ def _make_llm_client(llm_cfg: dict):
 
     # Custom CA bundle or SSL disable for LLM endpoint
     ca_bundle = llm_cfg.get("ca_bundle", "").strip() or os.environ.get("LLM_CA_BUNDLE", "")
+    if ca_bundle:
+        ca_bundle = os.path.expanduser(ca_bundle)
     no_ssl = os.environ.get("GIT_SSL_NO_VERIFY") == "1"  # set by --no-verify-ssl
     if no_ssl:
         import httpx
