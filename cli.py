@@ -120,11 +120,15 @@ def run(
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-    # HTTP debug: show urllib3 requests at DEBUG level
+    # HTTP/httpx noise: only show at DEBUG level
     if level.upper() == "DEBUG":
         logging.getLogger("urllib3").setLevel(logging.DEBUG)
+        logging.getLogger("httpx").setLevel(logging.DEBUG)
+        logging.getLogger("httpcore").setLevel(logging.DEBUG)
     else:
         logging.getLogger("urllib3").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     # Disable SSL verification globally
     if no_verify_ssl:
@@ -937,10 +941,25 @@ def _make_event_handler(model: str, live: Optional[Live]):
             if child_id:
                 _child_ids.add(child_id)
 
-        # Suppress ALL events from child agents — they work silently.
-        # Their results appear in root's spawn_agent/spawn_many tool result.
+        # Child agents: log actions but don't update Rich display
         is_child = aid in _child_ids
         if is_child:
+            if event == "orchestrator_result":
+                tool = kw.get("tool", "")
+                args = kw.get("args", {})
+                parts = []
+                for k, v in list(args.items())[:2]:
+                    vs = str(v)
+                    if len(vs) > 30:
+                        vs = vs[:28] + "…"
+                    parts.append(f"{k}={vs}")
+                _agent_log.info("%s: %s(%s)", aname or aid[:8], tool, ", ".join(parts)[:80])
+            elif event == "orchestrator_reflect":
+                _agent_log.info("%s: reflect  %s", aname or aid[:8], kw.get("confidence", "?"))
+            elif event == "orchestrator_agent_done":
+                _agent_log.info("%s: done", aname or aid[:8])
+            elif event == "orchestrator_forced_done":
+                _agent_log.info("%s: forced done (%s)", aname or aid[:8], kw.get("reason", "limit"))
             return
 
         # Update active agent for root events
@@ -973,7 +992,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             else:
                 _actions.append(f"[bold cyan]spawn {name}[/bold cyan] ({child[:6]})")
             _update_live()
-            _agent_log.info("spawn: %s → %s", name, focus_short or child[:8])
+            _agent_log.info("spawn %s → %s", name, focus_short or child[:8])
 
         elif event == "orchestrator_agent_done":
             # Print final summary for the finishing agent
@@ -1076,7 +1095,10 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _update_live()
             # Log for --log-level INFO
             agent_name = kw.get("agent_name", "agent")
-            _agent_log.info("%s: %s(%s)", agent_name, tool, arg_str[:80])
+            # Strip Rich markup for plain log
+            import re as _re
+            plain_args = _re.sub(r'\[/?[a-z ]+\]', '', arg_str)[:80]
+            _agent_log.info("%s: %s(%s)", agent_name, tool, plain_args)
 
         elif event == "orchestrator_reflect":
             step = kw.get("step", 0)
