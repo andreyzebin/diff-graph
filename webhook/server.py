@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 
 from .config import load_config, WebhookConfig
 from .bitbucket import parse_event, extract_commands
@@ -137,19 +138,75 @@ async def health():
 
 @app.get("/routes")
 async def show_routes():
-    """Show configured routes (for debugging)."""
+    """Show configured routes."""
     if _config is None:
         return {"error": "not configured"}
     return {
-        "routes": [
-            {
-                "name": r.name,
-                "when": r.when,
-                "forward": r.forward,
-                "agent": r.agent,
-                "sample": r.sample,
-                **r.commands,
-            }
-            for r in _config.routes
-        ]
+        "routes": [_route_to_dict(r) for r in _config.routes]
+    }
+
+
+@app.patch("/api/routes/{name}")
+async def update_route(name: str, request: Request):
+    """Update a route (sample%, agent, forward, when)."""
+    if _config is None:
+        return Response(status_code=500, content="not configured")
+    route = next((r for r in _config.routes if r.name == name), None)
+    if not route:
+        return JSONResponse({"error": f"route '{name}' not found"}, status_code=404)
+    import json
+    body = json.loads(await request.body())
+    if "sample" in body:
+        route.sample = int(body["sample"])
+    if "agent" in body:
+        route.agent = body["agent"]
+    if "forward" in body:
+        route.forward = body["forward"]
+    if "when" in body:
+        route.when = body["when"]
+    return {"status": "updated", "route": _route_to_dict(route)}
+
+
+@app.post("/api/routes")
+async def create_route(request: Request):
+    """Create a new route."""
+    if _config is None:
+        return Response(status_code=500, content="not configured")
+    import json
+    body = json.loads(await request.body())
+    name = body.get("name", "")
+    if not name:
+        return JSONResponse({"error": "name required"}, status_code=400)
+    if any(r.name == name for r in _config.routes):
+        return JSONResponse({"error": f"route '{name}' already exists"}, status_code=409)
+    from .config import Route
+    route = Route(
+        name=name,
+        when=body.get("when", "true"),
+        agent=body.get("agent"),
+        forward=body.get("forward"),
+        sample=body.get("sample", 100),
+        commands={k: v for k, v in body.items() if k not in ("name", "when", "agent", "forward", "sample")},
+    )
+    _config.routes.append(route)
+    return JSONResponse({"status": "created", "route": _route_to_dict(route)}, status_code=201)
+
+
+@app.delete("/api/routes/{name}")
+async def delete_route(name: str):
+    """Delete a route by name."""
+    if _config is None:
+        return Response(status_code=500, content="not configured")
+    before = len(_config.routes)
+    _config.routes = [r for r in _config.routes if r.name != name]
+    if len(_config.routes) == before:
+        return JSONResponse({"error": f"route '{name}' not found"}, status_code=404)
+    return {"status": "deleted", "name": name}
+
+
+def _route_to_dict(r) -> dict:
+    return {
+        "name": r.name, "when": r.when,
+        "forward": r.forward, "agent": r.agent,
+        "sample": r.sample, **r.commands,
     }

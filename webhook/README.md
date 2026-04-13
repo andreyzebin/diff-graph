@@ -173,9 +173,16 @@ improve = "pra"         # /improve → pra instead
 
 ## Endpoints
 
-- `POST /webhook` — Bitbucket webhook receiver
-- `GET /health` — health check
-- `GET /routes` — show configured routes
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/webhook` | Bitbucket webhook receiver |
+| `GET` | `/health` | Health check |
+| `GET` | `/routes` | Show all routes |
+| `POST` | `/api/routes` | Create route `{name, when, agent, sample}` |
+| `PATCH` | `/api/routes/{name}` | Update route `{sample?, agent?, when?}` |
+| `DELETE` | `/api/routes/{name}` | Delete route |
+
+Route management API enables evolution to deploy/undeploy/rebalance branches programmatically.
 
 ## Tests
 
@@ -183,4 +190,4 @@ improve = "pra"         # /improve → pra instead
 pytest webhook/tests/ -v --log-cli-level=INFO
 ```
 
-31 tests: config, event parsing, @mention, args, comment_id, forward routing, command routing, sample distribution, per-command overrides, cascade.
+41 tests: config, event parsing, routing, API CRUD (create/update/delete routes).
