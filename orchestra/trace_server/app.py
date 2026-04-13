@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -17,10 +18,13 @@ from ..trace_db import TraceDBReader, DEFAULT_DB_PATH
 from ..trace import prepare_for_template
 
 _DIR = Path(__file__).parent
+BASE_PATH = os.environ.get("TRACE_BASE_PATH", "").rstrip("/")
 
-app = FastAPI(title="DiffGraph Trace Viewer")
-app.mount("/static", StaticFiles(directory=_DIR / "static"), name="static")
+app = FastAPI(title="DiffGraph Trace Viewer", root_path=BASE_PATH)
+app.mount(f"{BASE_PATH}/static", StaticFiles(directory=_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=_DIR / "templates")
+# Inject base_path into all template contexts
+templates.env.globals["base_path"] = BASE_PATH
 
 
 def _get_reader() -> TraceDBReader:
@@ -51,8 +55,8 @@ async def run_detail(run_id: str):
     run_meta = next((r for r in runs if r["id"] == run_id), {})
     reader.close()
     if run_meta.get("status") == "running":
-        return RedirectResponse(f"/runs/{run_id}/live", status_code=302)
-    return RedirectResponse(f"/runs/{run_id}/trace", status_code=302)
+        return RedirectResponse(f"{BASE_PATH}/runs/{run_id}/live", status_code=302)
+    return RedirectResponse(f"{BASE_PATH}/runs/{run_id}/trace", status_code=302)
 
 
 @app.get("/runs/{run_id}/live", response_class=HTMLResponse)

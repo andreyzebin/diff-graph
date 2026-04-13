@@ -3,7 +3,7 @@
 <head>
 <title>DiffGraph Traces</title>
 <meta charset="utf-8">
-<link rel="stylesheet" href="/static/trace.css">
+<link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
 body { padding: 20px; max-width: 1000px; margin: 0 auto; }
@@ -49,7 +49,7 @@ h1 { margin-bottom: 20px; }
       <tbody>
       <template x-for="run in filtered()" :key="run.id">
         <tr :class="run._new ? 'new-row' : ''">
-          <td><a class="run-link" :href="'/runs/' + run.id" x-text="run.id.substring(0, 12)"></a></td>
+          <td><a class="run-link" :href="'{{ base_path }}/runs/' + run.id" x-text="run.id.substring(0, 12)"></a></td>
           <td x-text="(run.started_at || '?').substring(0, 19)"></td>
           <td x-text="run.model || '?'"></td>
           <td><span class="prompt-gen" x-text="formatPrompts(run)"></span></td>
@@ -83,7 +83,7 @@ function runsPanel() {
     },
     async refresh() {
       try {
-        const resp = await fetch('/api/runs');
+        const resp = await fetch('{{ base_path }}/api/runs');
         const fresh = await resp.json();
         const knownIds = new Set(this.runs.map(r => r.id));
         // Mark new runs

@@ -78,7 +78,7 @@
     {% for tc in resp.tool_calls %}
       <div class="resp-tc">
         {{ tc.name }}({{ (tc.arguments or '')[:200] }}{{ '…' if (tc.arguments or '') | length > 200 }})
-        <span class="open-btn" onclick="fetchTab('step {{ s.step }} Call: {{ tc.name }}', '/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/call')">⧉</span>
+        <span class="open-btn" onclick="fetchTab('step {{ s.step }} Call: {{ tc.name }}', '{{ base_path }}/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/call')">⧉</span>
       </div>
     {% endfor %}
     {% set usage = resp.usage or {} %}
@@ -93,7 +93,7 @@
     {% for r in s.tool_results %}
       <pre class="msg-content">{{ r }}</pre>
     {% endfor %}
-    <span class="open-btn" onclick="fetchTab('step {{ s.step }} Result', '/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/result')">⧉ full</span>
+    <span class="open-btn" onclick="fetchTab('step {{ s.step }} Result', '{{ base_path }}/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/result')">⧉ full</span>
   </div>
   {% endif %}
 
@@ -101,7 +101,7 @@
   <details class="llm-context">
     <summary class="llm-section-title">
       Context ({{ req.message_count or (req.messages or []) | length }} messages)
-      <span class="download-btn" onclick="event.stopPropagation(); event.preventDefault(); copyFromApi('/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/messages')">📋 JSON</span>
+      <span class="download-btn" onclick="event.stopPropagation(); event.preventDefault(); copyFromApi('{{ base_path }}/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/messages')">📋 JSON</span>
     </summary>
     {% for m in (req.messages or []) %}
       <details class="msg-entry">
@@ -110,7 +110,7 @@
           {% if m.content %}{{ m.content[:80] | replace('\n', '↵ ') }}{{ '…' if m.content | length > 80 }}
           {% elif m.tool_calls %}→ {{ m.tool_calls[:3] | map(attribute='name') | join(', ') }}
           {% else %}(empty){% endif %}
-          {% if m.content %}<span class="open-btn" onclick="event.stopPropagation(); fetchTab('{{ m.role }}', '/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/messages', {{ loop.index0 }})">⧉</span>{% endif %}
+          {% if m.content %}<span class="open-btn" onclick="event.stopPropagation(); fetchTab('{{ m.role }}', '{{ base_path }}/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/messages', {{ loop.index0 }})">⧉</span>{% endif %}
         </summary>
         {% if m.content %}<pre class="msg-content">{{ m.content[:1000] }}{{ '…' if m.content | length > 1000 }}</pre>{% endif %}
         {% if m.tool_calls %}

@@ -4,13 +4,13 @@
 <head>
 <title>Trace · {{ title }}</title>
 <meta charset="utf-8">
-<link rel="stylesheet" href="/static/trace.css">
+<link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
 <body>
 <div class="layout" x-data="splitPane()">
   <div class="left-pane" :style="'width:' + leftWidth + 'px'">
-    <h1><a href="/" style="color:#8b949e;text-decoration:none">←</a> Trace · {{ title }} <a href="/runs/{{ run_id }}/live" class="nav-link">Live ⧉</a></h1>
+    <h1><a href="{{ base_path }}/" style="color:#8b949e;text-decoration:none">←</a> Trace · {{ title }} <a href="{{ base_path }}/runs/{{ run_id }}/live" class="nav-link">Live ⧉</a></h1>
     {{ agent_list(trace, run_id) }}
   </div>
   <div class="divider" @mousedown="startDrag($event)"></div>
@@ -50,6 +50,8 @@
 </div>
 
 <script>
+const BASE = '{{ base_path }}';
+
 function splitPane() {
   return {
     leftWidth: Math.floor(window.innerWidth * 0.5),
