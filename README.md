@@ -78,8 +78,9 @@ python cli.py run --pr-url ... --post-comments
 OPENAI_API_KEY=sk-...
 DEEPSEEK_API_KEY=sk-...
 BITBUCKET_SERVER_BEARER_TOKEN=...
-REQUESTS_CA_BUNDLE=/path/to/ca.pem        # optional
-BITBUCKET_SERVER_CLIENT_CERT=/path/to/client.pem  # optional
+REQUESTS_CA_BUNDLE=/path/to/ca.pem            # CA for Bitbucket (optional)
+BITBUCKET_SERVER_CLIENT_CERT=/path/to/client.pem  # mTLS for Bitbucket (optional)
+LLM_CA_BUNDLE=/path/to/llm-ca.pem            # CA for LLM endpoint (optional, separate)
 ```
 
 ### `config.local.yaml`
@@ -89,10 +90,49 @@ llm:
   api_url: "https://api.deepseek.com/v1"
   api_key: "${DEEPSEEK_API_KEY}"
   model: "deepseek-chat"
+  ca_bundle: "/path/to/llm-ca.pem"  # or use LLM_CA_BUNDLE env var
 
 review:
   max_steps: 40
   max_tokens: 40000
+```
+
+### Corporate TLS certificates
+
+Two separate CA bundles — Bitbucket and LLM may use different corporate CAs:
+
+| Variable | Config key | Used for |
+|---|---|---|
+| `REQUESTS_CA_BUNDLE` | — | Bitbucket Server API + git clone |
+| `LLM_CA_BUNDLE` | `llm.ca_bundle` | LLM API endpoint (OpenAI-compatible) |
+| `BITBUCKET_SERVER_CLIENT_CERT` | — | mTLS client cert for Bitbucket |
+
+**Convert `.crt` to `.pem`:**
+
+```bash
+# Single cert
+openssl x509 -in corporate-ca.crt -out corporate-ca.pem -outform PEM
+
+# Chain (multiple certs in one file)
+cat corporate-root-ca.crt intermediate-ca.crt > combined-ca.pem
+
+# From PKCS12 (.p12/.pfx) — extract CA chain
+openssl pkcs12 -in bundle.p12 -cacerts -nokeys -out ca-chain.pem
+
+# Verify it works
+openssl s_client -connect llm-endpoint.company.com:443 -CAfile corporate-ca.pem
+```
+
+**Test connection:**
+```bash
+# Check if LLM endpoint is reachable with your CA
+python -c "
+import httpx
+r = httpx.get('https://your-llm-endpoint.com/v1/models',
+              verify='/path/to/ca.pem',
+              headers={'Authorization': 'Bearer YOUR_KEY'})
+print(r.status_code)
+"
 ```
 
 ---

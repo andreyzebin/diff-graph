@@ -4,6 +4,10 @@ llm:
   api_url: ""
   api_key: "${OPENAI_API_KEY}"
   model: "gpt-4o-mini"
+  # CA bundle for LLM endpoint TLS (corporate proxy/self-signed).
+  # Separate from REQUESTS_CA_BUNDLE (which is for Bitbucket).
+  # Also configurable via LLM_CA_BUNDLE env var.
+  ca_bundle: ""
 
 review:
   max_steps: 40          # max ReAct tool calls per review

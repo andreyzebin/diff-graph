@@ -85,6 +85,7 @@ docker run -d --name diffgraph -p 8000:8000 -p 8081:8080 \
 | `LLM_BASE_URL` | Yes | OpenAI-compatible API endpoint |
 | `LLM_API_KEY` | Yes | API key |
 | `LLM_MODEL` | No | Model name (default: deepseek-chat) |
+| `LLM_CA_BUNDLE` | If corporate CA | Path to CA bundle for LLM endpoint TLS |
 | `FORWARD_WEBHOOK_URL` | No | URL for forward webhook trigger |
 | `WEBHOOK_CONFIG` | No | Path to TOML config (default: /app/webhook.toml) |
 | `WEBHOOK_PORT` | No | Webhook server port (default: 8000) |
