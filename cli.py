@@ -972,6 +972,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             else:
                 _actions.append(f"[bold cyan]spawn {name}[/bold cyan] ({child[:6]})")
             _update_live()
+            _agent_log.info("spawn: %s → %s", name, focus_short or child[:8])
 
         elif event == "orchestrator_agent_done":
             # Print final summary for the finishing agent
@@ -1074,7 +1075,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _update_live()
             # Log for --log-level INFO
             agent_name = kw.get("agent_name", "agent")
-            _agent_log.info("%s step %d %s(%s)", agent_name, step, tool, arg_str[:60])
+            _agent_log.info("%s: %s(%s)", agent_name, tool, arg_str[:80])
 
         elif event == "orchestrator_reflect":
             step = kw.get("step", 0)
@@ -1133,6 +1134,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _actions.append(f"step {step}  reflect()  conf=[{conf_color}]{conf}[/{conf_color}]")
             _current_stream["text"] = ""
             _update_live()
+            _agent_log.info("%s: reflect  %s", kw.get("agent_name", "agent"), conf)
 
         elif event == "orchestrator_done":
             if live:
@@ -1143,6 +1145,8 @@ def _make_event_handler(model: str, live: Optional[Live]):
                 f"{kw.get('replies', 0)} replies  "
                 f"{kw.get('resolves', 0)} resolves[/dim]"
             )
+            _agent_log.info("done: %d findings, %d replies, %d resolves",
+                            kw.get("findings", 0), kw.get("replies", 0), kw.get("resolves", 0))
 
         elif event == "orchestrator_forced_done":
             tok_str = _fmt_tok_short()
@@ -1150,6 +1154,8 @@ def _make_event_handler(model: str, live: Optional[Live]):
                 f"[yellow]forced[/yellow]    {kw.get('reason', 'limit')}  "
                 f"[dim cyan]{tok_str}[/dim cyan]"
             )
+            _agent_log.info("%s: forced done (%s)",
+                            kw.get("agent_name", "agent"), kw.get("reason", "limit"))
             # Print final summary (if not already printed by agent_done)
             if _sgr["conf_history"] or _actions:
                 _print_and_reset(kw.get("agent_id", ""))
