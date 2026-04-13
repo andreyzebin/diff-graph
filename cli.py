@@ -114,7 +114,7 @@ def run(
       python cli.py run --repo . --base main --source feature/my-branch
     """
     import logging
-    level = log_level or ("DEBUG" if verbose else "WARNING")
+    level = log_level or ("DEBUG" if verbose else "INFO")
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.WARNING),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -254,12 +254,13 @@ def run(
         # Note: _trace_db gets raw events via direct EventBus subscription
         # in orchestrator.py — no need to call it here (would duplicate)
 
-    with Live("", console=console, refresh_per_second=8, vertical_overflow="visible") as live:
-        event_handler = _make_event_handler(effective_model, live)
+    event_handler = _make_event_handler(effective_model, None)
 
-        def _combined_handler(event: str, **kw):
-            _capture_event(event, **kw)
-            event_handler(event, **kw)
+    def _combined_handler(event: str, **kw):
+        _capture_event(event, **kw)
+        event_handler(event, **kw)
+
+    if True:
 
         # Refs: from PR metadata or from CLI args (already resolved above)
         if pr_url:
