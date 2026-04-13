@@ -5,7 +5,8 @@ All-in-one container: webhook router (port 8000) + trace viewer (port 8080) + di
 ## Build
 
 ```bash
-docker build -t diffgraph .
+# From repo root
+docker build -f docker/Dockerfile -t diffgraph .
 ```
 
 ## Run
