@@ -584,10 +584,10 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 4.3 | Trace search CLI | Low | Small | Later |
 | 5.2 | Model comparison | Low | Medium | Later |
 | 7.1 | `dg:` tag in comments (done) | **Done** | | |
-| 8.2 | pr-analytics `dg:` tag extraction | **Critical** | Small | **Do first** |
-| 8.3a | benchmarks `--prompts` URI | High | Small | **Do first** |
-| 8.3b | benchmarks capability tags | High | Small | **Do first** |
-| 8.4a | webhook `PATCH /api/routes/{name}` | High | Small | **Do first** |
+| 8.2 | ~~pr-analytics `dg:` tag extraction~~ | **Done** | | |
+| 8.3a | ~~benchmarks `--prompts` URI~~ | **Done** | | |
+| 8.3b | ~~benchmarks capability tags~~ | **Done** | | |
+| 8.4a | ~~webhook route management API~~ | **Done** | | |
 | 8.1 | Tracing subproject CLI | High | Medium | Do second |
 | 8.3c | benchmarks capability breakdown | High | Medium | Do second |
 | 8.4b | webhook POST/DELETE routes API | High | Medium | Do second |
