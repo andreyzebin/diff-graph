@@ -7,7 +7,7 @@ import argparse
 import json
 import sys
 
-from .query import get_metrics, get_runs, compare
+from .query import get_metrics, get_runs, compare, tag_run, untag_run
 
 
 def main():
@@ -34,6 +34,18 @@ def main():
     p.add_argument("--b", required=True, help="Hash B")
     p.add_argument("--db", help="DB path override")
     p.add_argument("--format", default="text", choices=["text", "json"])
+
+    # tag
+    p = sub.add_parser("tag", help="Add tag to a run")
+    p.add_argument("--run", required=True, help="Run ID")
+    p.add_argument("--tag", required=True, help="Tag name")
+    p.add_argument("--db", help="DB path override")
+
+    # untag
+    p = sub.add_parser("untag", help="Remove tag from a run")
+    p.add_argument("--run", required=True, help="Run ID")
+    p.add_argument("--tag", required=True, help="Tag name")
+    p.add_argument("--db", help="DB path override")
 
     args = parser.parse_args()
     if not args.command:
@@ -75,6 +87,14 @@ def main():
             if c.p_value is not None:
                 sig = "significant" if c.p_value < 0.05 else "not significant"
                 print(f"\n  p-value: {c.p_value} ({sig})")
+
+    elif args.command == "tag":
+        tag_run(args.run, args.tag, **db_kwargs)
+        print(f"  tagged {args.run} with '{args.tag}'")
+
+    elif args.command == "untag":
+        untag_run(args.run, args.tag, **db_kwargs)
+        print(f"  untagged '{args.tag}' from {args.run}")
 
 
 if __name__ == "__main__":

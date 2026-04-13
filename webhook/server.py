@@ -22,11 +22,13 @@ log = logging.getLogger(__name__)
 app = FastAPI(title="DiffGraph Webhook Router")
 
 _config: WebhookConfig | None = None
+_config_path: str | Path = ""
 
 
 def init_app(config_path: str | Path) -> FastAPI:
     """Initialize the app with config."""
-    global _config
+    global _config, _config_path
+    _config_path = config_path
     _config = load_config(config_path)
     log.info("loaded %d agents, %d routes", len(_config.agents), len(_config.routes))
     return app
@@ -202,6 +204,21 @@ async def delete_route(name: str):
     if len(_config.routes) == before:
         return JSONResponse({"error": f"route '{name}' not found"}, status_code=404)
     return {"status": "deleted", "name": name}
+
+
+@app.post("/api/reload")
+async def reload_config():
+    """Reload config from file."""
+    global _config
+    if not _config_path:
+        return JSONResponse({"error": "no config path"}, status_code=500)
+    try:
+        _config = load_config(_config_path)
+        log.info("reloaded config: %d agents, %d routes", len(_config.agents), len(_config.routes))
+        return {"status": "reloaded", "agents": len(_config.agents), "routes": len(_config.routes)}
+    except Exception as exc:
+        log.error("reload failed: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 def _route_to_dict(r) -> dict:

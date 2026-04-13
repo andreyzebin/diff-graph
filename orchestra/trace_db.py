@@ -66,6 +66,10 @@ class TraceDBWriter:
         except sqlite3.OperationalError:
             self.conn.execute("ALTER TABLE runs ADD COLUMN prompt_source TEXT")
             self.conn.execute("ALTER TABLE runs ADD COLUMN prompt_hash TEXT")
+        try:
+            self.conn.execute("SELECT tags FROM runs LIMIT 0")
+        except sqlite3.OperationalError:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN tags TEXT")
 
     def _insert_run(self):
         self.conn.execute(
@@ -161,6 +165,10 @@ class TraceDBReader:
         except sqlite3.OperationalError:
             self.conn.execute("ALTER TABLE runs ADD COLUMN prompt_source TEXT")
             self.conn.execute("ALTER TABLE runs ADD COLUMN prompt_hash TEXT")
+        try:
+            self.conn.execute("SELECT tags FROM runs LIMIT 0")
+        except sqlite3.OperationalError:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN tags TEXT")
 
     def list_runs(self, limit: int = 10) -> list[dict]:
         """List recent runs."""

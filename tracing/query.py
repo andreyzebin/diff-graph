@@ -200,6 +200,42 @@ def _mann_whitney(hash_a: str, hash_b: str, db_path) -> float | None:
         return None
 
 
+def tag_run(
+    run_id: str,
+    tag: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    """Add a tag to a run. Tags stored as comma-separated string."""
+    conn = _connect(db_path)
+    row = conn.execute("SELECT tags FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if not row:
+        conn.close()
+        return
+    existing = set(filter(None, (row["tags"] or "").split(",")))
+    existing.add(tag)
+    conn.execute("UPDATE runs SET tags = ? WHERE id = ?", (",".join(sorted(existing)), run_id))
+    conn.commit()
+    conn.close()
+
+
+def untag_run(
+    run_id: str,
+    tag: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    """Remove a tag from a run."""
+    conn = _connect(db_path)
+    row = conn.execute("SELECT tags FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if not row:
+        conn.close()
+        return
+    existing = set(filter(None, (row["tags"] or "").split(",")))
+    existing.discard(tag)
+    conn.execute("UPDATE runs SET tags = ? WHERE id = ?", (",".join(sorted(existing)) or None, run_id))
+    conn.commit()
+    conn.close()
+
+
 def _connect(db_path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row

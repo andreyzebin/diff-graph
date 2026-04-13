@@ -973,8 +973,8 @@ Phase 2 (full connectors):
   8.4b webhook POST/DELETE /api/routes        ← Medium
   8.2b pr-analytics compare/trend by hash     ← Medium
 
-Phase 3 (polish):
-  8.4c webhook hot reload                     ← Medium
-  8.1b tracing run tagging                    ← Small
-  8.3d benchmarks per-capability regression   ← Medium
+Phase 3 (polish): ✅ Done
+  8.4c webhook hot reload                     ✅
+  8.1b tracing run tagging                    ✅
+  8.3d benchmarks per-capability regression   ✅
 ```
