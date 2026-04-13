@@ -584,9 +584,13 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 4.3 | Trace search CLI | Low | Small | Later |
 | 5.2 | Model comparison | Low | Medium | Later |
 | 7.1 | `dg:` tag in comments (done) | **Done** | | |
-| 7.2 | Tracing subproject CLI | High | Medium | **Do first** |
-| 7.3 | pr-analytics `dg:` tag extraction | **Critical** | Small | **Do first** |
-| 7.4 | BenchmarkConnector + capability breakdown | High | Medium | **Do first** |
+| 8.2 | pr-analytics `dg:` tag extraction | **Critical** | Small | **Do first** |
+| 8.3a | benchmarks `--prompts` URI | High | Small | **Do first** |
+| 8.3b | benchmarks capability tags | High | Small | **Do first** |
+| 8.4a | webhook `PATCH /api/routes/{name}` | High | Small | **Do first** |
+| 8.1 | Tracing subproject CLI | High | Medium | Do second |
+| 8.3c | benchmarks capability breakdown | High | Medium | Do second |
+| 8.4b | webhook POST/DELETE routes API | High | Medium | Do second |
 | 7.5 | Evolution core: Branch, Population, tick() | **High** | Large | Do second |
 | 7.6 | MutationAgent (capability-driven) | High | Medium | Do second |
 | 7.7 | MergeAgent (semantic prompt merge) | High | Medium | Do third |
@@ -874,3 +878,103 @@ null_safety    0.90   0.92     0.93     0.88
 ```
 
 Evolution is continuous. Branches compete for weeks. Best spawn children. Weakest die. Dominant branches merge. System improves generation by generation, driven by benchmark capabilities + business metrics + efficiency.
+
+---
+
+## 8. External System Gaps (prerequisites for evolution)
+
+Audit of what each connected system needs before evolution connectors work.
+
+### 8.1 Tracing — needs CLI subproject
+
+**Exists:** SQLite DB (runs + events), JSON API, WebSocket live, prompt_source/prompt_hash columns.
+
+**Missing:**
+
+| Gap | What to build | Effort |
+|---|---|---|
+| No CLI | `tracing/` subproject with typer CLI | Medium |
+| No metrics aggregation | `tracing metrics --hash X` → tokens_per_finding, convergence_steps, findings_avg, cache_ratio, tool_waste | Medium |
+| No compare | `tracing compare --a X --b Y` → delta per metric + p-value + runs count | Medium |
+| No API endpoint | `GET /api/runs/metrics?hash=X` on trace server | Small |
+| No run tagging | Tag runs for filtering (experiment, stable, benchmark) | Small |
+
+**Priority:** High — evolution tick() calls tracing on every cycle.
+
+### 8.2 pr-analytics — needs `dg:` tag extraction
+
+**Exists:** Comment storage, reactions, LLM-judge verdicts, semantic_acceptance_rate, sql command.
+
+**Missing:**
+
+| Gap | What to build | Effort |
+|---|---|---|
+| No `dg:` tag parsing | `extract_dg_tag(text) → {gen, hash, run}` regex parser | Small |
+| No tag in DB | Extract and store `dg_gen`, `dg_hash`, `dg_run` on comment cache | Small |
+| No acceptance by hash | `acceptance --dg-hash X` command → acceptance_rate, false_positive_rate, feedback_rate | Small |
+| No compare by hash | `compare --dg-hash-a X --dg-hash-b Y` → delta + significance | Medium |
+| No trend by hash | `trend --dg-hashes X,Y,Z` → acceptance over time per generation | Medium |
+
+**Priority:** Critical — this is the bridge between trace DB and business outcomes. Without it, fitness function has no business signal per prompt_hash.
+
+### 8.3 code-review-benchmarks — needs `--prompts` + capability breakdown
+
+**Exists:** Scenario runner, LLM judge, per-scenario scoring, A/B comparison, results storage.
+
+**Missing:**
+
+| Gap | What to build | Effort |
+|---|---|---|
+| No `--prompts` URI | Add `--prompts` arg to `run` command → pass to agent CLI trigger | Small |
+| No capability tags | Add `capabilities: [security, business_logic]` to scenario YAML | Small |
+| No capability breakdown | Aggregate scores by capability tag across scenarios | Medium |
+| No weaknesses API | `weaknesses --run X` → lowest scoring capabilities | Small |
+| No per-capability regression | Compare capability scores between runs, not just overall | Medium |
+
+Scenario YAML change:
+```yaml
+metadata:
+  difficulty: medium
+  language: java
+  capabilities: [business_logic, null_safety, transaction_safety]  # NEW
+```
+
+**Priority:** High — benchmark capability scores drive MutationAgent's axis selection.
+
+### 8.4 Webhook router — needs route management API
+
+**Exists:** `POST /webhook`, `GET /routes` (read-only), `GET /health`, TOML config.
+
+**Missing:**
+
+| Gap | What to build | Effort |
+|---|---|---|
+| No create route | `POST /api/routes` → add route + agent in memory + persist | Medium |
+| No update route | `PATCH /api/routes/{name}` → update sample%, agent | Small |
+| No delete route | `DELETE /api/routes/{name}` → remove route | Small |
+| No hot reload | Apply changes without restart (file watcher or `/api/reload`) | Medium |
+| No agent management | `POST /api/agents` → register new agent config | Small |
+| No validation | `POST /api/validate-route` → test when expression | Small |
+
+**Priority:** High — evolution deploy/undeploy/rebalance all need programmatic route management.
+
+### Implementation order
+
+```
+Phase 1 (unblock evolution core):
+  8.2  pr-analytics dg: tag extraction        ← Critical, small
+  8.3a benchmarks --prompts URI               ← Small
+  8.3b benchmarks capability tags in YAML     ← Small
+  8.4a webhook PATCH /api/routes/{name}       ← Small (sample% update)
+
+Phase 2 (full connectors):
+  8.1  tracing CLI + metrics/compare          ← Medium
+  8.3c benchmarks capability breakdown API    ← Medium
+  8.4b webhook POST/DELETE /api/routes        ← Medium
+  8.2b pr-analytics compare/trend by hash     ← Medium
+
+Phase 3 (polish):
+  8.4c webhook hot reload                     ← Medium
+  8.1b tracing run tagging                    ← Small
+  8.3d benchmarks per-capability regression   ← Medium
+```
