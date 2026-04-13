@@ -191,7 +191,8 @@ def fetch_pr(
 
     auth_flag = ["-c", f"http.extraHeader=Authorization: Bearer {token}"]
     ssl_flags = _ssl_flags(ca_bundle, client_cert)
-    git_cfg = auth_flag + ssl_flags   # used only for the initial clone
+    # Disable credential helper to avoid "missing host field" on Windows
+    git_cfg = ["-c", "credential.helper="] + auth_flag + ssl_flags
 
     try:
         _run([
