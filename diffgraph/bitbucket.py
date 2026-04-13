@@ -111,6 +111,24 @@ def _git_base_env() -> dict:
     return env
 
 
+_IS_WINDOWS = __import__("platform").system() == "Windows"
+
+
+def _make_askpass(token: str) -> str:
+    """Create a temp askpass script that echoes the token. Returns script path."""
+    import stat
+    if _IS_WINDOWS:
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".bat", delete=False, prefix="git-askpass-")
+        f.write(f"@echo {token}\n")
+        f.close()
+    else:
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False, prefix="git-askpass-")
+        f.write(f"#!/bin/sh\necho '{token}'\n")
+        f.close()
+        os.chmod(f.name, stat.S_IRWXU)
+    return f.name
+
+
 def _ssl_flags(ca_bundle: str | None, client_cert: str | None) -> list[str]:
     """Return git -c flags for SSL CA and client cert."""
     flags: list[str] = []
@@ -189,19 +207,40 @@ def fetch_pr(
     # 3. Clone: blobless + single branch → fast, full working tree
     tmpdir = tempfile.mkdtemp(prefix="diffgraph-")
 
-    auth_flag = ["-c", f"http.extraHeader=Authorization: Bearer {token}"]
     ssl_flags = _ssl_flags(ca_bundle, client_cert)
-    # credential.helper= disables Windows credential manager that conflicts with extraHeader
-    git_cfg = ["-c", "credential.helper="] + auth_flag + ssl_flags
+    askpass_file = None
+
+    if _IS_WINDOWS:
+        # Windows: GIT_ASKPASS avoids credential manager conflict with extraHeader
+        askpass_file = _make_askpass(token)
+        git_cfg = ssl_flags
+    else:
+        # Linux/macOS: http.extraHeader works fine
+        git_cfg = ["-c", f"http.extraHeader=Authorization: Bearer {token}"] + ssl_flags
 
     try:
-        _run([
-            "git", *git_cfg,
-            "clone",
-            "--filter=blob:none",
-            "--single-branch", "--branch", from_branch,
-            clone_url, tmpdir,
-        ])
+        if askpass_file:
+            # Clone with askpass env
+            env = _git_base_env()
+            env["GIT_ASKPASS"] = askpass_file
+            result = subprocess.run(
+                ["git", *git_cfg, "clone", "--filter=blob:none",
+                 "--single-branch", "--branch", from_branch, clone_url, tmpdir],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"git command failed: git clone ...\n"
+                    f"stderr: {result.stderr.decode(errors='replace')}"
+                )
+        else:
+            _run([
+                "git", *git_cfg,
+                "clone",
+                "--filter=blob:none",
+                "--single-branch", "--branch", from_branch,
+                clone_url, tmpdir,
+            ])
 
         # Bake auth + SSL into the repo config so all subsequent git ops
         # (fetch, diff lazy-blob downloads) authenticate automatically.
@@ -230,10 +269,17 @@ def fetch_pr(
 
     except Exception:
         shutil.rmtree(tmpdir, ignore_errors=True)
+        if askpass_file:
+            os.unlink(askpass_file)
         raise
 
     def cleanup() -> None:
         shutil.rmtree(tmpdir, ignore_errors=True)
+        if askpass_file:
+            try:
+                os.unlink(askpass_file)
+            except OSError:
+                pass
 
     emit(f"Ready  repo={tmpdir}  diff={len(diff_text)} chars")
     return diff_text, tmpdir, cleanup, pr_meta
