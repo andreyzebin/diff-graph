@@ -23,6 +23,7 @@ class ScenarioResult:
     total_comments: int
     duration_seconds: float
     judge_summary: str
+    capabilities: list[str] = field(default_factory=list)
     judge_output: JudgeOutput | None = None
     run_at: datetime = field(default_factory=datetime.utcnow)
     error: str | None = None
@@ -74,5 +75,6 @@ def score_scenario(
         total_comments=total_count,
         duration_seconds=duration_seconds,
         judge_summary=judge_output.summary,
+        capabilities=scenario.metadata.capabilities,
         judge_output=judge_output,
     )

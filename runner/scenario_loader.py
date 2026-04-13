@@ -72,6 +72,7 @@ class ScenarioMetadata:
     language: str = "unknown"
     pr_size: str = "small"
     scenario_type: str = "bug"
+    capabilities: list[str] = field(default_factory=list)
     author: str = "team"
     created: str = ""
 
@@ -126,6 +127,7 @@ def load_scenario(path: Path) -> Scenario:
         language=meta_data.get("language", "unknown"),
         pr_size=meta_data.get("pr_size", "small"),
         scenario_type=meta_data.get("scenario_type", "bug"),
+        capabilities=meta_data.get("capabilities", []),
         author=meta_data.get("author", "team"),
         created=meta_data.get("created", ""),
     )
