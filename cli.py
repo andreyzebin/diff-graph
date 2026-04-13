@@ -66,9 +66,13 @@ def _make_llm_client(llm_cfg: dict):
     api_url = llm_cfg.get("api_url", "").strip()
     if api_url:
         kwargs["base_url"] = api_url
-    # Custom CA bundle for LLM endpoint (separate from REQUESTS_CA_BUNDLE for Bitbucket)
+    # Custom CA bundle or SSL disable for LLM endpoint
     ca_bundle = llm_cfg.get("ca_bundle", "").strip() or os.environ.get("LLM_CA_BUNDLE", "")
-    if ca_bundle:
+    no_ssl = os.environ.get("GIT_SSL_NO_VERIFY") == "1"  # set by --no-verify-ssl
+    if no_ssl:
+        import httpx
+        kwargs["http_client"] = httpx.Client(verify=False)
+    elif ca_bundle:
         import httpx
         kwargs["http_client"] = httpx.Client(verify=ca_bundle)
     return OpenAI(**kwargs)
@@ -92,6 +96,7 @@ def run(
     prompts:       Optional[str] = typer.Option(None,  "--prompts",            help="Prompt resource URI (path, file://, bitbucket://)"),
     log_level:     Optional[str] = typer.Option(None,  "--log-level",          help="Logging level: DEBUG, INFO, WARNING, ERROR"),
     verbose:       bool          = typer.Option(False, "--verbose", "-v",      help="Shortcut for --log-level DEBUG (shows HTTP, LLM calls)"),
+    no_verify_ssl: bool          = typer.Option(False, "--no-verify-ssl",      help="Disable SSL verification for all connections (LLM + Bitbucket)"),
 ):
     """
     Run a multi-agent PR review and print structured findings.
@@ -114,6 +119,17 @@ def run(
         logging.getLogger("urllib3").setLevel(logging.DEBUG)
     else:
         logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+    # Disable SSL verification globally
+    if no_verify_ssl:
+        import ssl
+        ssl._create_default_context = lambda *a, **kw: ssl.create_default_context()
+        # urllib3 / requests
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        os.environ["PYTHONHTTPSVERIFY"] = "0"
+        # git operations
+        os.environ["GIT_SSL_NO_VERIFY"] = "1"
 
     cfg = _load_config()
     llm_cfg    = cfg.get("llm", {})

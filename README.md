@@ -170,6 +170,7 @@ python cli.py run --repo /path/to/service --base abc123 --source def456 --output
 | `--prompts` | Prompt resource URI (path, `file://`, `bitbucket://`) |
 | `--log-level` | `DEBUG`, `INFO`, `WARNING` (default), `ERROR` |
 | `-v` / `--verbose` | Shortcut for `--log-level DEBUG` |
+| `--no-verify-ssl` | Disable SSL verification for all connections (LLM, Bitbucket, git) |
 
 ### Logging levels
 
