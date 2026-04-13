@@ -96,6 +96,22 @@ async def api_runs():
     return JSONResponse(content=runs)
 
 
+@app.get("/api/metrics")
+async def api_metrics(hash: str, since: str = None):
+    """Aggregate metrics for a prompt hash."""
+    from tracing.query import get_metrics
+    m = get_metrics(hash, since=since)
+    return JSONResponse(content=m.to_dict())
+
+
+@app.get("/api/compare")
+async def api_compare(a: str, b: str):
+    """Compare two prompt hashes."""
+    from tracing.query import compare
+    c = compare(a, b)
+    return JSONResponse(content=c.to_dict())
+
+
 @app.get("/api/runs/{run_id}/json")
 async def api_run_json(run_id: str):
     """Full trace data as JSON."""

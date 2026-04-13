@@ -588,9 +588,9 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 8.3a | ~~benchmarks `--prompts` URI~~ | **Done** | | |
 | 8.3b | ~~benchmarks capability tags~~ | **Done** | | |
 | 8.4a | ~~webhook route management API~~ | **Done** | | |
-| 8.1 | Tracing subproject CLI | High | Medium | Do second |
-| 8.3c | benchmarks capability breakdown | High | Medium | Do second |
-| 8.4b | webhook POST/DELETE routes API | High | Medium | Do second |
+| 8.1 | ~~Tracing subproject CLI~~ | **Done** | | |
+| 8.3c | ~~benchmarks capability breakdown~~ | **Done** | | |
+| 8.4b | ~~webhook POST/DELETE routes API~~ | **Done** (in 8.4a) | | |
 | 7.5 | Evolution core: Branch, Population, tick() | **High** | Large | Do second |
 | 7.6 | MutationAgent (capability-driven) | High | Medium | Do second |
 | 7.7 | MergeAgent (semantic prompt merge) | High | Medium | Do third |
