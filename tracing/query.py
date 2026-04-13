@@ -43,13 +43,27 @@ class Comparison:
         }
 
 
+def _resolve_hash(conn: sqlite3.Connection, prefix: str) -> str:
+    """Resolve hash prefix to full hash. Returns prefix if no match or ambiguous."""
+    if len(prefix) >= 32:
+        return prefix
+    rows = conn.execute(
+        "SELECT DISTINCT prompt_hash FROM runs WHERE prompt_hash LIKE ? LIMIT 2",
+        (prefix + "%",),
+    ).fetchall()
+    if len(rows) == 1:
+        return rows[0][0]
+    return prefix
+
+
 def get_metrics(
     prompt_hash: str,
     db_path: str | Path = DEFAULT_DB_PATH,
     since: str | None = None,
 ) -> Metrics:
-    """Aggregate metrics for runs with given prompt_hash."""
+    """Aggregate metrics for runs with given prompt_hash (prefix match)."""
     conn = _connect(db_path)
+    prompt_hash = _resolve_hash(conn, prompt_hash)
     where = "WHERE prompt_hash = ?"
     params: list = [prompt_hash]
     if since:
@@ -121,8 +135,9 @@ def get_runs(
     db_path: str | Path = DEFAULT_DB_PATH,
     limit: int = 50,
 ) -> list[dict]:
-    """List runs for a prompt hash."""
+    """List runs for a prompt hash (prefix match)."""
     conn = _connect(db_path)
+    prompt_hash = _resolve_hash(conn, prompt_hash)
     rows = conn.execute("""
         SELECT id, started_at, finished_at, model, findings_count,
                total_tokens_paid, status, prompt_source, prompt_hash
@@ -138,7 +153,11 @@ def compare(
     hash_b: str,
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> Comparison:
-    """Compare two prompt generations."""
+    """Compare two prompt generations (prefix match)."""
+    conn = _connect(db_path)
+    hash_a = _resolve_hash(conn, hash_a)
+    hash_b = _resolve_hash(conn, hash_b)
+    conn.close()
     a = get_metrics(hash_a, db_path)
     b = get_metrics(hash_b, db_path)
 
