@@ -88,6 +88,7 @@ docker run -d --name diffgraph -p 8000:8000 -p 8081:8080 \
 | `WEBHOOK_CONFIG` | No | Path to TOML config (default: /app/webhook.toml) |
 | `WEBHOOK_PORT` | No | Webhook server port (default: 8000) |
 | `TRACE_PORT` | No | Trace viewer port (default: 8080) |
+| `TRACE_BASE_PATH` | No | URL prefix for trace viewer behind reverse proxy (e.g. `/evo/traces-ui`) |
 | `NO_PROXY` | If needed | Comma-separated no-proxy hosts |
 
 ## Ports
@@ -175,6 +176,44 @@ curl -X POST http://localhost:8000/webhook \
 ### Trace viewer
 
 Open http://localhost:8081 in browser to see run history and agent traces.
+
+## Behind nginx (reverse proxy)
+
+Deploy with path-based routing for corporate environments:
+
+```bash
+docker run -d --name diffgraph \
+  -e TRACE_BASE_PATH=/evo/traces-ui \
+  -e BITBUCKET_SERVER_BEARER_TOKEN=your-token \
+  -e LLM_BASE_URL=https://api.deepseek.com/v1 \
+  -e LLM_API_KEY=sk-your-key \
+  diffgraph
+```
+
+nginx config:
+
+```nginx
+# Webhook (no prefix needed — Bitbucket sends to this URL directly)
+location /evo/webhook {
+    proxy_pass http://diffgraph:8000/webhook;
+}
+
+# Trace viewer (with path prefix)
+location /evo/traces-ui/ {
+    proxy_pass http://diffgraph:8080/;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+```
+
+Access:
+- Bitbucket webhook URL: `https://your-company.com/evo/webhook`
+- Trace viewer: `https://your-company.com/evo/traces-ui/`
+
+Without `TRACE_BASE_PATH` — all paths from root (default, no proxy needed).
 
 ## Logs
 
