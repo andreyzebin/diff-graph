@@ -59,5 +59,6 @@ metadata:
   language: java
   pr_size: small
   scenario_type: bug
+  capabilities: [null_safety, data_integrity, business_logic]
   author: "team"
   created: "2026-03-30"

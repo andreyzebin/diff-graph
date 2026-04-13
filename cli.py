@@ -132,10 +132,11 @@ def run(
     dry_run: bool = typer.Option(False, "--dry-run", help="Load scenarios without calling agent"),
     compare_with: Optional[str] = typer.Option(None, "--compare-with", help="Compare with run ID or 'last'"),
     agent_url: Optional[str] = typer.Option(None, "--agent-url", help="Override agent URL from config"),
+    prompts: Optional[str] = typer.Option(None, "--prompts", help="Prompt resource URI (passed to agent CLI as --prompts)"),
     no_verify_ssl: bool = typer.Option(False, "--no-verify-ssl", help="Skip TLS certificate verification (corporate self-signed certs)"),
 ):
     """Run benchmark scenarios."""
-    asyncio.run(_run_async(scenario, tag or [], dry_run, compare_with, agent_url, no_verify_ssl))
+    asyncio.run(_run_async(scenario, tag or [], dry_run, compare_with, agent_url, prompts, no_verify_ssl))
 
 
 async def _run_async(
@@ -144,6 +145,7 @@ async def _run_async(
     dry_run: bool,
     compare_with: str | None,
     agent_url_override: str | None,
+    prompts_override: str | None = None,
     no_verify_ssl: bool = False,
 ):
     from bitbucket import build_proxy
@@ -156,6 +158,11 @@ async def _run_async(
     agent_cfg = cfg.get("agent", {})
     if agent_url_override:
         agent_cfg = {**agent_cfg, "base_url": agent_url_override}
+    # Inject --prompts into CLI trigger command if provided
+    if prompts_override and agent_cfg.get("trigger") == "cli":
+        cmd = agent_cfg.get("command", "")
+        if "--prompts" not in cmd:
+            agent_cfg = {**agent_cfg, "command": cmd + f' --prompts="{prompts_override}"'}
     agent_url = agent_cfg.get("base_url", "http://localhost:8080")
 
     bitbucket_connection = cfg.get("bitbucket", {}).get("connection", {})

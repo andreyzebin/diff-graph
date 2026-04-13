@@ -122,5 +122,6 @@ metadata:
   language: java
   pr_size: medium
   scenario_type: bug
+  capabilities: [business_logic, null_safety, transaction_safety, test_coverage]
   author: "team"
   created: "2026-03-30"
