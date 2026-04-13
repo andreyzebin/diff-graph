@@ -95,12 +95,9 @@ def _get_pr_meta(
     return _api_get(url, token, ca_bundle, client_cert)
 
 
-def _clone_url(server_url: str, project: str, repo: str, token: str = "") -> str:
-    """Build the HTTP clone URL with optional token auth embedded."""
+def _clone_url(server_url: str, project: str, repo: str) -> str:
+    """Build the HTTP clone URL: <server>/scm/<project_lower>/<repo>.git"""
     parsed = urlparse(server_url)
-    if token:
-        # x-token-auth:{token}@host — works with Bitbucket Server, avoids http.extraHeader
-        return f"{parsed.scheme}://x-token-auth:{token}@{parsed.netloc}{parsed.path}/scm/{project.lower()}/{repo}.git"
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path}/scm/{project.lower()}/{repo}.git"
 
 
@@ -186,16 +183,16 @@ def fetch_pr(
     }
     log.debug("fromRef=%s (%s)  toRef sha=%s", from_branch, from_sha, to_sha)
 
-    clone_url = _clone_url(server_url, project, repo, token=token)
-    # Log URL without token for safety
-    safe_url = _clone_url(server_url, project, repo)
-    emit(f"Cloning {safe_url}  branch={from_branch}")
+    clone_url = _clone_url(server_url, project, repo)
+    emit(f"Cloning {clone_url}  branch={from_branch}")
 
     # 3. Clone: blobless + single branch → fast, full working tree
     tmpdir = tempfile.mkdtemp(prefix="diffgraph-")
 
+    auth_flag = ["-c", f"http.extraHeader=Authorization: Bearer {token}"]
     ssl_flags = _ssl_flags(ca_bundle, client_cert)
-    git_cfg = ssl_flags  # auth via URL token, not http.extraHeader
+    # credential.helper= disables Windows credential manager that conflicts with extraHeader
+    git_cfg = ["-c", "credential.helper="] + auth_flag + ssl_flags
 
     try:
         _run([
@@ -206,8 +203,10 @@ def fetch_pr(
             clone_url, tmpdir,
         ])
 
-        # Bake SSL into the repo config so all subsequent git ops
-        # (fetch, diff lazy-blob downloads) work. Auth is in the origin URL.
+        # Bake auth + SSL into the repo config so all subsequent git ops
+        # (fetch, diff lazy-blob downloads) authenticate automatically.
+        _run(["git", "config", "http.extraHeader",
+              f"Authorization: Bearer {token}"], cwd=tmpdir)
         if ca_bundle:
             _run(["git", "config", "http.sslCAInfo", ca_bundle], cwd=tmpdir)
         if client_cert:
