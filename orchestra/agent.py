@@ -285,7 +285,10 @@ class Agent:
                     **step_params,
                 )
             except Exception as exc:
-                log.warning("agent '%s' step %d failed: %s", self.config.name, step, exc)
+                log.error("agent '%s' step %d LLM call failed: %s: %s",
+                          self.config.name, step, type(exc).__name__, exc)
+                log.debug("LLM params: model=%s url=%s", step_model,
+                          getattr(self.llm, '_base_url', getattr(self.llm, 'base_url', '?')))
                 break
 
             # Update budget

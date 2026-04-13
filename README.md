@@ -128,6 +128,30 @@ python cli.py run --repo /path/to/service --base abc123 --source def456 --output
 | `--max-steps` | Max ReAct tool calls |
 | `--max-tokens` | Max token budget |
 | `--prompts` | Prompt resource URI (path, `file://`, `bitbucket://`) |
+| `--log-level` | `DEBUG`, `INFO`, `WARNING` (default), `ERROR` |
+| `-v` / `--verbose` | Shortcut for `--log-level DEBUG` |
+
+### Logging levels
+
+```bash
+# Default — minimal output, only Rich live display
+python cli.py run --pr-url ...
+
+# INFO — agent actions (like live trace), LLM step results
+python cli.py run --pr-url ... --log-level INFO
+
+# DEBUG — everything: HTTP requests/responses, LLM params, VFS operations
+python cli.py run --pr-url ... -v
+
+# Troubleshoot connection issues
+python cli.py run --pr-url ... -v 2>&1 | grep -i "error\|fail\|connect\|timeout"
+```
+
+| Level | What you see |
+|---|---|
+| `WARNING` (default) | Errors and warnings only |
+| `INFO` | Agent actions: tool calls with args, agent start/done, reflections |
+| `DEBUG` | HTTP traffic (urllib3), LLM params (model, URL), VFS materialization |
 
 ### `trace` -- view execution traces
 

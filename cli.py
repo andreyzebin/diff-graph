@@ -85,6 +85,8 @@ def run(
     max_steps:     Optional[int] = typer.Option(None,  "--max-steps",          help="Max ReAct steps (default: from config)"),
     max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
     prompts:       Optional[str] = typer.Option(None,  "--prompts",            help="Prompt resource URI (path, file://, bitbucket://)"),
+    log_level:     Optional[str] = typer.Option(None,  "--log-level",          help="Logging level: DEBUG, INFO, WARNING, ERROR"),
+    verbose:       bool          = typer.Option(False, "--verbose", "-v",      help="Shortcut for --log-level DEBUG (shows HTTP, LLM calls)"),
 ):
     """
     Run a multi-agent PR review and print structured findings.
@@ -95,6 +97,19 @@ def run(
       python cli.py run --repo . --base HEAD~1
       python cli.py run --repo . --base main --source feature/my-branch
     """
+    import logging
+    level = log_level or ("DEBUG" if verbose else "WARNING")
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.WARNING),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    # HTTP debug: show urllib3 requests at DEBUG level
+    if level.upper() == "DEBUG":
+        logging.getLogger("urllib3").setLevel(logging.DEBUG)
+    else:
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
+
     cfg = _load_config()
     llm_cfg    = cfg.get("llm", {})
     review_cfg = cfg.get("review", {})
@@ -662,6 +677,9 @@ def _finding_to_comment(finding):
     return c
 
 
+_agent_log = __import__("logging").getLogger("diffgraph.agent")
+
+
 def _make_event_handler(model: str, live: Optional[Live]):
     """
     Returns an on_event callback that renders:
@@ -883,6 +901,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
         # Track root agent (first agent that starts)
         if event == "orchestrator_agent_started" and not _root_id["val"]:
             _root_id["val"] = aid
+            _agent_log.info("agent started: %s (%s)", kw.get("agent_name", "?"), aid[:8])
 
         # Register children
         if event == "orchestrator_agent_spawned":
@@ -1026,6 +1045,9 @@ def _make_event_handler(model: str, live: Optional[Live]):
             _actions.append(action_line)
             _current_stream["text"] = ""
             _update_live()
+            # Log for --log-level INFO
+            agent_name = kw.get("agent_name", "agent")
+            _agent_log.info("%s step %d %s(%s)", agent_name, step, tool, arg_str[:60])
 
         elif event == "orchestrator_reflect":
             step = kw.get("step", 0)
