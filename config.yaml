@@ -8,6 +8,7 @@ llm:
   # Separate from REQUESTS_CA_BUNDLE (which is for Bitbucket).
   # Also configurable via LLM_CA_BUNDLE env var.
   ca_bundle: ""
+  timeout: 600             # LLM request timeout in seconds
 
 review:
   max_steps: 40          # max ReAct tool calls per review
