@@ -57,3 +57,43 @@ def weaknesses(results: list, threshold: float = 0.7) -> list[CapabilityScore]:
         [c for c in caps if c.avg_score < threshold],
         key=lambda c: c.avg_score,
     )
+
+
+@dataclass
+class CapabilityRegression:
+    capability: str
+    old_score: float
+    new_score: float
+    diff: float
+    diff_pct: float
+    regressed: bool
+
+
+def compare_capabilities(
+    old_results: list,
+    new_results: list,
+    threshold_pct: float = -10.0,
+) -> list[CapabilityRegression]:
+    """Compare capability scores between two runs.
+
+    Returns per-capability diff. regressed=True if diff_pct < threshold_pct.
+    """
+    old_caps = {c.capability: c for c in aggregate_by_capability(old_results)}
+    new_caps = {c.capability: c for c in aggregate_by_capability(new_results)}
+    all_caps = sorted(set(old_caps) | set(new_caps))
+
+    regressions = []
+    for cap in all_caps:
+        old_score = old_caps[cap].avg_score if cap in old_caps else 0.0
+        new_score = new_caps[cap].avg_score if cap in new_caps else 0.0
+        diff = new_score - old_score
+        diff_pct = (diff / old_score * 100) if old_score > 0 else 0.0
+        regressions.append(CapabilityRegression(
+            capability=cap,
+            old_score=round(old_score, 3),
+            new_score=round(new_score, 3),
+            diff=round(diff, 3),
+            diff_pct=round(diff_pct, 1),
+            regressed=diff_pct < threshold_pct,
+        ))
+    return regressions
