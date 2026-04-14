@@ -292,7 +292,7 @@ def _get_commit_list(repo_path: str, base_ref: str, source_ref: str) -> str:
     try:
         result = subprocess.run(
             ["git", "log", "--oneline", "--reverse", f"{base_ref}..{source_ref}"],
-            cwd=repo_path, capture_output=True, text=True, check=True,
+            cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
         )
         lines = result.stdout.strip()
         return lines if lines else "(single commit)"
