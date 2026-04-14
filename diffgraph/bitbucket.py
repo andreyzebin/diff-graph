@@ -247,113 +247,74 @@ def fetch_pr(
     """
     Clone the PR source branch and produce a unified diff.
 
+    Uses PRProvider for API calls and RepoProvider for git operations.
+    Auth for each is independent.
+
     Returns:
-        (diff_text, repo_path, cleanup_fn)
-
-    cleanup_fn() removes the temp directory — call it when done.
+        (diff_text, repo_path, cleanup_fn, pr_meta)
     """
-    token      = token      or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
-    ca_bundle  = ca_bundle  or os.environ.get("REQUESTS_CA_BUNDLE")
-    client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
+    from .providers.bitbucket_pr import BitbucketPRProvider
+    from .providers.git_repo import GitRepoProvider, GitAuthConfig
 
-    if not token:
-        raise ValueError("BITBUCKET_SERVER_BEARER_TOKEN is required")
+    token      = token or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN") or ""
+    ca_bundle  = ca_bundle or os.environ.get("REQUESTS_CA_BUNDLE") or ""
+    client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT") or ""
 
     emit = on_status or (lambda msg: None)
 
-    # 1. Parse URL
+    # ── PR Provider (API) ─────────────────────────────────
+    pr_provider = BitbucketPRProvider(token=token, ca_bundle=ca_bundle, client_cert=client_cert)
+
     server_url, project, repo, pr_id = parse_pr_url(pr_url)
     emit(f"Fetching PR metadata: {server_url} / {project} / {repo} #{pr_id}")
 
-    # 2. Get PR metadata from API
-    pr = _get_pr_meta(server_url, project, repo, pr_id, token, ca_bundle, client_cert)
-    from_branch  = pr["fromRef"]["displayId"]
-    from_sha     = pr["fromRef"]["latestCommit"]
-    to_sha       = pr["toRef"]["latestCommit"]
-    pr_meta      = {
-        "title":       pr.get("title", ""),
-        "description": pr.get("description", "") or "",
-        "author":      pr.get("author", {}).get("user", {}).get("displayName", ""),
-        "from_branch": from_branch,
-        "to_branch":   pr["toRef"]["displayId"],
-        "pr_id":       pr_id,
-        "base_ref":    to_sha,
-        "source_ref":  from_sha,
+    meta = pr_provider.get_pr_meta(pr_url)
+    pr_meta = {
+        "title":       meta.title,
+        "description": meta.description,
+        "author":      meta.author,
+        "from_branch": meta.from_branch,
+        "to_branch":   meta.to_branch,
+        "pr_id":       meta.pr_id,
+        "base_ref":    meta.to_sha,
+        "source_ref":  meta.from_sha,
     }
-    log.debug("fromRef=%s (%s)  toRef sha=%s", from_branch, from_sha, to_sha)
+    log.debug("fromRef=%s (%s)  toRef sha=%s", meta.from_branch, meta.from_sha, meta.to_sha)
 
-    clone_url = _clone_url(server_url, project, repo)
-    emit(f"Cloning {clone_url}  branch={from_branch}")
+    # ── Repo Provider (git) ───────────────────────────────
+    git_auth = GitAuthConfig(
+        method=os.environ.get("DIFFGRAPH_GIT_AUTH", "auto"),
+        token=token,
+        username=os.environ.get("BITBUCKET_USERNAME", ""),
+        password=os.environ.get("BITBUCKET_PASSWORD", ""),
+        ca_bundle=ca_bundle,
+        client_cert=client_cert,
+    )
+    git = GitRepoProvider(auth=git_auth)
 
-    # 3. Clone: blobless + single branch → fast, full working tree
+    clone_url = pr_provider.clone_url(pr_url)
+    emit(f"Cloning {clone_url}  branch={meta.from_branch}")
+
     tmpdir = tempfile.mkdtemp(prefix="diffgraph-")
 
-    ssl_flags = _ssl_flags(ca_bundle, client_cert)
-    auth_method, askpass_file, auth_flags = _resolve_git_auth(token)
-    git_cfg = auth_flags + ssl_flags
-
     try:
-        env = _git_base_env()
-        if askpass_file:
-            env["GIT_ASKPASS"] = askpass_file
-        clone_cmd = [
-            "git", *git_cfg,
-            "clone", "--filter=blob:none",
-            "--single-branch", "--branch", from_branch,
-            clone_url, tmpdir,
-        ]
-        log.debug("git clone cmd: %s", " ".join(
-            a if "Bearer" not in a else "***" for a in clone_cmd
-        ))
-        result = subprocess.run(
-            clone_cmd, env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode(errors="replace")
-            log.error("git clone failed (exit %d): %s", result.returncode, stderr[:500])
-            raise RuntimeError(f"git command failed: git clone ...\nstderr: {stderr}")
+        git.clone(clone_url, meta.from_branch, tmpdir)
+        git.configure_repo(tmpdir)
 
-        # Bake auth + SSL into the repo config so all subsequent git ops
-        # (fetch, diff lazy-blob downloads) authenticate automatically.
-        log.debug("configuring repo auth + SSL in %s", tmpdir)
-        _run(["git", "config", "credential.helper", ""], cwd=tmpdir)
-        _run(["git", "config", "http.extraHeader",
-              f"Authorization: Bearer {token}"], cwd=tmpdir)
-        if ca_bundle:
-            _run(["git", "config", "http.sslCAInfo", ca_bundle], cwd=tmpdir)
-        if client_cert:
-            _run(["git", "config", "http.sslCert", client_cert], cwd=tmpdir)
+        emit(f"Fetching base commit {meta.to_sha[:12]}…")
+        git.fetch(tmpdir, meta.to_sha)
 
-        # 4. Fetch base branch history (no depth limit — only commits+trees,
-        #    no blobs, so still fast). Full history is needed to find the
-        #    merge-base for a correct three-dot diff matching the PR UI.
-        emit(f"Fetching base commit {to_sha[:12]}…")
-        _run([
-            "git", "fetch", "--filter=blob:none",
-            "origin", to_sha,
-        ], cwd=tmpdir)
-
-        # 5. Three-dot diff: changes from merge-base to fromRef — matches PR UI.
         emit("Computing diff…")
-        diff_text = _run(
-            ["git", "diff", f"{to_sha}...{from_sha}"],
-            cwd=tmpdir,
-        )
+        diff_text = git.diff(tmpdir, meta.to_sha, meta.from_sha)
 
     except Exception:
         shutil.rmtree(tmpdir, ignore_errors=True)
-        if askpass_file:
-            os.unlink(askpass_file)
+        git.cleanup()
         raise
 
     def cleanup() -> None:
         shutil.rmtree(tmpdir, ignore_errors=True)
-        if askpass_file:
-            try:
-                os.unlink(askpass_file)
-            except OSError:
-                pass
+        git.cleanup()
 
     emit(f"Ready  repo={tmpdir}  diff={len(diff_text)} chars")
     return diff_text, tmpdir, cleanup, pr_meta

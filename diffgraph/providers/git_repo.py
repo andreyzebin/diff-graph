@@ -1,0 +1,243 @@
+"""
+Git repo provider — clone, fetch, diff with configurable auth.
+
+Auth methods (git.auth config or DIFFGRAPH_GIT_AUTH env):
+- "header"   — http.extraHeader with Bearer token (Linux default)
+- "askpass"  — GIT_ASKPASS with token (Windows with Bearer token)
+- "userpass" — GIT_ASKPASS with username/password
+- "interactive" — prompt for credentials, offer to save
+"""
+from __future__ import annotations
+
+import logging
+import os
+import stat
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+from .base import RepoProvider
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class GitAuthConfig:
+    method: str = ""        # header | askpass | userpass | interactive | auto
+    token: str = ""         # Bearer token (for header/askpass)
+    username: str = ""      # for userpass
+    password: str = ""      # for userpass
+    ca_bundle: str = ""
+    client_cert: str = ""
+
+
+class GitRepoProvider(RepoProvider):
+
+    def __init__(self, auth: GitAuthConfig | None = None):
+        self.auth = auth or _auto_auth_config()
+        self._askpass_file: str | None = None
+
+    def clone(self, url: str, branch: str, dest: str) -> None:
+        git_cfg, env = self._build_auth(url)
+        ssl_flags = self._ssl_flags()
+        cmd = ["git", *git_cfg, *ssl_flags, "clone", "--filter=blob:none",
+               "--single-branch", "--branch", branch, url, dest]
+        log.debug("git clone: %s", _safe_cmd(cmd))
+        self._run(cmd, env=env)
+
+    def fetch(self, repo_path: str, ref: str) -> None:
+        cmd = ["git", "fetch", "--filter=blob:none", "origin", ref]
+        log.debug("git fetch: %s", ref)
+        self._run(cmd, cwd=repo_path)
+
+    def diff(self, repo_path: str, base: str, source: str) -> str:
+        cmd = ["git", "diff", f"{base}...{source}"]
+        return self._run(cmd, cwd=repo_path)
+
+    def log_oneline(self, repo_path: str, base: str, source: str) -> str:
+        cmd = ["git", "log", "--oneline", "--reverse", f"{base}..{source}"]
+        try:
+            return self._run(cmd, cwd=repo_path).strip()
+        except Exception:
+            return "(unavailable)"
+
+    def configure_repo(self, repo_path: str) -> None:
+        """Bake auth + SSL into repo config for subsequent git ops."""
+        log.debug("configuring repo auth in %s", repo_path)
+        # Disable credential manager
+        self._run(["git", "config", "credential.helper", ""], cwd=repo_path)
+        # Auth
+        if self.auth.token:
+            self._run(["git", "config", "http.extraHeader",
+                        f"Authorization: Bearer {self.auth.token}"], cwd=repo_path)
+        # SSL
+        if self.auth.ca_bundle:
+            self._run(["git", "config", "http.sslCAInfo", self.auth.ca_bundle], cwd=repo_path)
+        if self.auth.client_cert:
+            self._run(["git", "config", "http.sslCert", self.auth.client_cert], cwd=repo_path)
+
+    def cleanup(self) -> None:
+        """Remove temp askpass script."""
+        if self._askpass_file:
+            try:
+                os.unlink(self._askpass_file)
+            except OSError:
+                pass
+            self._askpass_file = None
+
+    # ── Internal ──────────────────────────────────────────────
+
+    def _build_auth(self, url: str = "") -> tuple[list[str], dict]:
+        """Build git -c flags and env for auth. Tries methods in chain."""
+        env = _git_base_env()
+        method = self.auth.method
+
+        if method == "header" and self.auth.token:
+            log.info("git auth: http.extraHeader (Bearer token)")
+            return ["-c", f"http.extraHeader=Authorization: Bearer {self.auth.token}"], env
+
+        if method == "askpass" and self.auth.token:
+            self._askpass_file = _make_askpass_token(self.auth.token)
+            env["GIT_ASKPASS"] = self._askpass_file
+            log.info("git auth: GIT_ASKPASS with token")
+            return [], env
+
+        if method == "userpass" and self.auth.username:
+            self._askpass_file = _make_askpass_userpass(self.auth.username, self.auth.password)
+            env["GIT_ASKPASS"] = self._askpass_file
+            log.info("git auth: GIT_ASKPASS with username/password (user=%s)", self.auth.username)
+            return [], env
+
+        if method == "interactive":
+            username, password = _interactive_credentials()
+            if username:
+                self._askpass_file = _make_askpass_userpass(username, password)
+                env["GIT_ASKPASS"] = self._askpass_file
+                log.info("git auth: GIT_ASKPASS interactive (user=%s)", username)
+                return [], env
+
+        # Auto: try token header first, fall back
+        if method == "auto" or not method:
+            if self.auth.token:
+                log.info("git auth: auto → http.extraHeader (Bearer token)")
+                return ["-c", f"http.extraHeader=Authorization: Bearer {self.auth.token}"], env
+            if self.auth.username and self.auth.password:
+                self._askpass_file = _make_askpass_userpass(self.auth.username, self.auth.password)
+                env["GIT_ASKPASS"] = self._askpass_file
+                log.info("git auth: auto → GIT_ASKPASS username/password")
+                return [], env
+            # Interactive fallback
+            username, password = _interactive_credentials()
+            if username:
+                self._askpass_file = _make_askpass_userpass(username, password)
+                env["GIT_ASKPASS"] = self._askpass_file
+                return [], env
+
+        log.warning("git auth: no credentials configured")
+        return [], env
+
+    def _ssl_flags(self) -> list[str]:
+        flags = []
+        if self.auth.ca_bundle:
+            flags += ["-c", f"http.sslCAInfo={self.auth.ca_bundle}"]
+        if self.auth.client_cert:
+            flags += ["-c", f"http.sslCert={self.auth.client_cert}"]
+        return flags
+
+    def _run(self, args: list[str], cwd: str | None = None, env: dict | None = None) -> str:
+        run_env = env or _git_base_env()
+        result = subprocess.run(
+            args, env=run_env, cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace")
+            log.error("git failed (exit %d): %s", result.returncode, stderr[:300])
+            raise RuntimeError(f"git command failed: {_safe_cmd(args)}\nstderr: {stderr}")
+        return result.stdout.decode(errors="replace")
+
+
+# ── Helpers ───────────────────────────────────────────────────
+
+def _git_base_env() -> dict:
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = "echo"
+    return env
+
+
+def _auto_auth_config() -> GitAuthConfig:
+    """Build auth config from environment variables."""
+    return GitAuthConfig(
+        method=os.environ.get("DIFFGRAPH_GIT_AUTH", "auto"),
+        token=(os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN", "")
+               or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN", "")),
+        username=os.environ.get("BITBUCKET_USERNAME", ""),
+        password=os.environ.get("BITBUCKET_PASSWORD", ""),
+        ca_bundle=os.environ.get("REQUESTS_CA_BUNDLE", ""),
+        client_cert=(os.environ.get("BITBUCKET_SERVER_CLIENT_CERT", "")
+                     or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT", "")),
+    )
+
+
+_TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
+
+
+def _make_askpass_token(token: str) -> str:
+    return _write_askpass(
+        _TEMPLATES_DIR / "git-askpass.sh",
+        {"{{ token }}": token},
+    )
+
+
+def _make_askpass_userpass(username: str, password: str) -> str:
+    return _write_askpass(
+        _TEMPLATES_DIR / "git-askpass-userpass.sh",
+        {"{{ username }}": username, "{{ password }}": password},
+    )
+
+
+def _write_askpass(template_path: Path, replacements: dict) -> str:
+    text = template_path.read_text()
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    f = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".sh", delete=False, prefix="git-askpass-",
+    )
+    f.write(text)
+    f.close()
+    os.chmod(f.name, stat.S_IRWXU)
+    log.debug("askpass script: %s", f.name)
+    return f.name
+
+
+def _interactive_credentials() -> tuple[str, str]:
+    import getpass
+    print("\nNo git credentials found.")
+    username = input("  Username: ").strip()
+    password = getpass.getpass("  Password: ").strip()
+    if username and password:
+        save = input("  Save to .env? [y/N]: ").strip().lower()
+        if save == "y":
+            _save_to_env(username, password)
+    return username, password
+
+
+def _save_to_env(username: str, password: str) -> None:
+    env_path = Path(".env")
+    lines = []
+    if env_path.exists():
+        lines = env_path.read_text().splitlines()
+    lines = [l for l in lines
+             if not l.lstrip("export ").startswith("BITBUCKET_USERNAME=")
+             and not l.lstrip("export ").startswith("BITBUCKET_PASSWORD=")]
+    lines.append(f"export BITBUCKET_USERNAME={username}")
+    lines.append(f"export BITBUCKET_PASSWORD={password}")
+    env_path.write_text("\n".join(lines) + "\n")
+    print(f"  Saved to {env_path.resolve()}")
+
+
+def _safe_cmd(args: list[str]) -> str:
+    """Redact tokens from command for logging."""
+    return " ".join(a if "Bearer" not in a else "***" for a in args)
