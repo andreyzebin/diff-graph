@@ -112,11 +112,14 @@ class GitRepoProvider(RepoProvider):
         method = self.auth.method
         candidates: list[tuple[str, list[str], dict]] = []
 
+        # All methods include credential.helper= to disable Windows credential manager
+        disable_cred = ["-c", "credential.helper="]
+
         if method in ("header", "auto", "") and self.auth.token:
             env = _git_base_env()
             candidates.append((
                 "header",
-                ["-c", f"http.extraHeader=Authorization: Bearer {self.auth.token}"],
+                disable_cred + ["-c", f"http.extraHeader=Authorization: Bearer {self.auth.token}"],
                 env,
             ))
 
@@ -124,13 +127,13 @@ class GitRepoProvider(RepoProvider):
             env = _git_base_env()
             askpass = _make_askpass_token(self.auth.token)
             env["GIT_ASKPASS"] = askpass
-            candidates.append(("askpass-token", [], env))
+            candidates.append(("askpass-token", disable_cred, env))
 
         if method in ("userpass", "auto", "") and self.auth.username and self.auth.password:
             env = _git_base_env()
             askpass = _make_askpass_userpass(self.auth.username, self.auth.password)
             env["GIT_ASKPASS"] = askpass
-            candidates.append(("userpass", [], env))
+            candidates.append(("userpass", disable_cred, env))
 
         if method == "interactive" or (not candidates and method in ("auto", "")):
             username, password = _interactive_credentials()
