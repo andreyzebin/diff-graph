@@ -147,10 +147,8 @@ def fetch_pr(
 
     # ── Repo Provider (git) ───────────────────────────────
     git_auth = GitAuthConfig(
-        method=os.environ.get("DIFFGRAPH_GIT_AUTH", "auto"),
+        method=os.environ.get("DIFFGRAPH_GIT_AUTH", "header"),
         token=token,
-        username=os.environ.get("BITBUCKET_USERNAME", ""),
-        password=os.environ.get("BITBUCKET_PASSWORD", ""),
         ca_bundle=ca_bundle,
         client_cert=client_cert,
     )
