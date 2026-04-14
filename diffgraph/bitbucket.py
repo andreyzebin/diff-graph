@@ -112,21 +112,102 @@ def _git_base_env() -> dict:
     return env
 
 
-def _make_askpass(token: str) -> str:
-    """Create a temp askpass .sh script from template. Works on Linux, macOS, and Git Bash."""
-    import stat
-    template_path = Path(__file__).parent / "templates" / "git-askpass.sh"
-    template_text = template_path.read_text()
-    script_text = template_text.replace("{{ token }}", token)
+def _make_askpass_token(token: str) -> str:
+    """Askpass script that echoes token for any prompt."""
+    return _write_askpass(
+        Path(__file__).parent / "templates" / "git-askpass.sh",
+        {"{{ token }}": token},
+    )
 
+
+def _make_askpass_userpass(username: str, password: str) -> str:
+    """Askpass script that returns username or password based on prompt."""
+    return _write_askpass(
+        Path(__file__).parent / "templates" / "git-askpass-userpass.sh",
+        {"{{ username }}": username, "{{ password }}": password},
+    )
+
+
+def _write_askpass(template_path: Path, replacements: dict) -> str:
+    import stat
+    text = template_path.read_text()
+    for k, v in replacements.items():
+        text = text.replace(k, v)
     f = tempfile.NamedTemporaryFile(
         mode="w", suffix=".sh", delete=False, prefix="git-askpass-",
     )
-    f.write(script_text)
+    f.write(text)
     f.close()
     os.chmod(f.name, stat.S_IRWXU)
     log.debug("askpass script created: %s", f.name)
     return f.name
+
+
+def _resolve_git_auth(token: str | None) -> tuple[str, str | None, list[str]]:
+    """
+    Resolve git auth method. Returns (method_name, askpass_file, extra_git_cfg).
+
+    Auth chain:
+    1. Token + header mode (default)
+    2. Token + askpass mode (DIFFGRAPH_GIT_AUTH=askpass)
+    3. Username/password askpass (BITBUCKET_USERNAME + BITBUCKET_PASSWORD)
+    4. Interactive prompt (saves to .env)
+    """
+    auth_mode = os.environ.get("DIFFGRAPH_GIT_AUTH", "header")
+    bb_username = os.environ.get("BITBUCKET_USERNAME", "")
+    bb_password = os.environ.get("BITBUCKET_PASSWORD", "")
+
+    # 1. Token + header
+    if token and auth_mode == "header":
+        log.info("git auth: http.extraHeader (Bearer token)")
+        return "header", None, ["-c", f"http.extraHeader=Authorization: Bearer {token}"]
+
+    # 2. Token + askpass
+    if token and auth_mode == "askpass":
+        askpass = _make_askpass_token(token)
+        log.info("git auth: GIT_ASKPASS with token (%s)", askpass)
+        return "askpass", askpass, []
+
+    # 3. Username/password from env
+    if bb_username and bb_password:
+        askpass = _make_askpass_userpass(bb_username, bb_password)
+        log.info("git auth: GIT_ASKPASS with username/password (user=%s)", bb_username)
+        return "askpass", askpass, []
+
+    # 4. Interactive
+    if not token:
+        log.info("git auth: no token found, prompting for credentials")
+        import getpass
+        print("\nNo Bitbucket credentials found.")
+        bb_username = input("  Username: ").strip()
+        bb_password = getpass.getpass("  Password: ").strip()
+        if bb_username and bb_password:
+            askpass = _make_askpass_userpass(bb_username, bb_password)
+            # Offer to save
+            save = input("  Save to .env? [y/N]: ").strip().lower()
+            if save == "y":
+                _save_credentials_to_env(bb_username, bb_password)
+            return "askpass", askpass, []
+
+    # Fallback: no auth
+    log.warning("git auth: no credentials configured")
+    return "none", None, []
+
+
+def _save_credentials_to_env(username: str, password: str) -> None:
+    env_path = Path(".env")
+    lines = []
+    if env_path.exists():
+        lines = env_path.read_text().splitlines()
+    # Remove old entries
+    lines = [l for l in lines if not l.startswith("export BITBUCKET_USERNAME=")
+             and not l.startswith("export BITBUCKET_PASSWORD=")
+             and not l.startswith("BITBUCKET_USERNAME=")
+             and not l.startswith("BITBUCKET_PASSWORD=")]
+    lines.append(f"export BITBUCKET_USERNAME={username}")
+    lines.append(f"export BITBUCKET_PASSWORD={password}")
+    env_path.write_text("\n".join(lines) + "\n")
+    print(f"  Saved to {env_path.resolve()}")
 
 
 def _ssl_flags(ca_bundle: str | None, client_cert: str | None) -> list[str]:
@@ -208,16 +289,8 @@ def fetch_pr(
     tmpdir = tempfile.mkdtemp(prefix="diffgraph-")
 
     ssl_flags = _ssl_flags(ca_bundle, client_cert)
-    askpass_file = None
-    git_auth_method = os.environ.get("DIFFGRAPH_GIT_AUTH", "header")  # "header" or "askpass"
-
-    if git_auth_method == "askpass":
-        askpass_file = _make_askpass(token)
-        git_cfg = ssl_flags
-        log.info("git auth: GIT_ASKPASS=%s", askpass_file)
-    else:
-        git_cfg = ["-c", f"http.extraHeader=Authorization: Bearer {token}"] + ssl_flags
-        log.info("git auth: http.extraHeader (set DIFFGRAPH_GIT_AUTH=askpass for GIT_ASKPASS mode)")
+    auth_method, askpass_file, auth_flags = _resolve_git_auth(token)
+    git_cfg = auth_flags + ssl_flags
 
     try:
         env = _git_base_env()
