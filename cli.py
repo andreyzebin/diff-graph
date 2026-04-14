@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# Use OS trust store for SSL — picks up corporate VPN/proxy CA certificates
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 import json
 import os
 import re
