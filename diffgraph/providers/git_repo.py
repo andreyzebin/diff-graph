@@ -53,11 +53,27 @@ class GitRepoProvider(RepoProvider):
             except RuntimeError as exc:
                 last_err = exc
                 log.warning("git clone failed with %s: %s", method_name, str(exc)[:200])
-                # Clean up failed clone dir for retry
                 import shutil
                 shutil.rmtree(dest, ignore_errors=True)
                 import os as _os
                 _os.makedirs(dest, exist_ok=True)
+
+        # All methods failed → try interactive as last resort
+        if self.auth.method in ("auto", ""):
+            log.info("all auth methods failed, trying interactive credentials")
+            try:
+                username, password = _interactive_credentials()
+                if username:
+                    env = _git_base_env()
+                    askpass = _make_askpass_userpass(username, password)
+                    env["GIT_ASKPASS"] = askpass
+                    cmd = ["git", "-c", "credential.helper=", *ssl_flags,
+                           "clone", "--filter=blob:none",
+                           "--single-branch", "--branch", branch, url, dest]
+                    self._run(cmd, env=env)
+                    return
+            except RuntimeError as exc:
+                last_err = exc
 
         raise last_err or RuntimeError("git clone failed: no auth methods available")
 
