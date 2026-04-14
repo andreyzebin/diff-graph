@@ -8,8 +8,11 @@ try:
 except ImportError:
     pass
 
-import json
 import os
+# Force UTF-8 mode on Windows (avoids cp1251 crashes in subprocess)
+os.environ["PYTHONUTF8"] = "1"
+
+import json
 import re
 import sys
 from pathlib import Path
@@ -193,11 +196,11 @@ def run(
         try:
             _base_ref = subprocess.run(
                 ["git", "rev-parse", _base_ref], cwd=repo_path,
-                capture_output=True, text=True, encoding="utf-8", errors="replace", encoding="utf-8", errors="replace", check=True,
+                capture_output=True, text=True, check=True,
             ).stdout.strip()
             _source_ref = subprocess.run(
                 ["git", "rev-parse", _source_ref], cwd=repo_path,
-                capture_output=True, text=True, encoding="utf-8", errors="replace", encoding="utf-8", errors="replace", check=True,
+                capture_output=True, text=True, check=True,
             ).stdout.strip()
         except subprocess.CalledProcessError as exc:
             console.print(f"[red]Failed to resolve refs: {exc.stderr.strip()}[/red]")
@@ -205,7 +208,7 @@ def run(
         # Compute diff from refs
         diff_text = subprocess.run(
             ["git", "diff", f"{_base_ref}...{_source_ref}"],
-            cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=repo_path, capture_output=True, text=True,
         ).stdout
 
     if not diff_text.strip():

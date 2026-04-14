@@ -43,7 +43,7 @@ def get_changed_files(base_ref: str, source_ref: str, repo_path: str) -> list[st
     """Return list of files changed between two refs."""
     out = subprocess.run(
         ["git", "diff", "--name-only", base_ref, source_ref],
-        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+        cwd=repo_path, capture_output=True, text=True, check=True,
     )
     return [f for f in out.stdout.strip().splitlines() if f]
 
@@ -54,7 +54,7 @@ def build_virtual_file(
     """Build a VirtualFile from full-context unified diff."""
     result = subprocess.run(
         ["git", "diff", "-U99999", base_ref, source_ref, "--", path],
-        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+        cwd=repo_path, capture_output=True, text=True, check=True,
     )
     diff_output = result.stdout
 
@@ -177,14 +177,14 @@ def materialize_vfs(
     # Get all files in source ref
     all_files_out = subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", source_ref],
-        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+        cwd=repo_path, capture_output=True, text=True, check=True,
     )
     all_files = [f for f in all_files_out.stdout.strip().splitlines() if f]
 
     # Also get files only in base (deleted files)
     base_files_out = subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", base_ref],
-        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+        cwd=repo_path, capture_output=True, text=True, check=True,
     )
     base_only = set(base_files_out.stdout.strip().splitlines()) - set(all_files)
 
