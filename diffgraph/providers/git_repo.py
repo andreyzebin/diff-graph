@@ -76,6 +76,10 @@ class GitRepoProvider(RepoProvider):
         if self.auth.client_cert:
             self._run(["git", "config", "http.sslCert", self.auth.client_cert], cwd=repo_path)
 
+    def cleanup(self) -> None:
+        """No-op — simplified auth has no temp files to clean."""
+        pass
+
     # ── Internal ──────────────────────────────────────────────
 
     def _https_to_ssh(self, https_url: str) -> str:
