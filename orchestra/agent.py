@@ -137,6 +137,8 @@ class Agent:
             params["max_completion_tokens"] = lp.max_completion_tokens
         if lp.model:
             params["model"] = lp.model
+        if lp.tool_choice and lp.tool_choice != "required":
+            params["tool_choice"] = lp.tool_choice
         return params
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -262,6 +264,7 @@ class Agent:
                 step_params = dict(self.llm_params)
 
             step_model = step_params.pop("model", self.model)
+            step_tool_choice = step_params.pop("tool_choice", "required")
 
             # Stream callback
             _agent_name = self.config.name  # capture for closure
@@ -281,7 +284,7 @@ class Agent:
             try:
                 response = stream_llm(
                     self.llm, step_model, messages, current_tools_schema,
-                    tool_choice="required", on_token=_on_token,
+                    tool_choice=step_tool_choice, on_token=_on_token,
                     **step_params,
                 )
             except Exception as exc:
@@ -962,9 +965,10 @@ class Agent:
         done_tools = [t for t in tools_schema if t["function"]["name"] == "done"]
         if not done_tools:
             return None
+        lp = self.config.llm_params or LLMParamsConfig()
         try:
             response = stream_llm(self.llm, self.model, messages, done_tools,
-                                  tool_choice="required")
+                                  tool_choice=lp.tool_choice)
             msg = response.choices[0].message
             if msg.tool_calls:
                 args = json.loads(msg.tool_calls[0].function.arguments or "{}")

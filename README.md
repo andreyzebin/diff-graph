@@ -78,50 +78,35 @@ python cli.py run --pr-url ... --post-comments
 # LLM
 OPENAI_API_KEY=sk-...
 DEEPSEEK_API_KEY=sk-...
-LLM_CA_BUNDLE=/path/to/llm-ca.pem            # CA for LLM endpoint (optional)
 
-# Bitbucket — auth (pick one)
-BITBUCKET_SERVER_BEARER_TOKEN=...              # Option 1: Bearer token (Linux default)
-# BITBUCKET_USERNAME=john.doe                  # Option 2: Username/password
-# BITBUCKET_PASSWORD=secret                    #   (for Windows or when token doesn't work)
-
-# Bitbucket — TLS
+# Bitbucket Server
+BITBUCKET_SERVER_BEARER_TOKEN=...              # Bearer token for API + git clone
 REQUESTS_CA_BUNDLE=/path/to/ca.pem            # CA for Bitbucket (optional)
 BITBUCKET_SERVER_CLIENT_CERT=/path/to/client.pem  # mTLS client cert (optional)
 
-# Git auth mode (optional)
-# DIFFGRAPH_GIT_AUTH=askpass                   # Use GIT_ASKPASS instead of http.extraHeader
+# Git auth mode
+# DIFFGRAPH_GIT_AUTH=ssh                       # Use SSH instead of http.extraHeader
+# BITBUCKET_SSH_PORT=7999                      # SSH port (default 7999)
 ```
 
-### Bitbucket authentication
+### Git authentication
 
-DiffGraph tries credentials in this order:
+Two modes controlled by `DIFFGRAPH_GIT_AUTH`:
 
-| Priority | Env vars needed | Git method | Best for |
+| Mode | Env var | Git method | Best for |
 |---|---|---|---|
-| 1 | `BITBUCKET_SERVER_BEARER_TOKEN` | `http.extraHeader` | Linux, Docker |
-| 2 | `BITBUCKET_SERVER_BEARER_TOKEN` + `DIFFGRAPH_GIT_AUTH=askpass` | `GIT_ASKPASS` | Windows (Git Bash) if header mode fails |
-| 3 | `BITBUCKET_USERNAME` + `BITBUCKET_PASSWORD` | `GIT_ASKPASS` | Windows, when token auth not available |
-| 4 | (nothing) | Interactive prompt | First-time setup |
+| `header` (default) | `BITBUCKET_SERVER_BEARER_TOKEN` | `http.extraHeader` with Bearer token | Linux, Docker |
+| `ssh` | — | `ssh://git@server:port/...` via ssh-agent | Windows, SSH keys |
 
-**Linux / Docker** — use Bearer token (default):
+**Linux / Docker** — Bearer token (default):
 ```bash
 export BITBUCKET_SERVER_BEARER_TOKEN=ATBBxxxxxxxx
 ```
 
-**Windows (Git Bash)** — if token gives "credential missing host field":
+**Windows / SSH keys:**
 ```bash
-export BITBUCKET_USERNAME=john.doe
-export BITBUCKET_PASSWORD=secret
-```
-
-**First run without credentials** — interactive prompt:
-```
-No Bitbucket credentials found.
-  Username: john.doe
-  Password: ****
-  Save to .env? [y/N]: y
-  Saved to /home/user/repos/diff-graph/.env
+export DIFFGRAPH_GIT_AUTH=ssh
+# Optionally: export BITBUCKET_SSH_PORT=7999
 ```
 
 ### `config.local.yaml`
@@ -131,65 +116,35 @@ llm:
   api_url: "https://api.deepseek.com/v1"
   api_key: "${DEEPSEEK_API_KEY}"
   model: "deepseek-chat"
-  ca_bundle: "/path/to/llm-ca.pem"  # or use LLM_CA_BUNDLE env var
+  tool_choice: "required"    # "required" (default) or "auto" for models that don't support required
+  timeout: 600
 
 review:
   max_steps: 40
   max_tokens: 40000
 ```
 
-### Corporate TLS certificates
+### `tool_choice`
 
-Two separate CA bundles — Bitbucket and LLM may use different corporate CAs:
+Some LiteLLM-proxied models (e.g. `Qwen3-Coder-480B`) don't support `tool_choice="required"` and fail with `MidStreamFallbackError`. Set `tool_choice: "auto"` in `config.local.yaml`:
 
-| Variable | Config key | Used for |
-|---|---|---|
-| `REQUESTS_CA_BUNDLE` | — | Bitbucket Server API + git clone |
-| `LLM_CA_BUNDLE` | `llm.ca_bundle` | LLM API endpoint (OpenAI-compatible) |
-| `BITBUCKET_SERVER_CLIENT_CERT` | — | mTLS client cert for Bitbucket |
-
-**Convert `.crt` to `.pem`:**
-
-```bash
-# Single cert
-openssl x509 -in corporate-ca.crt -out corporate-ca.pem -outform PEM
-
-# Chain (multiple certs in one file)
-cat corporate-root-ca.crt intermediate-ca.crt > combined-ca.pem
-
-# From PKCS12 (.p12/.pfx) — extract CA chain
-openssl pkcs12 -in bundle.p12 -cacerts -nokeys -out ca-chain.pem
-
-# Verify it works
-openssl s_client -connect llm-endpoint.company.com:443 -CAfile corporate-ca.pem
+```yaml
+llm:
+  tool_choice: "auto"
 ```
 
-**Extract full CA chain from a live server:**
+Can also be set per-agent in `.prompt` files: `@llm: tool_choice=auto`.
 
-```bash
-# Grab all certificates from the TLS handshake
-openssl s_client -connect your-llm-endpoint.com:443 -showcerts </dev/null 2>/dev/null \
-  | awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{print}' > corporate-ca.pem
+### Corporate TLS
 
-# Verify it works
-openssl s_client -connect your-llm-endpoint.com:443 -CAfile corporate-ca.pem </dev/null 2>&1 \
-  | grep "Verify return code"
-# Should show: Verify return code: 0 (ok)
-```
+DiffGraph uses [truststore](https://pypi.org/project/truststore/) to automatically pick up OS-level CA certificates (corporate VPN, proxy CAs). No manual CA bundle configuration needed in most cases.
 
-This captures the entire chain (server cert + intermediates + root) as seen by the connection — works even when you don't know which CA issued the cert.
+For edge cases:
 
-**Test connection from Python:**
-
-```bash
-python -c "
-import httpx
-r = httpx.get('https://your-llm-endpoint.com/v1/models',
-              verify='corporate-ca.pem',
-              headers={'Authorization': 'Bearer YOUR_KEY'})
-print(r.status_code)
-"
-```
+| Variable | Used for |
+|---|---|
+| `REQUESTS_CA_BUNDLE` | Bitbucket Server API + git clone |
+| `BITBUCKET_SERVER_CLIENT_CERT` | mTLS client cert for Bitbucket |
 
 **If still failing** — use `--no-verify-ssl` as a quick workaround:
 ```bash
@@ -482,10 +437,7 @@ diffgraph/                   Code review domain
 +-- providers/               Pluggable provider abstractions
     +-- base.py              PRProvider (ABC) + RepoProvider (ABC)
     +-- bitbucket_pr.py      Bitbucket REST API (Bearer token)
-    +-- git_repo.py          Git clone/fetch/diff (auth chain: header → askpass → userpass)
-+-- templates/
-    +-- git-askpass.sh       Token askpass template
-    +-- git-askpass-userpass.sh  Username/password askpass template
+    +-- git_repo.py          Git clone/fetch/diff (header | ssh)
 +-- prompts/
     +-- lead.prompt          Three-phase review lead (analyze -> investigate -> judge)
     +-- reviewer.prompt      Focused investigator with SGR

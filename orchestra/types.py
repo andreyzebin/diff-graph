@@ -76,6 +76,7 @@ class LLMParamsConfig:
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
     max_completion_tokens: int = 4096
+    tool_choice: str = "required"  # "required" | "auto"
 
 
 # ── Agent ─────────────────────────────────────────────────────────────────────

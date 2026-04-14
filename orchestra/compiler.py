@@ -436,6 +436,8 @@ def _parse_llm_header(value: str) -> LLMParamsConfig:
                 params.presence_penalty = float(val)
             elif key == "max_completion_tokens":
                 params.max_completion_tokens = int(val)
+            elif key == "tool_choice":
+                params.tool_choice = val
 
     return params
 

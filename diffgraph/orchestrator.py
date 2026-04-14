@@ -91,6 +91,7 @@ def run_review(
     base_ref: str = "",
     source_ref: str = "",
     prompt_resource: Optional[str] = None,
+    tool_choice: str = "",
 ) -> tuple[list[ReviewFinding], ReviewContext]:
     _emit = on_event or (lambda *_, **__: None)
     diff_result = parse_diff(diff_text)
@@ -162,6 +163,14 @@ def run_review(
             PusherConfig(at=1.0, type=PusherType.FORCE_DONE),
         ],
     )
+
+    # Override tool_choice from global config (applies to all agents)
+    if tool_choice:
+        from orchestra.types import LLMParamsConfig
+        for ac in [config] + list(agent_registry.get_all_configs().values()):
+            if ac.llm_params is None:
+                ac.llm_params = LLMParamsConfig()
+            ac.llm_params.tool_choice = tool_choice
 
     # ── Register builtins and run ─────────────────────────────────────────
     sgr_tracker = SGRTracker()

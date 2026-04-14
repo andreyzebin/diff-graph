@@ -9,6 +9,7 @@ llm:
   # Also configurable via LLM_CA_BUNDLE env var.
   ca_bundle: ""
   timeout: 600             # LLM request timeout in seconds
+  tool_choice: "required"  # "required" (default) or "auto" for models that don't support required
 
 review:
   max_steps: 40          # max ReAct tool calls per review

@@ -248,6 +248,7 @@ def run(
         llm_model=effective_model,
         max_steps=effective_steps,
         max_tokens=effective_tokens,
+        tool_choice=llm_cfg.get("tool_choice", ""),
     )
 
     _root_agent_ref: dict = {"agent": None}

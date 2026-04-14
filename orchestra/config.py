@@ -156,6 +156,7 @@ def _parse_agent(name: str, d: dict) -> AgentConfig:
             frequency_penalty=lp.get("frequency_penalty", 0.0),
             presence_penalty=lp.get("presence_penalty", 0.0),
             max_completion_tokens=lp.get("max_completion_tokens", 4096),
+            tool_choice=lp.get("tool_choice", "required"),
         )
 
     return AgentConfig(
