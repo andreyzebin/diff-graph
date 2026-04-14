@@ -28,6 +28,7 @@ class GitAuthConfig:
     token: str = ""         # Bearer token (for header/askpass)
     username: str = ""      # for userpass
     password: str = ""      # for userpass
+    ssh_port: int = 7999    # Bitbucket Server SSH port
     ca_bundle: str = ""
     client_cert: str = ""
 
@@ -45,8 +46,15 @@ class GitRepoProvider(RepoProvider):
 
         for method_name, git_cfg, env in methods:
             try:
-                cmd = ["git", *git_cfg, *ssl_flags, "clone", "--filter=blob:none",
-                       "--single-branch", "--branch", branch, url, dest]
+                # SSH uses different URL, no SSL flags
+                if method_name == "ssh":
+                    clone_url = self._https_to_ssh(url)
+                    clone_ssl = []
+                else:
+                    clone_url = url
+                    clone_ssl = ssl_flags
+                cmd = ["git", *git_cfg, *clone_ssl, "clone", "--filter=blob:none",
+                       "--single-branch", "--branch", branch, clone_url, dest]
                 log.debug("git clone [%s]: %s", method_name, _safe_cmd(cmd))
                 self._run(cmd, env=env)
                 return  # success
@@ -145,6 +153,11 @@ class GitRepoProvider(RepoProvider):
             env["GIT_ASKPASS"] = askpass
             candidates.append(("askpass-token", disable_cred, env))
 
+        if method in ("ssh", "auto", ""):
+            # SSH via ssh-agent — no token/password needed, different transport
+            env = _git_base_env()
+            candidates.append(("ssh", [], env))
+
         if method in ("userpass", "auto", "") and self.auth.username and self.auth.password:
             env = _git_base_env()
             askpass = _make_askpass_userpass(self.auth.username, self.auth.password)
@@ -170,6 +183,23 @@ class GitRepoProvider(RepoProvider):
 
         log.info("git auth chain: %s", " → ".join(c[0] for c in candidates))
         return candidates
+
+    def _https_to_ssh(self, https_url: str) -> str:
+        """Convert HTTPS clone URL to SSH URL.
+
+        https://server/scm/project/repo.git → ssh://git@server:7999/project/repo.git
+        """
+        from urllib.parse import urlparse
+        parsed = urlparse(https_url)
+        # Bitbucket Server HTTPS: /scm/project/repo.git
+        # Bitbucket Server SSH:   /project/repo.git
+        path = parsed.path
+        if "/scm/" in path:
+            path = path.split("/scm/", 1)[1]
+            path = "/" + path
+        ssh_url = f"ssh://git@{parsed.hostname}:{self.auth.ssh_port}{path}"
+        log.debug("SSH URL: %s → %s", https_url, ssh_url)
+        return ssh_url
 
     def _ssl_flags(self) -> list[str]:
         flags = []
@@ -209,6 +239,7 @@ def _auto_auth_config() -> GitAuthConfig:
                or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN", "")),
         username=os.environ.get("BITBUCKET_USERNAME", ""),
         password=os.environ.get("BITBUCKET_PASSWORD", ""),
+        ssh_port=int(os.environ.get("BITBUCKET_SSH_PORT", "7999")),
         ca_bundle=os.environ.get("REQUESTS_CA_BUNDLE", ""),
         client_cert=(os.environ.get("BITBUCKET_SERVER_CLIENT_CERT", "")
                      or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT", "")),
