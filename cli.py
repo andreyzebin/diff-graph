@@ -1092,10 +1092,15 @@ def _make_event_handler(model: str, live: Optional[Live]):
 
             # Build result preview for meta-tools
             res_str = ""
+            result_count = kw.get("result_count")
             if tool in ("spawn_agent", "spawn_many") and result_preview:
                 # Show first part of output
                 preview = result_preview[:80].replace("{", "").replace("}", "").replace('"', "")
                 res_str = f" [dim]→ {preview}[/dim]"
+            elif result_preview.startswith("(no matches") or result_preview.startswith("(no results"):
+                res_str = " [dim]→ 0 results[/dim]"
+            elif result_count is not None:
+                res_str = f" [dim]→ {result_count} lines[/dim]"
 
             action_line = f"step {step}  {tool}"
             if arg_str:
@@ -1109,7 +1114,13 @@ def _make_event_handler(model: str, live: Optional[Live]):
             # Strip Rich markup for plain log
             import re as _re
             plain_args = _re.sub(r'\[/?[a-z ]+\]', '', arg_str)[:80]
-            _agent_log.info("%s: %s(%s)", agent_name, tool, plain_args)
+            if result_preview.startswith("(no matches") or result_preview.startswith("(no results"):
+                count_str = " → 0 results"
+            elif result_count is not None:
+                count_str = f" → {result_count} lines"
+            else:
+                count_str = ""
+            _agent_log.info("%s: %s(%s)%s", agent_name, tool, plain_args, count_str)
 
         elif event == "orchestrator_reflect":
             step = kw.get("step", 0)

@@ -402,13 +402,19 @@ class Agent:
                         tc_args = json.loads(tc.function.arguments or "{}")
                     except json.JSONDecodeError:
                         tc_args = {}
+                    if isinstance(result_text, list):
+                        r_count = len(result_text)
+                    elif isinstance(result_text, str) and "\n" in result_text:
+                        r_count = result_text.count("\n") + 1
+                    else:
+                        r_count = None
                     self.event_bus.emit(EventType.AGENT_TOOL_RESULT,
                                        agent_id=self.agent_id, agent_name=self.config.name,
                                        step=step, tool=tc.function.name,
                                        args=tc_args,
                                        result_len=len(result_text),
                                        result_preview=result_preview,
-                                       result_count=len(result_text) if isinstance(result_text, list) else None)
+                                       result_count=r_count)
                     step_record.tool_calls.append({"name": tc.function.name})
 
             if response.usage:
