@@ -75,12 +75,53 @@ python cli.py run --pr-url ... --post-comments
 ### `.env`
 
 ```bash
+# LLM
 OPENAI_API_KEY=sk-...
 DEEPSEEK_API_KEY=sk-...
-BITBUCKET_SERVER_BEARER_TOKEN=...
+LLM_CA_BUNDLE=/path/to/llm-ca.pem            # CA for LLM endpoint (optional)
+
+# Bitbucket — auth (pick one)
+BITBUCKET_SERVER_BEARER_TOKEN=...              # Option 1: Bearer token (Linux default)
+# BITBUCKET_USERNAME=john.doe                  # Option 2: Username/password
+# BITBUCKET_PASSWORD=secret                    #   (for Windows or when token doesn't work)
+
+# Bitbucket — TLS
 REQUESTS_CA_BUNDLE=/path/to/ca.pem            # CA for Bitbucket (optional)
-BITBUCKET_SERVER_CLIENT_CERT=/path/to/client.pem  # mTLS for Bitbucket (optional)
-LLM_CA_BUNDLE=/path/to/llm-ca.pem            # CA for LLM endpoint (optional, separate)
+BITBUCKET_SERVER_CLIENT_CERT=/path/to/client.pem  # mTLS client cert (optional)
+
+# Git auth mode (optional)
+# DIFFGRAPH_GIT_AUTH=askpass                   # Use GIT_ASKPASS instead of http.extraHeader
+```
+
+### Bitbucket authentication
+
+DiffGraph tries credentials in this order:
+
+| Priority | Env vars needed | Git method | Best for |
+|---|---|---|---|
+| 1 | `BITBUCKET_SERVER_BEARER_TOKEN` | `http.extraHeader` | Linux, Docker |
+| 2 | `BITBUCKET_SERVER_BEARER_TOKEN` + `DIFFGRAPH_GIT_AUTH=askpass` | `GIT_ASKPASS` | Windows (Git Bash) if header mode fails |
+| 3 | `BITBUCKET_USERNAME` + `BITBUCKET_PASSWORD` | `GIT_ASKPASS` | Windows, when token auth not available |
+| 4 | (nothing) | Interactive prompt | First-time setup |
+
+**Linux / Docker** — use Bearer token (default):
+```bash
+export BITBUCKET_SERVER_BEARER_TOKEN=ATBBxxxxxxxx
+```
+
+**Windows (Git Bash)** — if token gives "credential missing host field":
+```bash
+export BITBUCKET_USERNAME=john.doe
+export BITBUCKET_PASSWORD=secret
+```
+
+**First run without credentials** — interactive prompt:
+```
+No Bitbucket credentials found.
+  Username: john.doe
+  Password: ****
+  Save to .env? [y/N]: y
+  Saved to /home/user/repos/diff-graph/.env
 ```
 
 ### `config.local.yaml`
