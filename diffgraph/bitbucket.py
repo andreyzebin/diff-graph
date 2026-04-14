@@ -16,6 +16,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -106,26 +107,25 @@ def _clone_url(server_url: str, project: str, repo: str) -> str:
 def _git_base_env() -> dict:
     """Base env: disable interactive prompts."""
     env = os.environ.copy()
-    env["GIT_TERMINAL_PROMPT"] = "0"   # never ask for credentials
-    env["GIT_ASKPASS"] = "echo"        # return empty string for any git password prompt
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = "echo"
     return env
 
 
-_IS_WINDOWS = __import__("platform").system() == "Windows"
-
-
 def _make_askpass(token: str) -> str:
-    """Create a temp askpass script that echoes the token. Returns script path."""
+    """Create a temp askpass .sh script from template. Works on Linux, macOS, and Git Bash."""
     import stat
-    if _IS_WINDOWS:
-        f = tempfile.NamedTemporaryFile(mode="w", suffix=".bat", delete=False, prefix="git-askpass-")
-        f.write(f"@echo {token}\n")
-        f.close()
-    else:
-        f = tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False, prefix="git-askpass-")
-        f.write(f"#!/bin/sh\necho '{token}'\n")
-        f.close()
-        os.chmod(f.name, stat.S_IRWXU)
+    template_path = Path(__file__).parent / "templates" / "git-askpass.sh"
+    template_text = template_path.read_text()
+    script_text = template_text.replace("{{ token }}", token)
+
+    f = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".sh", delete=False, prefix="git-askpass-",
+    )
+    f.write(script_text)
+    f.close()
+    os.chmod(f.name, stat.S_IRWXU)
+    log.debug("askpass script created: %s", f.name)
     return f.name
 
 
@@ -208,42 +208,38 @@ def fetch_pr(
     tmpdir = tempfile.mkdtemp(prefix="diffgraph-")
 
     ssl_flags = _ssl_flags(ca_bundle, client_cert)
-    askpass_file = None
+    git_cfg = ssl_flags
 
-    if _IS_WINDOWS:
-        # Windows: GIT_ASKPASS avoids credential manager conflict with extraHeader
-        askpass_file = _make_askpass(token)
-        git_cfg = ssl_flags
-    else:
-        # Linux/macOS: http.extraHeader works fine
-        git_cfg = ["-c", f"http.extraHeader=Authorization: Bearer {token}"] + ssl_flags
+    # Auth via GIT_ASKPASS — works on Linux, macOS, and Git Bash on Windows.
+    # Avoids http.extraHeader which conflicts with Windows credential manager.
+    askpass_file = _make_askpass(token)
+    log.info("git auth: GIT_ASKPASS=%s", askpass_file)
 
     try:
-        if askpass_file:
-            # Clone with askpass env
-            env = _git_base_env()
-            env["GIT_ASKPASS"] = askpass_file
-            result = subprocess.run(
-                ["git", *git_cfg, "clone", "--filter=blob:none",
-                 "--single-branch", "--branch", from_branch, clone_url, tmpdir],
-                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"git command failed: git clone ...\n"
-                    f"stderr: {result.stderr.decode(errors='replace')}"
-                )
-        else:
-            _run([
-                "git", *git_cfg,
-                "clone",
-                "--filter=blob:none",
-                "--single-branch", "--branch", from_branch,
-                clone_url, tmpdir,
-            ])
+        env = _git_base_env()
+        env["GIT_ASKPASS"] = askpass_file
+        clone_cmd = [
+            "git", *git_cfg,
+            "clone", "--filter=blob:none",
+            "--single-branch", "--branch", from_branch,
+            clone_url, tmpdir,
+        ]
+        log.debug("git clone cmd: %s", " ".join(
+            a if "Bearer" not in a else "***" for a in clone_cmd
+        ))
+        result = subprocess.run(
+            clone_cmd, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace")
+            log.error("git clone failed (exit %d): %s", result.returncode, stderr[:500])
+            raise RuntimeError(f"git command failed: git clone ...\nstderr: {stderr}")
 
         # Bake auth + SSL into the repo config so all subsequent git ops
         # (fetch, diff lazy-blob downloads) authenticate automatically.
+        log.debug("configuring repo auth + SSL in %s", tmpdir)
+        _run(["git", "config", "credential.helper", ""], cwd=tmpdir)
         _run(["git", "config", "http.extraHeader",
               f"Authorization: Bearer {token}"], cwd=tmpdir)
         if ca_bundle:
