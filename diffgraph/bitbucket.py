@@ -208,16 +208,21 @@ def fetch_pr(
     tmpdir = tempfile.mkdtemp(prefix="diffgraph-")
 
     ssl_flags = _ssl_flags(ca_bundle, client_cert)
-    git_cfg = ssl_flags
+    askpass_file = None
+    git_auth_method = os.environ.get("DIFFGRAPH_GIT_AUTH", "header")  # "header" or "askpass"
 
-    # Auth via GIT_ASKPASS — works on Linux, macOS, and Git Bash on Windows.
-    # Avoids http.extraHeader which conflicts with Windows credential manager.
-    askpass_file = _make_askpass(token)
-    log.info("git auth: GIT_ASKPASS=%s", askpass_file)
+    if git_auth_method == "askpass":
+        askpass_file = _make_askpass(token)
+        git_cfg = ssl_flags
+        log.info("git auth: GIT_ASKPASS=%s", askpass_file)
+    else:
+        git_cfg = ["-c", f"http.extraHeader=Authorization: Bearer {token}"] + ssl_flags
+        log.info("git auth: http.extraHeader (set DIFFGRAPH_GIT_AUTH=askpass for GIT_ASKPASS mode)")
 
     try:
         env = _git_base_env()
-        env["GIT_ASKPASS"] = askpass_file
+        if askpass_file:
+            env["GIT_ASKPASS"] = askpass_file
         clone_cmd = [
             "git", *git_cfg,
             "clone", "--filter=blob:none",
