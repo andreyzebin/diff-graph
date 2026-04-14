@@ -149,6 +149,7 @@ def fetch_pr(
     git_auth = GitAuthConfig(
         method=os.environ.get("DIFFGRAPH_GIT_AUTH", "header"),
         token=token,
+        ssh_port=int(os.environ.get("BITBUCKET_SSH_PORT", "7999")),
         ca_bundle=ca_bundle,
         client_cert=client_cert,
     )
