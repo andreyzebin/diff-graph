@@ -225,56 +225,24 @@ def run_review(
 
 # ── Event adapter ─────────────────────────────────────────────────────────────
 
-def _adapt_events(on_event: Callable) -> Callable:
-    def handler(event_type: str, **kw):
-        # Pass agent identity through all events
-        aid = kw.get("agent_id", "")
-        aname = kw.get("agent_name", "")
+_EVENT_MAP = {
+    "agent_started":     "orchestrator_agent_started",
+    "agent_stream":      "orchestrator_stream",
+    "agent_step":        "orchestrator_step",
+    "agent_reflect":     "orchestrator_reflect",
+    "agent_tool_result": "orchestrator_result",
+    "agent_done":        "orchestrator_agent_done",
+    "agent_forced_done": "orchestrator_forced_done",
+    "agent_spawned":     "orchestrator_agent_spawned",
+}
 
-        if event_type == "agent_started":
-            on_event("orchestrator_agent_started",
-                     agent_id=aid, agent_name=aname, depth=kw.get("depth", 0))
-        elif event_type == "agent_stream":
-            on_event("orchestrator_stream",
-                     agent_id=aid, agent_name=aname, step=kw.get("step", 0),
-                     tool_name=kw.get("tool_name", ""),
-                     args_preview=kw.get("args_preview", ""), tok=kw.get("tok", 0))
-        elif event_type == "agent_step":
-            on_event("orchestrator_step",
-                     agent_id=aid, agent_name=aname, step=kw.get("step", 0),
-                     tool=kw.get("tool", ""),
-                     args=kw.get("args", {}),
-                     tok_in=kw.get("tok_in", 0), tok_out=kw.get("tok_out", 0),
-                     tok_cached=kw.get("tok_cached", 0))
-        elif event_type == "agent_reflect":
-            on_event("orchestrator_reflect",
-                     agent_id=aid, agent_name=aname, step=kw.get("step", 0),
-                     learned=kw.get("learned", ""),
-                     resolved_questions=kw.get("resolved_questions", []),
-                     questions_remaining=kw.get("questions_remaining", []),
-                     confidence=kw.get("confidence", ""),
-                     next_action=kw.get("next_action", ""))
-        elif event_type == "agent_tool_result":
-            on_event("orchestrator_result",
-                     agent_id=aid, agent_name=aname, step=kw.get("step", 0),
-                     tool=kw.get("tool", ""),
-                     args=kw.get("args", {}),
-                     result_len=kw.get("result_len", 0),
-                     result_preview=kw.get("result_preview", ""),
-                     result_count=kw.get("result_count"))
-        elif event_type == "agent_done":
-            on_event("orchestrator_agent_done",
-                     agent_id=aid, agent_name=aname)
-        elif event_type == "agent_forced_done":
-            on_event("orchestrator_forced_done",
-                     agent_id=aid, agent_name=aname, reason=kw.get("reason", ""),
-                     tok_in=kw.get("tok_in", 0), tok_out=kw.get("tok_out", 0),
-                     tok_cached=kw.get("tok_cached", 0))
-        elif event_type == "agent_spawned":
-            on_event("orchestrator_agent_spawned",
-                     parent_id=kw.get("parent_id", ""),
-                     child_id=kw.get("child_id", ""),
-                     agent_name=aname or kw.get("agent_name", ""))
+
+def _adapt_events(on_event: Callable) -> Callable:
+    """Rename orchestra events to orchestrator_* for CLI. All **kw pass through."""
+    def handler(event_type: str, **kw):
+        mapped = _EVENT_MAP.get(event_type)
+        if mapped:
+            on_event(mapped, **kw)
     return handler
 
 

@@ -21,7 +21,6 @@ from typing import Optional
 import typer
 from rich import box as rich_box
 from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -269,7 +268,7 @@ def run(
         # Note: _trace_db gets raw events via direct EventBus subscription
         # in orchestrator.py — no need to call it here (would duplicate)
 
-    event_handler = _make_event_handler(effective_model, None)
+    event_handler = _make_event_handler(effective_model)
 
     def _combined_handler(event: str, **kw):
         _capture_event(event, **kw)
@@ -723,25 +722,20 @@ def _finding_to_comment(finding):
 _agent_log = __import__("logging").getLogger("diffgraph.agent")
 
 
-def _make_event_handler(model: str, live: Optional[Live]):
+def _make_event_handler(model: str):
     """
-    Returns an on_event callback that renders:
-      - Permanent log: compiled agents, plan panel, final SGR summary, findings
-      - Live frame: actions list + SGR status, updated in-place at bottom of screen
+    Returns an on_event callback.
+
+    All agents (root and children) go through the same formatting path.
+    Only SGR tracking and summary panels apply to the root agent.
     """
 
     # ── State ─────────────────────────────────────────────────────────────
 
-    # Agent identity
-    _active: dict = {"agent_id": "", "agent_name": "agent"}
-    _root_id: dict = {"val": ""}  # first agent = root, only show root events
-    _child_ids: set = set()       # IDs of spawned children (suppressed)
+    _root_id: dict = {"val": ""}
+    _child_ids: set = set()
 
-    # Action log (accumulated, shown in live frame)
-    _actions: list[str] = []
-    _current_stream: dict = {"text": ""}
-
-    # SGR state — keyed by question ID
+    # SGR state — keyed by question ID (root agent only)
     _sgr: dict = {
         "questions":     {},   # id -> {text, age, step_opened}
         "conf_history":  [],   # [(step, conf), ...]
@@ -749,100 +743,16 @@ def _make_event_handler(model: str, live: Optional[Live]):
         "resolutions":   [],   # [(step, id, text, resolution, summary), ...]
     }
 
-    # Budget tracking
+    # Budget tracking (root agent only, for summary panel)
     _budget: dict = {"step": 0, "max_steps": 40, "tok_in": 0, "tok_out": 0, "tok_cached": 0}
-
-    # ── Render the live frame (SGR top, Actions bottom) ─────────────────────
 
     _cc = {"low": "red", "medium": "yellow", "high": "green"}
 
-    def _render_sgr_section(body: Text) -> None:
-        """Append SGR section to body."""
-        if not _sgr["conf_history"]:
-            return
+    # ── Render final SGR summary panel ────────────────────────────────────
 
-        body.append("SGR · ", style="dim bold")
-        for i, (_, conf) in enumerate(_sgr["conf_history"]):
-            if i:
-                body.append(" → ", style="dim")
-            body.append(conf, style=_cc.get(conf, "white"))
-        body.append("\n")
-
-        # Resolved (compact: icon + ID + text + answer)
-        if _sgr["resolutions"]:
-            for entry in _sgr["resolutions"][-6:]:
-                _, qid, q_text, res_type, summary = entry
-                icon = "✓" if res_type == "answered" else "✗"
-                color = "green" if res_type == "answered" else "dim"
-                label = f"{qid}: {q_text}" if qid != q_text else q_text
-                display_q = (label[:36] + "…") if len(label) > 38 else label
-                body.append(f"  {icon} ", style=f"bold {color}")
-                body.append(display_q, style="dim")
-                if summary and summary != "(implicit)":
-                    display_s = (summary[:55] + "…") if len(summary) > 57 else summary
-                    body.append(f" → {display_s}", style="dim italic")
-                body.append("\n")
-
-        # Open questions (keyed by ID, value is {text, age, step_opened})
-        if _sgr["questions"]:
-            body.append(f"\n  Open ({len(_sgr['questions'])})\n", style="bold")
-            for qid, qdata in _sgr["questions"].items():
-                text = qdata["text"] if isinstance(qdata, dict) else str(qdata)
-                age = qdata["age"] if isinstance(qdata, dict) else 0
-                step_opened = qdata.get("step_opened", "?") if isinstance(qdata, dict) else "?"
-                if age == 0:
-                    dot, color, tag = "●", "green", "  new"
-                elif age == 1:
-                    dot, color, tag = "●", "yellow", ""
-                else:
-                    dot, color, tag = "●", "red", "  ⚠"
-                label = f"{qid}: {text}" if qid != text else text
-                display_q = (label[:56] + "…") if len(label) > 58 else label
-                body.append(f"    {dot} ", style=f"bold {color}")
-                body.append(display_q, style="")
-                body.append(f"  step {step_opened}{tag}\n", style="dim")
-
-    def _render_live_stream() -> Text:
-        """Minimal live indicator: just the current stream line."""
-        agent_name = _active["agent_name"]
-        step = _budget["step"]
-        stream = _current_stream["text"]
-        if stream:
-            return Text.assemble(
-                (f"  {agent_name} ", "dim cyan"),
-                (stream, "dim"),
-            )
-        elif _actions:
-            # Show last action if no active stream
-            last = _actions[-1]
-            try:
-                return Text.from_markup(f"  [dim cyan]{agent_name}[/dim cyan] [dim]{last}[/dim]")
-            except Exception:
-                return Text(f"  {agent_name} {last}", style="dim")
-        return Text(f"  {agent_name} · step {step}…", style="dim")
-
-    def _update_live() -> None:
-        """Update live indicator with minimal text."""
-        if not live:
-            return
-        live.update(_render_live_stream())
-
-    def _update_stream_only() -> None:
-        """Throttled stream update."""
-        if not live:
-            return
-        now = _time.monotonic()
-        if now - _last_stream_update["t"] < 0.2:
-            return
-        _last_stream_update["t"] = now
-        live.update(_render_live_stream())
-
-    # ── Render final summary (SGR + compact actions, logged permanently) ────
-
-    def _render_final_summary() -> Panel:
+    def _render_final_summary(agent_name: str) -> Panel:
         body = Text()
 
-        # SGR section (compact — all resolutions, no open questions section)
         if _sgr["conf_history"]:
             body.append("SGR · ", style="dim bold")
             for i, (_, conf) in enumerate(_sgr["conf_history"]):
@@ -874,110 +784,96 @@ def _make_event_handler(model: str, live: Optional[Live]):
                     body.append("  ● ", style="bold yellow")
                     body.append(f"{display_q} (open)\n", style="yellow")
 
-            body.append("\n")
-
-        # Compact actions (no tokens, just tool + short args)
-        for line in _actions:
-            # Strip Rich markup for compact log
-            import re as _re
-            clean = _re.sub(r"\[/?[^\]]*\]", "", line)
-            # Remove token info (↑... ↓...)
-            clean = _re.sub(r"\s+[↑↓][^\s]*", "", clean).strip()
-            body.append(f"  {clean}\n", style="dim")
-
         step = _budget["step"]
         tok_in = _budget["tok_in"]
         tok_out = _budget["tok_out"]
         return Panel(
             body,
-            title=f"[dim]{_active['agent_name']} · done · {step} steps · ↑{tok_in} ↓{tok_out}[/dim]",
+            title=f"[dim]{agent_name} · done · {step} steps · ↑{tok_in} ↓{tok_out}[/dim]",
             border_style="dim",
             box=rich_box.ROUNDED,
             padding=(0, 1),
         )
 
-    # ── Helpers ───────────────────────────────────────────────────────────
-
-    def _log(msg: str) -> None:
-        (live.console if live else console).log(msg)
-
-    def _fmt_tok_short() -> str:
-        tok_in = _budget["tok_in"]
-        tok_out = _budget["tok_out"]
-        tok_cached = _budget["tok_cached"]
-        if not (tok_in or tok_out):
-            return ""
-        if tok_cached:
-            # Show paid tokens: uncached_in + cached*0.1 + out
-            paid_in = (tok_in - tok_cached) + int(tok_cached * 0.1)
-            return f"↑{tok_in}[cache:{tok_cached}] ↓{tok_out} paid:{paid_in + tok_out}"
-        return f"↑{tok_in} ↓{tok_out}"
-
-    # ── Event handler ─────────────────────────────────────────────────────
-
-    def _print_and_reset(agent_id: str) -> None:
-        """Print final summary for current agent and reset state."""
-        if not _sgr["conf_history"] and not _actions:
-            return  # nothing to print
-        if live:
-            live.update("")
-        if _sgr["conf_history"] or _actions:
-            (live.console if live else console).print(_render_final_summary())
-        # Reset state
+    def _print_and_reset(agent_name: str) -> None:
+        """Print final SGR summary for root agent and reset state."""
+        if _sgr["conf_history"]:
+            console.print(_render_final_summary(agent_name))
         _sgr["questions"].clear()
         _sgr["conf_history"].clear()
         _sgr["resolved_set"].clear()
         _sgr["resolutions"].clear()
-        _actions.clear()
-        _current_stream["text"] = ""
         _budget.update(step=0, tok_in=0, tok_out=0, tok_cached=0)
 
-    def _switch_agent(agent_id: str, agent_name: str) -> None:
-        """Switch live frame to a new agent. Does NOT print final summary."""
-        _active["agent_id"] = agent_id
-        _active["agent_name"] = agent_name
+    # ── Formatting helpers ────────────────────────────────────────────────
+
+    def _format_args(tool: str, args: dict) -> str:
+        """Build compact args string for a tool call."""
+        if tool == "spawn_agent":
+            agent = args.get("agent", "?")
+            data = args.get("data", {})
+            focus = data.get("focus", args.get("focus", ""))
+            focus_short = (focus[:50] + "…") if len(focus) > 52 else focus
+            s = agent
+            if focus_short:
+                s += f" → {focus_short}"
+            return s
+        elif tool == "spawn_many":
+            agents = args.get("agents", [])
+            names = [a.get("agent", "?") for a in agents[:4]]
+            return f"{', '.join(names)} x{len(agents)}"
+        elif tool in ("reply_to_comment", "resolve_comment"):
+            cid = args.get("comment_id", "?")
+            text = args.get("text", "")
+            text_short = (text[:40] + "…") if len(text) > 42 else text
+            s = f"#{cid}"
+            if text_short:
+                s += f" {text_short}"
+            return s
+        elif tool == "get_diff":
+            path = args.get("path", "")
+            return path if path else "(full)"
+        else:
+            parts = []
+            for k, v in list(args.items())[:2]:
+                vs = str(v)
+                if len(vs) > 30:
+                    vs = vs[:28] + "…"
+                parts.append(f"{k}={vs}")
+            return ", ".join(parts)
+
+    def _format_result_count(result_preview: str, result_count) -> str:
+        """Build result count suffix for log line."""
+        if result_preview.startswith("(no matches") or result_preview.startswith("(no results"):
+            return " → 0 results"
+        elif result_count is not None:
+            return f" → {result_count} lines"
+        return ""
+
+    # ── Event handler ─────────────────────────────────────────────────────
 
     def on_event(event: str, **kw) -> None:
         aid = kw.get("agent_id", "")
-        aname = kw.get("agent_name", "")
+        aname = kw.get("agent_name", "") or aid[:8]
+        is_root = aid == _root_id.get("val", "")
 
         # Track root agent (first agent that starts)
         if event == "orchestrator_agent_started" and not _root_id["val"]:
             _root_id["val"] = aid
-            _agent_log.info("agent started: %s (%s)", kw.get("agent_name", "?"), aid[:8])
+            is_root = True
+            _agent_log.info("agent started: %s (%s)", aname, aid[:8])
 
         # Register children
         if event == "orchestrator_agent_spawned":
             child_id = kw.get("child_id", "")
             if child_id:
                 _child_ids.add(child_id)
+            name = kw.get("agent_name", "?") or kw.get("name", "?")
+            focus = kw.get("focus", "")
+            focus_short = (focus[:60] + "…") if len(focus) > 62 else focus
+            _agent_log.info("spawn %s → %s", name, focus_short or child_id[:8])
 
-        # Child agents: log actions but don't update Rich display
-        is_child = aid in _child_ids
-        if is_child:
-            if event == "orchestrator_result":
-                tool = kw.get("tool", "")
-                args = kw.get("args", {})
-                parts = []
-                for k, v in list(args.items())[:2]:
-                    vs = str(v)
-                    if len(vs) > 30:
-                        vs = vs[:28] + "…"
-                    parts.append(f"{k}={vs}")
-                _agent_log.info("%s: %s(%s)", aname or aid[:8], tool, ", ".join(parts)[:80])
-            elif event == "orchestrator_reflect":
-                _agent_log.info("%s: reflect  %s", aname or aid[:8], kw.get("confidence", "?"))
-            elif event == "orchestrator_agent_done":
-                _agent_log.info("%s: done", aname or aid[:8])
-            elif event == "orchestrator_forced_done":
-                _agent_log.info("%s: forced done (%s)", aname or aid[:8], kw.get("reason", "limit"))
-            return
-
-        # Update active agent for root events
-        if aid and aid == _root_id["val"] and aid != _active["agent_id"]:
-            _switch_agent(aid, aname or aid[:8])
-
-        if event == "orchestrator_agent_compiled":
+        elif event == "orchestrator_agent_compiled":
             name = kw.get("name", "?")
             mode = kw.get("mode", "?")
             caps = kw.get("capabilities", "–")
@@ -985,29 +881,7 @@ def _make_event_handler(model: str, live: Optional[Live]):
             bt = kw.get("budget_tokens", 0)
             bs = kw.get("budget_steps", 0)
             _budget["max_steps"] = max(_budget["max_steps"], bs)
-            _log(f"[dim]  compiled [cyan]{name}[/cyan] \\[{mode}]  caps=\\[{caps}]  data=\\[{data}]  budget={bt}t/{bs}s[/dim]")
-
-        elif event == "orchestrator_agent_started":
-            pass
-
-        elif event == "orchestrator_plan_start":
-            _log("[bold green]plan[/bold green]      lead analyzing diff…")
-
-        elif event == "orchestrator_agent_spawned":
-            child = kw.get("child_id", "?")
-            name = kw.get("agent_name", "?") or kw.get("name", "?")
-            focus = kw.get("focus", "")
-            focus_short = (focus[:60] + "…") if len(focus) > 62 else focus
-            if focus_short:
-                _actions.append(f"[bold cyan]spawn {name}[/bold cyan] → {focus_short}")
-            else:
-                _actions.append(f"[bold cyan]spawn {name}[/bold cyan] ({child[:6]})")
-            _update_live()
-            _agent_log.info("spawn %s → %s", name, focus_short or child[:8])
-
-        elif event == "orchestrator_agent_done":
-            # Print final summary for the finishing agent
-            _print_and_reset(kw.get("agent_id", ""))
+            console.log(f"[dim]  compiled [cyan]{name}[/cyan] \\[{mode}]  caps=\\[{caps}]  data=\\[{data}]  budget={bt}t/{bs}s[/dim]")
 
         elif event == "orchestrator_plan_done":
             plan = kw.get("plan", {})
@@ -1032,190 +906,91 @@ def _make_event_handler(model: str, live: Optional[Live]):
                 title=f"[bold green]plan[/bold green] · [cyan]{system_type}[/cyan] · {len(tasks)} focuses",
                 border_style="dim", box=rich_box.ROUNDED, padding=(0, 1),
             )
-            (live.console if live else console).print(panel)
-
-        elif event == "orchestrator_stream":
-            tool_name = kw.get("tool_name", "")
-            args_preview = kw.get("args_preview", "")
-            tok = kw.get("tok", 0)
-            step = kw.get("step", 0)
-            _current_stream["text"] = f"step {step}  {tool_name or '…'}({args_preview})  ↓{tok}…"
-            _update_stream_only()
+            console.print(panel)
 
         elif event == "orchestrator_step":
-            tool = kw.get("tool", "")
-            step = kw.get("step", 0)
-            _budget["step"] = step + 1
-            _budget["tok_in"] = kw.get("tok_in", _budget["tok_in"])
-            _budget["tok_out"] = kw.get("tok_out", _budget["tok_out"])
-            _budget["tok_cached"] = kw.get("tok_cached", _budget["tok_cached"])
+            # Budget tracking (root only — used for summary panel)
+            if is_root:
+                _budget["step"] = kw.get("step", 0) + 1
+                _budget["tok_in"] = kw.get("tok_in", _budget["tok_in"])
+                _budget["tok_out"] = kw.get("tok_out", _budget["tok_out"])
+                _budget["tok_cached"] = kw.get("tok_cached", _budget["tok_cached"])
 
         elif event == "orchestrator_result":
-            step = kw.get("step", 0)
             tool = kw.get("tool", "")
             args = kw.get("args", {})
             result_preview = kw.get("result_preview", "")
-            tok_str = _fmt_tok_short()
-
-            # Build compact args string
-            if tool == "spawn_agent":
-                agent = args.get("agent", "?")
-                data = args.get("data", {})
-                focus = data.get("focus", args.get("focus", ""))
-                focus_short = (focus[:50] + "…") if len(focus) > 52 else focus
-                arg_str = f"[cyan]{agent}[/cyan]"
-                if focus_short:
-                    arg_str += f" → {focus_short}"
-            elif tool == "spawn_many":
-                agents = args.get("agents", [])
-                names = [a.get("agent", "?") for a in agents[:4]]
-                arg_str = f"[cyan]{', '.join(names)}[/cyan] ×{len(agents)}"
-            elif tool in ("reply_to_comment", "resolve_comment"):
-                cid = args.get("comment_id", "?")
-                text = args.get("text", "")
-                text_short = (text[:40] + "…") if len(text) > 42 else text
-                arg_str = f"#{cid}"
-                if text_short:
-                    arg_str += f" {text_short}"
-            elif tool == "get_diff":
-                path = args.get("path", "")
-                arg_str = path if path else "(full)"
-            else:
-                # Generic: show first 1-2 args compactly
-                parts = []
-                for k, v in list(args.items())[:2]:
-                    vs = str(v)
-                    if len(vs) > 30:
-                        vs = vs[:28] + "…"
-                    parts.append(f"{k}={vs}")
-                arg_str = ", ".join(parts)
-
-            # Build result preview for meta-tools
-            res_str = ""
             result_count = kw.get("result_count")
-            if tool in ("spawn_agent", "spawn_many") and result_preview:
-                # Show first part of output
-                preview = result_preview[:80].replace("{", "").replace("}", "").replace('"', "")
-                res_str = f" [dim]→ {preview}[/dim]"
-            elif result_preview.startswith("(no matches") or result_preview.startswith("(no results"):
-                res_str = " [dim]→ 0 results[/dim]"
-            elif result_count is not None:
-                res_str = f" [dim]→ {result_count} lines[/dim]"
-
-            action_line = f"step {step}  {tool}"
-            if arg_str:
-                action_line += f"({arg_str})"
-            action_line += f"  {tok_str}{res_str}"
-            _actions.append(action_line)
-            _current_stream["text"] = ""
-            _update_live()
-            # Log for --log-level INFO
-            agent_name = kw.get("agent_name", "agent")
-            # Strip Rich markup for plain log
-            import re as _re
-            plain_args = _re.sub(r'\[/?[a-z ]+\]', '', arg_str)[:80]
-            if result_preview.startswith("(no matches") or result_preview.startswith("(no results"):
-                count_str = " → 0 results"
-            elif result_count is not None:
-                count_str = f" → {result_count} lines"
-            else:
-                count_str = ""
-            _agent_log.info("%s: %s(%s)%s", agent_name, tool, plain_args, count_str)
+            arg_str = _format_args(tool, args)
+            count_str = _format_result_count(result_preview, result_count)
+            _agent_log.info("%s: %s(%s)%s", aname, tool, arg_str[:80], count_str)
 
         elif event == "orchestrator_reflect":
             step = kw.get("step", 0)
             conf = kw.get("confidence", "?")
-            questions = kw.get("questions_remaining", [])
-            resolved_questions = kw.get("resolved_questions", [])
+            _agent_log.info("%s: reflect  %s", aname, conf)
 
-            # Process resolved questions
-            for rq in (resolved_questions or []):
-                if not isinstance(rq, dict):
-                    continue
-                qid = rq.get("id", "") or rq.get("question", "")
-                q_text = rq.get("question", "") or rq.get("text", "") or qid
-                res_type = rq.get("resolution", "answered")
-                summary = rq.get("summary", "")
-                if qid and qid not in _sgr["resolved_set"]:
-                    _sgr["resolved_set"].add(qid)
-                    # Use stored text if available (more stable)
-                    stored = _sgr["questions"].get(qid, {})
-                    display_text = stored.get("text", q_text) if isinstance(stored, dict) else q_text
-                    _sgr["resolutions"].append((step, qid, display_text, res_type, summary))
+            # SGR tracking (root only — for summary panel)
+            if is_root:
+                questions = kw.get("questions_remaining", [])
+                resolved_questions = kw.get("resolved_questions", [])
 
-            # Extract IDs from remaining questions
-            new_q: dict[str, str] = {}  # id -> text
-            for q in questions:
-                if isinstance(q, dict):
-                    qid = q.get("id", q.get("text", ""))
-                    text = q.get("text", qid)
-                    new_q[qid] = text
-                else:
-                    new_q[str(q)] = str(q)
+                for rq in (resolved_questions or []):
+                    if not isinstance(rq, dict):
+                        continue
+                    qid = rq.get("id", "") or rq.get("question", "")
+                    q_text = rq.get("question", "") or rq.get("text", "") or qid
+                    res_type = rq.get("resolution", "answered")
+                    summary = rq.get("summary", "")
+                    if qid and qid not in _sgr["resolved_set"]:
+                        _sgr["resolved_set"].add(qid)
+                        stored = _sgr["questions"].get(qid, {})
+                        display_text = stored.get("text", q_text) if isinstance(stored, dict) else q_text
+                        _sgr["resolutions"].append((step, qid, display_text, res_type, summary))
 
-            # Detect implicit drops (ID disappeared without resolution)
-            for qid in list(_sgr["questions"].keys()):
-                if qid not in new_q and qid not in _sgr["resolved_set"]:
-                    _sgr["resolved_set"].add(qid)
-                    old = _sgr["questions"][qid]
-                    old_text = old.get("text", qid) if isinstance(old, dict) else str(old)
-                    _sgr["resolutions"].append((step, qid, old_text, "dropped", "(implicit)"))
+                new_q: dict[str, str] = {}
+                for q in questions:
+                    if isinstance(q, dict):
+                        qid = q.get("id", q.get("text", ""))
+                        text = q.get("text", qid)
+                        new_q[qid] = text
+                    else:
+                        new_q[str(q)] = str(q)
 
-            # PUT semantics: update existing by ID, add new
-            new_questions: dict[str, dict] = {}
-            for qid, text in new_q.items():
-                if qid in _sgr["questions"]:
-                    old = _sgr["questions"][qid]
-                    age = old["age"] + 1 if isinstance(old, dict) else 1
-                    step_opened = old.get("step_opened", step) if isinstance(old, dict) else step
-                    new_questions[qid] = {"text": text, "age": age, "step_opened": step_opened}
-                else:
-                    new_questions[qid] = {"text": text, "age": 0, "step_opened": step}
-            _sgr["questions"] = new_questions
-            _sgr["conf_history"].append((step, conf))
+                for qid in list(_sgr["questions"].keys()):
+                    if qid not in new_q and qid not in _sgr["resolved_set"]:
+                        _sgr["resolved_set"].add(qid)
+                        old = _sgr["questions"][qid]
+                        old_text = old.get("text", qid) if isinstance(old, dict) else str(old)
+                        _sgr["resolutions"].append((step, qid, old_text, "dropped", "(implicit)"))
 
-            # Add reflect to action log
-            conf_color = {"low": "red", "medium": "yellow", "high": "green"}.get(conf, "white")
-            _actions.append(f"step {step}  reflect()  conf=[{conf_color}]{conf}[/{conf_color}]")
-            _current_stream["text"] = ""
-            _update_live()
-            _agent_log.info("%s: reflect  %s", kw.get("agent_name", "agent"), conf)
+                new_questions: dict[str, dict] = {}
+                for qid, text in new_q.items():
+                    if qid in _sgr["questions"]:
+                        old = _sgr["questions"][qid]
+                        age = old["age"] + 1 if isinstance(old, dict) else 1
+                        step_opened = old.get("step_opened", step) if isinstance(old, dict) else step
+                        new_questions[qid] = {"text": text, "age": age, "step_opened": step_opened}
+                    else:
+                        new_questions[qid] = {"text": text, "age": 0, "step_opened": step}
+                _sgr["questions"] = new_questions
+                _sgr["conf_history"].append((step, conf))
+
+        elif event == "orchestrator_agent_done":
+            _agent_log.info("%s: done", aname)
+            if is_root:
+                _print_and_reset(aname)
+
+        elif event == "orchestrator_forced_done":
+            _agent_log.info("%s: forced done (%s)", aname, kw.get("reason", "limit"))
+            if is_root:
+                _print_and_reset(aname)
 
         elif event == "orchestrator_done":
-            if live:
-                live.update("")
-            _log(
-                f"[bold green]done[/bold green]      "
-                f"[dim]{kw.get('findings', 0)} finding(s)  "
-                f"{kw.get('replies', 0)} replies  "
-                f"{kw.get('resolves', 0)} resolves[/dim]"
-            )
             _agent_log.info("done: %d findings, %d replies, %d resolves",
                             kw.get("findings", 0), kw.get("replies", 0), kw.get("resolves", 0))
 
-        elif event == "orchestrator_forced_done":
-            tok_str = _fmt_tok_short()
-            _log(
-                f"[yellow]forced[/yellow]    {kw.get('reason', 'limit')}  "
-                f"[dim cyan]{tok_str}[/dim cyan]"
-            )
-            _agent_log.info("%s: forced done (%s)",
-                            kw.get("agent_name", "agent"), kw.get("reason", "limit"))
-            # Print final summary (if not already printed by agent_done)
-            if _sgr["conf_history"] or _actions:
-                _print_and_reset(kw.get("agent_id", ""))
-
     return on_event
-
-
-def _fmt_tok(kw: dict) -> str:
-    tok_in = kw.get("tok_in", 0)
-    tok_out = kw.get("tok_out", 0)
-    tok_cached = kw.get("tok_cached", 0)
-    if not (tok_in or tok_out):
-        return ""
-    in_str = f"↑{tok_in}[{tok_cached}]" if tok_cached else f"↑{tok_in}"
-    return f"{in_str} ↓{tok_out}"
 
 
 if __name__ == "__main__":
