@@ -39,12 +39,27 @@ class GitRepoProvider(RepoProvider):
         self._askpass_file: str | None = None
 
     def clone(self, url: str, branch: str, dest: str) -> None:
-        git_cfg, env = self._build_auth(url)
         ssl_flags = self._ssl_flags()
-        cmd = ["git", *git_cfg, *ssl_flags, "clone", "--filter=blob:none",
-               "--single-branch", "--branch", branch, url, dest]
-        log.debug("git clone: %s", _safe_cmd(cmd))
-        self._run(cmd, env=env)
+        methods = self._auth_methods()
+        last_err = None
+
+        for method_name, git_cfg, env in methods:
+            try:
+                cmd = ["git", *git_cfg, *ssl_flags, "clone", "--filter=blob:none",
+                       "--single-branch", "--branch", branch, url, dest]
+                log.debug("git clone [%s]: %s", method_name, _safe_cmd(cmd))
+                self._run(cmd, env=env)
+                return  # success
+            except RuntimeError as exc:
+                last_err = exc
+                log.warning("git clone failed with %s: %s", method_name, str(exc)[:200])
+                # Clean up failed clone dir for retry
+                import shutil
+                shutil.rmtree(dest, ignore_errors=True)
+                import os as _os
+                _os.makedirs(dest, exist_ok=True)
+
+        raise last_err or RuntimeError("git clone failed: no auth methods available")
 
     def fetch(self, repo_path: str, ref: str) -> None:
         cmd = ["git", "fetch", "--filter=blob:none", "origin", ref]
@@ -88,54 +103,54 @@ class GitRepoProvider(RepoProvider):
 
     # ── Internal ──────────────────────────────────────────────
 
-    def _build_auth(self, url: str = "") -> tuple[list[str], dict]:
-        """Build git -c flags and env for auth. Tries methods in chain."""
-        env = _git_base_env()
+    def _auth_methods(self) -> list[tuple[str, list[str], dict]]:
+        """Return list of (name, git_cfg, env) to try in order.
+
+        For explicit method: returns just that one.
+        For auto: returns all available methods as fallback chain.
+        """
         method = self.auth.method
+        candidates: list[tuple[str, list[str], dict]] = []
 
-        if method == "header" and self.auth.token:
-            log.info("git auth: http.extraHeader (Bearer token)")
-            return ["-c", f"http.extraHeader=Authorization: Bearer {self.auth.token}"], env
+        if method in ("header", "auto", "") and self.auth.token:
+            env = _git_base_env()
+            candidates.append((
+                "header",
+                ["-c", f"http.extraHeader=Authorization: Bearer {self.auth.token}"],
+                env,
+            ))
 
-        if method == "askpass" and self.auth.token:
-            self._askpass_file = _make_askpass_token(self.auth.token)
-            env["GIT_ASKPASS"] = self._askpass_file
-            log.info("git auth: GIT_ASKPASS with token")
-            return [], env
+        if method in ("askpass", "auto", "") and self.auth.token:
+            env = _git_base_env()
+            askpass = _make_askpass_token(self.auth.token)
+            env["GIT_ASKPASS"] = askpass
+            candidates.append(("askpass-token", [], env))
 
-        if method == "userpass" and self.auth.username:
-            self._askpass_file = _make_askpass_userpass(self.auth.username, self.auth.password)
-            env["GIT_ASKPASS"] = self._askpass_file
-            log.info("git auth: GIT_ASKPASS with username/password (user=%s)", self.auth.username)
-            return [], env
+        if method in ("userpass", "auto", "") and self.auth.username and self.auth.password:
+            env = _git_base_env()
+            askpass = _make_askpass_userpass(self.auth.username, self.auth.password)
+            env["GIT_ASKPASS"] = askpass
+            candidates.append(("userpass", [], env))
 
-        if method == "interactive":
+        if method == "interactive" or (not candidates and method in ("auto", "")):
             username, password = _interactive_credentials()
             if username:
-                self._askpass_file = _make_askpass_userpass(username, password)
-                env["GIT_ASKPASS"] = self._askpass_file
-                log.info("git auth: GIT_ASKPASS interactive (user=%s)", username)
-                return [], env
+                env = _git_base_env()
+                askpass = _make_askpass_userpass(username, password)
+                env["GIT_ASKPASS"] = askpass
+                candidates.append(("interactive", [], env))
 
-        # Auto: try token header first, fall back
-        if method == "auto" or not method:
-            if self.auth.token:
-                log.info("git auth: auto → http.extraHeader (Bearer token)")
-                return ["-c", f"http.extraHeader=Authorization: Bearer {self.auth.token}"], env
-            if self.auth.username and self.auth.password:
-                self._askpass_file = _make_askpass_userpass(self.auth.username, self.auth.password)
-                env["GIT_ASKPASS"] = self._askpass_file
-                log.info("git auth: auto → GIT_ASKPASS username/password")
-                return [], env
-            # Interactive fallback
-            username, password = _interactive_credentials()
-            if username:
-                self._askpass_file = _make_askpass_userpass(username, password)
-                env["GIT_ASKPASS"] = self._askpass_file
-                return [], env
+        if not candidates:
+            log.warning("git auth: no credentials available")
+            candidates.append(("none", [], _git_base_env()))
 
-        log.warning("git auth: no credentials configured")
-        return [], env
+        # For explicit method (not auto): only first match
+        if method and method not in ("auto", ""):
+            log.info("git auth: %s", candidates[0][0])
+            return candidates[:1]
+
+        log.info("git auth chain: %s", " → ".join(c[0] for c in candidates))
+        return candidates
 
     def _ssl_flags(self) -> list[str]:
         flags = []
