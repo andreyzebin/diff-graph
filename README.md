@@ -333,24 +333,21 @@ Question IDs provide stability across reflect calls -- fuzzy matching links ques
 
 Agents use their own `.prompt` budget (not parent-allocated). Default pushers: 75% nudge + 100% force_done. Budget tracks cumulative paid (sum of per-step deltas) with cache discount.
 
-### CLI live display
+### CLI output
 
-Child events suppressed in CLI -- only root agent visible. Single live panel per agent (SGR top, actions bottom):
+Plain text logging at INFO level (default). Shows all agents including reviewers:
 
 ```
-+----------------- reviewer . step 6/30 . 20% . ^3246 . conf=high -----------------+
-| SGR . medium -> high                                                              |
-|   OK  Order model items null? -> @Builder.Default, never null                     |
-|   OK  Other getItems usages? -> createOrder:29, PricingService:23                 |
-|   *   releaseInventory behavior?                              step 3  new         |
-|                                                                                   |
-|   step 0  get_diff  ^1823 v20                                                     |
-|   step 1  read_outline(OrderService.java)  ^2042 v50                              |
-|   step 2  read_file(OrderService.java)  ^2231 v49                                 |
-|   step 3  reflect()  conf=medium                                                  |
-|   step 4  find_files(**/*.java)  x1  ^3165 v39                                    |
-|   > step 5  search("getItems")  v22...                                            |
-+-----------------------------------------------------------------------------------+
+10:07:04 INFO lead: read_file(path=…/OrderService.java, changes_only=True)
+10:07:06 INFO lead: reflect  medium
+10:07:07 INFO spawn reviewer → BUSINESS LOGIC: Investigate...
+10:07:09 INFO reviewer: read_file(path=…/OrderService.java, changes_only=True)
+10:07:10 INFO reviewer: search(query=getItems)
+10:07:12 INFO reviewer: reflect  high
+10:07:14 INFO reviewer: done
+10:07:15 INFO lead: reflect  high
+10:07:17 INFO lead: resolve_comment(comment_id=1149607)
+10:07:19 INFO done: 1 findings, 0 replies, 4 resolves
 ```
 
 ### Incremental review
@@ -481,10 +478,23 @@ diffgraph/                   Code review domain
 +-- lang.py                  Language detection
 +-- tools.py                 Filesystem primitives
 +-- outline.py               tree-sitter structural outline
-+-- bitbucket.py             Bitbucket Server integration
++-- bitbucket.py             Bitbucket Server integration (legacy compat)
++-- providers/               Pluggable provider abstractions
+    +-- base.py              PRProvider (ABC) + RepoProvider (ABC)
+    +-- bitbucket_pr.py      Bitbucket REST API (Bearer token)
+    +-- git_repo.py          Git clone/fetch/diff (auth chain: header → askpass → userpass)
++-- templates/
+    +-- git-askpass.sh       Token askpass template
+    +-- git-askpass-userpass.sh  Username/password askpass template
 +-- prompts/
-    +-- lead.prompt    Three-phase review lead (analyze -> investigate -> judge)
+    +-- lead.prompt          Three-phase review lead (analyze -> investigate -> judge)
     +-- reviewer.prompt      Focused investigator with SGR
+
+diffsearch/                  Virtual unified diff filesystem
+webhook/                     Bitbucket webhook router with A/B routing
+tracing/                     Trace CLI + web server
+evolution/                   Self-sustaining prompt development
+docker/                      Dockerfile + entrypoint
 ```
 
 ## Tests
