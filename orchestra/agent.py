@@ -276,6 +276,8 @@ class Agent:
         tools_schema = self.registry.to_openai_schema(tool_names)
         steps_since_reflect = 0
         self._natural_stop = False
+        _guard_retries: dict[str, int] = {}  # guard_name → retry count
+        _MAX_GUARD_RETRIES = 2
 
         for step in range(self.config.budget.max_steps):
             if self.budget_state.exhausted:
@@ -393,6 +395,12 @@ class Agent:
                                tok_cached=self.budget_state.tokens_cached)
 
             if not msg.tool_calls:
+                # Check text_response guard
+                guard_msg = self._check_guard("text_response", _guard_retries, _MAX_GUARD_RETRIES)
+                if guard_msg:
+                    messages.append({"role": "assistant", "content": msg.content or ""})
+                    messages.append({"role": "user", "content": guard_msg})
+                    continue
                 self._natural_stop = True
                 break
 
@@ -551,6 +559,25 @@ class Agent:
                 return entry.to_agent_config()
         # Fallback to dict
         return self.agent_configs.get(agent_name)
+
+    def _check_guard(self, trigger: str, retries: dict, max_retries: int) -> str | None:
+        """Check if a guard is configured and has retries left. Returns message or None."""
+        guards = self.config.guards or {}
+        if trigger not in guards:
+            return None
+        count = retries.get(trigger, 0)
+        if count >= max_retries:
+            return None
+        retries[trigger] = count + 1
+        # Interpolate {placeholders} from data_scope
+        msg = guards[trigger]
+        try:
+            msg = msg.format(**self.data_scope)
+        except (KeyError, IndexError):
+            pass
+        log.info("guard '%s' fired for agent '%s' (retry %d/%d)",
+                 trigger, self.config.name, count + 1, max_retries)
+        return msg
 
     def _resolve_data_inheritance(self, data: dict) -> dict:
         """Resolve explicit data values from spawn call."""

@@ -46,6 +46,7 @@ class AgentRegistryEntry:
     sgr: bool
     sgr_interval: int
     prompt_template: str  # body with {placeholders}
+    guards: dict[str, str] = field(default_factory=dict)  # {trigger: message}
     source_file: str = ""
     source_hash: str = ""
 
@@ -76,6 +77,7 @@ class AgentRegistryEntry:
             budget=self.budget,
             llm_params=self.llm_params,
             input_schema=self.input_schema,
+            guards=self.guards if self.guards else None,
         )
 
     def to_listing(self) -> dict:
@@ -295,6 +297,7 @@ def _parse_prompt_file(
     capabilities = _parse_list(headers.get("capabilities", ""))
     tools = _parse_list(headers.get("tools", ""))
     input_schema = _parse_data_section(header_text)
+    guards = _parse_guards_section(header_text)
     budget = _parse_budget_header(headers.get("budget", ""))
     llm_params = _parse_llm_header(headers.get("llm", ""))
     sgr = "sgr" in capabilities
@@ -308,6 +311,7 @@ def _parse_prompt_file(
         capabilities=capabilities,
         tools=tools,
         input_schema=input_schema,
+        guards=guards,
         budget=budget,
         llm_params=llm_params,
         sgr=sgr,
@@ -382,6 +386,26 @@ def _parse_data_section(header_text: str) -> dict[str, dict[str, str]]:
                 schema[field_name] = entry
 
     return schema
+
+
+_GUARD_LINE_RE = re.compile(r'^\s+(\w+):\s*"(.+)"$')
+
+
+def _parse_guards_section(header_text: str) -> dict[str, str]:
+    """Parse @guards section: trigger_name: "message"."""
+    guards: dict[str, str] = {}
+    in_guards = False
+    for line in header_text.splitlines():
+        if line.strip().startswith("@guards:"):
+            in_guards = True
+            continue
+        if in_guards:
+            if line.startswith("@") or (line.strip() and not line.startswith(" ") and not line.startswith("\t")):
+                break
+            match = _GUARD_LINE_RE.match(line)
+            if match:
+                guards[match.group(1)] = match.group(2)
+    return guards
 
 
 def _parse_list(value: str) -> list[str]:

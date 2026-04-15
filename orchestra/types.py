@@ -97,6 +97,7 @@ class AgentConfig:
     llm_params: Optional[LLMParamsConfig] = None
     max_depth: int = 3  # max spawn/fork depth
     input_schema: Optional[dict] = None  # @data fields with from: metadata
+    guards: Optional[dict[str, str]] = None  # {trigger_name: message} from @guards
 
 
 # ── Top-level config ──────────────────────────────────────────────────────────
