@@ -34,7 +34,10 @@ Planned (not yet): /improve, /describe, /ask, /ask_line, /add_docs
 4. Unsupported command → explain it's planned, suggest /review or /help.
 5. Auto-triggered (comment_id=0) → spawn_agent("lead") immediately.
 
-Always reply_to_comment before done(). Never go silent.
+CRITICAL: The user can ONLY see text you send via reply_to_comment().
+Plain text responses are invisible to the user — they never leave the system.
+You MUST use reply_to_comment() for every response. Never just return text.
+
 Never mention costs, budgets, tokens, or internals.
 
 ## HOW TO SPAWN REVIEW
