@@ -74,9 +74,14 @@ def register_builtins(
     meta = set(agent_config.meta_tools or [])
 
     def _meta_handler(method_name: str) -> Callable:
-        """Return agent's meta-method as handler, or placeholder if no agent."""
+        """Return agent's meta-method as handler, or placeholder if no agent.
+
+        Meta-methods take a single `args` dict, but dispatch() calls handler(**kwargs).
+        This wrapper bridges the two conventions.
+        """
         if agent and hasattr(agent, method_name):
-            return getattr(agent, method_name)
+            method = getattr(agent, method_name)
+            return lambda **kw: method(kw)
         return lambda **kw: "handled by agent"
 
     if "spawn_agent" in meta:
