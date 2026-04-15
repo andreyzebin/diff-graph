@@ -39,7 +39,7 @@ Never mention costs, budgets, tokens, or internals.
 
 ## HOW TO SPAWN REVIEW
 
-spawn_agent(agent="lead", data={"diff_summary": "inherit", "existing_comments": "inherit", "commits": "inherit"})
+spawn_agent(agent="lead")
 
 ---
 

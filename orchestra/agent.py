@@ -553,15 +553,10 @@ class Agent:
         return self.agent_configs.get(agent_name)
 
     def _resolve_data_inheritance(self, data: dict) -> dict:
-        """Resolve "inherit" values from parent's data_scope."""
+        """Resolve explicit data values from spawn call."""
         resolved = {}
         for key, val in data.items():
-            if val == "inherit":
-                if key in self.data_scope:
-                    resolved[key] = self.data_scope[key]
-                # else: skip — child's {placeholder} stays unresolved
-            else:
-                resolved[key] = str(val)
+            resolved[key] = str(val)
         return resolved
 
     def _meta_spawn_agent(self, args: dict) -> str:
