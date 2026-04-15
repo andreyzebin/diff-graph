@@ -150,10 +150,16 @@ class ToolRegistry:
         return result
 
     def dispatch(self, tool_name: str, args: dict) -> Any:
-        """Call a tool handler by name. Returns raw result (cached if cache=True)."""
+        """Call a tool handler by name. Validates args against JSON Schema first."""
         td = self._tools.get(tool_name)
         if td is None:
             return f"unknown tool: {tool_name}"
+
+        # Validate args against tool's JSON Schema
+        error = _validate_args(args, td.parameters)
+        if error:
+            return error
+
         if td.cache and td._cache_hit:
             return td._cached_result
         try:
@@ -267,6 +273,20 @@ def _import_handler(dotted_path: str) -> Callable:
         raise ValueError(f"invalid handler path: {dotted_path}")
     mod = importlib.import_module(mod_path)
     return getattr(mod, attr)
+
+
+def _validate_args(args: dict, schema: dict) -> str | None:
+    """Validate tool args against JSON Schema. Returns error string or None."""
+    try:
+        from jsonschema import validate, ValidationError
+        validate(instance=args, schema=schema)
+        return None
+    except ValidationError as e:
+        path = ".".join(str(p) for p in e.absolute_path) if e.absolute_path else ""
+        field = f" at '{path}'" if path else ""
+        return f"validation error{field}: {e.message}"
+    except Exception:
+        return None  # if jsonschema not installed, skip validation
 
 
 def _noop_handler(**kwargs: Any) -> str:
