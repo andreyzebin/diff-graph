@@ -5,7 +5,6 @@
 @budget: 30000 tokens, 10 steps
 @llm: temperature=0.3
 @guards:
-  text_response: "Your text was NOT delivered to the user. They can only see reply_to_comment() calls. Use reply_to_comment(comment_id={comment_id}, text=...) to send your response."
   require_tool:reply_to_comment: "You must reply to the user before finishing. Call reply_to_comment(comment_id={comment_id}, text=...) with your response."
 @data:
   message: string -- the full user message (may contain /command, or just plain text)
