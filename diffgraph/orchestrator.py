@@ -197,10 +197,8 @@ def run_agent(
         for et in EventType:
             event_bus.subscribe(et, _make_trace_handler(et.value))
 
-    # Register builtins (done, reflect)
+    # Create agent first, then register builtins with real handlers
     sgr_tracker = SGRTracker()
-    register_builtins(registry, config, sgr_tracker=sgr_tracker)
-
     agent = Agent(
         config=config,
         tool_registry=registry,
@@ -210,6 +208,7 @@ def run_agent(
         agent_registry=agent_registry,
         agent_configs=agent_registry.get_all_configs(),
     )
+    register_builtins(registry, config, sgr_tracker=sgr_tracker, agent=agent)
     agent.data_scope = data
 
     result = agent.run()
@@ -292,15 +291,32 @@ def _make_diff_summary(diff_result: DiffResult) -> str:
     return "\n".join(parts)
 
 
-def _format_existing_comments(comments: list[dict], bot_user: str = "") -> str:
+def _format_existing_comments(comments: list[dict], bot_user: str = "",
+                              max_comments: int = 0) -> str:
+    """Format comments for prompt injection.
+
+    max_comments=0 means no limit. When set, keeps only unresolved + last N.
+    """
     if not comments:
         return "(none)"
+
+    # Filter if limit set: unresolved first, then most recent
+    if max_comments and len(comments) > max_comments:
+        unresolved = [c for c in comments if not c.get("resolved")]
+        resolved = [c for c in comments if c.get("resolved")]
+        # Keep all unresolved + fill remaining with most recent resolved
+        remaining = max(0, max_comments - len(unresolved))
+        filtered = unresolved + resolved[-remaining:] if remaining else unresolved
+        if len(filtered) > max_comments:
+            filtered = filtered[-max_comments:]
+    else:
+        filtered = comments
+
     lines = []
-    for c in comments:
+    for c in filtered:
         resolved = " [RESOLVED]" if c.get("resolved") else ""
         author = c.get("author", "")
         slug = c.get("author_slug", "")
-        # Mark bot's own comments so agents can distinguish them
         if bot_user and slug and slug == bot_user:
             who = f"[SELF:{author}]"
         else:
@@ -309,4 +325,10 @@ def _format_existing_comments(comments: list[dict], bot_user: str = "") -> str:
             f"  #{c['id']} {who} {c.get('file', '')}:{c.get('line', '')} — "
             f"{str(c.get('text', ''))[:100]}{resolved}"
         )
-    return "\n".join(lines)
+
+    total = len(comments)
+    shown = len(filtered)
+    header = ""
+    if shown < total:
+        header = f"  ({shown} of {total} shown, {total - shown} older resolved omitted)\n"
+    return header + "\n".join(lines)
