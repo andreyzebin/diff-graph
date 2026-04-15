@@ -388,11 +388,17 @@ def _parse_data_section(header_text: str) -> dict[str, dict[str, str]]:
     return schema
 
 
-_GUARD_LINE_RE = re.compile(r'^\s+(\w+):\s*"(.+)"$')
+_GUARD_LINE_RE = re.compile(r'^\s+([\w:]+):\s*"(.+)"$')
 
 
 def _parse_guards_section(header_text: str) -> dict[str, str]:
-    """Parse @guards section: trigger_name: "message"."""
+    """
+    Parse @guards section.
+
+    Formats:
+      trigger: "message"
+      require_tool:tool_name: "message"
+    """
     guards: dict[str, str] = {}
     in_guards = False
     for line in header_text.splitlines():

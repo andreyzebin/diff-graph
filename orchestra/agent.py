@@ -278,6 +278,7 @@ class Agent:
         self._natural_stop = False
         _guard_retries: dict[str, int] = {}  # guard_name → retry count
         _MAX_GUARD_RETRIES = 2
+        _called_tools: set[str] = set()  # track all tools called during this run
 
         for step in range(self.config.budget.max_steps):
             if self.budget_state.exhausted:
@@ -375,6 +376,7 @@ class Agent:
             if msg.tool_calls:
                 for tc in msg.tool_calls:
                     tool_names.append(tc.function.name)
+                    _called_tools.add(tc.function.name)
                     if tc.function.name not in ("done", "reflect", "spawn_agent", "spawn_many",
                                                 "plan", "fork", "adjust_agent", "observe_agents"):
                         dispatch_tcs.append(tc)
@@ -483,6 +485,15 @@ class Agent:
             trace.steps.append(step_record)
 
             if findings_from_done is not None:
+                # Check require_tool guards before finishing
+                rt_msg = self._check_require_tool_guards(_called_tools, _guard_retries, _MAX_GUARD_RETRIES)
+                if rt_msg:
+                    messages.append({"role": "user", "content": rt_msg})
+                    findings_from_done = None
+                    self._done_called = False
+                    self._done_output = None
+                    continue
+
                 trace.total_tokens = self.budget_state.tokens_used
                 trace.total_steps = self.budget_state.steps_used
                 self.event_bus.emit(EventType.AGENT_DONE,
@@ -559,6 +570,29 @@ class Agent:
                 return entry.to_agent_config()
         # Fallback to dict
         return self.agent_configs.get(agent_name)
+
+    def _check_require_tool_guards(self, called_tools: set, retries: dict, max_retries: int) -> str | None:
+        """Check all require_tool:* guards. Returns first unmet guard message or None."""
+        guards = self.config.guards or {}
+        for key, msg in guards.items():
+            if not key.startswith("require_tool:"):
+                continue
+            tool_name = key.split(":", 1)[1]
+            if tool_name in called_tools:
+                continue
+            guard_key = f"require_tool:{tool_name}"
+            count = retries.get(guard_key, 0)
+            if count >= max_retries:
+                continue
+            retries[guard_key] = count + 1
+            try:
+                msg = msg.format(**self.data_scope)
+            except (KeyError, IndexError):
+                pass
+            log.info("guard 'require_tool:%s' fired for agent '%s' (retry %d/%d)",
+                     tool_name, self.config.name, count + 1, max_retries)
+            return msg
+        return None
 
     def _check_guard(self, trigger: str, retries: dict, max_retries: int) -> str | None:
         """Check if a guard is configured and has retries left. Returns message or None."""
