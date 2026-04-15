@@ -334,18 +334,29 @@ class Agent:
 
             # Classify tool calls
             dispatch_tcs = []
+            tool_names = []
             for tc in msg.tool_calls:
+                tool_names.append(tc.function.name)
                 if tc.function.name not in ("done", "reflect", "spawn_agent", "spawn_many",
                                             "plan", "fork", "adjust_agent", "observe_agents"):
                     dispatch_tcs.append(tc)
 
-            # Emit events
+            # Emit AGENT_STEP once per LLM round (before tool dispatch — crash-safe)
+            self.event_bus.emit(EventType.AGENT_STEP,
+                               agent_id=self.agent_id, agent_name=self.config.name,
+                               step=step, tool=tool_names[0] if tool_names else "",
+                               args={},
+                               tok_in=self.budget_state.tokens_in,
+                               tok_out=self.budget_state.tokens_out,
+                               tok_cached=self.budget_state.tokens_cached)
+
+            # Emit reflect events
             for tc in msg.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
                 if tc.function.name == "reflect":
+                    try:
+                        args = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
                     if self.sgr:
                         self.sgr.record(step, args)
                         self.event_bus.emit(EventType.AGENT_REFLECT,
@@ -353,12 +364,6 @@ class Agent:
                                            step=step, **args)
                         steps_since_reflect = 0
                 elif tc.function.name != "done":
-                    self.event_bus.emit(EventType.AGENT_STEP,
-                                       agent_id=self.agent_id, agent_name=self.config.name,
-                                       step=step, tool=tc.function.name, args=args,
-                                       tok_in=self.budget_state.tokens_in,
-                                       tok_out=self.budget_state.tokens_out,
-                                       tok_cached=self.budget_state.tokens_cached)
                     steps_since_reflect += 1
 
             # Parallel dispatch of domain tools
