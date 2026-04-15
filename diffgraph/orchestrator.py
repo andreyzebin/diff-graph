@@ -25,7 +25,6 @@ from orchestra import (
 from orchestra.tools.builtin import register_builtins
 from orchestra.sgr import SGRTracker
 from orchestra.types import PusherConfig, PusherType
-from orchestra.prompts import interpolate
 
 from .diff_parser import DiffResult, parse_diff
 from .orchestra_tools import register_diffgraph_tools
@@ -175,25 +174,9 @@ def run_agent(
     # Tool registry — use provided or empty
     registry = tool_registry or ToolRegistry()
 
-    # Auto-resolve from:tool.field for unresolved @data fields
-    schema = getattr(config, "input_schema", None) or {}
-    resolved = dict(data)
-    for field_name, field_meta in schema.items():
-        if field_name in resolved and resolved[field_name] not in ("(not available)", "(not yet loaded)", ""):
-            continue
-        from_tool = field_meta.get("from_tool")
-        from_field = field_meta.get("from_field")
-        if from_tool and from_field and registry.has(from_tool):
-            try:
-                result = registry.call_data_provider(from_tool)
-                if isinstance(result, dict) and from_field in result:
-                    resolved[field_name] = str(result[from_field])
-            except Exception:
-                resolved[field_name] = "(not available)"
-    data = resolved
-
-    # Interpolate data into prompt placeholders
-    config.system_prompt = interpolate(config.system_prompt, **data)
+    # Single path: resolve from:tool.field + interpolate prompt
+    from orchestra.agent import resolve_agent_data
+    data = resolve_agent_data(config, data, registry)
 
     # Override tool_choice for all agents (root + children)
     if tool_choice:

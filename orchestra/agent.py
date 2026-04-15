@@ -62,6 +62,43 @@ class AgentResult:
     trace: AgentTrace = field(default_factory=AgentTrace)
 
 
+def resolve_agent_data(config: AgentConfig, data: dict, registry: ToolRegistry) -> dict:
+    """
+    Resolve @data fields for an agent config. Single path for all agents.
+
+    1. Start with provided data
+    2. Auto-resolve from:tool.field for missing fields (cached data providers)
+    3. Interpolate resolved data into system prompt
+
+    Returns the resolved data dict. Mutates config.system_prompt in place.
+    """
+    resolved = dict(data)
+    schema = getattr(config, "input_schema", None) or {}
+    for field_name, field_meta in schema.items():
+        if field_name in resolved and resolved[field_name] not in (
+            "(not available)", "(not yet loaded)", ""
+        ):
+            continue
+        from_tool = field_meta.get("from_tool")
+        from_field = field_meta.get("from_field")
+        if not from_tool or not from_field:
+            continue
+        if not registry.has(from_tool):
+            continue
+        try:
+            result = registry.call_data_provider(from_tool)
+            if isinstance(result, dict) and from_field in result:
+                resolved[field_name] = str(result[from_field])
+        except Exception as e:
+            log.warning("from: tool '%s' failed for field '%s': %s", from_tool, field_name, e)
+            resolved[field_name] = "(not available)"
+
+    if resolved and "{" in config.system_prompt:
+        config.system_prompt = interpolate(config.system_prompt, **resolved)
+
+    return resolved
+
+
 class Agent:
     """
     Core agent. Manages its own children, mutable LLM params, SGR,
@@ -541,31 +578,6 @@ class Agent:
                 resolved[key] = str(val)
         return resolved
 
-    def _resolve_from_providers(self, resolved_data: dict, agent_config) -> dict:
-        """Auto-resolve @data fields with from:tool.field from data-provider tools."""
-        schema = getattr(agent_config, "input_schema", None) or {}
-        for field_name, field_meta in schema.items():
-            if field_name in resolved_data and resolved_data[field_name] not in ("(not available)", "(not yet loaded)", ""):
-                continue  # already resolved
-            from_tool = field_meta.get("from_tool")
-            from_field = field_meta.get("from_field")
-            if not from_tool or not from_field:
-                continue
-            if not self.registry.has(from_tool):
-                log.debug("from: tool '%s' not found for field '%s'", from_tool, field_name)
-                continue
-            try:
-                result = self.registry.call_data_provider(from_tool)
-                if isinstance(result, dict) and from_field in result:
-                    resolved_data[field_name] = str(result[from_field])
-                    log.debug("auto-resolved %s from %s.%s", field_name, from_tool, from_field)
-                else:
-                    log.debug("from: field '%s' not in tool '%s' result", from_field, from_tool)
-            except Exception as e:
-                log.warning("from: tool '%s' failed: %s", from_tool, e)
-                resolved_data[field_name] = "(not available)"
-        return resolved_data
-
     def _meta_spawn_agent(self, args: dict) -> str:
         """spawn_agent: create and run a child agent with data injection."""
         agent_name = args.get("agent", "")
@@ -575,36 +587,17 @@ class Agent:
         if self.depth >= self.config.max_depth:
             return json.dumps({"error": "max depth reached"})
 
-        # Data injection: always inherit parent's data_scope, merge explicit data on top
+        # Data: inherit parent scope, merge explicit, auto-resolve from:tool.field
         data = args.get("data", {})
-        resolved_data = dict(self.data_scope)  # start with parent's scope
+        resolved_data = dict(self.data_scope)
         if data:
-            explicit = self._resolve_data_inheritance(data)
-            resolved_data.update(explicit)
-        # Also merge top-level focus if present and not in data
+            resolved_data.update(self._resolve_data_inheritance(data))
         focus_arg = args.get("focus", "")
         if focus_arg and "focus" not in resolved_data:
             resolved_data["focus"] = focus_arg
 
-        # Auto-resolve from:tool.field for unresolved @data fields
-        resolved_data = self._resolve_from_providers(resolved_data, agent_config)
-
-        if resolved_data and "{" in agent_config.system_prompt:
-            agent_config = AgentConfig(
-                name=agent_config.name,
-                system_prompt=interpolate(agent_config.system_prompt, **resolved_data),
-                mode=agent_config.mode,
-                sgr=agent_config.sgr,
-                sgr_interval=agent_config.sgr_interval,
-                sgr_extensions=agent_config.sgr_extensions,
-                tools=list(agent_config.tools),
-                meta_tools=list(agent_config.meta_tools),
-                output_schema=agent_config.output_schema,
-                budget=agent_config.budget,
-                condensation=agent_config.condensation,
-                llm_params=agent_config.llm_params,
-                max_depth=agent_config.max_depth,
-            )
+        # Single path: resolve from: providers + interpolate prompt
+        resolved_data = resolve_agent_data(agent_config, resolved_data, self.registry)
 
         # Pass handoff context if explicitly requested by LLM
         context: list[dict] = []
@@ -702,18 +695,8 @@ class Agent:
             focus_from_spec = spec.get("focus", "")
             if focus_from_spec and "focus" not in resolved_data:
                 resolved_data["focus"] = focus_from_spec
-            # Auto-resolve from:tool.field
-            resolved_data = self._resolve_from_providers(resolved_data, agent_config)
-            if resolved_data and "{" in agent_config.system_prompt:
-                agent_config = AgentConfig(
-                    name=agent_config.name,
-                    system_prompt=interpolate(agent_config.system_prompt, **resolved_data),
-                    mode=agent_config.mode, sgr=agent_config.sgr,
-                    sgr_interval=agent_config.sgr_interval,
-                    tools=list(agent_config.tools), meta_tools=list(agent_config.meta_tools),
-                    output_schema=agent_config.output_schema, budget=agent_config.budget,
-                    llm_params=agent_config.llm_params, max_depth=agent_config.max_depth,
-                )
+            # Single path: resolve from: providers + interpolate prompt
+            resolved_data = resolve_agent_data(agent_config, resolved_data, self.registry)
 
             # Pass handoff context if requested
             context: list[dict] = []
