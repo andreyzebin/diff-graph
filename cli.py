@@ -1056,7 +1056,11 @@ def _make_event_handler(model: str):
         elif event == "orchestrator_step":
             step = kw.get("step", 0)
             tool = kw.get("tool", "")
-            _agent_log.info("%s: step %d → %s", aname, step, tool or "(no tools)")
+            text_preview = kw.get("text_preview", "")
+            if text_preview:
+                _agent_log.info("%s: step %d → %s: %s", aname, step, tool, text_preview)
+            else:
+                _agent_log.info("%s: step %d → %s", aname, step, tool or "(no tools)")
             if is_root:
                 _budget["step"] = step + 1
                 _budget["tok_in"] = kw.get("tok_in", _budget["tok_in"])

@@ -329,28 +329,33 @@ class Agent:
                                       "cached_tokens": tok_cached,
                                       "paid": paid})
 
-            if not msg.tool_calls:
-                break
-
             # Classify tool calls
-            dispatch_tcs = []
             tool_names = []
-            for tc in msg.tool_calls:
-                tool_names.append(tc.function.name)
-                if tc.function.name not in ("done", "reflect", "spawn_agent", "spawn_many",
-                                            "plan", "fork", "adjust_agent", "observe_agents"):
-                    dispatch_tcs.append(tc)
+            dispatch_tcs = []
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tool_names.append(tc.function.name)
+                    if tc.function.name not in ("done", "reflect", "spawn_agent", "spawn_many",
+                                                "plan", "fork", "adjust_agent", "observe_agents"):
+                        dispatch_tcs.append(tc)
 
-            # Emit AGENT_STEP once per LLM round (before tool dispatch — crash-safe)
+            # Emit AGENT_STEP for every LLM round — even text-only (WAL: before dispatch)
+            text_preview = ""
+            if not tool_names and msg.content:
+                text_preview = msg.content[:100].replace("\n", " ")
             self.event_bus.emit(EventType.AGENT_STEP,
                                agent_id=self.agent_id, agent_name=self.config.name,
                                step=step,
-                               tool=", ".join(tool_names),
+                               tool=", ".join(tool_names) if tool_names else "(text)",
                                tools=tool_names,
+                               text_preview=text_preview,
                                args={},
                                tok_in=self.budget_state.tokens_in,
                                tok_out=self.budget_state.tokens_out,
                                tok_cached=self.budget_state.tokens_cached)
+
+            if not msg.tool_calls:
+                break
 
             # Emit reflect events
             for tc in msg.tool_calls:
