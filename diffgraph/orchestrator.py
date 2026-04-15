@@ -195,12 +195,13 @@ def run_agent(
     # Interpolate data into prompt placeholders
     config.system_prompt = interpolate(config.system_prompt, **data)
 
-    # Override tool_choice
+    # Override tool_choice for all agents (root + children)
     if tool_choice:
         from orchestra.types import LLMParamsConfig
-        if config.llm_params is None:
-            config.llm_params = LLMParamsConfig()
-        config.llm_params.tool_choice = tool_choice
+        for ac in [config] + list(agent_registry.get_all_configs().values()):
+            if ac.llm_params is None:
+                ac.llm_params = LLMParamsConfig()
+            ac.llm_params.tool_choice = tool_choice
 
     # Event bus
     event_bus = EventBus()
