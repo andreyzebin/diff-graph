@@ -299,38 +299,9 @@ def _format_existing_comments(comments: list[dict], bot_user: str = "") -> str:
     if not comments:
         return "(none)"
 
-    import re as _re
-
-    # Filter out noise: command-only comments (@bot /command), empty
-    def _is_noise(c: dict) -> bool:
-        text = (c.get("text") or "").strip()
-        if not text:
-            return True
-        # Pure bot invocations: "@mention /command" with no real content
-        if _re.match(r"^@\S+\s*/\w+\s*$", text):
-            return True
-        return False
-
-    meaningful = [c for c in comments if not _is_noise(c)]
-
-    # Deduplicate: same file + same title → keep latest
-    seen: dict[str, dict] = {}  # "file:title_prefix" → comment
-    deduped: list[dict] = []
-    for c in meaningful:
-        text = (c.get("text") or "")[:60]
-        file = c.get("file") or ""
-        if file and text.startswith("**"):
-            # Extract title: **Some title** ...
-            key = f"{file}:{text.split('**')[1] if '**' in text else text[:30]}"
-            if key in seen:
-                seen[key] = c  # keep latest
-                continue
-            seen[key] = c
-        deduped.append(c)
-
-    # Limit: unresolved + most recent resolved
-    unresolved = [c for c in deduped if not c.get("resolved")]
-    resolved = [c for c in deduped if c.get("resolved")]
+    # Always limit: keep unresolved + most recent resolved
+    unresolved = [c for c in comments if not c.get("resolved")]
+    resolved = [c for c in comments if c.get("resolved")]
     remaining = max(0, _MAX_COMMENTS - len(unresolved))
     filtered = unresolved + resolved[-remaining:] if remaining else unresolved
     if len(filtered) > _MAX_COMMENTS:
