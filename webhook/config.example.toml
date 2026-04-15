@@ -5,62 +5,60 @@ port = 8000
 
 # ── Agents ──────────────────────────────────────────────
 
+# DiffGraph v2 — dispatcher handles /help, plain text, unsupported commands;
+# passes /review through to the review pipeline
 [agents.dg2]
 trigger = "cli"
 command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --post-comments --message="{message}" --comment-id={comment_id}'
 timeout = 600
 
+# DiffGraph v1 — no dispatcher, review only (legacy)
 [agents.dg1]
 trigger = "cli"
 command = 'cd ~/repos/diff-graph-v1 && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --post-comments'
 timeout = 600
 
+# PR-Agent — forward raw Bitbucket event, it handles everything internally
 [agents.pra]
 trigger = "webhook"
-base_url = "http://pr-agent-host:3000"    # forward raw BB event
+base_url = "http://pr-agent-host:3000/webhook"
 timeout = 300
 
 # ── Events → commands ───────────────────────────────────
 [events]
-"pr:opened" = ["review"]
-"pr:comment:added" = "parse"         # extract /command from comment text
-"repo:refs_changed" = []              # nothing on push
+"pr:opened" = ["review"]            # auto-review on PR creation
+"pr:comment:added" = "parse"        # /command or plain text → dispatcher
+"pr:from_ref_updated" = ["review"]  # re-review on force-push
+"repo:refs_changed" = []            # ignore push events
 
 # ── Routes (first match wins, each route is forward OR agent) ────
 
-# Legacy project → forward everything to pr-agent
+# Legacy project → forward everything to pr-agent (no dispatcher)
 [[routes]]
 name = "legacy-forward"
 when = "project == 'LEGACY'"
 forward = "pra"
 
-# PLATFORM → 50% forward to pr-agent, 50% command routing to dg2
+# A/B test: 50% pr-agent, 50% DiffGraph v2
 [[routes]]
-name = "platform-forward"
+name = "platform-pra"
 when = "project == 'PLATFORM'"
 forward = "pra"
 sample = 50
 
 [[routes]]
-name = "platform-commands"
+name = "platform-dg"
 when = "project == 'PLATFORM'"
 agent = "dg2"
 
-# Canary repo → always dg2
+# Canary repo → DiffGraph v2
 [[routes]]
-name = "orderflow-canary"
+name = "canary"
 when = "repo == 'code-review-example-orderflow'"
 agent = "dg2"
 
-# SBLOOM → command routing, /improve overridden
-[[routes]]
-name = "sbloom"
-when = "project == 'SBLOOM'"
-agent = "dg2"
-improve = "pra"
-
-# Default
+# Default → DiffGraph v2 for all projects
 [[routes]]
 name = "default"
 when = "true"
-agent = "dg1"
+agent = "dg2"

@@ -91,20 +91,17 @@ port = 8000
 
 [agents.dg2]
 trigger = "cli"
-command = '... cli.py run --pr-url="{pr_url}" --post-comments'
+command = '... cli.py run --pr-url="{pr_url}" --post-comments --message="{message}" --comment-id={comment_id}'
 timeout = 600
-
-[agents.dg2.commands]
-ask = '... cli.py ask --pr-url="{pr_url}" --question="{args}"'
-improve = '... cli.py improve --pr-url="{pr_url}" --comment-id={comment_id}'
 
 [agents.pra]
 trigger = "webhook"
-base_url = "http://pr-agent-host:3000"
+base_url = "http://pr-agent-host:3000/webhook"
 
 [events]
 "pr:opened" = ["review"]
 "pr:comment:added" = "parse"
+"pr:from_ref_updated" = ["review"]
 "repo:refs_changed" = []
 
 [[routes]]
@@ -118,36 +115,30 @@ when = "repo == 'my-service'"
 agent = "dg2"
 
 [[routes]]
-name = "sbloom"
-when = "project == 'SBLOOM'"
-agent = "dg2"
-improve = "pra"
-
-[[routes]]
 name = "default"
 when = "true"
-agent = "dg1"
+agent = "dg2"
 ```
 
 ## Commands from PR comments
 
+Any PR comment triggers the dispatcher agent. The dispatcher understands both slash commands and plain text:
+
 ```
-@diffgraph /review
-@diffgraph /ask What about null safety?
-@diffgraph /improve
+/review                          → dispatcher signals full review
+/help                            → dispatcher replies with version + commands
+/help what does /review do?      → dispatcher answers the question
+Is this null-safe?               → dispatcher answers from PR context
+/improve                         → dispatcher replies: planned, not yet available
 ```
 
-| Part | Extracted as |
-|---|---|
-| `/review` | command = `review` |
-| `/ask What about null?` | command = `ask`, args = `What about null?` |
-| `/improve` (as reply in thread) | command = `improve`, comment_id = invoking comment ID |
+`@mention` prefix is optional (`@diffgraph /review` and `/review` both work).
 
-`@mention` is optional. `comment_id` is the ID of the comment containing the /command — agent can reply directly to it.
+Comments without a `/command` are passed as-is to the dispatcher (command = `default`), so it can answer questions, suggest commands, or ask for clarification.
 
 ## Placeholders
 
-Command templates (`command`, `commands.<name>`) support:
+Command templates support:
 
 | Placeholder | Value |
 |---|---|
@@ -155,8 +146,9 @@ Command templates (`command`, `commands.<name>`) support:
 | `{pr_id}` | PR number |
 | `{project}` | Bitbucket project key |
 | `{repo}` | Repository slug |
-| `{command}` | Command name |
-| `{args}` | Text after /command |
+| `{command}` | Command name (`review`, `help`, `default`, ...) |
+| `{args}` | Text after /command (or full text for `default`) |
+| `{message}` | Full user message: `/review args` for commands, raw text for `default` |
 | `{comment_id}` | Invoking comment ID |
 
 ## Route matching
@@ -167,8 +159,8 @@ Command templates (`command`, `commands.<name>`) support:
 
 **Per-command override** — any key besides `name`, `when`, `agent`, `forward`, `sample` is a command override:
 ```toml
-agent = "dg2"          # default
-improve = "pra"         # /improve → pra instead
+agent = "dg2"           # default: all commands → dg2 (dispatcher handles routing)
+review = "pra"          # override: /review → pr-agent instead of dg2
 ```
 
 ## Endpoints

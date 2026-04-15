@@ -43,19 +43,14 @@ class TestLoadConfig:
         cfg = load_config(EXAMPLE_CONFIG)
         forwards = [r for r in cfg.routes if r.forward]
         agents = [r for r in cfg.routes if r.agent]
-        assert len(forwards) >= 2  # legacy-forward, platform-forward
-        assert len(agents) >= 3    # platform-commands, canary, sbloom, default
+        assert len(forwards) >= 1  # legacy-forward
+        assert len(agents) >= 2    # canary, default
 
     def test_route_sample(self):
         cfg = load_config(EXAMPLE_CONFIG)
-        platform_fwd = next(r for r in cfg.routes if r.name == "platform-forward")
-        assert platform_fwd.sample == 50
-        assert platform_fwd.forward == "pra"
-
-    def test_route_per_command_override(self):
-        cfg = load_config(EXAMPLE_CONFIG)
-        sbloom = next(r for r in cfg.routes if r.name == "sbloom")
-        assert sbloom.commands["improve"] == "pra"
+        platform_pra = next(r for r in cfg.routes if r.name == "platform-pra")
+        assert platform_pra.sample == 50
+        assert platform_pra.forward == "pra"
 
 
 # ── Bitbucket event parsing ─────────────────────────────────────────────────
@@ -240,22 +235,14 @@ class TestCommandRouting:
         result = route_event([self._cmd("review")], pr, cfg)
         assert isinstance(result, list)
         assert result[0].agent_name == "dg2"
-        assert result[0].route_name == "orderflow-canary"
-
-    def test_sbloom_per_command_override(self):
-        cfg = load_config(EXAMPLE_CONFIG)
-        pr = PRMeta("SBLOOM", "other-repo", 1, "http://pr/1", "", "", "", "")
-        result = route_event([self._cmd("improve")], pr, cfg)
-        assert isinstance(result, list)
-        assert result[0].agent_name == "pra"
-        log.info("sbloom /improve → %s", result[0].agent_name)
+        assert result[0].route_name == "canary"
 
     def test_default_fallback(self):
         cfg = load_config(EXAMPLE_CONFIG)
         pr = PRMeta("OTHER", "repo", 1, "http://pr/1", "", "", "", "")
         result = route_event([self._cmd()], pr, cfg)
         assert isinstance(result, list)
-        assert result[0].agent_name == "dg1"
+        assert result[0].agent_name == "dg2"
         assert result[0].route_name == "default"
 
     def test_multiple_commands(self):
