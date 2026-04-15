@@ -141,7 +141,10 @@ class TestExtractCommands:
             pr=PRMeta("X", "x", 1, "", "", "", "", ""),
             comment_text="just a comment",
         )
-        assert extract_commands(ev, cfg.events) == []
+        cmds = extract_commands(ev, cfg.events)
+        assert len(cmds) == 1
+        assert cmds[0].name == "default"
+        assert cmds[0].args == "just a comment"
 
     def test_unknown_event(self):
         cfg = load_config(EXAMPLE_CONFIG)

@@ -6,8 +6,9 @@ Placeholders available in command templates:
   {pr_id}       — PR number
   {project}     — Bitbucket project key
   {repo}        — repository slug
-  {command}     — command name (review, ask, improve, ...)
+  {command}     — command name (review, help, default, ...)
   {args}        — command arguments (question text, instructions)
+  {message}     — full user message ("/review", "/help topic", or raw text for default)
   {comment_id}  — parent comment ID (for threaded replies), empty if none
 """
 from __future__ import annotations
@@ -41,6 +42,14 @@ async def trigger_agent(
 
 def _build_placeholders(pr: PRMeta, cmd: CommandRequest) -> dict[str, str]:
     """Build placeholder dict for command template substitution."""
+    # Build message: for /commands → "/command args", for default → raw text
+    if cmd.name == "default":
+        message = cmd.args or ""
+    elif cmd.args:
+        message = f"/{cmd.name} {cmd.args}"
+    else:
+        message = f"/{cmd.name}"
+
     return {
         "pr_url": pr.pr_url,
         "pr_id": str(pr.pr_id),
@@ -48,6 +57,7 @@ def _build_placeholders(pr: PRMeta, cmd: CommandRequest) -> dict[str, str]:
         "repo": pr.repo,
         "command": cmd.name,
         "args": cmd.args or "",
+        "message": message,
         "comment_id": str(cmd.comment_id) if cmd.comment_id else "",
     }
 

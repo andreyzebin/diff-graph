@@ -7,7 +7,7 @@ port = 8000
 
 [agents.dg2]
 trigger = "cli"
-command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --post-comments --message="/{command} {args}" --comment-id={comment_id}'
+command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --post-comments --message="{message}" --comment-id={comment_id}'
 timeout = 600
 
 [agents.dg1]

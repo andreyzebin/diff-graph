@@ -135,7 +135,12 @@ def extract_commands(event: WebhookEvent, events_config: dict) -> list[CommandRe
                 args=args,
                 comment_id=event.comment_id,
             )]
-        return []
+        # No /command — pass full text as "default" so dispatcher can handle it
+        return [CommandRequest(
+            name="default",
+            args=event.comment_text.strip(),
+            comment_id=event.comment_id,
+        )]
 
     # List of auto-commands
     if isinstance(cfg, list):
