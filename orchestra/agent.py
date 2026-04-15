@@ -238,6 +238,7 @@ class Agent:
         tool_names = self._build_tool_names()
         tools_schema = self.registry.to_openai_schema(tool_names)
         steps_since_reflect = 0
+        self._natural_stop = False
 
         for step in range(self.config.budget.max_steps):
             if self.budget_state.exhausted:
@@ -355,6 +356,7 @@ class Agent:
                                tok_cached=self.budget_state.tokens_cached)
 
             if not msg.tool_calls:
+                self._natural_stop = True
                 break
 
             # Emit reflect events
@@ -454,7 +456,19 @@ class Agent:
             # Maybe condense
             messages = self._maybe_condense(messages)
 
-        # Force done
+        # Post-loop: natural stop (LLM returned text) or forced (budget/step limit)
+        if getattr(self, '_natural_stop', False):
+            self.event_bus.emit(EventType.AGENT_DONE,
+                               agent_id=self.agent_id, agent_name=self.config.name)
+            trace.total_tokens = self.budget_state.tokens_used
+            trace.total_steps = self.budget_state.steps_used
+            return AgentResult(
+                agent_id=self.agent_id, agent_name=self.config.name,
+                output=None,
+                sgr_history=self.sgr.history if self.sgr else [],
+                messages=messages, budget_state=self.budget_state, trace=trace,
+            )
+
         self.event_bus.emit(EventType.AGENT_FORCED_DONE,
                            agent_id=self.agent_id, agent_name=self.config.name,
                            reason="step limit" if not self.budget_state.exhausted else "token limit",
