@@ -126,6 +126,12 @@ class ToolRegistry:
     def get_many(self, names: list[str]) -> list[ToolDef]:
         return [self._tools[n] for n in names if n in self._tools]
 
+    def clone(self) -> "ToolRegistry":
+        """Create a shallow copy — domain tools shared, builtins can be overwritten."""
+        new = ToolRegistry()
+        new._tools = dict(self._tools)
+        return new
+
     def has(self, name: str) -> bool:
         return name in self._tools
 

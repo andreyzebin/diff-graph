@@ -21,8 +21,14 @@ def register_builtins(
     registry: ToolRegistry,
     agent_config: Any,
     sgr_tracker: Optional["SGRTracker"] = None,
+    agent: Any = None,
 ) -> None:
-    """Register builtin tools based on agent config."""
+    """Register builtin tools based on agent config.
+
+    If agent is provided, meta-tools are registered with real handlers
+    (agent._meta_spawn_agent, etc.) so they go through registry.dispatch()
+    and get schema validation. Otherwise, placeholder handlers are used.
+    """
 
     # ── reflect ───────────────────────────────────────────────────────────
     if agent_config.sgr and sgr_tracker:
@@ -67,6 +73,12 @@ def register_builtins(
     # ── Meta-tools (schemas only — Agent handles execution) ───────────────
     meta = set(agent_config.meta_tools or [])
 
+    def _meta_handler(method_name: str) -> Callable:
+        """Return agent's meta-method as handler, or placeholder if no agent."""
+        if agent and hasattr(agent, method_name):
+            return getattr(agent, method_name)
+        return lambda **kw: "handled by agent"
+
     if "spawn_agent" in meta:
         registry.register_tool_def(ToolDef(
             name="spawn_agent",
@@ -90,7 +102,7 @@ def register_builtins(
                 },
                 "required": ["agent"],
             },
-            handler=lambda **kw: "handled by agent",
+            handler=_meta_handler("_meta_spawn_agent"),
             is_builtin=True,
         ))
 
@@ -120,7 +132,7 @@ def register_builtins(
                 },
                 "required": ["agents"],
             },
-            handler=lambda **kw: "handled by agent",
+            handler=_meta_handler("_meta_spawn_many"),
             is_builtin=True,
         ))
 
@@ -141,7 +153,7 @@ def register_builtins(
                 },
                 "required": ["goal"],
             },
-            handler=lambda **kw: "handled by agent",
+            handler=_meta_handler("_meta_plan"),
             is_builtin=True,
         ))
 
@@ -170,7 +182,7 @@ def register_builtins(
                 },
                 "required": ["branches"],
             },
-            handler=lambda **kw: "handled by agent",
+            handler=_meta_handler("_meta_fork"),
             is_builtin=True,
         ))
 
@@ -197,7 +209,7 @@ def register_builtins(
                 },
                 "required": ["agent_id"],
             },
-            handler=lambda **kw: "handled by agent",
+            handler=_meta_handler("_meta_adjust_agent"),
             is_builtin=True,
         ))
 
@@ -209,7 +221,7 @@ def register_builtins(
                 "SGR state (confidence, open questions, learned), last tool called."
             ),
             parameters={"type": "object", "properties": {}},
-            handler=lambda **kw: "handled by agent",
+            handler=_meta_handler("_meta_observe_agents"),
             is_builtin=True,
         ))
 
@@ -222,7 +234,7 @@ def register_builtins(
                 "for a given task."
             ),
             parameters={"type": "object", "properties": {}},
-            handler=lambda **kw: "handled by agent",
+            handler=_meta_handler("_meta_list_agents"),
             is_builtin=True,
         ))
 

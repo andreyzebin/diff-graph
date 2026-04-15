@@ -525,34 +525,20 @@ class Agent:
     # ── Tool call handling ────────────────────────────────────────────────────
 
     def _handle_tool_call(self, tc, dispatch_results: dict, step: int) -> str:
-        """Route a single tool call to the appropriate handler."""
+        """Route all tool calls through registry.dispatch() — validation + handler."""
         name = tc.function.name
         try:
             args = json.loads(tc.function.arguments or "{}")
         except json.JSONDecodeError:
             args = {}
 
-        if name == "done":
-            return "Output submitted."
-        elif name == "reflect":
-            return "Reflection noted."
-        elif name == "spawn_agent":
-            return self._meta_spawn_agent(args)
-        elif name == "spawn_many":
-            return self._meta_spawn_many(args)
-        elif name == "plan":
-            return self._meta_plan(args)
-        elif name == "fork":
-            return self._meta_fork(args)
-        elif name == "adjust_agent":
-            return self._meta_adjust_agent(args)
-        elif name == "observe_agents":
-            return self._meta_observe_agents(args)
-        elif name == "list_agents":
-            return self._meta_list_agents(args)
-        else:
-            result = dispatch_results.get(tc.id, "")
-            return self.registry.format_result(name, result)
+        # Pre-dispatched domain tools (ran in parallel earlier)
+        if tc.id in dispatch_results:
+            return self.registry.format_result(name, dispatch_results[tc.id])
+
+        # Everything else through registry (builtins + domain, with schema validation)
+        result = self.registry.dispatch(name, args)
+        return self.registry.format_result(name, result)
 
     # ── Meta-tool implementations ─────────────────────────────────────────────
 
@@ -612,12 +598,16 @@ class Agent:
         # Child uses its own budget from .prompt config — not overridden by parent
         child_config = agent_config
 
+        # Child gets own registry (inherits domain tools, fresh builtins)
+        from .tools.builtin import register_builtins
+        child_registry = self.registry.clone()
         child = Agent(
-            config=child_config, tool_registry=self.registry,
+            config=child_config, tool_registry=child_registry,
             llm=self.llm, model=self.model, event_bus=self.event_bus,
             parent_id=self.agent_id, parent=self, depth=self.depth + 1,
             context_messages=context, agent_configs=self.agent_configs, agent_registry=self.agent_registry,
         )
+        register_builtins(child_registry, child_config, sgr_tracker=child.sgr, agent=child)
         child.data_scope = resolved_data  # for further inheritance
 
         with self._children_lock:
@@ -710,12 +700,15 @@ class Agent:
             # Child uses its own budget from .prompt config
             child_config = agent_config
 
+            from .tools.builtin import register_builtins
+            child_registry = self.registry.clone()
             child = Agent(
-                config=child_config, tool_registry=self.registry,
+                config=child_config, tool_registry=child_registry,
                 llm=self.llm, model=self.model, event_bus=self.event_bus,
                 parent_id=self.agent_id, parent=self, depth=self.depth + 1,
                 context_messages=context, agent_configs=self.agent_configs, agent_registry=self.agent_registry,
             )
+            register_builtins(child_registry, child_config, sgr_tracker=child.sgr, agent=child)
             child.data_scope = resolved_data
             with self._children_lock:
                 self._children[child.agent_id] = child
@@ -819,12 +812,15 @@ class Agent:
                 llm_params=self.config.llm_params, max_depth=self.config.max_depth,
             )
 
+            from .tools.builtin import register_builtins
+            child_registry = self.registry.clone()
             child = Agent(
-                config=child_config, tool_registry=self.registry,
+                config=child_config, tool_registry=child_registry,
                 llm=self.llm, model=self.model, event_bus=self.event_bus,
                 parent_id=self.agent_id, parent=self, depth=self.depth + 1,
                 context_messages=context, agent_configs=self.agent_configs, agent_registry=self.agent_registry,
             )
+            register_builtins(child_registry, child_config, sgr_tracker=child.sgr, agent=child)
             return child.run()
 
         with ThreadPoolExecutor(max_workers=n) as executor:
