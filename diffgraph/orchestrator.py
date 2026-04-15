@@ -291,26 +291,21 @@ def _make_diff_summary(diff_result: DiffResult) -> str:
     return "\n".join(parts)
 
 
-def _format_existing_comments(comments: list[dict], bot_user: str = "",
-                              max_comments: int = 0) -> str:
-    """Format comments for prompt injection.
+_MAX_COMMENTS = 20
 
-    max_comments=0 means no limit. When set, keeps only unresolved + last N.
-    """
+
+def _format_existing_comments(comments: list[dict], bot_user: str = "") -> str:
+    """Format comments for prompt injection. Keeps unresolved + last N resolved."""
     if not comments:
         return "(none)"
 
-    # Filter if limit set: unresolved first, then most recent
-    if max_comments and len(comments) > max_comments:
-        unresolved = [c for c in comments if not c.get("resolved")]
-        resolved = [c for c in comments if c.get("resolved")]
-        # Keep all unresolved + fill remaining with most recent resolved
-        remaining = max(0, max_comments - len(unresolved))
-        filtered = unresolved + resolved[-remaining:] if remaining else unresolved
-        if len(filtered) > max_comments:
-            filtered = filtered[-max_comments:]
-    else:
-        filtered = comments
+    # Always limit: keep unresolved + most recent resolved
+    unresolved = [c for c in comments if not c.get("resolved")]
+    resolved = [c for c in comments if c.get("resolved")]
+    remaining = max(0, _MAX_COMMENTS - len(unresolved))
+    filtered = unresolved + resolved[-remaining:] if remaining else unresolved
+    if len(filtered) > _MAX_COMMENTS:
+        filtered = filtered[-_MAX_COMMENTS:]
 
     lines = []
     for c in filtered:

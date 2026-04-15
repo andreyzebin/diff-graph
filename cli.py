@@ -155,7 +155,7 @@ def _run_with_dispatcher(
 
     bot_user = review_cfg.get("bot_user", "")
     from diffgraph.orchestrator import _format_existing_comments
-    existing_comments_str = _format_existing_comments(existing_comments, bot_user=bot_user, max_comments=15)
+    existing_comments_str = _format_existing_comments(existing_comments, bot_user=bot_user)
 
     # ── Lazy ctx: clone happens on first domain tool call ─────────────────
     _cleanup_fn = {"fn": None}

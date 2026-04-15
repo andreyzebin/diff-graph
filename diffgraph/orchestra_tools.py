@@ -82,7 +82,6 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "existing_comments": _format_existing_comments(
                 ctx.existing_comments,
                 bot_user=getattr(ctx, '_bot_user', ''),
-                max_comments=20,
             ),
             "commits": _get_commit_list(ctx.repo_path, ctx.base_ref, ctx.source_ref)
                        if ctx.base_ref and ctx.source_ref else "(unavailable)",
