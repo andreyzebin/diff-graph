@@ -1054,9 +1054,11 @@ def _make_event_handler(model: str):
             console.print(panel)
 
         elif event == "orchestrator_step":
-            # Budget tracking (root only — used for summary panel)
+            step = kw.get("step", 0)
+            tool = kw.get("tool", "")
+            _agent_log.info("%s: step %d → %s", aname, step, tool or "(no tools)")
             if is_root:
-                _budget["step"] = kw.get("step", 0) + 1
+                _budget["step"] = step + 1
                 _budget["tok_in"] = kw.get("tok_in", _budget["tok_in"])
                 _budget["tok_out"] = kw.get("tok_out", _budget["tok_out"])
                 _budget["tok_cached"] = kw.get("tok_cached", _budget["tok_cached"])

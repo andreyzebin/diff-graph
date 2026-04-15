@@ -344,7 +344,9 @@ class Agent:
             # Emit AGENT_STEP once per LLM round (before tool dispatch — crash-safe)
             self.event_bus.emit(EventType.AGENT_STEP,
                                agent_id=self.agent_id, agent_name=self.config.name,
-                               step=step, tool=tool_names[0] if tool_names else "",
+                               step=step,
+                               tool=", ".join(tool_names),
+                               tools=tool_names,
                                args={},
                                tok_in=self.budget_state.tokens_in,
                                tok_out=self.budget_state.tokens_out,
