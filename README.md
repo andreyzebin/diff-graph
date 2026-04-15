@@ -3,35 +3,33 @@
 Multi-agent PR code reviewer powered by the **Orchestra** framework. Takes a git diff (or a Bitbucket Server PR URL), spawns a lead agent that analyzes the change, delegates investigation to focused reviewer agents, and consolidates findings into a deduplicated list.
 
 ```
-git diff / PR URL
+PR comment / event
       |
       v
-parse_diff()         changed files + changed lines
++--- dispatcher (react, lightweight) ---+
+|  /help → reply directly, done         |
+|  /review → done(action="review")      |
+|  unknown → suggest command, done      |
+|  no command → answer or suggest       |
++----------------------------------------+
+      |  action="review"
+      v
+clone + parse_diff()
       |
       v
-+----------------------- Orchestra -----------------------+
-|                                                          |
-|  lead (react)                                      |
-|    Phase 1: ANALYZE  -- read diff, form concerns         |
-|    Phase 2: INVESTIGATE -- spawn reviewer(s), one round  |
-|    Phase 3: JUDGE -- consolidate, reply, done            |
-|       |                                                  |
-|       +-- spawn_agent("reviewer", focus="concern")       |
-|       |      +-- ReAct loop: tools + SGR                 |
-|       |                                                  |
-|       +-- [optional: spawn_many for parallel]            |
-|       |                                                  |
-|       +-- done(consolidated_findings)                    |
-|                                                          |
-+----------------------------------------------------------+
++--- lead (react, spawns children) -----+
+|  Phase 1: ANALYZE — form concerns      |
+|  Phase 2: INVESTIGATE — spawn reviewers|
+|  Phase 3: JUDGE — consolidate, done    |
+|     +-- reviewer (react + SGR)         |
+|     +-- reviewer (react + SGR)         |
++----------------------------------------+
       |
       v
-ReviewFinding[]      BLOCKER / MAJOR / MINOR / COMMENT
-      |
-      +---> post inline comments to PR
+ReviewFinding[]  →  inline PR comments
 ```
 
-No pre-indexing. No database. One session per diff. All agents defined by `.prompt` files.
+No pre-indexing. No database. One session per diff. All agents defined by `.prompt` files. All agents are homogeneous — hierarchy and behavior controlled entirely by prompts.
 
 ---
 
@@ -184,6 +182,9 @@ python cli.py run --repo /path/to/service --base abc123 --source def456 --output
 | `--max-steps` | Max ReAct tool calls |
 | `--max-tokens` | Max token budget |
 | `--prompts` | Prompt resource URI (path, `file://`, `bitbucket://`) |
+| `--command` | Dispatch command (`review`, `help`, etc.). Runs dispatcher agent first. |
+| `--args` | Arguments for the command (question, topic) |
+| `--comment-id` | Bitbucket comment ID that triggered this invocation |
 | `--log-level` | `DEBUG`, `INFO`, `WARNING` (default), `ERROR` |
 | `-v` / `--verbose` | Shortcut for `--log-level DEBUG` |
 | `--no-verify-ssl` | Disable SSL verification for all connections (LLM, Bitbucket, git) |
@@ -191,7 +192,7 @@ python cli.py run --repo /path/to/service --base abc123 --source def456 --output
 ### Logging levels
 
 ```bash
-# Default — minimal output, only Rich live display
+# Default — agent actions at INFO level
 python cli.py run --pr-url ...
 
 # INFO — agent actions (like live trace), LLM step results
@@ -258,6 +259,17 @@ Enables pr-analytics to correlate comment acceptance rates with prompt generatio
 
 ## How it works
 
+### Dispatcher
+
+Entry point for all user interactions. Runs before the repo is cloned (lightweight — only Bitbucket API calls). Decides what to do based on the command, comment thread, and PR context:
+
+- `/review` → signals `done(action="review")`, the CLI proceeds with the review pipeline
+- `/help [topic]` → replies directly with version info, available commands, capabilities
+- No command (just a comment) → answers from context if cheap, suggests `/review` if expensive
+- Unsupported command → explains what's available
+
+The dispatcher sees: `{command}`, `{args}`, `{comment_thread}` (full parent chain), `{pr_title}`, `{pr_description}`, `{generation}`, `{mutation}`. All configurable in `dispatcher.prompt`.
+
 ### Three-phase review methodology
 
 **Phase 1 -- ANALYZE:** The lead reads the diff, identifies the system type, and formulates concerns scaled to diff size: 1-2 for small diffs, 2-3 for medium, 3-5 for large. Each concern is a distinct theme — not split facets of the same issue.
@@ -267,6 +279,10 @@ Enables pr-analytics to correlate comment acceptance rates with prompt generatio
 **Phase 3 -- JUDGE (no going back):** The lead resolves concerns from the evidence collected, handles PR comment threads, deduplicates findings, and delivers the verdict. New questions from results are answered from collected evidence, not by spawning more reviewers.
 
 ### Agents (defined by `.prompt` files)
+
+All agents are homogeneous — same `Agent` class, same tool dispatch, same `.prompt` format. Hierarchy and behavior are controlled entirely by prompts, not code.
+
+**Dispatcher** -- react agent (lightweight). Entry point for user interactions. Handles cheap requests directly (`reply_to_comment`), routes expensive operations via `done(action=...)`.
 
 **Lead** -- react agent with `spawn`, `observe_agents`, `adjust_agent` capabilities. Orchestrates the review. Owns PR comment interaction (`reply_to_comment`, `resolve_comment`).
 
@@ -290,14 +306,14 @@ Agents use their own `.prompt` budget (not parent-allocated). Default pushers: 7
 
 ### CLI output
 
-Plain text logging at INFO level (default). Shows all agents including reviewers:
+Plain text logging at INFO level (default). Shows all agents with result counts:
 
 ```
-10:07:04 INFO lead: read_file(path=…/OrderService.java, changes_only=True)
+10:07:04 INFO lead: read_file(path=…/OrderService.java, changes_only=True) → 47 lines
 10:07:06 INFO lead: reflect  medium
 10:07:07 INFO spawn reviewer → BUSINESS LOGIC: Investigate...
-10:07:09 INFO reviewer: read_file(path=…/OrderService.java, changes_only=True)
-10:07:10 INFO reviewer: search(query=getItems)
+10:07:09 INFO reviewer: read_file(path=…/OrderService.java, changes_only=True) → 120 lines
+10:07:10 INFO reviewer: search(query=getItems) → 12 lines
 10:07:12 INFO reviewer: reflect  high
 10:07:14 INFO reviewer: done
 10:07:15 INFO lead: reflect  high
@@ -427,7 +443,7 @@ tracing/                     Trace CLI + web server
 
 diffgraph/                   Code review domain
 +-- api.py                   DiffGraph public API
-+-- orchestrator.py          One agent entry point (~35 lines of logic)
++-- orchestrator.py          run_agent() + run_review() entry points
 +-- orchestra_tools.py       Domain tools as closures
 +-- diff_parser.py           git diff -> DiffResult
 +-- lang.py                  Language detection
@@ -439,6 +455,7 @@ diffgraph/                   Code review domain
     +-- bitbucket_pr.py      Bitbucket REST API (Bearer token)
     +-- git_repo.py          Git clone/fetch/diff (header | ssh)
 +-- prompts/
+    +-- dispatcher.prompt    Entry point: route commands, handle /help
     +-- lead.prompt          Three-phase review lead (analyze -> investigate -> judge)
     +-- reviewer.prompt      Focused investigator with SGR
 
