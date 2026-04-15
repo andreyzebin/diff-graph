@@ -87,8 +87,9 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                        if ctx.base_ref and ctx.source_ref else "(unavailable)",
         }
 
-    # Default ref when base/source are available
-    default_ref = "base..source" if (ctx.base_ref and ctx.source_ref) else "source"
+    def _default_ref() -> str:
+        """Compute default ref dynamically (after lazy init may have set base/source)."""
+        return "base..source" if (ctx.base_ref and ctx.source_ref) else "source"
 
     @registry.register(
         name="find_files",
@@ -102,8 +103,9 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "required": ["pattern"],
         },
     )
-    def find_files(pattern: str = "**/*", ref: str = default_ref) -> list[str]:
+    def find_files(pattern: str = "**/*", ref: str = "") -> list[str]:
         _ensure()
+        ref = ref or _default_ref()
         vfs_dir = _get_vfs(ctx, ref)
         if vfs_dir:
             from diffsearch.tools import list_files_vfs
@@ -131,8 +133,9 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     )
     def read_file_tool(path: str = "", start_line: int = None, end_line: int = None,
                        changes_only: bool = False, before: int = 3, after: int = 3,
-                       ref: str = default_ref) -> str:
+                       ref: str = "") -> str:
         _ensure()
+        ref = ref or _default_ref()
         if not changes_only and start_line is not None and end_line is not None and (end_line - start_line) > 100:
             end_line = start_line + 99
         vfs_dir = _get_vfs(ctx, ref)
@@ -160,8 +163,9 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "required": ["path"],
         },
     )
-    def read_outline_tool(path: str = "", ref: str = default_ref) -> str:
+    def read_outline_tool(path: str = "", ref: str = "") -> str:
         _ensure()
+        ref = ref or _default_ref()
         vfs_dir = _get_vfs(ctx, ref)
         if vfs_dir:
             from diffsearch.tools import read_outline_vfs
@@ -187,8 +191,9 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         },
     )
     def search_tool(query: str = "", glob: str = "**/*", regex: bool = False,
-                    before: int = 0, after: int = 0, ref: str = default_ref) -> str:
+                    before: int = 0, after: int = 0, ref: str = "") -> str:
         _ensure()
+        ref = ref or _default_ref()
         vfs_dir = _get_vfs(ctx, ref)
         if vfs_dir:
             from diffsearch.tools import search_vfs
