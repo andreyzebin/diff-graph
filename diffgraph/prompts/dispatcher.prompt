@@ -1,7 +1,7 @@
 @agent: dispatcher
 @mode: react
 @tools: reply_to_comment
-@budget: 8000 tokens, 5 steps
+@budget: 20000 tokens, 5 steps
 @llm: temperature=0.3
 @data:
   message: string -- the full user message (may contain /command, or just plain text)
