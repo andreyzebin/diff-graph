@@ -75,6 +75,7 @@ class AgentRegistryEntry:
             meta_tools=meta_tools,
             budget=self.budget,
             llm_params=self.llm_params,
+            input_schema=self.input_schema,
         )
 
     def to_listing(self) -> dict:

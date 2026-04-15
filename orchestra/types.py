@@ -96,6 +96,7 @@ class AgentConfig:
     condensation: Optional[CondensationConfig] = None
     llm_params: Optional[LLMParamsConfig] = None
     max_depth: int = 3  # max spawn/fork depth
+    input_schema: Optional[dict] = None  # @data fields with from: metadata
 
 
 # ── Top-level config ──────────────────────────────────────────────────────────
