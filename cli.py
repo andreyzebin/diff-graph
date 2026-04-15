@@ -93,26 +93,32 @@ def _make_llm_client(llm_cfg: dict):
     return OpenAI(**kwargs)
 
 
-def _run_dispatcher(
+def _run_with_dispatcher(
     pr_url: str,
     message: str,
     comment_id: int,
     llm_cfg: dict,
+    review_cfg: dict,
     effective_model: str,
     prompts: Optional[str],
 ) -> None:
     """
-    Run the dispatcher agent. If it handles the request (help, unsupported
-    command, etc.), posts replies and exits. If it returns action="review",
-    returns normally so the caller can proceed with the review pipeline.
+    Run dispatcher as root agent with lazy repo init.
+
+    Dispatcher can spawn lead (which spawns reviewers) — all in one trace.
+    Repo clone + diff happen lazily only when a domain tool is first called.
+    For /help or plain questions, no clone happens at all.
     """
     from diffgraph.bitbucket import (
-        get_comment_thread, reply_to_pr_comment, parse_pr_url,
+        get_comment_thread, reply_to_pr_comment, get_pr_info,
+        get_pr_comments, fetch_pr,
     )
-    from diffgraph.orchestrator import run_agent
+    from diffgraph.orchestrator import run_agent, _Ctx, ReviewContext
+    from diffgraph.orchestra_tools import register_diffgraph_tools
+    from diffgraph.diff_parser import parse_diff, DiffResult
     from orchestra import ToolRegistry
 
-    # Fetch lightweight context (no clone needed)
+    # ── Lightweight context (no clone) ────────────────────────────────────
     thread = "(no thread)"
     if comment_id:
         try:
@@ -120,29 +126,80 @@ def _run_dispatcher(
         except Exception as exc:
             thread = f"(failed to fetch thread: {exc})"
 
-    # PR title/description from API
     pr_title = pr_description = ""
     try:
-        from diffgraph.bitbucket import get_pr_info
         info = get_pr_info(pr_url)
         pr_title = info.get("title", "")
         pr_description = info.get("description", "")
     except Exception:
         pass
 
-    # Prompt generation/mutation from compiled prompts
+    # Prompt generation/mutation
     from orchestra import compile_prompts
     from pathlib import Path as _Path
     prompt_source = prompts or str(_Path(__file__).parent / "diffgraph" / "prompts")
     try:
-        registry = compile_prompts(prompt_source, pattern="*.prompt")
+        pr = compile_prompts(prompt_source, pattern="*.prompt")
         generation = str(prompt_source).rsplit("/", 1)[-1] if "/" in str(prompt_source) else str(prompt_source)
-        mutation = registry.source_hash[:7] if registry.source_hash else "unknown"
+        mutation = pr.source_hash[:7] if pr.source_hash else "unknown"
     except Exception:
         generation = "default"
         mutation = "unknown"
 
-    data = {
+    # Existing comments (cheap API call)
+    existing_comments: list = []
+    try:
+        existing_comments = get_pr_comments(pr_url)
+    except Exception:
+        pass
+
+    bot_user = review_cfg.get("bot_user", "")
+    from diffgraph.orchestrator import _format_existing_comments
+    existing_comments_str = _format_existing_comments(existing_comments, bot_user=bot_user)
+
+    # ── Lazy ctx: clone happens on first domain tool call ─────────────────
+    _cleanup_fn = {"fn": None}
+
+    ctx = _Ctx(
+        diff_text="", diff_result=DiffResult(files={}),
+        repo_path="", existing_comments=existing_comments,
+        review_context=ReviewContext(),
+        _pr_url=pr_url, _initialized=False,
+    )
+
+    def _lazy_init(c: _Ctx) -> None:
+        """Clone repo, compute diff — called on first domain tool access."""
+        console.print(f"[dim]  cloning repo (lazy)...[/dim]")
+        diff_text, repo_path, cleanup_fn, pr_meta = fetch_pr(
+            pr_url,
+            on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+        )
+        _cleanup_fn["fn"] = cleanup_fn
+        c.diff_text = diff_text
+        c.diff_result = parse_diff(diff_text)
+        c.repo_path = repo_path
+        c.base_ref = pr_meta.get("base_ref", "")
+        c.source_ref = pr_meta.get("source_ref", "")
+
+    ctx._init_fn = _lazy_init
+
+    # ── Tool registry with all domain tools ───────────────────────────────
+    tool_registry = ToolRegistry()
+    register_diffgraph_tools(tool_registry, ctx)
+
+    # ── Data for dispatcher prompt ────────────────────────────────────────
+    # LazyData triggers repo clone when review-related fields are accessed
+    class _LazyData(dict):
+        def __getitem__(self, key):
+            if key in ("diff_summary", "commits") and not ctx._initialized:
+                ctx.ensure_repo()
+                # Recompute after clone
+                from diffgraph.orchestrator import _make_diff_summary, _get_commit_list
+                self["diff_summary"] = _make_diff_summary(ctx.diff_result)
+                self["commits"] = _get_commit_list(ctx.repo_path, ctx.base_ref, ctx.source_ref) if ctx.base_ref else "(unavailable)"
+            return super().__getitem__(key)
+
+    data = _LazyData({
         "message": message,
         "comment_id": str(comment_id),
         "comment_thread": thread,
@@ -150,27 +207,10 @@ def _run_dispatcher(
         "pr_description": pr_description or "(no description)",
         "generation": generation,
         "mutation": mutation,
-    }
-
-    # Build tool registry with reply_to_comment
-    tool_registry = ToolRegistry()
-    _replies: list[dict] = []
-
-    @tool_registry.register(
-        name="reply_to_comment",
-        description="Reply to a PR comment thread.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "comment_id": {"type": "integer"},
-                "text": {"type": "string"},
-            },
-            "required": ["comment_id", "text"],
-        },
-    )
-    def _reply(comment_id: int = 0, text: str = "") -> dict:
-        _replies.append({"comment_id": comment_id, "text": text})
-        return {"status": "queued"}
+        "diff_summary": "(not yet loaded)",
+        "existing_comments": existing_comments_str,
+        "commits": "(not yet loaded)",
+    })
 
     llm_client = _make_llm_client(llm_cfg)
     msg_preview = message[:60] + "…" if len(message) > 62 else message
@@ -178,10 +218,9 @@ def _run_dispatcher(
 
     from orchestra.trace_db import TraceDBWriter
     _trace_db = TraceDBWriter()
-
     event_handler = _make_event_handler(effective_model)
 
-    def _combined(event: str, **kw):
+    def _on_event(event: str, **kw):
         event_handler(event, **kw)
 
     result = run_agent(
@@ -190,38 +229,74 @@ def _run_dispatcher(
         llm=llm_client,
         model=effective_model,
         tool_registry=tool_registry,
-        on_event=_combined,
+        on_event=_on_event,
         trace_writer=_trace_db.on_event,
         prompt_resource=prompts,
         tool_choice=llm_cfg.get("tool_choice", ""),
     )
 
+    # ── Post-run: post replies, findings, cleanup ─────────────────────────
+    review_ctx = ctx.review_context
+    findings = []
+    raw = result.get("findings", [])
+    if isinstance(raw, list):
+        from diffgraph.orchestrator import _parse_findings
+        findings = _parse_findings(raw)
+
     _trace_db.finish_run(
         model=effective_model,
         pr_url=pr_url,
-        findings_count=0,
+        findings_count=len(findings),
         prompt_source=str(prompt_source),
         prompt_hash=mutation,
     )
     _trace_db.close()
     console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")
 
-    # Post queued replies
-    if _replies and pr_url:
-        for reply in _replies:
+    if findings:
+        _print_findings(findings)
+
+    # Post findings as inline comments
+    if pr_url and findings and ctx._initialized:
+        from diffgraph.bitbucket import post_review_comments
+        comments_to_post = [_finding_to_comment(f) for f in findings]
+        changed_lines = {
+            path: set(fd.after_changed_lines)
+            for path, fd in ctx.diff_result.files.items()
+        }
+        console.print(f"\n[bold]Posting[/bold]  {len(comments_to_post)} findings to PR...\n")
+        posted = post_review_comments(
+            pr_url, comments_to_post,
+            on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+            changed_lines=changed_lines,
+        )
+        console.print(f"\n[green]Posted {posted}/{len(comments_to_post)} comments[/green]")
+
+    # Post replies and resolves
+    if pr_url and (review_ctx.comment_replies or review_ctx.comment_resolves):
+        from diffgraph.bitbucket import reply_to_pr_comment, resolve_pr_comment
+        for reply in review_ctx.comment_replies:
             try:
                 reply_to_pr_comment(pr_url, reply["comment_id"], reply["text"])
                 console.print(f"  [dim]replied to #{reply['comment_id']}[/dim]")
             except Exception as exc:
                 console.print(f"  [yellow]reply #{reply['comment_id']} failed: {exc}[/yellow]")
+        for cid in review_ctx.comment_resolves:
+            try:
+                resolve_pr_comment(pr_url, cid)
+                console.print(f"  [dim]resolved #{cid}[/dim]")
+            except Exception as exc:
+                console.print(f"  [yellow]resolve #{cid} failed: {exc}[/yellow]")
 
-    # Check if dispatcher wants to proceed with review
-    action = result.get("action", "")
-    if action == "review":
-        return  # caller will proceed with review pipeline
+    # Cleanup cloned repo if it was created
+    if _cleanup_fn["fn"]:
+        _cleanup_fn["fn"]()
 
-    # Dispatcher handled it — exit
-    raise typer.Exit(0)
+    # Clean up VFS temp dirs
+    if ctx.vfs_cache:
+        import shutil
+        for vfs_dir in ctx.vfs_cache.values():
+            shutil.rmtree(vfs_dir, ignore_errors=True)
 
 
 # ── commands ──────────────────────────────────────────────────────────────────
@@ -297,19 +372,18 @@ def run(
     cleanup_fn = None
     pr_title = pr_description = ""
 
-    # ── Dispatcher: handle message before expensive clone ────────────────
+    # ── Dispatcher mode: single entry point, lazy clone ─────────────────
     if message is not None and pr_url:
-        _run_dispatcher(
+        _run_with_dispatcher(
             pr_url=pr_url,
             message=message,
             comment_id=comment_id or 0,
             llm_cfg=llm_cfg,
+            review_cfg=review_cfg,
             effective_model=effective_model,
             prompts=prompts,
         )
-        # _run_dispatcher calls sys.exit if no review needed.
-        # If we get here, dispatcher said action="review" — proceed.
-        console.print("[dim]  dispatcher → review[/dim]")
+        raise typer.Exit(0)
 
     if pr_url:
         from diffgraph.bitbucket import fetch_pr

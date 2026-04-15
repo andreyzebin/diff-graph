@@ -73,6 +73,18 @@ class _Ctx:
     base_ref: str = ""
     source_ref: str = ""
     vfs_cache: dict = field(default_factory=dict)  # ref → vfs_dir
+    # Lazy init: set _pr_url and _init_fn to defer clone until first domain tool call
+    _pr_url: str = ""
+    _init_fn: Optional[Callable] = None
+    _initialized: bool = True
+
+    def ensure_repo(self) -> None:
+        """Clone repo lazily on first domain tool access."""
+        if self._initialized:
+            return
+        if self._init_fn:
+            self._init_fn(self)
+            self._initialized = True
 
 
 def run_review(
@@ -287,7 +299,7 @@ def run_agent(
         agent_registry=agent_registry,
         agent_configs=agent_registry.get_all_configs(),
     )
-    agent.data_scope = dict(data)
+    agent.data_scope = data
 
     result = agent.run()
 
