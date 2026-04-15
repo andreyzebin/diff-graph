@@ -79,15 +79,22 @@ async def _trigger_cli(agent: AgentConfig, pr: PRMeta, cmd: CommandRequest) -> s
         command,
         executable="/bin/bash",
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,  # merge stderr into stdout
         cwd=os.path.expanduser("~/"),
     )
 
+    # Stream output lines in real time
+    prefix = f"[{agent.name}]"
     try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(),
-            timeout=agent.timeout,
-        )
+        async def _stream():
+            assert proc.stdout
+            async for raw_line in proc.stdout:
+                line = raw_line.decode(errors="replace").rstrip()
+                if line:
+                    log.info("%s %s", prefix, line)
+            return await proc.wait()
+
+        returncode = await asyncio.wait_for(_stream(), timeout=agent.timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
@@ -95,9 +102,8 @@ async def _trigger_cli(agent: AgentConfig, pr: PRMeta, cmd: CommandRequest) -> s
         log.error(msg)
         return msg
 
-    if proc.returncode != 0:
-        err_lines = stderr.decode(errors="replace").strip().splitlines()[-10:]
-        msg = f"agent {agent.name} failed (exit {proc.returncode}): {' | '.join(err_lines)}"
+    if returncode != 0:
+        msg = f"agent {agent.name} failed (exit {returncode})"
         log.error(msg)
         return msg
 
