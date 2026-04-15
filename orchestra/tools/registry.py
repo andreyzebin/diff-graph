@@ -32,6 +32,10 @@ class ToolDef:
     handler: Callable[..., Any]
     result_limit: int = 6000
     is_builtin: bool = False  # reflect, done, spawn_agent, etc.
+    hidden: bool = False      # hidden from agent tool list (data providers)
+    cache: bool = False       # cache result after first call
+    _cached_result: Any = field(default=None, repr=False)
+    _cache_hit: bool = field(default=False, repr=False)
 
 
 class ToolRegistry:
@@ -49,6 +53,8 @@ class ToolRegistry:
         parameters: Optional[dict] = None,
         result_limit: int = 6000,
         is_builtin: bool = False,
+        hidden: bool = False,
+        cache: bool = False,
     ) -> Callable:
         """
         Decorator or direct call.
@@ -59,6 +65,9 @@ class ToolRegistry:
 
             @registry.register(name="custom_name", description="...")
             def my_tool(x: str) -> str: ...
+
+            @registry.register(hidden=True, cache=True)
+            def pr_context() -> dict: ...  # data provider, not shown to agent
 
             registry.register(fn=my_fn, name="alias")
         """
@@ -73,6 +82,8 @@ class ToolRegistry:
                 handler=func,
                 result_limit=result_limit,
                 is_builtin=is_builtin,
+                hidden=hidden,
+                cache=cache,
             )
             return func
 
@@ -122,11 +133,11 @@ class ToolRegistry:
         return list(self._tools.keys())
 
     def to_openai_schema(self, names: list[str]) -> list[dict]:
-        """Convert named tools to OpenAI function-calling tool dicts."""
+        """Convert named tools to OpenAI function-calling tool dicts. Excludes hidden tools."""
         result = []
         for name in names:
             td = self._tools.get(name)
-            if td is None:
+            if td is None or td.hidden:
                 continue
             result.append({
                 "type": "function",
@@ -139,16 +150,26 @@ class ToolRegistry:
         return result
 
     def dispatch(self, tool_name: str, args: dict) -> Any:
-        """Call a tool handler by name. Returns raw result."""
+        """Call a tool handler by name. Returns raw result (cached if cache=True)."""
         td = self._tools.get(tool_name)
         if td is None:
             return f"unknown tool: {tool_name}"
+        if td.cache and td._cache_hit:
+            return td._cached_result
         try:
-            return td.handler(**args)
+            result = td.handler(**args)
         except TypeError as e:
             log.debug("tool dispatch type error for %s: %s", tool_name, e)
-            return td.handler(**{k: v for k, v in args.items()
-                                 if k in inspect.signature(td.handler).parameters})
+            result = td.handler(**{k: v for k, v in args.items()
+                                   if k in inspect.signature(td.handler).parameters})
+        if td.cache:
+            td._cached_result = result
+            td._cache_hit = True
+        return result
+
+    def call_data_provider(self, tool_name: str) -> Any:
+        """Call a cached data-provider tool (no args). For from: resolution."""
+        return self.dispatch(tool_name, {})
 
     def format_result(self, tool_name: str, result: Any) -> str:
         """Format and truncate a tool result for message history."""

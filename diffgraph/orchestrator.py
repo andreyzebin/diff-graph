@@ -103,7 +103,7 @@ def run_review(
     tool_choice: str = "",
     bot_user: str = "",
 ) -> tuple[list[ReviewFinding], ReviewContext]:
-    _emit = on_event or (lambda *_, **__: None)
+    """Run lead agent directly (no dispatcher). For --pr-url without --message."""
     diff_result = parse_diff(diff_text)
 
     ctx = _Ctx(
@@ -111,118 +111,28 @@ def run_review(
         repo_path=repo_path, existing_comments=existing_comments or [],
         base_ref=base_ref, source_ref=source_ref,
     )
+    ctx._bot_user = bot_user
 
-    # ── Compile agents from .prompt files ─────────────────────────────────
-    prompt_source = prompt_resource or _PROMPT_DIR
-    agent_registry = compile_prompts(prompt_source, pattern="*.prompt")
-    _emit("orchestrator_prompts_compiled",
-          prompt_source=str(prompt_source),
-          prompt_hash=agent_registry.source_hash or "")
-    for entry in agent_registry.entries.values():
-        caps = ", ".join(entry.capabilities) if entry.capabilities else "–"
-        data_fields = ", ".join(entry.input_schema.keys()) if entry.input_schema else "–"
-        _emit("orchestrator_agent_compiled",
-              name=entry.name, mode=entry.mode.value,
-              capabilities=caps, data=data_fields,
-              budget_tokens=entry.budget.max_tokens,
-              budget_steps=entry.budget.max_steps)
-
-    # ── Event bus ─────────────────────────────────────────────────────────
-    event_bus = EventBus()
-    event_bus.set_passthrough(_adapt_events(_emit))
-
-    # Subscribe trace writer directly to raw events (not through adapter)
-    if trace_writer:
-        def _make_trace_handler(et_val):
-            def handler(**kw):
-                trace_writer(et_val, **kw)
-            return handler
-        for et in EventType:
-            event_bus.subscribe(et, _make_trace_handler(et.value))
-
-    # ── Register domain tools ─────────────────────────────────────────────
     tool_registry = ToolRegistry()
     register_diffgraph_tools(tool_registry, ctx)
 
-    # ── Build lead config ───────────────────────────────────────────
-    config = agent_registry.get_config("lead")
-    if not config:
-        log.error("lead agent not found in prompt registry")
-        return [], ctx.review_context
-
-    # Inject data into prompt placeholders
-    diff_summary = _make_diff_summary(diff_result)
-    existing_comments_str = _format_existing_comments(ctx.existing_comments, bot_user=bot_user)
-    commits_str = _get_commit_list(repo_path, base_ref, source_ref) if base_ref and source_ref else "(unavailable)"
-    config.system_prompt = interpolate(
-        config.system_prompt,
-        diff_summary=diff_summary,
-        existing_comments=existing_comments_str,
-        commits=commits_str,
-    )
-
-    # Override budget from CLI params
-    config.budget = BudgetConfig(
-        max_tokens=max_tokens,
-        max_steps=max_steps,
-        pushers=[
-            PusherConfig(at=0.5, type=PusherType.NUDGE,
-                         message="Half budget used. Focus on high-priority tasks."),
-            PusherConfig(at=0.8, type=PusherType.NUDGE,
-                         message="80% budget. Consolidate findings and call done()."),
-            PusherConfig(at=1.0, type=PusherType.FORCE_DONE),
-        ],
-    )
-
-    # Override tool_choice from global config (applies to all agents)
-    if tool_choice:
-        from orchestra.types import LLMParamsConfig
-        for ac in [config] + list(agent_registry.get_all_configs().values()):
-            if ac.llm_params is None:
-                ac.llm_params = LLMParamsConfig()
-            ac.llm_params.tool_choice = tool_choice
-
-    # ── Register builtins and run ─────────────────────────────────────────
-    sgr_tracker = SGRTracker()
-    register_builtins(tool_registry, config, sgr_tracker=sgr_tracker)
-
-    agent = Agent(
-        config=config,
-        tool_registry=tool_registry,
+    # Data resolved via from:pr_context.* — no manual injection needed
+    result = run_agent(
+        agent_name="lead",
+        data={},
         llm=llm,
         model=model,
-        event_bus=event_bus,
-        agent_registry=agent_registry,
-        agent_configs=agent_registry.get_all_configs(),
+        tool_registry=tool_registry,
+        on_event=on_event,
+        trace_writer=trace_writer,
+        prompt_resource=prompt_resource,
+        tool_choice=tool_choice,
     )
-    # Set data scope for inheritance by child agents
-    agent.data_scope = {
-        "diff_summary": diff_summary,
-        "existing_comments": existing_comments_str,
-        "commits": commits_str,
-    }
 
-    result = agent.run()
-
-    # Store agent ref for trace collection
-    _emit("orchestrator_root_agent", agent=agent)
-
-    # ── Parse findings ────────────────────────────────────────────────────
-    raw_findings = []
-    if result.output is not None:
-        if isinstance(result.output, list):
-            raw_findings = result.output
-        elif isinstance(result.output, dict):
-            raw_findings = result.output.get("findings", raw_findings)
-            if not raw_findings:
-                raw_findings = result.output.get("tasks", raw_findings)
-
+    raw_findings = result.get("findings", result.get("tasks", []))
+    if not isinstance(raw_findings, list):
+        raw_findings = []
     findings = _parse_findings(raw_findings)
-
-    _emit("orchestrator_done",
-          findings=len(findings),
-          replies=len(ctx.review_context.comment_replies),
-          resolves=len(ctx.review_context.comment_resolves))
 
     # Clean up VFS temp dirs
     if ctx.vfs_cache:
@@ -262,6 +172,26 @@ def run_agent(
         log.error("agent '%s' not found in prompt registry", agent_name)
         return {}
 
+    # Tool registry — use provided or empty
+    registry = tool_registry or ToolRegistry()
+
+    # Auto-resolve from:tool.field for unresolved @data fields
+    schema = getattr(config, "input_schema", None) or {}
+    resolved = dict(data)
+    for field_name, field_meta in schema.items():
+        if field_name in resolved and resolved[field_name] not in ("(not available)", "(not yet loaded)", ""):
+            continue
+        from_tool = field_meta.get("from_tool")
+        from_field = field_meta.get("from_field")
+        if from_tool and from_field and registry.has(from_tool):
+            try:
+                result = registry.call_data_provider(from_tool)
+                if isinstance(result, dict) and from_field in result:
+                    resolved[field_name] = str(result[from_field])
+            except Exception:
+                resolved[field_name] = "(not available)"
+    data = resolved
+
     # Interpolate data into prompt placeholders
     config.system_prompt = interpolate(config.system_prompt, **data)
 
@@ -282,9 +212,6 @@ def run_agent(
             return handler
         for et in EventType:
             event_bus.subscribe(et, _make_trace_handler(et.value))
-
-    # Tool registry — use provided or empty
-    registry = tool_registry or ToolRegistry()
 
     # Register builtins (done, reflect)
     sgr_tracker = SGRTracker()

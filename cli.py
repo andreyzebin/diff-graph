@@ -161,7 +161,7 @@ def _run_with_dispatcher(
     _cleanup_fn = {"fn": None}
 
     ctx = _Ctx(
-        diff_text="", diff_result=DiffResult(files={}),
+        diff_text="", diff_result=DiffResult(files={}, changed_files=[], changed_lines={}),
         repo_path="", existing_comments=existing_comments,
         review_context=ReviewContext(),
         _pr_url=pr_url, _initialized=False,
@@ -182,24 +182,15 @@ def _run_with_dispatcher(
         c.source_ref = pr_meta.get("source_ref", "")
 
     ctx._init_fn = _lazy_init
+    ctx._bot_user = bot_user
 
     # ── Tool registry with all domain tools ───────────────────────────────
     tool_registry = ToolRegistry()
     register_diffgraph_tools(tool_registry, ctx)
 
     # ── Data for dispatcher prompt ────────────────────────────────────────
-    # LazyData triggers repo clone when review-related fields are accessed
-    class _LazyData(dict):
-        def __getitem__(self, key):
-            if key in ("diff_summary", "commits") and not ctx._initialized:
-                ctx.ensure_repo()
-                # Recompute after clone
-                from diffgraph.orchestrator import _make_diff_summary, _get_commit_list
-                self["diff_summary"] = _make_diff_summary(ctx.diff_result)
-                self["commits"] = _get_commit_list(ctx.repo_path, ctx.base_ref, ctx.source_ref) if ctx.base_ref else "(unavailable)"
-            return super().__getitem__(key)
-
-    data = _LazyData({
+    # diff_summary, commits resolved lazily via from:pr_context.* in child prompts
+    data = {
         "message": message,
         "comment_id": str(comment_id),
         "comment_thread": thread,
@@ -207,10 +198,8 @@ def _run_with_dispatcher(
         "pr_description": pr_description or "(no description)",
         "generation": generation,
         "mutation": mutation,
-        "diff_summary": "(not yet loaded)",
         "existing_comments": existing_comments_str,
-        "commits": "(not yet loaded)",
-    })
+    }
 
     llm_client = _make_llm_client(llm_cfg)
     msg_preview = message[:60] + "…" if len(message) > 62 else message

@@ -66,6 +66,27 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         """Trigger lazy clone if needed."""
         ctx.ensure_repo()
 
+    # ── Data provider: pr_context (cached, hidden) ────────────────────────
+
+    @registry.register(
+        name="pr_context",
+        description="PR context data provider (diff summary, comments, commits).",
+        hidden=True,
+        cache=True,
+    )
+    def pr_context() -> dict:
+        _ensure()
+        from .orchestrator import _make_diff_summary, _get_commit_list, _format_existing_comments
+        return {
+            "diff_summary": _make_diff_summary(ctx.diff_result),
+            "existing_comments": _format_existing_comments(
+                ctx.existing_comments,
+                bot_user=getattr(ctx, '_bot_user', ''),
+            ),
+            "commits": _get_commit_list(ctx.repo_path, ctx.base_ref, ctx.source_ref)
+                       if ctx.base_ref and ctx.source_ref else "(unavailable)",
+        }
+
     # Default ref when base/source are available
     default_ref = "base..source" if (ctx.base_ref and ctx.source_ref) else "source"
 

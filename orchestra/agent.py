@@ -541,6 +541,31 @@ class Agent:
                 resolved[key] = str(val)
         return resolved
 
+    def _resolve_from_providers(self, resolved_data: dict, agent_config) -> dict:
+        """Auto-resolve @data fields with from:tool.field from data-provider tools."""
+        schema = getattr(agent_config, "input_schema", None) or {}
+        for field_name, field_meta in schema.items():
+            if field_name in resolved_data and resolved_data[field_name] not in ("(not available)", "(not yet loaded)", ""):
+                continue  # already resolved
+            from_tool = field_meta.get("from_tool")
+            from_field = field_meta.get("from_field")
+            if not from_tool or not from_field:
+                continue
+            if not self.registry.has(from_tool):
+                log.debug("from: tool '%s' not found for field '%s'", from_tool, field_name)
+                continue
+            try:
+                result = self.registry.call_data_provider(from_tool)
+                if isinstance(result, dict) and from_field in result:
+                    resolved_data[field_name] = str(result[from_field])
+                    log.debug("auto-resolved %s from %s.%s", field_name, from_tool, from_field)
+                else:
+                    log.debug("from: field '%s' not in tool '%s' result", from_field, from_tool)
+            except Exception as e:
+                log.warning("from: tool '%s' failed: %s", from_tool, e)
+                resolved_data[field_name] = "(not available)"
+        return resolved_data
+
     def _meta_spawn_agent(self, args: dict) -> str:
         """spawn_agent: create and run a child agent with data injection."""
         agent_name = args.get("agent", "")
@@ -560,6 +585,9 @@ class Agent:
         focus_arg = args.get("focus", "")
         if focus_arg and "focus" not in resolved_data:
             resolved_data["focus"] = focus_arg
+
+        # Auto-resolve from:tool.field for unresolved @data fields
+        resolved_data = self._resolve_from_providers(resolved_data, agent_config)
 
         if resolved_data and "{" in agent_config.system_prompt:
             agent_config = AgentConfig(
@@ -674,6 +702,8 @@ class Agent:
             focus_from_spec = spec.get("focus", "")
             if focus_from_spec and "focus" not in resolved_data:
                 resolved_data["focus"] = focus_from_spec
+            # Auto-resolve from:tool.field
+            resolved_data = self._resolve_from_providers(resolved_data, agent_config)
             if resolved_data and "{" in agent_config.system_prompt:
                 agent_config = AgentConfig(
                     name=agent_config.name,

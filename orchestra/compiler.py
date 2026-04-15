@@ -347,8 +347,16 @@ def _extract_headers(text: str) -> dict[str, str]:
     return headers
 
 
+_FROM_RE = re.compile(r"from:(\w+)\.(\w+)")
+
+
 def _parse_data_section(header_text: str) -> dict[str, dict[str, str]]:
-    """Parse @data section into input schema."""
+    """
+    Parse @data section into input schema.
+
+    Supports from:tool.field syntax in descriptions:
+      diff_summary: string -- from:pr_context.diff_summary
+    """
     schema: dict[str, dict[str, str]] = {}
     in_data = False
 
@@ -364,7 +372,13 @@ def _parse_data_section(header_text: str) -> dict[str, dict[str, str]]:
                 field_name = match.group(1)
                 field_type = match.group(2)
                 field_desc = match.group(3).strip().strip('"\'')
-                schema[field_name] = {"type": field_type, "description": field_desc}
+                entry: dict[str, str] = {"type": field_type, "description": field_desc}
+                # Parse from:tool.field
+                from_match = _FROM_RE.search(field_desc)
+                if from_match:
+                    entry["from_tool"] = from_match.group(1)
+                    entry["from_field"] = from_match.group(2)
+                schema[field_name] = entry
 
     return schema
 
