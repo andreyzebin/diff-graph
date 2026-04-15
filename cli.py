@@ -380,6 +380,7 @@ def run(
         max_steps=effective_steps,
         max_tokens=effective_tokens,
         tool_choice=llm_cfg.get("tool_choice", ""),
+        bot_user=review_cfg.get("bot_user", ""),
     )
 
     _root_agent_ref: dict = {"agent": None}

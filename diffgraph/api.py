@@ -29,6 +29,7 @@ class DiffGraph:
         max_steps: int = 40,
         max_tokens: int = 40000,
         tool_choice: str = "",
+        bot_user: str = "",
     ) -> None:
         self.repo_path = repo_path
         self.llm = llm_client
@@ -36,6 +37,7 @@ class DiffGraph:
         self.max_steps = max_steps
         self.max_tokens = max_tokens
         self.tool_choice = tool_choice
+        self.bot_user = bot_user
 
     def review(
         self,
@@ -68,4 +70,5 @@ class DiffGraph:
             source_ref=source_ref,
             prompt_resource=prompt_resource,
             tool_choice=self.tool_choice,
+            bot_user=self.bot_user,
         )

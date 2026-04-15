@@ -89,6 +89,7 @@ def run_review(
     source_ref: str = "",
     prompt_resource: Optional[str] = None,
     tool_choice: str = "",
+    bot_user: str = "",
 ) -> tuple[list[ReviewFinding], ReviewContext]:
     _emit = on_event or (lambda *_, **__: None)
     diff_result = parse_diff(diff_text)
@@ -139,7 +140,7 @@ def run_review(
 
     # Inject data into prompt placeholders
     diff_summary = _make_diff_summary(diff_result)
-    existing_comments_str = _format_existing_comments(ctx.existing_comments)
+    existing_comments_str = _format_existing_comments(ctx.existing_comments, bot_user=bot_user)
     commits_str = _get_commit_list(repo_path, base_ref, source_ref) if base_ref and source_ref else "(unavailable)"
     config.system_prompt = interpolate(
         config.system_prompt,
@@ -368,14 +369,21 @@ def _make_diff_summary(diff_result: DiffResult) -> str:
     return "\n".join(parts)
 
 
-def _format_existing_comments(comments: list[dict]) -> str:
+def _format_existing_comments(comments: list[dict], bot_user: str = "") -> str:
     if not comments:
         return "(none)"
     lines = []
     for c in comments:
         resolved = " [RESOLVED]" if c.get("resolved") else ""
+        author = c.get("author", "")
+        slug = c.get("author_slug", "")
+        # Mark bot's own comments so agents can distinguish them
+        if bot_user and slug and slug == bot_user:
+            who = f"[SELF:{author}]"
+        else:
+            who = f"[{author}]" if author else ""
         lines.append(
-            f"  #{c['id']}  {c.get('file', '')}:{c.get('line', '')} — "
+            f"  #{c['id']} {who} {c.get('file', '')}:{c.get('line', '')} — "
             f"{str(c.get('text', ''))[:100]}{resolved}"
         )
     return "\n".join(lines)

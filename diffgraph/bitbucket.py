@@ -332,12 +332,14 @@ def get_pr_comments(
                 continue
             comment_obj = activity.get("comment", {})
             anchor = activity.get("commentAnchor") or {}
+            author_obj = comment_obj.get("author", {})
             comments.append({
                 "id":       comment_obj.get("id"),
                 "file":     anchor.get("path", ""),
                 "line":     anchor.get("line", 0),
                 "text":     comment_obj.get("text", ""),
-                "author":   comment_obj.get("author", {}).get("displayName", ""),
+                "author":   author_obj.get("displayName", ""),
+                "author_slug": author_obj.get("slug", author_obj.get("name", "")),
                 "resolved": comment_obj.get("state", "") == "RESOLVED",
                 "anchored": bool(anchor.get("path")),
             })
