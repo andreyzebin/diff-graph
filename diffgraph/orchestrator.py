@@ -1,11 +1,8 @@
 """
-PR reviewer — one agent entry point.
-
-The lead agent is the sole orchestrator: it analyzes the diff,
-spawns reviewer agents via tool calls, and consolidates findings.
-All pipeline logic lives in prompts, not in code.
+Agent entry points.
 
 Public API:
+  run_agent(agent_name, data, llm, model, ...) → dict
   run_review(diff_text, repo_path, llm, model, ...) → (list[ReviewFinding], ReviewContext)
 """
 from __future__ import annotations
@@ -221,6 +218,90 @@ def run_review(
             shutil.rmtree(vfs_dir, ignore_errors=True)
 
     return findings, ctx.review_context
+
+
+def run_agent(
+    agent_name: str,
+    data: dict,
+    llm,
+    model: str,
+    tool_registry: Optional[ToolRegistry] = None,
+    on_event: OnEvent = None,
+    trace_writer: Optional[Callable] = None,
+    prompt_resource: Optional[str] = None,
+    tool_choice: str = "",
+) -> dict:
+    """
+    Run any prompt-defined agent by name.
+
+    Generic entry point — no domain-specific logic. The agent's prompt
+    determines what it does. Data dict is interpolated into {placeholders}.
+
+    Returns the agent's done() output (dict), or {} if agent produced nothing.
+    """
+    _emit = on_event or (lambda *_, **__: None)
+
+    prompt_source = prompt_resource or _PROMPT_DIR
+    agent_registry = compile_prompts(prompt_source, pattern="*.prompt")
+
+    config = agent_registry.get_config(agent_name)
+    if not config:
+        log.error("agent '%s' not found in prompt registry", agent_name)
+        return {}
+
+    # Interpolate data into prompt placeholders
+    config.system_prompt = interpolate(config.system_prompt, **data)
+
+    # Override tool_choice
+    if tool_choice:
+        from orchestra.types import LLMParamsConfig
+        if config.llm_params is None:
+            config.llm_params = LLMParamsConfig()
+        config.llm_params.tool_choice = tool_choice
+
+    # Event bus
+    event_bus = EventBus()
+    event_bus.set_passthrough(_adapt_events(_emit))
+    if trace_writer:
+        def _make_trace_handler(et_val):
+            def handler(**kw):
+                trace_writer(et_val, **kw)
+            return handler
+        for et in EventType:
+            event_bus.subscribe(et, _make_trace_handler(et.value))
+
+    # Tool registry — use provided or empty
+    registry = tool_registry or ToolRegistry()
+
+    # Register builtins (done, reflect)
+    sgr_tracker = SGRTracker()
+    register_builtins(registry, config, sgr_tracker=sgr_tracker)
+
+    agent = Agent(
+        config=config,
+        tool_registry=registry,
+        llm=llm,
+        model=model,
+        event_bus=event_bus,
+        agent_registry=agent_registry,
+        agent_configs=agent_registry.get_all_configs(),
+    )
+    agent.data_scope = dict(data)
+
+    result = agent.run()
+
+    # Parse output
+    output = result.output
+    if output is None:
+        return {}
+    if isinstance(output, dict):
+        return output
+    if isinstance(output, str):
+        try:
+            return json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            return {"text": output}
+    return {"output": output}
 
 
 # ── Event adapter ─────────────────────────────────────────────────────────────

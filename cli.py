@@ -93,6 +93,120 @@ def _make_llm_client(llm_cfg: dict):
     return OpenAI(**kwargs)
 
 
+def _run_dispatcher(
+    pr_url: str,
+    command: str,
+    cmd_args: str,
+    comment_id: int,
+    llm_cfg: dict,
+    effective_model: str,
+    prompts: Optional[str],
+) -> None:
+    """
+    Run the dispatcher agent. If it handles the request (help, unsupported
+    command, etc.), posts replies and exits. If it returns action="review",
+    returns normally so the caller can proceed with the review pipeline.
+    """
+    from diffgraph.bitbucket import (
+        get_comment_thread, reply_to_pr_comment, parse_pr_url,
+    )
+    from diffgraph.orchestrator import run_agent
+    from orchestra import ToolRegistry
+
+    # Fetch lightweight context (no clone needed)
+    thread = "(no thread)"
+    if comment_id:
+        try:
+            thread = get_comment_thread(pr_url, comment_id)
+        except Exception as exc:
+            thread = f"(failed to fetch thread: {exc})"
+
+    # PR title/description from API
+    pr_title = pr_description = ""
+    try:
+        from diffgraph.bitbucket import get_pr_info
+        info = get_pr_info(pr_url)
+        pr_title = info.get("title", "")
+        pr_description = info.get("description", "")
+    except Exception:
+        pass
+
+    # Prompt generation/mutation from compiled prompts
+    from orchestra import compile_prompts
+    from pathlib import Path as _Path
+    prompt_source = prompts or str(_Path(__file__).parent / "diffgraph" / "prompts")
+    try:
+        registry = compile_prompts(prompt_source, pattern="*.prompt")
+        generation = str(prompt_source).rsplit("/", 1)[-1] if "/" in str(prompt_source) else str(prompt_source)
+        mutation = registry.source_hash[:7] if registry.source_hash else "unknown"
+    except Exception:
+        generation = "default"
+        mutation = "unknown"
+
+    data = {
+        "command": command,
+        "args": cmd_args,
+        "comment_id": str(comment_id),
+        "comment_thread": thread,
+        "pr_title": pr_title,
+        "pr_description": pr_description or "(no description)",
+        "generation": generation,
+        "mutation": mutation,
+    }
+
+    # Build tool registry with reply_to_comment
+    tool_registry = ToolRegistry()
+    _replies: list[dict] = []
+
+    @tool_registry.register(
+        name="reply_to_comment",
+        description="Reply to a PR comment thread.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "comment_id": {"type": "integer"},
+                "text": {"type": "string"},
+            },
+            "required": ["comment_id", "text"],
+        },
+    )
+    def _reply(comment_id: int = 0, text: str = "") -> dict:
+        _replies.append({"comment_id": comment_id, "text": text})
+        return {"status": "queued"}
+
+    llm_client = _make_llm_client(llm_cfg)
+    console.print(f"[dim]  dispatcher: /{command} {cmd_args}[/dim]")
+
+    event_handler = _make_event_handler(effective_model)
+    result = run_agent(
+        agent_name="dispatcher",
+        data=data,
+        llm=llm_client,
+        model=effective_model,
+        tool_registry=tool_registry,
+        on_event=event_handler,
+        prompt_resource=prompts,
+        tool_choice=llm_cfg.get("tool_choice", ""),
+    )
+
+    # Post queued replies
+    if _replies and pr_url:
+        for reply in _replies:
+            try:
+                reply_to_pr_comment(pr_url, reply["comment_id"], reply["text"])
+                console.print(f"  [dim]replied to #{reply['comment_id']}[/dim]")
+            except Exception as exc:
+                console.print(f"  [yellow]reply #{reply['comment_id']} failed: {exc}[/yellow]")
+
+    # Check if dispatcher wants to proceed with review
+    action = result.get("action", "")
+    if action == "review":
+        return  # caller will proceed with review pipeline
+
+    # Dispatcher handled it — exit
+    raise typer.Exit(0)
+
+
 # ── commands ──────────────────────────────────────────────────────────────────
 
 @app.command()
@@ -112,6 +226,9 @@ def run(
     log_level:     Optional[str] = typer.Option(None,  "--log-level",          help="Logging level: DEBUG, INFO, WARNING, ERROR"),
     verbose:       bool          = typer.Option(False, "--verbose", "-v",      help="Shortcut for --log-level DEBUG (shows HTTP, LLM calls)"),
     no_verify_ssl: bool          = typer.Option(False, "--no-verify-ssl",      help="Disable SSL verification for all connections (LLM + Bitbucket)"),
+    command:       Optional[str] = typer.Option(None,  "--command",             help="Dispatch command (review, help, etc.). Runs dispatcher agent first."),
+    args:          Optional[str] = typer.Option(None,  "--args",               help="Arguments for the command (question, topic, etc.)"),
+    comment_id:    Optional[int] = typer.Option(None,  "--comment-id",         help="Bitbucket comment ID that triggered this invocation"),
 ):
     """
     Run a multi-agent PR review and print structured findings.
@@ -164,6 +281,21 @@ def run(
 
     cleanup_fn = None
     pr_title = pr_description = ""
+
+    # ── Dispatcher: handle command before expensive clone ─────────────────
+    if command is not None and pr_url:
+        _run_dispatcher(
+            pr_url=pr_url,
+            command=command or "",
+            cmd_args=args or "",
+            comment_id=comment_id or 0,
+            llm_cfg=llm_cfg,
+            effective_model=effective_model,
+            prompts=prompts,
+        )
+        # _run_dispatcher calls sys.exit if no review needed.
+        # If we get here, dispatcher said action="review" — proceed.
+        console.print("[dim]  dispatcher → review[/dim]")
 
     if pr_url:
         from diffgraph.bitbucket import fetch_pr

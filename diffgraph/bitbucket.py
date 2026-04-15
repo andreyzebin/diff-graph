@@ -93,6 +93,26 @@ def _get_pr_meta(
     return _api_get(url, token, ca_bundle, client_cert)
 
 
+def get_pr_info(
+    pr_url: str,
+    token: str | None = None,
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+) -> dict:
+    """Fetch basic PR metadata (title, description) without cloning."""
+    token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
+    ca_bundle   = ca_bundle   or os.environ.get("REQUESTS_CA_BUNDLE")
+    client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
+    if not token:
+        return {}
+    server_url, project, repo, pr_id = parse_pr_url(pr_url)
+    data = _get_pr_meta(server_url, project, repo, pr_id, token, ca_bundle, client_cert)
+    return {
+        "title": data.get("title", ""),
+        "description": data.get("description", ""),
+    }
+
+
 def _clone_url(server_url: str, project: str, repo: str) -> str:
     """Build the HTTP clone URL: <server>/scm/<project_lower>/<repo>.git"""
     parsed = urlparse(server_url)
@@ -391,6 +411,57 @@ def resolve_pr_comment(
         "text": comment.get("text", ""),
         "state": "RESOLVED",
     })
+
+
+def get_comment_thread(
+    pr_url: str,
+    comment_id: int,
+    token: str | None = None,
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+) -> str:
+    """
+    Fetch the comment thread from root to the given comment.
+
+    Walks the parent chain via Bitbucket API.
+    Returns formatted text: one message per line, oldest first.
+    """
+    token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
+    ca_bundle   = ca_bundle   or os.environ.get("REQUESTS_CA_BUNDLE")
+    client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
+
+    if not token:
+        return "(no token — cannot fetch thread)"
+
+    server_url, project, repo, pr_id = parse_pr_url(pr_url)
+    base = (
+        f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
+        f"/pull-requests/{pr_id}/comments"
+    )
+
+    # Walk parent chain
+    chain: list[dict] = []
+    cid = comment_id
+    for _ in range(20):  # guard against infinite loops
+        endpoint = f"{base}/{cid}"
+        try:
+            comment = _api_get(endpoint, token, ca_bundle, client_cert)
+        except Exception:
+            break
+        author = comment.get("author", {}).get("displayName", "unknown")
+        text = comment.get("text", "")
+        chain.append({"author": author, "text": text, "id": cid})
+        parent = comment.get("parent")
+        if not parent or not parent.get("id"):
+            break
+        cid = parent["id"]
+
+    # Reverse: root first
+    chain.reverse()
+    lines = []
+    for msg in chain:
+        lines.append(f"[{msg['author']}] (#{msg['id']}): {msg['text']}")
+    return "\n\n".join(lines) if lines else "(empty thread)"
 
 
 def _api_put(url: str, token: str, ca_bundle: str | None, client_cert: str | None, payload: dict) -> dict:
