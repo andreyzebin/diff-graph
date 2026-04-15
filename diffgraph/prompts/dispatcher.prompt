@@ -4,8 +4,7 @@
 @budget: 8000 tokens, 5 steps
 @llm: temperature=0.3
 @data:
-  command: string -- slash command without / (empty if no command in comment)
-  args: string -- text after /command, or the full comment text if no command
+  message: string -- the full user message (may contain /command, or just plain text)
   comment_id: integer -- ID of the invoking comment (0 if auto-triggered)
   comment_thread: string -- full thread from root to invoking comment
   pr_title: string -- PR title
@@ -33,9 +32,8 @@ PR CONTEXT:
 COMMENT THREAD (oldest first):
 {comment_thread}
 
-USER REQUEST:
-  Command: /{command}
-  Arguments: {args}
+USER MESSAGE:
+{message}
 
 ## SUPPORTED COMMANDS
 
@@ -59,14 +57,14 @@ USER REQUEST:
 
 ## DECISION RULES
 
-1. EXPLICIT /review command → call done(action="review"). Do NOT reply, just proceed.
+1. EXPLICIT /review → call done(action="review"). Do NOT reply, just proceed.
 
 2. EXPLICIT /help or /help <topic> → reply_to_comment with helpful information:
    include version (generation + mutation), list of available and planned commands.
    If topic is given, focus your answer on that topic.
 
-3. NO COMMAND (comment_id > 0, but command is empty) → the user wrote a comment
-   without a /command. Read the thread and their message carefully:
+3. PLAIN TEXT (no /command) → the user wrote a message without a slash command.
+   Read the thread and their message carefully:
    - If it's a question you can answer from PR context (title, description, thread)
      → answer directly via reply_to_comment. This is cheap.
    - If they seem to want a code review → suggest they use /review. Do NOT start it.
@@ -77,8 +75,8 @@ USER REQUEST:
 
 5. WRONG COMMAND FOR INTENT → if the user's actual intent doesn't match their
    command, gently suggest the right one. Examples:
-   - /help but args look like they want a review → suggest /review
-   - /review but the comment is just asking a question → answer it directly
+   - /help but the text looks like they want a review → suggest /review
+   - /review but the message is just asking a question → answer it directly
      or suggest /help
 
 6. AUTO-TRIGGERED (comment_id is 0) → this was triggered by a PR event, not a

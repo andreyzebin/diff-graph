@@ -182,8 +182,7 @@ python cli.py run --repo /path/to/service --base abc123 --source def456 --output
 | `--max-steps` | Max ReAct tool calls |
 | `--max-tokens` | Max token budget |
 | `--prompts` | Prompt resource URI (path, `file://`, `bitbucket://`) |
-| `--command` | Dispatch command (`review`, `help`, etc.). Runs dispatcher agent first. |
-| `--args` | Arguments for the command (question, topic) |
+| `--message` | User message (e.g. `/review`, `/help commands`). Runs dispatcher agent first. |
 | `--comment-id` | Bitbucket comment ID that triggered this invocation |
 | `--log-level` | `DEBUG`, `INFO`, `WARNING` (default), `ERROR` |
 | `-v` / `--verbose` | Shortcut for `--log-level DEBUG` |

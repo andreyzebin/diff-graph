@@ -95,8 +95,7 @@ def _make_llm_client(llm_cfg: dict):
 
 def _run_dispatcher(
     pr_url: str,
-    command: str,
-    cmd_args: str,
+    message: str,
     comment_id: int,
     llm_cfg: dict,
     effective_model: str,
@@ -144,8 +143,7 @@ def _run_dispatcher(
         mutation = "unknown"
 
     data = {
-        "command": command,
-        "args": cmd_args,
+        "message": message,
         "comment_id": str(comment_id),
         "comment_thread": thread,
         "pr_title": pr_title,
@@ -175,7 +173,8 @@ def _run_dispatcher(
         return {"status": "queued"}
 
     llm_client = _make_llm_client(llm_cfg)
-    console.print(f"[dim]  dispatcher: /{command} {cmd_args}[/dim]")
+    msg_preview = message[:60] + "…" if len(message) > 62 else message
+    console.print(f"[dim]  dispatcher: {msg_preview}[/dim]")
 
     event_handler = _make_event_handler(effective_model)
     result = run_agent(
@@ -226,8 +225,7 @@ def run(
     log_level:     Optional[str] = typer.Option(None,  "--log-level",          help="Logging level: DEBUG, INFO, WARNING, ERROR"),
     verbose:       bool          = typer.Option(False, "--verbose", "-v",      help="Shortcut for --log-level DEBUG (shows HTTP, LLM calls)"),
     no_verify_ssl: bool          = typer.Option(False, "--no-verify-ssl",      help="Disable SSL verification for all connections (LLM + Bitbucket)"),
-    command:       Optional[str] = typer.Option(None,  "--command",             help="Dispatch command (review, help, etc.). Runs dispatcher agent first."),
-    args:          Optional[str] = typer.Option(None,  "--args",               help="Arguments for the command (question, topic, etc.)"),
+    message:       Optional[str] = typer.Option(None,  "--message",             help="User message (e.g. '/review', '/help commands', 'Is this null-safe?'). Runs dispatcher agent first."),
     comment_id:    Optional[int] = typer.Option(None,  "--comment-id",         help="Bitbucket comment ID that triggered this invocation"),
 ):
     """
@@ -282,12 +280,11 @@ def run(
     cleanup_fn = None
     pr_title = pr_description = ""
 
-    # ── Dispatcher: handle command before expensive clone ─────────────────
-    if command is not None and pr_url:
+    # ── Dispatcher: handle message before expensive clone ────────────────
+    if message is not None and pr_url:
         _run_dispatcher(
             pr_url=pr_url,
-            command=command or "",
-            cmd_args=args or "",
+            message=message,
             comment_id=comment_id or 0,
             llm_cfg=llm_cfg,
             effective_model=effective_model,
