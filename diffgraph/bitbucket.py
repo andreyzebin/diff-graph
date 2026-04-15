@@ -441,28 +441,42 @@ def get_comment_thread(
         f"/pull-requests/{pr_id}/comments"
     )
 
-    # Walk parent chain
-    chain: list[dict] = []
-    cid = comment_id
-    for _ in range(20):  # guard against infinite loops
-        endpoint = f"{base}/{cid}"
+    # Walk parent chain to find root
+    root_id = comment_id
+    for _ in range(20):
+        endpoint = f"{base}/{root_id}"
         try:
             comment = _api_get(endpoint, token, ca_bundle, client_cert)
         except Exception:
             break
-        author = comment.get("author", {}).get("displayName", "unknown")
-        text = comment.get("text", "")
-        chain.append({"author": author, "text": text, "id": cid})
         parent = comment.get("parent")
         if not parent or not parent.get("id"):
             break
-        cid = parent["id"]
+        root_id = parent["id"]
 
-    # Reverse: root first
-    chain.reverse()
+    # Fetch root — Bitbucket nests the full thread under "comments"
+    try:
+        root = _api_get(f"{base}/{root_id}", token, ca_bundle, client_cert)
+    except Exception:
+        return "(failed to fetch root comment)"
+
+    # Flatten nested comment tree
+    flat: list[dict] = []
+
+    def _walk(node: dict) -> None:
+        author = node.get("author", {}).get("displayName", "unknown")
+        text = node.get("text", "")
+        nid = node.get("id", 0)
+        flat.append({"author": author, "text": text, "id": nid})
+        for child in node.get("comments", []):
+            _walk(child)
+
+    _walk(root)
+
     lines = []
-    for msg in chain:
-        lines.append(f"[{msg['author']}] (#{msg['id']}): {msg['text']}")
+    for msg in flat:
+        marker = " ← (this message)" if msg["id"] == comment_id else ""
+        lines.append(f"[{msg['author']}] (#{msg['id']}): {msg['text']}{marker}")
     return "\n\n".join(lines) if lines else "(empty thread)"
 
 
