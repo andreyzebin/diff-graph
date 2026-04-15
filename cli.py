@@ -218,7 +218,6 @@ def run(
     api_url:       Optional[str] = typer.Option(None,  "--api-url",            help="OpenAI-compatible API base URL override"),
     api_key:       Optional[str] = typer.Option(None,  "--api-key",            help="API key override"),
     output:        Optional[str] = typer.Option(None,  "--output",       "-o", help="Write findings as JSON to file"),
-    post_comments: bool          = typer.Option(False, "--post-comments",      help="Post findings to the PR as inline comments (requires --pr-url)"),
     max_steps:     Optional[int] = typer.Option(None,  "--max-steps",          help="Max ReAct steps (default: from config)"),
     max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
     prompts:       Optional[str] = typer.Option(None,  "--prompts",            help="Prompt resource URI (path, file://, bitbucket://)"),
@@ -233,7 +232,7 @@ def run(
 
     \b
       python cli.py run --pr-url https://bitbucket.example.com/.../pull-requests/42
-      python cli.py run --pr-url ... --post-comments
+      python cli.py run --pr-url ... --message "/review"
       python cli.py run --repo . --base HEAD~1
       python cli.py run --repo . --base main --source feature/my-branch
     """
@@ -449,7 +448,7 @@ def run(
             "run": _trace_db.run_id,
         }
 
-    if post_comments and pr_url:
+    if pr_url and findings:
         from diffgraph.bitbucket import post_review_comments
         comments_to_post = [_finding_to_comment(f) for f in findings]
         changed_lines = {
@@ -464,10 +463,8 @@ def run(
             comment_meta=_comment_meta,
         )
         console.print(f"\n[green]Posted {posted}/{len(comments_to_post)} comments[/green]")
-    elif post_comments and not pr_url:
-        console.print("[yellow]--post-comments requires --pr-url[/yellow]")
 
-    if post_comments and pr_url:
+    if pr_url:
         if review_ctx.comment_replies or review_ctx.comment_resolves:
             from diffgraph.bitbucket import reply_to_pr_comment, resolve_pr_comment
             for reply in review_ctx.comment_replies:

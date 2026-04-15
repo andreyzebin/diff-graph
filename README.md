@@ -63,7 +63,6 @@ Run against a Bitbucket Server PR:
 ```bash
 source .env
 python cli.py run --pr-url https://bitbucket.example.com/projects/X/repos/Y/pull-requests/42
-python cli.py run --pr-url ... --post-comments
 ```
 
 ---
@@ -158,9 +157,8 @@ python cli.py run --pr-url=... --no-verify-ssl
 Two modes: PR (fetches everything from Bitbucket) or local repo (you specify refs).
 
 ```bash
-# PR mode — clones repo, computes diff, fetches existing comments
+# PR mode — clones repo, computes diff, posts findings
 python cli.py run --pr-url https://bitbucket.example.com/.../pull-requests/42
-python cli.py run --pr-url ... --post-comments
 
 # Local mode — diff computed from git refs, repo not modified
 python cli.py run --repo . --base HEAD~1
@@ -174,7 +172,6 @@ python cli.py run --repo /path/to/service --base abc123 --source def456 --output
 | `--repo` / `-r` | Path to local repository (local mode) |
 | `--base` | Base ref — commit/branch to merge into. Required for local mode. |
 | `--source` | Source ref — commit/branch being reviewed. Default: HEAD. |
-| `--post-comments` | Post findings as inline PR comments (requires `--pr-url`) |
 | `--model` / `-m` | LLM model override |
 | `--api-url` | API base URL override |
 | `--api-key` | API key override |
