@@ -52,10 +52,13 @@
 {% if resp or req %}
 <details class="llm-call">
   <summary class="llm-header">
+    <span class="llm-step-num">step {{ s.step }}</span>
     {% if resp %}
       {% set calls = resp.tool_calls or [] %}
       {% if calls %}
         <span class="llm-tools">{% for tc in calls[:3] %}{% if not loop.first %}, {% endif %}<span class="tool-name">{{ tc.summary.name }}</span>{% if tc.summary.args %}(<span class="tool-args">{{ tc.summary.args }}</span>){% endif %}{% endfor %}{% if calls | length > 3 %} +{{ calls | length - 3 }}{% endif %}</span>
+      {% elif resp.content %}
+        <span class="llm-tools"><span class="tool-name">(text)</span> <span class="tool-args">{{ resp.content[:80] | replace('\n', ' ') }}{{ '…' if resp.content | length > 80 }}</span></span>
       {% endif %}
       {% set usage = resp.usage or {} %}
       {% set uin = usage.get('prompt_tokens', 0) - usage.get('cached_tokens', 0) %}
@@ -81,6 +84,13 @@
         <span class="open-btn" onclick="fetchTab('step {{ s.step }} Call: {{ tc.name }}', '{{ base_path }}/api/runs/{{ run_id }}/step/{{ agent_id }}/{{ s.step }}/call')">⧉</span>
       </div>
     {% endfor %}
+    {% set usage = resp.usage or {} %}
+    {% set sp = usage.get('step_paid', usage.get('paid', 0)) %}
+    <div class="resp-usage">in:{{ usage.get('prompt_tokens', 0) }} out:{{ usage.get('completion_tokens', 0) }} cached:{{ usage.get('cached_tokens', 0) }} step_paid:{{ sp }}</div>
+  </div>
+  {% elif resp and resp.content %}
+  <div class="llm-section">
+    <pre class="msg-content">{{ resp.content[:1000] }}{{ '…' if resp.content | length > 1000 }}</pre>
     {% set usage = resp.usage or {} %}
     {% set sp = usage.get('step_paid', usage.get('paid', 0)) %}
     <div class="resp-usage">in:{{ usage.get('prompt_tokens', 0) }} out:{{ usage.get('completion_tokens', 0) }} cached:{{ usage.get('cached_tokens', 0) }} step_paid:{{ sp }}</div>

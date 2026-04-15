@@ -154,6 +154,19 @@ function handleEvent(ev) {
       break;
     }
 
+    case 'agent_step': {
+      const tools = data.tools || [];
+      const toolStr = data.tool || '(text)';
+      const textPreview = data.text_preview || '';
+      const stepN = step || 0;
+      if (tools.length > 0) {
+        addLine(`<span class="${isChild ? 'log-child' : ''}">${tag}<span class="log-step">step ${stepN}</span> → <span class="log-tool">${esc(toolStr)}</span></span>`);
+      } else {
+        addLine(`<span class="${isChild ? 'log-child' : ''}">${tag}<span class="log-step">step ${stepN}</span> → <span class="log-tool">(text)</span> <span class="log-paid">${esc(textPreview.substring(0, 100))}</span></span>`);
+      }
+      break;
+    }
+
     case 'agent_llm_response': {
       const calls = data.tool_calls || [];
       const usage = data.usage || {};
@@ -169,7 +182,6 @@ function handleEvent(ev) {
           const display = Object.entries(args).filter(([k]) => !skipParams.has(k));
           if (!display.length) return esc(name);
           let first = String(display[0][1]);
-          // Smart truncate paths: keep right part
           if (first.includes('/') && first.length > 30) {
             const parts = first.split('/');
             first = '…/' + parts.slice(-2).join('/');
@@ -179,8 +191,11 @@ function handleEvent(ev) {
           return `<span class="log-tool-name">${esc(name)}</span>(<span class="log-tool-args">${esc(first)}</span>)`;
         } catch(e) { return esc(name); }
       }).join(', ');
+      const content = data.content || '';
       if (toolSummary) {
         addLine(`<span class="${isChild ? 'log-child' : ''}">${tag}${toolSummary} <span class="log-paid">↑${uin} ↓${uout}${ucache ? ' ©' + ucache : ''}</span></span>`);
+      } else if (content) {
+        addLine(`<span class="${isChild ? 'log-child' : ''}">${tag}<span class="log-paid">↑${uin} ↓${uout}</span> ${esc(content.substring(0, 120))}</span>`);
       }
       break;
     }
