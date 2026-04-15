@@ -133,7 +133,7 @@ async def _trigger_webhook(agent: AgentConfig, raw_event: dict | None) -> str:
     if not raw_event:
         return f"agent {agent.name}: no raw event to forward"
 
-    url = agent.base_url.rstrip("/") + "/webhook"
+    url = agent.base_url
     payload = json.dumps(raw_event).encode()
 
     headers = {"Content-Type": "application/json"}
