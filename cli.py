@@ -176,17 +176,35 @@ def _run_dispatcher(
     msg_preview = message[:60] + "…" if len(message) > 62 else message
     console.print(f"[dim]  dispatcher: {msg_preview}[/dim]")
 
+    from orchestra.trace_db import TraceDBWriter
+    _trace_db = TraceDBWriter()
+
     event_handler = _make_event_handler(effective_model)
+
+    def _combined(event: str, **kw):
+        event_handler(event, **kw)
+
     result = run_agent(
         agent_name="dispatcher",
         data=data,
         llm=llm_client,
         model=effective_model,
         tool_registry=tool_registry,
-        on_event=event_handler,
+        on_event=_combined,
+        trace_writer=_trace_db.on_event,
         prompt_resource=prompts,
         tool_choice=llm_cfg.get("tool_choice", ""),
     )
+
+    _trace_db.finish_run(
+        model=effective_model,
+        pr_url=pr_url,
+        findings_count=0,
+        prompt_source=str(prompt_source),
+        prompt_hash=mutation,
+    )
+    _trace_db.close()
+    console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")
 
     # Post queued replies
     if _replies and pr_url:
