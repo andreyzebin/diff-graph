@@ -130,11 +130,16 @@ DiffGraph uses [truststore](https://pypi.org/project/truststore/) to automatical
 ### `run` -- review code changes
 
 ```bash
-# PR mode with dispatcher
+# Dispatcher (default with --message)
 python cli.py run --pr-url ... --message "/review" --comment-id 12345
+python cli.py run --pr-url ... --message "/help" --comment-id 12345
 
-# PR mode direct (no dispatcher)
+# Direct review (no dispatcher)
 python cli.py run --pr-url https://bitbucket.example.com/.../pull-requests/42
+
+# Run any agent by name
+python cli.py run --pr-url ... --agent reviewer
+python cli.py run --pr-url ... --agent investigator -d focus="null safety"
 
 # Local mode
 python cli.py run --repo . --base HEAD~1
@@ -143,8 +148,10 @@ python cli.py run --repo . --base HEAD~1
 | Flag | Description |
 |------|-------------|
 | `--pr-url` | Bitbucket Server PR URL |
-| `--message` | User message (`/review`, `/help`, plain text). Runs dispatcher. |
+| `--message` | User message (`/review`, `/help`, plain text). Runs dispatcher by default. |
 | `--comment-id` | Bitbucket comment ID that triggered this invocation |
+| `--agent` | Run a specific agent by name (`dispatcher`, `reviewer`, `investigator`) |
+| `-d` / `--data` | Data key=value pairs for the agent (e.g. `-d focus="null safety"`) |
 | `--repo` / `-r` | Path to local repository (local mode) |
 | `--base` | Base ref (commit/branch to merge into) |
 | `--source` | Source ref (default: HEAD) |

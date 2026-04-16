@@ -101,11 +101,12 @@ def _run_with_dispatcher(
     review_cfg: dict,
     effective_model: str,
     prompts: Optional[str],
+    agent_name: str = "dispatcher",
+    extra_data: Optional[dict] = None,
 ) -> None:
     """
-    Run dispatcher as root agent with lazy repo init.
+    Run any agent with lazy repo init.
 
-    Dispatcher can spawn lead (which spawns reviewers) — all in one trace.
     Repo clone + diff happen lazily only when a domain tool is first called.
     For /help or plain questions, no clone happens at all.
     """
@@ -188,9 +189,9 @@ def _run_with_dispatcher(
     tool_registry = ToolRegistry()
     register_diffgraph_tools(tool_registry, ctx)
 
-    # ── Data for dispatcher prompt ────────────────────────────────────────
-    # diff_summary, commits resolved lazily via from:pr_context.* in child prompts
-    data = {
+    # ── Data: common context + extra CLI data ────────────────────────────
+    # Fields with from:pr_context.* resolve lazily at spawn time
+    data: dict[str, str] = {
         "message": message,
         "comment_id": str(comment_id),
         "comment_thread": thread,
@@ -200,10 +201,12 @@ def _run_with_dispatcher(
         "mutation": mutation,
         "existing_comments": existing_comments_str,
     }
+    if extra_data:
+        data.update(extra_data)
 
     llm_client = _make_llm_client(llm_cfg)
-    msg_preview = message[:60] + "…" if len(message) > 62 else message
-    console.print(f"[dim]  dispatcher: {msg_preview}[/dim]")
+    preview = message[:60] + "…" if message and len(message) > 62 else (message or agent_name)
+    console.print(f"[dim]  {agent_name}: {preview}[/dim]")
 
     from orchestra.trace_db import TraceDBWriter
     _trace_db = TraceDBWriter()
@@ -213,7 +216,7 @@ def _run_with_dispatcher(
         event_handler(event, **kw)
 
     result = run_agent(
-        agent_name="dispatcher",
+        agent_name=agent_name,
         data=data,
         llm=llm_client,
         model=effective_model,
@@ -306,17 +309,19 @@ def run(
     log_level:     Optional[str] = typer.Option(None,  "--log-level",          help="Logging level: DEBUG, INFO, WARNING, ERROR"),
     verbose:       bool          = typer.Option(False, "--verbose", "-v",      help="Shortcut for --log-level DEBUG (shows HTTP, LLM calls)"),
     no_verify_ssl: bool          = typer.Option(False, "--no-verify-ssl",      help="Disable SSL verification for all connections (LLM + Bitbucket)"),
-    message:       Optional[str] = typer.Option(None,  "--message",             help="User message (e.g. '/review', '/help commands', 'Is this null-safe?'). Runs dispatcher agent first."),
+    message:       Optional[str] = typer.Option(None,  "--message",             help="User message (e.g. '/review', '/help commands'). Runs dispatcher by default."),
     comment_id:    Optional[int] = typer.Option(None,  "--comment-id",         help="Bitbucket comment ID that triggered this invocation"),
+    agent:         Optional[str] = typer.Option(None,  "--agent",              help="Run a specific agent by name (dispatcher, reviewer, investigator)"),
+    data:          Optional[list[str]] = typer.Option(None, "--data", "-d",    help="Data key=value pairs for the agent (e.g. -d focus='null safety')"),
 ):
     """
-    Run a multi-agent PR review and print structured findings.
+    Run an agent. Default: dispatcher (with --message) or reviewer (without).
 
     \b
-      python cli.py run --pr-url https://bitbucket.example.com/.../pull-requests/42
       python cli.py run --pr-url ... --message "/review"
+      python cli.py run --pr-url ... --agent reviewer
+      python cli.py run --pr-url ... --agent investigator -d focus="null safety"
       python cli.py run --repo . --base HEAD~1
-      python cli.py run --repo . --base main --source feature/my-branch
     """
     import logging
     level = log_level or ("DEBUG" if verbose else "INFO")
@@ -361,16 +366,38 @@ def run(
     cleanup_fn = None
     pr_title = pr_description = ""
 
-    # ── Dispatcher mode: single entry point, lazy clone ─────────────────
-    if message is not None and pr_url:
+    # ── Parse --data key=value pairs ─────────────────────────────────────
+    extra_data: dict[str, str] = {}
+    if data:
+        for item in data:
+            if "=" in item:
+                k, v = item.split("=", 1)
+                extra_data[k.strip()] = v.strip()
+
+    # ── Resolve which agent to run ────────────────────────────────────────
+    agent_name = agent
+    if not agent_name:
+        agent_name = "dispatcher" if message is not None else None
+
+    # ── Agent mode: run any agent with lazy clone ─────────────────────────
+    if agent_name and pr_url:
+        # Build data from CLI flags + extra --data pairs
+        agent_data = dict(extra_data)
+        if message is not None:
+            agent_data["message"] = message
+        if comment_id:
+            agent_data["comment_id"] = str(comment_id)
+
         _run_with_dispatcher(
             pr_url=pr_url,
-            message=message,
+            message=message or "",
             comment_id=comment_id or 0,
             llm_cfg=llm_cfg,
             review_cfg=review_cfg,
             effective_model=effective_model,
             prompts=prompts,
+            agent_name=agent_name,
+            extra_data=extra_data,
         )
         raise typer.Exit(0)
 
