@@ -112,6 +112,16 @@ Is this null-safe?               → answers from PR context
 
 `@mention` prefix is optional. Comments without `/command` are passed as-is (command = `default`).
 
+When a command is posted as a reply in a thread, the webhook captures `comment_id` — the dispatcher can reply directly in that thread.
+
+### Adding a new command
+
+The webhook is command-agnostic — it routes strings, not predefined enums. To add a new command:
+
+1. Add it to `[events]` if it should auto-trigger (e.g. `"pr:opened" = ["review", "describe"]`)
+2. The dispatcher agent handles it — update `dispatcher.prompt` to recognize the new command
+3. Per-command routing works automatically via route config overrides
+
 ## Placeholders
 
 Command templates support:
