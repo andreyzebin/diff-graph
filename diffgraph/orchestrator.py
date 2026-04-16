@@ -117,7 +117,7 @@ def run_review(
 
     # Data resolved via from:pr_context.* — no manual injection needed
     result = run_agent(
-        agent_name="lead",
+        agent_name="reviewer",
         data={},
         llm=llm,
         model=model,
