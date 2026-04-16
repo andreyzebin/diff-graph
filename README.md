@@ -1,35 +1,31 @@
 # DiffGraph
 
-Multi-agent PR code reviewer powered by the **Orchestra** framework. Takes a git diff (or a Bitbucket Server PR URL), spawns a lead agent that analyzes the change, delegates investigation to focused reviewer agents, and consolidates findings into a deduplicated list.
+Multi-agent PR code reviewer powered by the **Orchestra** framework. All agents defined by `.prompt` files — hierarchy, behavior, and data flow controlled entirely by prompts.
 
 ```
 PR comment / event
       |
       v
-+--- dispatcher (react, lightweight) ---+
-|  /help → reply directly, done         |
-|  /review → done(action="review")      |
-|  unknown → suggest command, done      |
-|  no command → answer or suggest       |
++--- dispatcher (react) ----------------+
+|  /review → spawn reviewer             |
+|  /help   → reply directly             |
+|  /ask hi → answer, suggest commands   |
+|  plain   → answer from PR context     |
 +----------------------------------------+
-      |  action="review"
+      |  spawn_agent("reviewer")
+      |  (lazy clone on first tool call)
       v
-clone + parse_diff()
-      |
-      v
-+--- lead (react, spawns children) -----+
++--- reviewer (react, spawns children) -+
 |  Phase 1: ANALYZE — form concerns      |
-|  Phase 2: INVESTIGATE — spawn reviewers|
+|  Phase 2: INVESTIGATE — spawn          |
 |  Phase 3: JUDGE — consolidate, done    |
-|     +-- reviewer (react + SGR)         |
-|     +-- reviewer (react + SGR)         |
+|     +-- investigator (react + SGR)     |
+|     +-- investigator (react + SGR)     |
 +----------------------------------------+
       |
       v
 ReviewFinding[]  →  inline PR comments
 ```
-
-No pre-indexing. No database. One session per diff. All agents defined by `.prompt` files. All agents are homogeneous — hierarchy and behavior controlled entirely by prompts.
 
 ---
 
@@ -51,18 +47,26 @@ cp config.yaml config.local.yaml
 # edit config.local.yaml -- set api_url and model if not using OpenAI
 ```
 
-Run against a local repo:
-
-```bash
-python cli.py run --repo . --base HEAD~1
-python cli.py run --repo . --base main --source feature/my-branch
-```
-
 Run against a Bitbucket Server PR:
 
 ```bash
 source .env
 python cli.py run --pr-url https://bitbucket.example.com/projects/X/repos/Y/pull-requests/42
+```
+
+Run with dispatcher (interactive commands):
+
+```bash
+python cli.py run --pr-url ... --message "/review"
+python cli.py run --pr-url ... --message "/help" --comment-id 12345
+python cli.py run --pr-url ... --message "Is this null-safe?" --comment-id 12345
+```
+
+Run against a local repo (direct review, no dispatcher):
+
+```bash
+python cli.py run --repo . --base HEAD~1
+python cli.py run --repo . --base main --source feature/my-branch
 ```
 
 ---
@@ -95,17 +99,6 @@ Two modes controlled by `DIFFGRAPH_GIT_AUTH`:
 | `header` (default) | `BITBUCKET_SERVER_BEARER_TOKEN` | `http.extraHeader` with Bearer token | Linux, Docker |
 | `ssh` | — | `ssh://git@server:port/...` via ssh-agent | Windows, SSH keys |
 
-**Linux / Docker** — Bearer token (default):
-```bash
-export BITBUCKET_SERVER_BEARER_TOKEN=ATBBxxxxxxxx
-```
-
-**Windows / SSH keys:**
-```bash
-export DIFFGRAPH_GIT_AUTH=ssh
-# Optionally: export BITBUCKET_SSH_PORT=7999
-```
-
 ### `config.local.yaml`
 
 ```yaml
@@ -119,34 +112,16 @@ llm:
 review:
   max_steps: 40
   max_tokens: 40000
+  bot_user: ""               # Bitbucket slug — own comments marked [SELF]
 ```
 
 ### `tool_choice`
 
-Some LiteLLM-proxied models (e.g. `Qwen3-Coder-480B`) don't support `tool_choice="required"` and fail with `MidStreamFallbackError`. Set `tool_choice: "auto"` in `config.local.yaml`:
-
-```yaml
-llm:
-  tool_choice: "auto"
-```
-
-Can also be set per-agent in `.prompt` files: `@llm: tool_choice=auto`.
+Some LiteLLM-proxied models (e.g. `Qwen3-Coder-480B`) don't support `tool_choice="required"`. Set `tool_choice: "auto"` in `config.local.yaml`. Can also be set per-agent: `@llm: tool_choice=auto`.
 
 ### Corporate TLS
 
-DiffGraph uses [truststore](https://pypi.org/project/truststore/) to automatically pick up OS-level CA certificates (corporate VPN, proxy CAs). No manual CA bundle configuration needed in most cases.
-
-For edge cases:
-
-| Variable | Used for |
-|---|---|
-| `REQUESTS_CA_BUNDLE` | Bitbucket Server API + git clone |
-| `BITBUCKET_SERVER_CLIENT_CERT` | mTLS client cert for Bitbucket |
-
-**If still failing** — use `--no-verify-ssl` as a quick workaround:
-```bash
-python cli.py run --pr-url=... --no-verify-ssl
-```
+DiffGraph uses [truststore](https://pypi.org/project/truststore/) to automatically pick up OS-level CA certificates. `--no-verify-ssl` as a quick workaround.
 
 ---
 
@@ -154,310 +129,205 @@ python cli.py run --pr-url=... --no-verify-ssl
 
 ### `run` -- review code changes
 
-Two modes: PR (fetches everything from Bitbucket) or local repo (you specify refs).
-
 ```bash
-# PR mode — clones repo, computes diff, posts findings
+# PR mode with dispatcher
+python cli.py run --pr-url ... --message "/review" --comment-id 12345
+
+# PR mode direct (no dispatcher)
 python cli.py run --pr-url https://bitbucket.example.com/.../pull-requests/42
 
-# Local mode — diff computed from git refs, repo not modified
+# Local mode
 python cli.py run --repo . --base HEAD~1
-python cli.py run --repo . --base main --source feature/my-branch
-python cli.py run --repo /path/to/service --base abc123 --source def456 --output findings.json
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--pr-url` | Bitbucket Server PR URL (PR mode) |
+| `--pr-url` | Bitbucket Server PR URL |
+| `--message` | User message (`/review`, `/help`, plain text). Runs dispatcher. |
+| `--comment-id` | Bitbucket comment ID that triggered this invocation |
 | `--repo` / `-r` | Path to local repository (local mode) |
-| `--base` | Base ref — commit/branch to merge into. Required for local mode. |
-| `--source` | Source ref — commit/branch being reviewed. Default: HEAD. |
+| `--base` | Base ref (commit/branch to merge into) |
+| `--source` | Source ref (default: HEAD) |
 | `--model` / `-m` | LLM model override |
-| `--api-url` | API base URL override |
-| `--api-key` | API key override |
 | `--output` / `-o` | Write findings as JSON |
 | `--max-steps` | Max ReAct tool calls |
 | `--max-tokens` | Max token budget |
 | `--prompts` | Prompt resource URI (path, `file://`, `bitbucket://`) |
-| `--message` | User message (e.g. `/review`, `/help commands`). Runs dispatcher agent first. |
-| `--comment-id` | Bitbucket comment ID that triggered this invocation |
-| `--log-level` | `DEBUG`, `INFO`, `WARNING` (default), `ERROR` |
+| `--log-level` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `-v` / `--verbose` | Shortcut for `--log-level DEBUG` |
-| `--no-verify-ssl` | Disable SSL verification for all connections (LLM, Bitbucket, git) |
-
-### Logging levels
-
-```bash
-# Default — agent actions at INFO level
-python cli.py run --pr-url ...
-
-# INFO — agent actions (like live trace), LLM step results
-python cli.py run --pr-url ... --log-level INFO
-
-# DEBUG — everything: HTTP requests/responses, LLM params, VFS operations
-python cli.py run --pr-url ... -v
-
-# Troubleshoot connection issues
-python cli.py run --pr-url ... -v 2>&1 | grep -i "error\|fail\|connect\|timeout"
-```
-
-| Level | What you see |
-|---|---|
-| `WARNING` (default) | Errors and warnings only |
-| `INFO` | Agent actions: tool calls with args, agent start/done, reflections |
-| `DEBUG` | HTTP traffic (urllib3), LLM params (model, URL), VFS materialization |
+| `--no-verify-ssl` | Disable SSL verification |
 
 ### `trace` -- view execution traces
 
 ```bash
-python cli.py trace              # open last run in browser (starts trace server)
-python cli.py trace --log        # print trace to console (call/result per step, agent tree)
+python cli.py trace              # open last run in browser
+python cli.py trace --log        # print trace to console
 python cli.py trace --list       # list recent runs
 python cli.py trace --run ID     # specific run
 ```
 
 ### Prompt versioning
 
-Load prompts from different sources for A/B testing:
-
 ```bash
 python cli.py run --pr-url ... --prompts /path/to/prompts/v2
-python cli.py run --pr-url ... --prompts file:///absolute/path/to/prompts
 python cli.py run --pr-url ... --prompts bitbucket://server/PROJECT/prompts-repo/refs/main/prompts
 ```
-
-### Comment traceability
-
-Every posted comment includes a metadata tag at the end:
-
-```
-`dg:prompts:f7917d6:ae0bd23d-8d9`
-```
-
-Format: `` `dg:<generation>:<prompt_hash>:<run_id>` ``
-
-- **generation** — prompt source name (last segment of `--prompts` URI or directory)
-- **prompt_hash** — first 7 chars of content hash (md5) or commit SHA (Bitbucket provider)
-- **run_id** — trace DB run ID
-
-Extract from raw comment text (Bitbucket API):
-
-```python
-import re
-m = re.search(r'`dg:(\S+):(\w+):([\w-]+)`', comment_text)
-if m:
-    gen, prompt_hash, run_id = m.group(1), m.group(2), m.group(3)
-```
-
-Enables pr-analytics to correlate comment acceptance rates with prompt generations. Same `gen:hash` across comments = same prompt version. Different hash = prompt was modified (mutation).
 
 ---
 
 ## How it works
 
-### Dispatcher
+### Agents
 
-Entry point for all user interactions. Runs before the repo is cloned (lightweight — only Bitbucket API calls). Decides what to do based on the command, comment thread, and PR context:
+All agents are homogeneous — same `Agent` class, same `.prompt` format, same tool dispatch. Hierarchy and behavior controlled entirely by prompts.
 
-- `/review` → signals `done(action="review")`, the CLI proceeds with the review pipeline
-- `/help [topic]` → replies directly with version info, available commands, capabilities
-- No command (just a comment) → answers from context if cheap, suggests `/review` if expensive
-- Unsupported command → explains what's available
+**Dispatcher** — entry point for user interactions. Handles `/help`, questions, and planned commands directly. Only spawns reviewer on explicit `/review` command or auto-trigger. Uses `@guards` to ensure replies are delivered via tools.
 
-The dispatcher sees: `{command}`, `{args}`, `{comment_thread}` (full parent chain), `{pr_title}`, `{pr_description}`, `{generation}`, `{mutation}`. All configurable in `dispatcher.prompt`.
+**Reviewer** — conducts the code review. Three phases: analyze (read diff, form concerns), investigate (spawn investigators), judge (consolidate findings). Owns PR comment interaction.
+
+**Investigator** — focused agent with SGR. Gets a concern as focus, investigates with repo tools (read_file, search, read_outline). Returns findings with evidence.
+
+### Data flow: `from:tool.field`
+
+Agents declare data dependencies in `@data`. Missing fields are auto-resolved from cached data-provider tools:
+
+```
+@data:
+  diff_summary: string -- from:pr_context.diff_summary
+  focus: string -- task from parent
+```
+
+When investigator is spawned without `diff_summary`, the framework calls `pr_context()` tool (cached, hidden), extracts `.diff_summary`, injects into prompt. One tool call serves all fields. No domain code in the framework.
+
+### Guards
+
+`@guards` configure automatic interventions when agent behavior goes wrong:
+
+```
+@guards:
+  text_response: "Your text was NOT delivered. Use reply_to_comment()."
+  require_tool:reply_to_comment: "You must reply before finishing."
+```
+
+- `text_response` — model returned text without tool calls. Message injected, loop continues (max 2 retries).
+- `require_tool:X` — model called `done()` without calling tool X. Done cancelled, message injected, loop continues.
+
+### Lazy clone
+
+Repo clone + diff only happen when a domain tool is first called (`ctx.ensure_repo()`). `/help` and plain questions skip clone entirely.
 
 ### Three-phase review methodology
 
-**Phase 1 -- ANALYZE:** The lead reads the diff, identifies the system type, and formulates concerns scaled to diff size: 1-2 for small diffs, 2-3 for medium, 3-5 for large. Each concern is a distinct theme — not split facets of the same issue.
+**Phase 1 -- ANALYZE:** Read the diff, identify concerns scaled to diff size (1-2 small, 3-5 large). Each concern is a distinct theme.
 
-**Phase 2 -- INVESTIGATE (one round):** The lead spawns reviewer agent(s), each getting one concern as its focus. The reviewer breaks the concern into sub-questions and investigates using repo tools. One round of investigation -- no iterative spawning.
+**Phase 2 -- INVESTIGATE (one round):** Spawn investigator(s) — one per concern. Investigators use repo tools + SGR to track reasoning. One spawn round, no iteration.
 
-**Phase 3 -- JUDGE (no going back):** The lead resolves concerns from the evidence collected, handles PR comment threads, deduplicates findings, and delivers the verdict. New questions from results are answered from collected evidence, not by spawning more reviewers.
-
-### Agents (defined by `.prompt` files)
-
-All agents are homogeneous — same `Agent` class, same tool dispatch, same `.prompt` format. Hierarchy and behavior are controlled entirely by prompts, not code.
-
-**Dispatcher** -- react agent (lightweight). Entry point for user interactions. Handles cheap requests directly (`reply_to_comment`), routes expensive operations via `done(action=...)`.
-
-**Lead** -- react agent with `spawn`, `observe_agents`, `adjust_agent` capabilities. Orchestrates the review. Owns PR comment interaction (`reply_to_comment`, `resolve_comment`).
-
-**Reviewer** -- focused react agent with SGR. Gets a concern as focus, investigates first (get_diff, read_outline), then reflects with only genuinely unknown questions. Resolved questions from previous reflects carry concrete answers. No spawning, no PR interaction, no lead SGR context (clean start).
+**Phase 3 -- JUDGE:** Resolve concerns from evidence, handle existing PR comments, deduplicate findings, deliver verdict.
 
 ### SGR (Self-Guided Reasoning)
 
-Every react agent tracks its reasoning via `reflect()`:
-
-- `learned` -- facts established so far
-- `questions_remaining` -- open questions (each with a stable question ID)
-- `resolved_questions` -- each with `resolution` (answered/dropped) and `summary`
-- `confidence` -- low / medium / high
-- `next_action` -- what to do next
-
-Question IDs provide stability across reflect calls -- fuzzy matching links questions across steps even when wording drifts. Every open question must be explicitly resolved. No silent drops.
-
-### Budget
-
-Agents use their own `.prompt` budget (not parent-allocated). Default pushers: 75% nudge + 100% force_done. Budget tracks cumulative paid (sum of per-step deltas) with cache discount.
+Every react agent tracks reasoning via `reflect()`: `learned`, `questions_remaining`, `resolved_questions`, `confidence`, `next_action`. Question IDs provide stability across reflects.
 
 ### CLI output
 
-Plain text logging at INFO level (default). Shows all agents with result counts:
-
 ```
-10:07:04 INFO lead: read_file(path=…/OrderService.java, changes_only=True) → 47 lines
-10:07:06 INFO lead: reflect  medium
-10:07:07 INFO spawn reviewer → BUSINESS LOGIC: Investigate...
-10:07:09 INFO reviewer: read_file(path=…/OrderService.java, changes_only=True) → 120 lines
-10:07:10 INFO reviewer: search(query=getItems) → 12 lines
-10:07:12 INFO reviewer: reflect  high
-10:07:14 INFO reviewer: done
-10:07:15 INFO lead: reflect  high
-10:07:17 INFO lead: resolve_comment(comment_id=1149607)
+10:07:04 INFO reviewer: read_file(path=…/OrderService.java, changes_only=True) → 47 lines
+10:07:06 INFO reviewer: reflect  medium
+10:07:07 INFO spawn investigator → BUSINESS LOGIC: Investigate...
+10:07:09 INFO investigator: read_file(path=…/OrderService.java) → 120 lines
+10:07:10 INFO investigator: search(query=getItems) → 12 lines
+10:07:12 INFO investigator: reflect  high
+10:07:14 INFO investigator: done
+10:07:15 INFO reviewer: reflect  high
+10:07:17 INFO reviewer: resolve_comment(comment_id=1149607)
 10:07:19 INFO done: 1 findings, 0 replies, 4 resolves
 ```
-
-### Incremental review
-
-Existing PR comments are passed to the lead. In Phase 3, the lead:
-- `resolve_comment(id)` -- when the issue is addressed by the diff
-- `reply_to_comment(id, text)` -- when a fix is incomplete
 
 ---
 
 ## Orchestra Framework
 
-DiffGraph is built on **Orchestra** (~3,700 LOC), a prompt-defined agent framework. Agents are defined entirely by `.prompt` files with `@` headers. No topologies, no pipelines -- agents create structure at runtime via tool calls.
+Prompt-defined agent framework (~3,700 LOC). Agents defined by `.prompt` files with `@` headers. No topologies, no pipelines — agents create structure at runtime via tool calls.
 
 ### Prompt file format
 
 ```
-@agent: reviewer
+@agent: investigator
 @mode: react
 @capabilities: sgr
-@tools: find_files, read_file, search, get_diff
-@budget: 30000 tokens, 30 steps
+@tools: find_files, read_file, search
+@budget: 15000 tokens, 20 steps
 @llm: temperature=0
+@guards:
+  text_response: "Use tools to investigate, don't just return text."
 @data:
-  diff_summary: string -- changed files with line counts
-  focus: string -- specific task from lead
-@summary: Focused code reviewer. Investigates one aspect of a PR.
+  diff_summary: string -- from:pr_context.diff_summary
+  focus: string -- specific concern to investigate
+@summary: Investigates one aspect of a PR with tools and SGR.
 ---
-You are a code reviewer investigating a specific aspect.
-
+You are investigating a specific concern in a code review.
 {diff_summary}
-
-YOUR TASK:
-{focus}
-
-...
+YOUR TASK: {focus}
 ```
 
-`@data` fields serve triple duty: input schema for `spawn_agent`, `{placeholder}` injection into the prompt, and documentation for `list_agents`. Data inheritance: parent's data_scope auto-injected into child `{placeholders}`.
+### Key features
 
-### LLM compiler
-
-At startup, `.prompt` files are compiled into an agent registry. Two-pass parsing: deterministic regex for `@` headers + LLM fallback for unstructured prompts. Cached by file hash.
-
-### Meta-tools (9 total)
-
-| Tool | What it does |
+| Feature | Description |
 |---|---|
-| `spawn_agent` | Create a child agent. Data fields injected into prompt `{placeholders}`. `"inherit"` copies from parent. |
-| `spawn_many` | Fan-out N agents in parallel, return merged results |
-| `plan` | Single-shot planner returning structured JSON tasks |
-| `fork` | Clone self into N parallel branches with different focus |
-| `adjust_agent` | Change a child's temperature, penalties, model, inject message, extend budget |
-| `observe_agents` | Get status of all children: step, budget, SGR, signals |
-| `list_agents` | Get the compiled agent registry (summaries, input schemas) |
-| `reflect` | SGR self-reflection with question IDs |
-| `done` | Submit output and stop |
+| `@data` + `from:tool.field` | Auto-resolve prompt data from cached tool calls |
+| `@guards` | Reactive guards: `text_response`, `require_tool:X` |
+| `@capabilities: spawn` | Agent can spawn children via `spawn_agent`, `spawn_many` |
+| JSON Schema validation | All tool calls validated before dispatch (jsonschema) |
+| Trace system | SQLite WAL, live WebSocket view, navigator with per-step detail |
+| SGR | Self-Guided Reasoning with question IDs and fuzzy matching |
+| Budget + pushers | Token/step limits with configurable nudge/force_done thresholds |
+| Mutable LLM params | Parent can `adjust_agent` child's temperature, model, etc. |
 
-### Mutable LLM params
+### Tool system
 
-Every agent's generation parameters (temperature, penalties, model) are mutable at runtime. A supervisor agent can `adjust_agent(id, temperature=0.8, frequency_penalty=1.5)` to steer a stuck child. All changes logged as `param_adjusted` events.
-
-### Trace system
-
-SQLite trace DB persists events per-step (crash-safe). Two web views:
-
-- **Navigator** (`/runs/{id}/trace`) -- split-pane: agent tree left, detail tabs right. Click `[⧉]` to load full data from API. Right panel has `📋 Copy` and `{ } JSON` toggle. Steps show tool args preview, token usage (`↑` new input, `↓` output, `©` cached).
-- **Live** (`/runs/{id}/live`) -- real-time event stream via WebSocket. Bulk-loads existing events on open, then streams new ones. Child agents color-coded with `[reviewer:Focus]` tags. Auto-scroll pauses when scrolling up.
-
-Both views link to each other. Runs list (`/`) auto-refreshes every 3s. Console trace via `--log`.
-
-### Behavioral signals (read-only)
-
-| Signal | What it detects |
-|---|---|
-| `repetition_score` | Same tools/args called repeatedly |
-| `progress_score` | Unique files explored, questions resolved |
-| `stuck` | High repetition + low progress |
-
-Available via `observe_agents`. Framework does not act on them -- supervisor agents decide.
-
-See [REQUIREMENTS.md](REQUIREMENTS.md) for the full technical specification.
-
----
-
-## Supported languages
-
-Java, Python, TypeScript / TSX, Go, Kotlin, Ruby, C#
-
-(tree-sitter structural outlines; plain line-count fallback for unknown extensions)
+All tools — domain and builtin — go through `registry.dispatch()`. Schema validation, caching, hidden data providers. Tools registered with `cache=True, hidden=True` serve as data providers for `from:` resolution.
 
 ---
 
 ## Architecture
 
 ```
-orchestra/                   Prompt-defined agent framework (~3,700 LOC)
-+-- compiler.py              LLM compiler: .prompt files -> agent registry
-+-- trace.py                 Trace data collection + template preparation
-+-- trace_db.py              SQLite trace storage + reader
-tracing/                     Trace CLI + web server
-+-- server/                  FastAPI trace viewer (Alpine.js + Jinja2)
-    +-- app.py               Routes, data API, WebSocket live updates
-    +-- templates/            Jinja2 templates (trace, macros, runs, live)
-    +-- static/               CSS + JS
-+-- types.py                 AgentConfig, BudgetConfig, LLMParamsConfig
-+-- config.py                YAML loading, env var expansion, validation
-+-- events.py                EventBus with typed events
-+-- agent.py                 Agent: single + react, all meta-tools built-in
-+-- budget.py                BudgetState with cumulative_paid
-+-- sgr.py                   SGR with question IDs + fuzzy matching
-+-- handoff.py               7 context handoff modes
-+-- condensation.py          4 message condensation strategies
-+-- streaming.py             LLM streaming with param passthrough
-+-- feedback.py              Read-only behavioral signals
-+-- merge.py                 Merge strategies (union, best_confidence, llm_merge, raw)
-+-- prompts.py               Template loading + regex interpolation
+orchestra/                   Prompt-defined agent framework
++-- agent.py                 Agent + resolve_agent_data()
++-- compiler.py              .prompt → agent registry (regex + LLM fallback)
 +-- tools/
-    +-- registry.py          @register decorator, schema generation
-    +-- builtin.py           Meta-tool schemas (spawn, adjust, observe, etc.)
-    +-- shared.py            AppendLog, MutexMap, Blackboard
+    +-- registry.py          dispatch, validation, cache, hidden
+    +-- builtin.py           Meta-tools with real agent handlers
++-- types.py                 AgentConfig (guards, input_schema, ...)
++-- events.py                EventBus
++-- budget.py                BudgetState + pushers
++-- sgr.py                   SGR with question IDs
++-- trace.py                 Trace collection
++-- trace_db.py              SQLite storage + reader
++-- streaming.py             LLM streaming
++-- handoff.py               Context handoff modes
++-- condensation.py          Message condensation strategies
++-- feedback.py              Behavioral signals
++-- merge.py                 Merge strategies
++-- prompts.py               Template interpolation
 
 diffgraph/                   Code review domain
++-- orchestrator.py          run_agent() + run_review()
++-- orchestra_tools.py       Domain tools + pr_context data provider
 +-- api.py                   DiffGraph public API
-+-- orchestrator.py          run_agent() + run_review() entry points
-+-- orchestra_tools.py       Domain tools as closures
-+-- diff_parser.py           git diff -> DiffResult
-+-- lang.py                  Language detection
-+-- tools.py                 Filesystem primitives
-+-- outline.py               tree-sitter structural outline
-+-- bitbucket.py             Bitbucket Server integration (legacy compat)
-+-- providers/               Pluggable provider abstractions
-    +-- base.py              PRProvider (ABC) + RepoProvider (ABC)
-    +-- bitbucket_pr.py      Bitbucket REST API (Bearer token)
++-- diff_parser.py           git diff → DiffResult
++-- bitbucket.py             Bitbucket Server integration
++-- providers/
+    +-- bitbucket_pr.py      Bitbucket REST API
     +-- git_repo.py          Git clone/fetch/diff (header | ssh)
 +-- prompts/
-    +-- dispatcher.prompt    Entry point: route commands, handle /help
-    +-- lead.prompt          Three-phase review lead (analyze -> investigate -> judge)
-    +-- reviewer.prompt      Focused investigator with SGR
+    +-- dispatcher.prompt    Route commands, handle /help, spawn reviewer
+    +-- reviewer.prompt      Three-phase review (analyze → investigate → judge)
+    +-- investigator.prompt  Focused investigation with SGR
 
 diffsearch/                  Virtual unified diff filesystem
 webhook/                     Bitbucket webhook router with A/B routing
-tracing/                     Trace CLI + web server
+tracing/                     Trace web server (FastAPI + Alpine.js)
 evolution/                   Self-sustaining prompt development
 docker/                      Dockerfile + entrypoint
 ```
@@ -466,5 +336,5 @@ docker/                      Dockerfile + entrypoint
 
 ```bash
 source .venv/bin/activate
-pytest tests/
+pytest
 ```
