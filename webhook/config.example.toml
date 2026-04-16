@@ -5,20 +5,20 @@ port = 8000
 
 # ── Agents ──────────────────────────────────────────────
 
-# DiffGraph v2 — dispatcher handles /help, plain text, unsupported commands;
-# passes /review through to the review pipeline
-[agents.dg2]
+# DiffGraph — dispatcher as entry point (handles /help, /ask, plain text;
+# spawns reviewer on /review; lazy clone only when needed)
+[agents.dg]
 trigger = "cli"
 command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id}'
 timeout = 600
 
-# DiffGraph v1 — no dispatcher, review only (legacy)
-[agents.dg1]
+# DiffGraph — direct reviewer (skip dispatcher, always review)
+[agents.dg-review]
 trigger = "cli"
-command = 'cd ~/repos/diff-graph-v1 && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --post-comments'
+command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --agent=reviewer'
 timeout = 600
 
-# PR-Agent — forward raw Bitbucket event, it handles everything internally
+# PR-Agent — forward raw Bitbucket event
 [agents.pra]
 trigger = "webhook"
 base_url = "http://pr-agent-host:3000/webhook"
@@ -33,13 +33,13 @@ timeout = 300
 
 # ── Routes (first match wins, each route is forward OR agent) ────
 
-# Legacy project → forward everything to pr-agent (no dispatcher)
+# Legacy project → forward to pr-agent
 [[routes]]
 name = "legacy-forward"
 when = "project == 'LEGACY'"
 forward = "pra"
 
-# A/B test: 50% pr-agent, 50% DiffGraph v2
+# A/B test: 50% pr-agent, 50% DiffGraph
 [[routes]]
 name = "platform-pra"
 when = "project == 'PLATFORM'"
@@ -49,16 +49,11 @@ sample = 50
 [[routes]]
 name = "platform-dg"
 when = "project == 'PLATFORM'"
-agent = "dg2"
+agent = "dg"
 
-# Canary repo → DiffGraph v2
-[[routes]]
-name = "canary"
-when = "repo == 'code-review-example-orderflow'"
-agent = "dg2"
-
-# Default → DiffGraph v2 for all projects
+# Default → dispatcher for all, /review goes direct to reviewer
 [[routes]]
 name = "default"
 when = "true"
-agent = "dg2"
+agent = "dg"
+review = "dg-review"          # /review and auto-review → direct reviewer

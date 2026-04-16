@@ -24,14 +24,14 @@ class TestLoadConfig:
 
     def test_loads_example(self):
         cfg = load_config(EXAMPLE_CONFIG)
-        assert "dg2" in cfg.agents
-        assert "dg1" in cfg.agents
+        assert "dg" in cfg.agents
+        assert "dg-review" in cfg.agents
         assert "pra" in cfg.agents
 
     def test_agents_have_commands(self):
         cfg = load_config(EXAMPLE_CONFIG)
-        assert "cli.py" in cfg.agents["dg2"].command
-        assert cfg.agents["dg2"].trigger == "cli"
+        assert "cli.py" in cfg.agents["dg"].command
+        assert cfg.agents["dg"].trigger == "cli"
         assert cfg.agents["pra"].trigger == "webhook"
 
     def test_events_parsed(self):
@@ -228,22 +228,20 @@ class TestCommandRouting:
     def _cmd(self, name="review", args="", comment_id=None):
         return CommandRequest(name=name, args=args, comment_id=comment_id)
 
-    def test_canary_all_commands(self):
+    def test_review_per_command_override(self):
         cfg = load_config(EXAMPLE_CONFIG)
-        pr = PRMeta("SBLOOM", "code-review-example-orderflow", 1,
-                     "http://pr/1", "", "", "", "")
+        pr = PRMeta("ANY", "any-repo", 1, "http://pr/1", "", "", "", "")
         result = route_event([self._cmd("review")], pr, cfg)
         assert isinstance(result, list)
-        assert result[0].agent_name == "dg2"
-        assert result[0].route_name == "canary"
+        assert result[0].agent_name == "dg-review"
+        assert result[0].route_name == "default"
 
     def test_default_fallback(self):
         cfg = load_config(EXAMPLE_CONFIG)
         pr = PRMeta("OTHER", "repo", 1, "http://pr/1", "", "", "", "")
-        result = route_event([self._cmd()], pr, cfg)
+        result = route_event([self._cmd("help")], pr, cfg)
         assert isinstance(result, list)
-        assert result[0].agent_name == "dg2"
-        assert result[0].route_name == "default"
+        assert result[0].agent_name == "dg"
 
     def test_multiple_commands(self):
         cfg = load_config(EXAMPLE_CONFIG)

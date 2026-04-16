@@ -18,69 +18,21 @@ Bitbucket event
   ▼
 Layer 1: Event → Commands
   "pr:opened" = ["review"]         ← auto-run commands
-  "pr:comment:added" = "parse"     ← extract /command from comment
+  "pr:comment:added" = "parse"     ← extract /command or plain text
   │
   ▼
 Layer 2: Routes (first match wins, cascade via sample)
-  ┌─ forward = "pra"  → event-level: forward raw event, done
-  └─ agent = "dg2"    → command-level: route each command
-       ├─ review → dg2
-       └─ improve → pra  (per-command override)
+  ┌─ forward = "pra"   → forward raw event to external agent
+  └─ agent = "dg"      → route to DiffGraph CLI
+       ├─ /review  → dispatcher → spawns reviewer
+       ├─ /help    → dispatcher → replies directly
+       └─ default  → dispatcher → answers from context
   │
   ▼
 Layer 3: Agent trigger
-  cli     → subprocess with {pr_url}, {args}, {comment_id}
+  cli     → subprocess: cli.py run --pr-url --message --comment-id
   http    → POST to agent API
   webhook → forward raw Bitbucket event
-```
-
-## Two routing modes
-
-Each route is **either `forward` or `agent`**, never both:
-
-| Key | Mode | Behavior |
-|-----|------|----------|
-| `forward = "pra"` | Event-level | Forward raw Bitbucket event to agent. No command extraction. Agent handles everything internally. |
-| `agent = "dg2"` | Command-level | Extract commands from `[events]` config, route each command to agent. Per-command overrides possible. |
-
-## Cascading with `sample`
-
-`sample` controls what percentage of PRs a route matches (deterministic by `hash(pr_url)`). Unmatched PRs fall through to the next route.
-
-```toml
-# 50% of PLATFORM PRs → forward to pr-agent
-[[routes]]
-name = "platform-forward"
-when = "project == 'PLATFORM'"
-forward = "pra"
-sample = 50
-
-# Remaining 50% → command routing to dg2
-[[routes]]
-name = "platform-commands"
-when = "project == 'PLATFORM'"
-agent = "dg2"
-```
-
-Same PR always gets the same route (hash is deterministic). Three-way split:
-
-```toml
-[[routes]]
-name = "v3-canary"
-when = "project == 'X'"
-agent = "dg3"
-sample = 10                    # 10%
-
-[[routes]]
-name = "v2-rollout"
-when = "project == 'X'"
-agent = "dg2"
-sample = 50                    # 50% of remaining 90% ≈ 45%
-
-[[routes]]
-name = "v1-stable"
-when = "project == 'X'"
-agent = "dg1"                  # rest ≈ 45%
 ```
 
 ## Config
@@ -89,11 +41,19 @@ agent = "dg1"                  # rest ≈ 45%
 [server]
 port = 8000
 
-[agents.dg2]
+# DiffGraph — dispatcher handles all interactions
+[agents.dg]
 trigger = "cli"
-command = '... cli.py run --pr-url="{pr_url}" --post-comments --message="{message}" --comment-id={comment_id}'
+command = '... cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id}'
 timeout = 600
 
+# DiffGraph — direct reviewer (skip dispatcher)
+[agents.dg-review]
+trigger = "cli"
+command = '... cli.py run --pr-url="{pr_url}" --agent=reviewer'
+timeout = 600
+
+# PR-Agent — forward raw event
 [agents.pra]
 trigger = "webhook"
 base_url = "http://pr-agent-host:3000/webhook"
@@ -105,36 +65,52 @@ base_url = "http://pr-agent-host:3000/webhook"
 "repo:refs_changed" = []
 
 [[routes]]
-name = "legacy-forward"
-when = "project == 'LEGACY'"
-forward = "pra"
-
-[[routes]]
-name = "canary"
-when = "repo == 'my-service'"
-agent = "dg2"
-
-[[routes]]
 name = "default"
 when = "true"
-agent = "dg2"
+agent = "dg"
+review = "dg-review"        # auto-review and /review → direct reviewer
+```
+
+## Two routing modes
+
+Each route is **either `forward` or `agent`**, never both:
+
+| Key | Mode | Behavior |
+|-----|------|----------|
+| `forward = "pra"` | Event-level | Forward raw Bitbucket event to agent. No command extraction. |
+| `agent = "dg"` | Command-level | Extract commands from `[events]`, route each to agent. Per-command overrides possible. |
+
+## Cascading with `sample`
+
+`sample` controls what percentage of PRs a route matches (deterministic by `hash(pr_url)`). Unmatched PRs fall through to the next route.
+
+```toml
+# A/B test: 50% pr-agent, 50% DiffGraph
+[[routes]]
+name = "platform-pra"
+when = "project == 'PLATFORM'"
+forward = "pra"
+sample = 50
+
+[[routes]]
+name = "platform-dg"
+when = "project == 'PLATFORM'"
+agent = "dg"
 ```
 
 ## Commands from PR comments
 
-Any PR comment triggers the dispatcher agent. The dispatcher understands both slash commands and plain text:
+Any PR comment triggers the dispatcher agent. The dispatcher handles:
 
 ```
-/review                          → dispatcher signals full review
-/help                            → dispatcher replies with version + commands
-/help what does /review do?      → dispatcher answers the question
-Is this null-safe?               → dispatcher answers from PR context
-/improve                         → dispatcher replies: planned, not yet available
+/review                          → spawns reviewer agent
+/help                            → replies with version + commands
+/help what does /review do?      → answers the question
+/ask how does this work?         → answers from PR context (planned cmd, helpful fallback)
+Is this null-safe?               → answers from PR context
 ```
 
-`@mention` prefix is optional (`@diffgraph /review` and `/review` both work).
-
-Comments without a `/command` are passed as-is to the dispatcher (command = `default`), so it can answer questions, suggest commands, or ask for clarification.
+`@mention` prefix is optional. Comments without `/command` are passed as-is (command = `default`).
 
 ## Placeholders
 
@@ -155,12 +131,12 @@ Command templates support:
 
 **`when`** — Python expression against PR metadata: `project`, `repo`, `author`, `branch`, `target`, `pr_url`, `pr_id`, `title`.
 
-**`sample`** — percentage (0-100). Only this % of PRs (by hash) match. Default 100. Unmatched fall through.
+**`sample`** — percentage (0-100). Deterministic by hash. Default 100.
 
 **Per-command override** — any key besides `name`, `when`, `agent`, `forward`, `sample` is a command override:
 ```toml
-agent = "dg2"           # default: all commands → dg2 (dispatcher handles routing)
-review = "pra"          # override: /review → pr-agent instead of dg2
+agent = "dg"             # default: all commands → dispatcher
+review = "dg-review"     # /review → direct reviewer (skip dispatcher)
 ```
 
 ## Endpoints
@@ -174,12 +150,8 @@ review = "pra"          # override: /review → pr-agent instead of dg2
 | `PATCH` | `/api/routes/{name}` | Update route `{sample?, agent?, when?}` |
 | `DELETE` | `/api/routes/{name}` | Delete route |
 
-Route management API enables evolution to deploy/undeploy/rebalance branches programmatically.
-
 ## Tests
 
 ```bash
 pytest webhook/tests/ -v --log-cli-level=INFO
 ```
-
-41 tests: config, event parsing, routing, API CRUD (create/update/delete routes).
