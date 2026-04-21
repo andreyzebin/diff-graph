@@ -65,6 +65,49 @@ _TS_LANG: dict[str, str] = {
     "csharp":     "c_sharp",
 }
 
+# tree-sitter language module mapping (for new API: tree-sitter >= 0.23)
+_TS_MODULES: dict[str, str] = {
+    "python":     "tree_sitter_python",
+    "java":       "tree_sitter_java",
+    "typescript":  "tree_sitter_typescript",
+    "go":         "tree_sitter_go",
+    "kotlin":     "tree_sitter_kotlin",
+    "ruby":       "tree_sitter_ruby",
+    "c_sharp":    "tree_sitter_c_sharp",
+}
+
+_parser_cache: dict[str, object] = {}
+
+
+def _get_parser(lang_name: str):
+    """Get a tree-sitter parser. New API (per-language packages) or legacy fallback."""
+    if lang_name in _parser_cache:
+        return _parser_cache[lang_name]
+
+    # Try new API: tree_sitter_python, tree_sitter_java, etc.
+    mod_name = _TS_MODULES.get(lang_name)
+    if mod_name:
+        try:
+            import importlib
+            from tree_sitter import Language, Parser
+            mod = importlib.import_module(mod_name)
+            # Some packages use language_<name>() instead of language()
+            lang_fn = getattr(mod, "language", None) \
+                or getattr(mod, f"language_{lang_name}", None)
+            if lang_fn:
+                parser = Parser(Language(lang_fn()))
+                _parser_cache[lang_name] = parser
+                return parser
+        except (ImportError, TypeError, AttributeError):
+            pass
+
+    # Fallback: tree_sitter_languages (legacy, Python < 3.13)
+    from tree_sitter_languages import get_parser  # type: ignore
+    parser = get_parser(lang_name)
+    _parser_cache[lang_name] = parser
+    return parser
+
+
 # In-memory session cache (keyed by repo_path/path, no changed_lines variant)
 _session_cache: dict[str, str] = {}
 
@@ -110,8 +153,7 @@ def get_outline(
         return result
 
     try:
-        from tree_sitter_languages import get_parser  # type: ignore
-        parser = get_parser(ts_lang_name)
+        parser = _get_parser(ts_lang_name)
     except Exception as exc:
         total = len(content.splitlines())
         result = f"# {path}  ({total} lines)\n(tree-sitter unavailable: {exc})\n"
