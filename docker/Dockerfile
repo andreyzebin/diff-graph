@@ -15,17 +15,17 @@ ARG APT_MIRROR_URL=""
 ARG APT_MIRROR_TOKEN=""
 RUN if [ -n "$APT_MIRROR_URL" ]; then \
       CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME"); \
+      MIRROR_HOST=$(echo "$APT_MIRROR_URL" | sed 's|https\?://||; s|/.*||'); \
       if [ -n "$APT_MIRROR_TOKEN" ]; then \
-        REPO=$(echo "$APT_MIRROR_URL" | sed "s|://|://token:${APT_MIRROR_TOKEN}@|"); \
-        SEC=$(echo "${APT_MIRROR_URL}_security" | sed "s|://|://token:${APT_MIRROR_TOKEN}@|"); \
-      else \
-        REPO="${APT_MIRROR_URL}"; \
-        SEC="${APT_MIRROR_URL}_security"; \
+        mkdir -p /etc/apt/auth.conf.d; \
+        echo "machine ${MIRROR_HOST} login token password ${APT_MIRROR_TOKEN}" > /etc/apt/auth.conf.d/corp.conf; \
       fi; \
       rm -f /etc/apt/sources.list.d/*; \
-      echo "deb [trusted=yes] ${REPO} ${CODENAME} main" > /etc/apt/sources.list; \
-      echo "deb [trusted=yes] ${REPO} ${CODENAME}-updates main contrib" >> /etc/apt/sources.list; \
-      echo "deb [trusted=yes] ${SEC} ${CODENAME}-security main contrib" >> /etc/apt/sources.list; \
+      echo "deb [allow-insecure=yes] ${APT_MIRROR_URL} ${CODENAME} main" > /etc/apt/sources.list; \
+      echo "deb [allow-insecure=yes] ${APT_MIRROR_URL} ${CODENAME}-updates main contrib" >> /etc/apt/sources.list; \
+      echo "deb [allow-insecure=yes] ${APT_MIRROR_URL}_security ${CODENAME}-security main contrib" >> /etc/apt/sources.list; \
+      echo 'Acquire::AllowInsecureRepositories "true";' > /etc/apt/apt.conf.d/99allow-insecure; \
+      cat /etc/apt/sources.list; \
     fi
 
 # ── System deps ──────────────────────────────────────────
