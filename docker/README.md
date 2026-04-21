@@ -1,227 +1,183 @@
 # Docker
 
-All-in-one container: webhook router (port 8000) + trace viewer (port 8080) + diffgraph agent.
+All-in-one container: webhook router (port 8000) + trace viewer (port 8080) + DiffGraph agents.
 
-## Build
+## Quick start
 
 ```bash
-# From repo root
+# Build from repo root
 docker build -f docker/Dockerfile -t diffgraph .
-```
 
-## Run
-
-### Minimal (no Bitbucket, just webhook router)
-
-```bash
-docker run -d --name diffgraph -p 8000:8000 -p 8081:8080 \
-  -e LLM_BASE_URL=https://api.deepseek.com/v1 \
-  -e LLM_API_KEY=sk-your-key \
-  -e LLM_MODEL=deepseek-chat \
+# Run with your .env and config
+docker run -d --name diffgraph -p 8000:8000 -p 8080:8080 \
+  -v $(pwd)/.env:/app/.env:ro \
+  -v $(pwd)/config.local.yaml:/app/config.local.yaml:ro \
+  -v diffgraph-data:/data \
   diffgraph
 ```
 
-### With Bitbucket Server (token auth)
+That's it. `.env` provides Bitbucket token and API keys, `config.local.yaml` provides LLM settings. Traces persist in the `diffgraph-data` volume.
+
+## With .env and config.local.yaml (recommended)
+
+Mount your existing files — same ones you use with `.venv`:
 
 ```bash
-docker run -d --name diffgraph -p 8000:8000 -p 8081:8080 \
-  -e BITBUCKET_SERVER_BEARER_TOKEN=your-token \
-  -e LLM_BASE_URL=https://api.deepseek.com/v1 \
-  -e LLM_API_KEY=sk-your-key \
-  -e LLM_MODEL=deepseek-chat \
+docker run -d --name diffgraph -p 8000:8000 -p 8080:8080 \
+  -v $(pwd)/.env:/app/.env:ro \
+  -v $(pwd)/config.local.yaml:/app/config.local.yaml:ro \
+  -v diffgraph-data:/data \
   diffgraph
 ```
 
-### With Bitbucket Server (mTLS + CA bundle)
+If `.env` is mounted, it's sourced at startup. All env vars from it are available to agents.
+If `config.local.yaml` is mounted, it's used as-is. Otherwise generated from env vars.
+
+## SSL certificates
+
+### Auto-detect from host (recommended for corporate)
+
+Mount the host's cert directory — entrypoint auto-detects CA bundles:
 
 ```bash
-docker run -d --name diffgraph -p 8000:8000 -p 8081:8080 \
-  -v /path/to/certs:/certs:ro \
-  -e REQUESTS_CA_BUNDLE=/certs/ca-bundle.pem \
-  -e BITBUCKET_SERVER_CLIENT_CERT=/certs/client.pem \
-  -e BITBUCKET_SERVER_BEARER_TOKEN=your-token \
-  -e LLM_BASE_URL=https://api.deepseek.com/v1 \
-  -e LLM_API_KEY=sk-your-key \
-  -e LLM_MODEL=deepseek-chat \
-  -e "NO_PROXY=localhost,*.your-domain.com,api.deepseek.com" \
+# Find your host's CA path:
+python3 -c "import ssl; print(ssl.get_default_verify_paths())"
+# → DefaultVerifyPaths(cafile='/etc/pki/tls/certs/ca-bundle.crt', capath='/etc/pki/tls/certs', ...)
+
+# Mount the directory containing the CA bundle:
+docker run -d --name diffgraph -p 8000:8000 -p 8080:8080 \
+  -v /etc/pki/ca-trust/extracted/pem:/host-certs:ro \
+  -v $(pwd)/.env:/app/.env:ro \
+  -v diffgraph-data:/data \
   diffgraph
 ```
 
-### With certs as base64 (no volume mount)
+The entrypoint scans `/host-certs` for `*.crt` and `*.pem` files and adds them to the container's trust store. Works with RHEL, CentOS, Ubuntu, Debian.
+
+Common host paths:
+
+| OS | Mount this |
+|---|---|
+| RHEL/CentOS | `-v /etc/pki/ca-trust/extracted/pem:/host-certs:ro` |
+| Ubuntu/Debian | `-v /etc/ssl/certs:/host-certs:ro` |
+| macOS | `-v /etc/ssl:/host-certs:ro` |
+
+### Explicit cert files
 
 ```bash
-docker run -d --name diffgraph -p 8000:8000 -p 8081:8080 \
+docker run -d --name diffgraph -p 8000:8000 -p 8080:8080 \
+  -v /path/to/ca-bundle.pem:/app/certs/ca.pem:ro \
+  -e REQUESTS_CA_BUNDLE=/app/certs/ca.pem \
+  -v $(pwd)/.env:/app/.env:ro \
+  diffgraph
+```
+
+### Certs as base64 (no volume mount)
+
+```bash
+docker run -d --name diffgraph -p 8000:8000 -p 8080:8080 \
   -e BB_CA_BUNDLE_B64=$(base64 -w0 /path/to/ca-bundle.pem) \
-  -e BB_CLIENT_CERT_B64=$(base64 -w0 /path/to/client.pem) \
-  -e BITBUCKET_SERVER_BEARER_TOKEN=your-token \
-  -e LLM_BASE_URL=https://api.deepseek.com/v1 \
-  -e LLM_API_KEY=sk-your-key \
-  -e LLM_MODEL=deepseek-chat \
+  -v $(pwd)/.env:/app/.env:ro \
   diffgraph
 ```
 
-### Custom webhook config
+## Corporate PyPI mirror
 
-Mount your own TOML to override the default routing:
+If pip can't reach pypi.org during build:
 
 ```bash
-docker run -d --name diffgraph -p 8000:8000 -p 8081:8080 \
-  -v /path/to/webhook.toml:/app/webhook.toml:ro \
-  -e BITBUCKET_SERVER_BEARER_TOKEN=your-token \
-  -e LLM_BASE_URL=https://api.deepseek.com/v1 \
-  -e LLM_API_KEY=sk-your-key \
+docker build -f docker/Dockerfile -t diffgraph \
+  --build-arg PYPI_MIRROR_URL=https://mirror.corp.com/repo/pypi/simple \
+  --build-arg PYPI_MIRROR_TOKEN=your-token \
+  .
+```
+
+Only the host part is added to `trusted-host`. Token is embedded in the index URL. If `PYPI_MIRROR_URL` is empty (default), standard PyPI is used.
+
+## Data persistence
+
+Traces DB is stored at `/data/traces.db` inside the container. Mount a volume to persist across restarts:
+
+```bash
+# Named volume (recommended)
+-v diffgraph-data:/data
+
+# Host directory
+-v /path/on/host/diffgraph-data:/data
+```
+
+The directory is created automatically.
+
+### Clear trace data
+
+```bash
+# Remove named volume
+docker volume rm diffgraph-data
+
+# Or clear just the DB file
+docker exec diffgraph rm /data/traces.db
+```
+
+## Custom webhook config
+
+Mount your own TOML to override default routing:
+
+```bash
+docker run -d --name diffgraph -p 8000:8000 -p 8080:8080 \
+  -v $(pwd)/webhook.toml:/app/webhook.toml:ro \
+  -v $(pwd)/.env:/app/.env:ro \
+  -v diffgraph-data:/data \
   diffgraph
 ```
 
 ## Environment variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `BITBUCKET_SERVER_BEARER_TOKEN` | For PR mode | Bitbucket personal access token |
-| `REQUESTS_CA_BUNDLE` | If corporate CA | Path to CA cert bundle inside container |
-| `BITBUCKET_SERVER_CLIENT_CERT` | If mTLS | Path to client PEM inside container |
-| `BB_CA_BUNDLE_B64` | Alternative | CA bundle as base64 (auto-written to /app/certs/) |
-| `BB_CLIENT_CERT_B64` | Alternative | Client cert as base64 (auto-written to /app/certs/) |
-| `LLM_BASE_URL` | Yes | OpenAI-compatible API endpoint |
-| `LLM_API_KEY` | Yes | API key |
-| `LLM_MODEL` | No | Model name (default: deepseek-chat) |
-| `LLM_CA_BUNDLE` | If corporate CA | Path to CA bundle for LLM endpoint TLS |
-| `FORWARD_WEBHOOK_URL` | No | URL for forward webhook trigger |
-| `WEBHOOK_CONFIG` | No | Path to TOML config (default: /app/webhook.toml) |
-| `WEBHOOK_PORT` | No | Webhook server port (default: 8000) |
-| `TRACE_PORT` | No | Trace viewer port (default: 8080) |
-| `TRACE_BASE_PATH` | No | URL prefix for trace viewer behind reverse proxy (e.g. `/evo/traces-ui`) |
-| `NO_PROXY` | If needed | Comma-separated no-proxy hosts |
+All optional if `.env` and `config.local.yaml` are mounted.
+
+| Variable | Description |
+|---|---|
+| `LLM_BASE_URL` | OpenAI-compatible API endpoint |
+| `LLM_API_KEY` | API key |
+| `LLM_MODEL` | Model name (default: `deepseek-chat`) |
+| `LLM_TOOL_CHOICE` | `required` (default) or `auto` |
+| `LLM_TIMEOUT` | LLM request timeout in seconds (default: 600) |
+| `BB_TOKEN` | Bitbucket Bearer token (alias for `BITBUCKET_SERVER_BEARER_TOKEN`) |
+| `BOT_USER` | Bitbucket slug — own comments marked `[SELF]` |
+| `REQUESTS_CA_BUNDLE` | Explicit CA bundle path inside container |
+| `BB_CA_BUNDLE_B64` | CA bundle as base64 (auto-written to `/app/certs/`) |
+| `BB_CLIENT_CERT_B64` | Client cert as base64 |
+| `DATA_DIR` | Data directory (default: `/data`) |
+| `FORWARD_WEBHOOK_URL` | Forward webhook URL (adds a forward agent to default config) |
+| `WEBHOOK_CONFIG` | Path to webhook TOML (default: `/app/webhook.toml`) |
+| `WEBHOOK_PORT` | Webhook port (default: 8000) |
+| `TRACE_PORT` | Trace viewer port (default: 8080) |
+| `TRACE_BASE_PATH` | URL prefix for trace viewer behind reverse proxy |
 
 ## Ports
 
 | Port | Service |
 |---|---|
 | 8000 | Webhook router — configure as Bitbucket webhook URL |
-| 8080 | Trace viewer — browse run history and agent traces |
+| 8080 | Trace viewer — browse at http://localhost:8080 |
 
-## Test with curl
-
-### Health check
+## Verify
 
 ```bash
+# Health
 curl http://localhost:8000/health
-# {"status":"ok","agents":["diffgraph"],"routes":1}
-```
 
-### Show routes
-
-```bash
+# Routes
 curl http://localhost:8000/routes
+
+# Traces
+open http://localhost:8080
 ```
-
-### Webhook ping (connection test)
-
-```bash
-curl -X POST http://localhost:8000/webhook \
-  -H "Content-Type: application/json" \
-  -d '{"test": true}'
-# {"status":"ok","message":"webhook connected"}
-```
-
-### Simulate PR opened event
-
-```bash
-curl -X POST http://localhost:8000/webhook \
-  -H "Content-Type: application/json" \
-  -H "x-bitbucket-server-url: https://bitbucket.example.com" \
-  -d '{
-    "eventKey": "pr:opened",
-    "pullRequest": {
-      "id": 42,
-      "title": "Fix null check in OrderService",
-      "fromRef": {
-        "displayId": "feature/fix-npe",
-        "repository": {"slug": "my-service", "project": {"key": "MYPROJ"}}
-      },
-      "toRef": {
-        "displayId": "main",
-        "repository": {"slug": "my-service", "project": {"key": "MYPROJ"}}
-      },
-      "author": {"user": {"name": "developer"}}
-    }
-  }'
-# {"status":"accepted","mode":"commands","decisions":[{"command":"review",...}]}
-```
-
-### Simulate /ask comment
-
-```bash
-curl -X POST http://localhost:8000/webhook \
-  -H "Content-Type: application/json" \
-  -H "x-bitbucket-server-url: https://bitbucket.example.com" \
-  -d '{
-    "eventKey": "pr:comment:added",
-    "pullRequest": {
-      "id": 42,
-      "title": "Fix null check",
-      "fromRef": {
-        "displayId": "feature/fix-npe",
-        "repository": {"slug": "my-service", "project": {"key": "MYPROJ"}}
-      },
-      "toRef": {
-        "displayId": "main",
-        "repository": {"slug": "my-service", "project": {"key": "MYPROJ"}}
-      },
-      "author": {"user": {"name": "developer"}}
-    },
-    "comment": {"id": 123, "text": "@diffgraph /ask Is this null-safe?"}
-  }'
-# {"status":"accepted","mode":"commands","decisions":[{"command":"ask","args":"Is this null-safe?",...}]}
-```
-
-### Trace viewer
-
-Open http://localhost:8081 in browser to see run history and agent traces.
-
-## Behind nginx (reverse proxy)
-
-Deploy with path-based routing for corporate environments:
-
-```bash
-docker run -d --name diffgraph \
-  -e TRACE_BASE_PATH=/evo/traces-ui \
-  -e BITBUCKET_SERVER_BEARER_TOKEN=your-token \
-  -e LLM_BASE_URL=https://api.deepseek.com/v1 \
-  -e LLM_API_KEY=sk-your-key \
-  diffgraph
-```
-
-nginx config:
-
-```nginx
-# Webhook (no prefix needed — Bitbucket sends to this URL directly)
-location /evo/webhook {
-    proxy_pass http://diffgraph:8000/webhook;
-}
-
-# Trace viewer (with path prefix)
-location /evo/traces-ui/ {
-    proxy_pass http://diffgraph:8080/;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-}
-```
-
-Access:
-- Bitbucket webhook URL: `https://your-company.com/evo/webhook`
-- Trace viewer: `https://your-company.com/evo/traces-ui/`
-
-Without `TRACE_BASE_PATH` — all paths from root (default, no proxy needed).
 
 ## Logs
 
 ```bash
 docker logs diffgraph
-docker logs diffgraph --tail 20 -f
+docker logs diffgraph --tail 50 -f
 ```
 
 ## Stop
