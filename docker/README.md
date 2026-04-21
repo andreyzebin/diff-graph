@@ -68,6 +68,21 @@ cp /path/to/corporate-ca.crt docker/certs/
 
 All options: certs end up in `docker/certs/`, get added to the container trust store via `update-ca-certificates`. The dir is gitignored (only `.gitkeep` committed).
 
+### Mount certs at runtime (when build and run machines differ)
+
+```bash
+docker run -d --name diffgraph -p 8000:8000 -p 8080:8080 \
+  -v /path/to/ca-bundle.pem:/app/certs/ca.pem:ro \
+  -v /path/to/client.pem:/app/certs/client.pem:ro \
+  -e REQUESTS_CA_BUNDLE=/app/certs/ca.pem \
+  -e BITBUCKET_SERVER__CLIENT_CERT=/app/certs/client.pem \
+  -v $(pwd)/.env:/app/.env:ro \
+  -v diffgraph-data:/data \
+  diffgraph
+```
+
+Paths from `.env` that don't exist in the container are auto-fixed: `REQUESTS_CA_BUNDLE` falls back to the system trust store, invalid client cert paths are unset.
+
 ### Auto-detect from host (recommended for runtime)
 
 Mount the host's cert directory — entrypoint auto-detects CA bundles:
