@@ -87,12 +87,19 @@ If pip can't reach pypi.org during build:
 
 ```bash
 docker build -f docker/Dockerfile -t diffgraph \
+  --build-arg DOCKER_REGISTRY=osc.corp.com/docker.io/ \
   --build-arg PYPI_MIRROR_URL=https://mirror.corp.com/repo/pypi/simple \
   --build-arg PYPI_MIRROR_TOKEN=your-token \
   .
 ```
 
-Only the host part is added to `trusted-host`. Token is embedded in the index URL. If `PYPI_MIRROR_URL` is empty (default), standard PyPI is used.
+| Build arg | Default | Description |
+|---|---|---|
+| `DOCKER_REGISTRY` | _(empty — Docker Hub)_ | Corporate Docker registry prefix (e.g. `osc.corp.com/docker.io/`) |
+| `PYPI_MIRROR_URL` | _(empty — pypi.org)_ | Corporate PyPI mirror URL |
+| `PYPI_MIRROR_TOKEN` | _(empty)_ | Auth token for PyPI mirror |
+
+`DOCKER_REGISTRY` is prepended to `python:3.12-slim` in FROM. Must end with `/` if set. `trusted-host` extracted automatically from `PYPI_MIRROR_URL`.
 
 ## Data persistence
 

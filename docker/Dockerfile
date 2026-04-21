@@ -1,4 +1,5 @@
-FROM python:3.12-slim
+ARG DOCKER_REGISTRY=""
+FROM ${DOCKER_REGISTRY}python:3.12-slim
 
 # ── System deps ──────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
