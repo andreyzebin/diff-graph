@@ -105,7 +105,7 @@ docker build -f docker/Dockerfile -t diffgraph \
 | `PYPI_MIRROR_URL` | _(empty — pypi.org)_ | Corporate PyPI mirror URL |
 | `PYPI_MIRROR_TOKEN` | _(empty)_ | Auth token for PyPI mirror |
 
-`DOCKER_REGISTRY` is prepended to `python:3.12-slim` in FROM. Must end with `/` if set. `trusted-host` extracted automatically from `PYPI_MIRROR_URL`.
+`DOCKER_REGISTRY` is prepended to `python:3.13-slim` in FROM. Must end with `/` if set. `trusted-host` extracted automatically from `PYPI_MIRROR_URL`.
 
 ## Data persistence
 
