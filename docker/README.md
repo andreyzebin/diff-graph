@@ -219,6 +219,28 @@ All optional if `.env` and `config.local.yaml` are mounted.
 | 8000 | Webhook router — configure as Bitbucket webhook URL |
 | 8080 | Trace viewer — browse at http://localhost:8080 |
 
+## Debug mode
+
+Run with `DEBUG=1` to see SSL cert sources, paths, config details:
+
+```bash
+docker run -d --name diffgraph -p 8000:8000 -p 8080:8080 \
+  -e DEBUG=1 \
+  -v $(pwd)/.env:/app/.env:ro \
+  -v diffgraph-data:/data \
+  diffgraph
+
+docker logs diffgraph
+```
+
+Output includes:
+- Build-time certs in `/usr/local/share/ca-certificates/corp/`
+- Which CA bundle is used and its size
+- Host cert paths that were fixed or unset
+- Python SSL verify paths and truststore status
+- Final `webhook.toml` contents
+- Bitbucket token presence (not the value)
+
 ## Verify
 
 ```bash
