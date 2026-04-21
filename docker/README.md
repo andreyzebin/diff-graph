@@ -5,10 +5,16 @@ All-in-one container: webhook router (port 8000) + trace viewer (port 8080) + Di
 ## Quick start
 
 ```bash
-# Build from repo root
-docker build -f docker/Dockerfile -t diffgraph .
+source .env
 
-# Run with your .env and config
+# Build (picks up DOCKER_REGISTRY, PYPI_MIRROR_URL from .env if set)
+docker build -f docker/Dockerfile -t diffgraph \
+  --build-arg DOCKER_REGISTRY=${DOCKER_REGISTRY:-} \
+  --build-arg PYPI_MIRROR_URL=${PYPI_MIRROR_URL:-} \
+  --build-arg PYPI_MIRROR_TOKEN=${PYPI_MIRROR_TOKEN:-} \
+  .
+
+# Run
 docker run -d --name diffgraph -p 8000:8000 -p 8080:8080 \
   -v $(pwd)/.env:/app/.env:ro \
   -v $(pwd)/config.local.yaml:/app/config.local.yaml:ro \
@@ -16,7 +22,7 @@ docker run -d --name diffgraph -p 8000:8000 -p 8080:8080 \
   diffgraph
 ```
 
-That's it. `.env` provides Bitbucket token and API keys, `config.local.yaml` provides LLM settings. Traces persist in the `diffgraph-data` volume.
+One `source .env` — same file for build and run. Build args pick up `DOCKER_REGISTRY` and `PYPI_MIRROR_URL` if set, skip if empty. Container sources `.env` at startup for runtime vars (tokens, API keys).
 
 ## With .env and config.local.yaml (recommended)
 
