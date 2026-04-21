@@ -2,8 +2,7 @@ ARG DOCKER_REGISTRY=""
 FROM ${DOCKER_REGISTRY}python:3.13-slim
 
 # ── System deps ──────────────────────────────────────────
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git grep curl ca-certificates && \
+RUN apt-get update && apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 
 # ── Corporate PyPI mirror (optional, via build arg) ──────
