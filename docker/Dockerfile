@@ -2,8 +2,9 @@ ARG DOCKER_REGISTRY=""
 FROM ${DOCKER_REGISTRY}python:3.13-slim
 
 # ── Corporate CA bundle (optional, for APT/pip SSL during build) ────
-# Drop .crt/.pem files into docker/certs/ before building.
-# Dir always exists (has .gitkeep). Your cert files are gitignored.
+# Drop .crt/.pem files into docker/certs/ before building, OR
+# set BUILD_CERTS_DIR in .env to copy from a host directory.
+# See build command below — it copies certs into docker/certs/ first.
 COPY docker/certs/ /usr/local/share/ca-certificates/corp/
 RUN update-ca-certificates 2>/dev/null || true
 

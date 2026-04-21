@@ -7,6 +7,10 @@ All-in-one container: webhook router (port 8000) + trace viewer (port 8080) + Di
 ```bash
 source .env
 
+# Copy certs from BUILD_CERTS_DIR if set in .env (or from REQUESTS_CA_BUNDLE)
+[ -n "${BUILD_CERTS_DIR:-}" ] && cp -f "$BUILD_CERTS_DIR"/*.crt "$BUILD_CERTS_DIR"/*.pem docker/certs/ 2>/dev/null || true
+[ -n "${REQUESTS_CA_BUNDLE:-}" ] && cp -f "$REQUESTS_CA_BUNDLE" docker/certs/ 2>/dev/null || true
+
 # Build (picks up corporate mirrors from .env if set)
 docker build -f docker/Dockerfile -t diffgraph \
   --build-arg DOCKER_REGISTRY=${DOCKER_REGISTRY:-} \
@@ -44,14 +48,26 @@ If `config.local.yaml` is mounted, it's used as-is. Otherwise generated from env
 
 ### At build time (for APT/pip SSL during build)
 
-If your corporate mirrors use custom TLS, drop CA certs into `docker/certs/` before building:
+If your corporate mirrors use custom TLS, two options:
+
+**Option 1** — set `BUILD_CERTS_DIR` in `.env` pointing to a host directory with `.crt`/`.pem` files:
+
+```bash
+# In .env:
+export BUILD_CERTS_DIR=/etc/pki/ca-trust/extracted/pem
+```
+
+The build command copies them into `docker/certs/` automatically before building.
+
+**Option 2** — if `REQUESTS_CA_BUNDLE` is set in `.env`, it's also copied into `docker/certs/`.
+
+**Option 3** — manually copy certs:
 
 ```bash
 cp /path/to/corporate-ca.crt docker/certs/
-docker build -f docker/Dockerfile -t diffgraph ...
 ```
 
-The certs are added to the container's trust store via `update-ca-certificates`. The `docker/certs/` dir is gitignored (only `.gitkeep` is committed).
+All options: certs end up in `docker/certs/`, get added to the container trust store via `update-ca-certificates`. The dir is gitignored (only `.gitkeep` committed).
 
 ### Auto-detect from host (recommended for runtime)
 
