@@ -2,6 +2,23 @@
 
 Multi-agent PR code reviewer powered by the **Orchestra** framework. All agents defined by `.prompt` files — hierarchy, behavior, and data flow controlled entirely by prompts.
 
+## Contents
+
+- [Quickstart](#quickstart)
+- [Configuration](#configuration)
+  - [Git authentication](#git-authentication)
+  - [Corporate TLS](#corporate-tls)
+  - [Mutual TLS (client certificate)](#mutual-tls-client-certificate)
+- [CLI](#cli)
+- [How it works](#how-it-works)
+  - [Agents](#agents)
+  - [Data flow: from:tool.field](#data-flow-fromtoolfield)
+  - [Guards](#guards)
+  - [Three-phase review](#three-phase-review-methodology)
+- [Orchestra Framework](#orchestra-framework)
+- [Architecture](#architecture)
+- [Docker](docker/README.md)
+
 ```
 PR comment / event
       |
@@ -121,7 +138,47 @@ Some LiteLLM-proxied models (e.g. `Qwen3-Coder-480B`) don't support `tool_choice
 
 ### Corporate TLS
 
-DiffGraph uses [truststore](https://pypi.org/project/truststore/) to automatically pick up OS-level CA certificates. `--no-verify-ssl` as a quick workaround.
+DiffGraph uses [truststore](https://pypi.org/project/truststore/) to automatically pick up OS-level CA certificates (corporate VPN, proxy CAs). No manual CA bundle needed in most cases.
+
+If still failing — `--no-verify-ssl` as a quick workaround.
+
+### Mutual TLS (client certificate)
+
+Some corporate Bitbucket instances require a client certificate (mTLS). DiffGraph needs a PEM file.
+
+**Convert P12 to PEM:**
+
+```bash
+openssl pkcs12 -in client.p12 -out client.pem -nodes -passin pass:YOUR_PASSWORD
+chmod 600 client.pem
+```
+
+Then set in `.env`:
+
+```bash
+export BITBUCKET_SERVER_CLIENT_CERT=/path/to/client.pem
+```
+
+**Find client certificate on Windows:**
+
+1. Open `certmgr.msc` (Win+R → `certmgr.msc`)
+2. Go to **Personal → Certificates**
+3. Find your corporate certificate (usually issued by your company's CA)
+4. Right-click → **All Tasks → Export...**
+5. Select **Yes, export the private key**
+6. Choose **PKCS #12 (.PFX)** format, set a password
+7. Save as `client.p12`
+8. Convert to PEM with the command above
+
+**Find client certificate on macOS:**
+
+1. Open **Keychain Access**
+2. Category: **My Certificates**
+3. Find the corporate certificate, right-click → **Export...**
+4. Save as `.p12`, set a password
+5. Convert to PEM
+
+**Linux** — client certs are usually at `/etc/pki/tls/certs/` or provided by your admin as `.p12`/`.pem` files.
 
 ---
 
