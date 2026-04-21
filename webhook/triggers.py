@@ -23,6 +23,19 @@ from .bitbucket import PRMeta, CommandRequest
 log = logging.getLogger(__name__)
 
 
+def _get_ssl_context():
+    """Create SSL context using OS trust store + optional CA/client certs."""
+    import ssl
+    ctx = ssl.create_default_context()
+    ca = os.environ.get("REQUESTS_CA_BUNDLE")
+    if ca:
+        ctx.load_verify_locations(ca)
+    client_cert = os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
+    if client_cert:
+        ctx.load_cert_chain(client_cert)
+    return ctx
+
+
 async def trigger_agent(
     agent: AgentConfig, pr: PRMeta, cmd: CommandRequest,
     raw_event: dict | None = None,
@@ -131,9 +144,10 @@ async def _trigger_http(agent: AgentConfig, pr: PRMeta, cmd: CommandRequest) -> 
         headers["Authorization"] = f"Bearer {agent.api_key}"
 
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    ssl_ctx = _get_ssl_context()
 
     try:
-        with urllib.request.urlopen(req, timeout=agent.timeout) as resp:
+        with urllib.request.urlopen(req, timeout=agent.timeout, context=ssl_ctx) as resp:
             return f"agent {agent.name} responded {resp.status}"
     except Exception as exc:
         msg = f"agent {agent.name} http error: {exc}"
@@ -159,9 +173,10 @@ async def _trigger_webhook(agent: AgentConfig, raw_event: dict | None) -> str:
     log.info("forward webhook [%s]: %s", agent.name, url)
 
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    ssl_ctx = _get_ssl_context()
 
     try:
-        with urllib.request.urlopen(req, timeout=agent.timeout) as resp:
+        with urllib.request.urlopen(req, timeout=agent.timeout, context=ssl_ctx) as resp:
             return f"agent {agent.name} webhook forwarded ({resp.status})"
     except Exception as exc:
         msg = f"agent {agent.name} webhook forward error: {exc}"

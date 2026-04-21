@@ -1,6 +1,13 @@
 """
 Run the webhook server: python -m webhook --config webhook.toml
 """
+# Use OS trust store for SSL — picks up corporate CA certificates
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 import argparse
 import logging
 import uvicorn
