@@ -132,7 +132,7 @@ docker build -f docker/Dockerfile -t diffgraph \
 | `PYPI_MIRROR_URL` | _(empty — pypi.org)_ | Corporate PyPI mirror URL |
 | `PYPI_MIRROR_TOKEN` | _(empty)_ | Auth token for PyPI mirror |
 
-`DOCKER_REGISTRY` prepended to `python:3.12-slim` in FROM (must end with `/`).
+`DOCKER_REGISTRY` prepended to `python:3.13-slim` in FROM (must end with `/`).
 `APT_MIRROR_URL` optional — default Debian repos work if Docker build has internet. Token embedded in URL.
 `trusted-host` extracted automatically from `PYPI_MIRROR_URL`.
 Alpine uses its own package manager (`apk`) which works without corporate mirrors.

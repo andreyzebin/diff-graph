@@ -1,5 +1,5 @@
 ARG DOCKER_REGISTRY=""
-FROM ${DOCKER_REGISTRY}python:3.12-slim
+FROM ${DOCKER_REGISTRY}python:3.13-slim
 
 # ── Corporate CA bundle (optional, for pip SSL during build) ─
 COPY docker/certs/ /usr/local/share/ca-certificates/corp/
