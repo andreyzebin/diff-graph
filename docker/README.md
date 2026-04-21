@@ -14,8 +14,6 @@ source .env
 # Build (picks up corporate mirrors from .env if set)
 docker build -f docker/Dockerfile -t diffgraph \
   --build-arg DOCKER_REGISTRY=${DOCKER_REGISTRY:-} \
-  --build-arg APT_MIRROR_URL=${APT_MIRROR_URL:-} \
-  --build-arg APT_MIRROR_TOKEN=${APT_MIRROR_TOKEN:-} \
   --build-arg PYPI_MIRROR_URL=${PYPI_MIRROR_URL:-} \
   --build-arg PYPI_MIRROR_TOKEN=${PYPI_MIRROR_TOKEN:-} \
   .
@@ -123,8 +121,6 @@ If pip can't reach pypi.org during build:
 ```bash
 docker build -f docker/Dockerfile -t diffgraph \
   --build-arg DOCKER_REGISTRY=osc.corp.com/docker.io/ \
-  --build-arg APT_MIRROR_URL=http://mirror.corp.com/repo/debian/debian_yandex \
-  --build-arg APT_MIRROR_TOKEN=your-token \
   --build-arg PYPI_MIRROR_URL=https://mirror.corp.com/repo/pypi/simple \
   --build-arg PYPI_MIRROR_TOKEN=your-token \
   .
@@ -133,13 +129,12 @@ docker build -f docker/Dockerfile -t diffgraph \
 | Build arg | Default | Description |
 |---|---|---|
 | `DOCKER_REGISTRY` | _(empty — Docker Hub)_ | Corporate Docker registry prefix (e.g. `osc.corp.com/docker.io/`) |
-| `APT_MIRROR_URL` | _(empty — default Debian)_ | Corporate APT mirror base URL. Codename auto-detected from base image. |
-| `APT_MIRROR_TOKEN` | _(empty)_ | Auth token for APT mirror (written to `/etc/apt/auth.conf.d/`) |
 | `PYPI_MIRROR_URL` | _(empty — pypi.org)_ | Corporate PyPI mirror URL |
 | `PYPI_MIRROR_TOKEN` | _(empty)_ | Auth token for PyPI mirror |
 
-`DOCKER_REGISTRY` prepended to `python:3.13-slim` in FROM (must end with `/`).
-`APT_MIRROR_URL` generates `sources.list` with `[trusted=yes]`, codename from `/etc/os-release` (e.g. `bookworm`). Security repo appends `_security` to the base URL.
+`DOCKER_REGISTRY` prepended to `python:3.12-alpine` in FROM (must end with `/`).
+`DOCKER_REGISTRY` prepended to `python:3.12-alpine` in FROM (must end with `/`).
+Alpine uses its own package manager (`apk`) which works without corporate mirrors.
 `trusted-host` extracted automatically from `PYPI_MIRROR_URL`.
 
 ## Data persistence

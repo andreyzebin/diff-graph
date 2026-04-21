@@ -1,46 +1,16 @@
 ARG DOCKER_REGISTRY=""
-FROM ${DOCKER_REGISTRY}python:3.13-slim
+FROM ${DOCKER_REGISTRY}python:3.12-alpine
 
-# ── Corporate CA bundle (optional, for APT/pip SSL during build) ────
-# Drop .crt/.pem files into docker/certs/ before building, OR
-# set BUILD_CERTS_DIR in .env to copy from a host directory.
-# See build command below — it copies certs into docker/certs/ first.
+# ── System deps (alpine apk — no corporate mirror needed) ───
+RUN apk add --no-cache git bash
+
+# ── Corporate CA bundle (optional, for pip SSL during build) ─
+# Drop .crt/.pem files into docker/certs/ before building.
 COPY docker/certs/ /usr/local/share/ca-certificates/corp/
 RUN chmod -R 644 /usr/local/share/ca-certificates/corp/* 2>/dev/null || true
 RUN update-ca-certificates 2>/dev/null || true
 
-# ── Corporate APT mirror (optional) ─────────────────────
-# APT_MIRROR_URL: base URL like http://mirror.corp.com/repo/debian/debian_yandex
-# Codename auto-detected from the base image (bookworm for python:3.13-slim)
-ARG APT_MIRROR_URL=""
-ARG APT_MIRROR_TOKEN=""
-RUN if [ -n "$APT_MIRROR_URL" ]; then \
-      CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME"); \
-      MIRROR_HOST=$(echo "$APT_MIRROR_URL" | sed 's|https\?://||; s|/.*||'); \
-      if [ -n "$APT_MIRROR_TOKEN" ]; then \
-        mkdir -p /etc/apt/auth.conf.d; \
-        echo "machine ${MIRROR_HOST} login token password ${APT_MIRROR_TOKEN}" > /etc/apt/auth.conf.d/corp.conf; \
-      fi; \
-      CLIENT_CERT=$(ls /usr/local/share/ca-certificates/corp/client.pem 2>/dev/null || true); \
-      if [ -n "$CLIENT_CERT" ]; then \
-        echo "Acquire::https::${MIRROR_HOST}::SslCert \"${CLIENT_CERT}\";" > /etc/apt/apt.conf.d/99client-cert; \
-        echo "APT mTLS: using ${CLIENT_CERT}"; \
-      fi; \
-      rm -f /etc/apt/sources.list.d/*; \
-      echo "deb [allow-insecure=yes] ${APT_MIRROR_URL} ${CODENAME} main" > /etc/apt/sources.list; \
-      echo "deb [allow-insecure=yes] ${APT_MIRROR_URL} ${CODENAME}-updates main contrib" >> /etc/apt/sources.list; \
-      echo "deb [allow-insecure=yes] ${APT_MIRROR_URL}_security ${CODENAME}-security main contrib" >> /etc/apt/sources.list; \
-      echo 'Acquire::AllowInsecureRepositories "true";' > /etc/apt/apt.conf.d/99allow-insecure; \
-      cat /etc/apt/sources.list; \
-    fi
-
-# ── System deps ──────────────────────────────────────────
-RUN apt-get update && apt-get install -y --no-install-recommends git && \
-    rm -rf /var/lib/apt/lists/*
-
-# ── Corporate PyPI mirror (optional, via build arg) ──────
-# PYPI_MIRROR_URL: full URL like https://mirror.corp.com/repo/pypi/simple
-# PYPI_MIRROR_TOKEN: token for auth (optional)
+# ── Corporate PyPI mirror (optional, via build arg) ──────────
 ARG PYPI_MIRROR_URL=""
 ARG PYPI_MIRROR_TOKEN=""
 RUN if [ -n "$PYPI_MIRROR_URL" ]; then \
@@ -56,11 +26,11 @@ RUN if [ -n "$PYPI_MIRROR_URL" ]; then \
 
 WORKDIR /app
 
-# ── Install deps (cached layer) ─────────────────────────
+# ── Install deps (cached layer) ─────────────────────────────
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ── Copy app ─────────────────────────────────────────────
+# ── Copy app ─────────────────────────────────────────────────
 COPY . .
 COPY docker/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
