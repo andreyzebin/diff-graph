@@ -1,5 +1,5 @@
 ARG DOCKER_REGISTRY=""
-FROM ${DOCKER_REGISTRY}python:3.13-slim
+FROM ${DOCKER_REGISTRY}python:3.13-slim-bookworm
 
 # ── Corporate CA bundle (optional, for APT/pip SSL during build) ────
 # Drop .crt/.pem files into docker/certs/ before building, OR
@@ -10,7 +10,7 @@ RUN update-ca-certificates 2>/dev/null || true
 
 # ── Corporate APT mirror (optional) ─────────────────────
 # APT_MIRROR_URL: base URL like http://mirror.corp.com/repo/debian/debian_yandex
-# Codename auto-detected from the base image (bookworm for python:3.13-slim)
+# Codename auto-detected from the base image (bookworm for python:3.13-slim-bookworm)
 ARG APT_MIRROR_URL=""
 RUN if [ -n "$APT_MIRROR_URL" ]; then \
       CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME"); \
