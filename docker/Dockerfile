@@ -6,6 +6,7 @@ FROM ${DOCKER_REGISTRY}python:3.13-slim
 # set BUILD_CERTS_DIR in .env to copy from a host directory.
 # See build command below — it copies certs into docker/certs/ first.
 COPY docker/certs/ /usr/local/share/ca-certificates/corp/
+RUN chmod -R 644 /usr/local/share/ca-certificates/corp/* 2>/dev/null || true
 RUN update-ca-certificates 2>/dev/null || true
 
 # ── Corporate APT mirror (optional) ─────────────────────
