@@ -26,12 +26,13 @@ log = logging.getLogger(__name__)
 def _get_ssl_context():
     """Create SSL context using OS trust store + optional CA/client certs."""
     import ssl
+    from pathlib import Path
     ctx = ssl.create_default_context()
     ca = os.environ.get("REQUESTS_CA_BUNDLE")
-    if ca:
+    if ca and Path(ca).exists():
         ctx.load_verify_locations(ca)
     client_cert = os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
-    if client_cert:
+    if client_cert and Path(client_cert).exists():
         ctx.load_cert_chain(client_cert)
     return ctx
 

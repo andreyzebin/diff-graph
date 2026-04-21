@@ -29,8 +29,13 @@ if [[ -z "$REQUESTS_CA_BUNDLE" && -d "/host-certs" ]]; then
     update-ca-certificates 2>/dev/null || true
 fi
 
+if [[ -n "$REQUESTS_CA_BUNDLE" && ! -f "$REQUESTS_CA_BUNDLE" ]]; then
+    # Path from .env doesn't exist in container — use system bundle
+    echo "CA bundle: $REQUESTS_CA_BUNDLE not found, using /etc/ssl/certs/ca-certificates.crt"
+    export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+fi
+
 if [[ -n "$REQUESTS_CA_BUNDLE" ]]; then
-    # Make sure Python/curl/git all use it
     export SSL_CERT_FILE="${REQUESTS_CA_BUNDLE}"
     export CURL_CA_BUNDLE="${REQUESTS_CA_BUNDLE}"
     echo "CA bundle: $REQUESTS_CA_BUNDLE"
@@ -40,6 +45,15 @@ if [[ -n "$BB_CLIENT_CERT_B64" && -z "$BITBUCKET_SERVER_CLIENT_CERT" ]]; then
     echo "$BB_CLIENT_CERT_B64" | base64 -d > /app/certs/client.pem
     export BITBUCKET_SERVER_CLIENT_CERT=/app/certs/client.pem
 fi
+
+# Fix client cert path from .env that doesn't exist in container
+for var in BITBUCKET_SERVER_CLIENT_CERT BITBUCKET_SERVER__CLIENT_CERT; do
+    val="${!var}"
+    if [[ -n "$val" && ! -f "$val" ]]; then
+        echo "Warning: $var=$val not found in container, unsetting"
+        unset "$var"
+    fi
+done
 
 # ── Config: use mounted files or generate from env ───────────────────
 # .env: sourced if mounted
