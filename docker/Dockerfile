@@ -1,6 +1,18 @@
 ARG DOCKER_REGISTRY=""
 FROM ${DOCKER_REGISTRY}python:3.13-slim
 
+# ── Corporate APT mirror (optional) ─────────────────────
+# APT_MIRROR_URL: base URL like http://mirror.corp.com/repo/debian/debian_yandex
+# Codename auto-detected from the base image (bookworm for python:3.13-slim)
+ARG APT_MIRROR_URL=""
+RUN if [ -n "$APT_MIRROR_URL" ]; then \
+      CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME"); \
+      rm -f /etc/apt/sources.list.d/*; \
+      echo "deb [trusted=yes] ${APT_MIRROR_URL} ${CODENAME} main" > /etc/apt/sources.list; \
+      echo "deb [trusted=yes] ${APT_MIRROR_URL} ${CODENAME}-updates main contrib" >> /etc/apt/sources.list; \
+      echo "deb [trusted=yes] ${APT_MIRROR_URL}_security ${CODENAME}-security main contrib" >> /etc/apt/sources.list; \
+    fi
+
 # ── System deps ──────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
