@@ -1,0 +1,6 @@
+*.crt
+*.pem
+*.p12
+*.pfx
+!.gitkeep
+!.gitignore

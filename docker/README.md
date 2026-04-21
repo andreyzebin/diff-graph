@@ -42,7 +42,18 @@ If `config.local.yaml` is mounted, it's used as-is. Otherwise generated from env
 
 ## SSL certificates
 
-### Auto-detect from host (recommended for corporate)
+### At build time (for APT/pip SSL during build)
+
+If your corporate mirrors use custom TLS, drop CA certs into `docker/certs/` before building:
+
+```bash
+cp /path/to/corporate-ca.crt docker/certs/
+docker build -f docker/Dockerfile -t diffgraph ...
+```
+
+The certs are added to the container's trust store via `update-ca-certificates`. The `docker/certs/` dir is gitignored (only `.gitkeep` is committed).
+
+### Auto-detect from host (recommended for runtime)
 
 Mount the host's cert directory — entrypoint auto-detects CA bundles:
 

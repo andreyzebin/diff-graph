@@ -1,6 +1,12 @@
 ARG DOCKER_REGISTRY=""
 FROM ${DOCKER_REGISTRY}python:3.13-slim
 
+# ── Corporate CA bundle (optional, for APT/pip SSL during build) ────
+# Drop .crt/.pem files into docker/certs/ before building.
+# Dir always exists (has .gitkeep). Your cert files are gitignored.
+COPY docker/certs/ /usr/local/share/ca-certificates/corp/
+RUN update-ca-certificates 2>/dev/null || true
+
 # ── Corporate APT mirror (optional) ─────────────────────
 # APT_MIRROR_URL: base URL like http://mirror.corp.com/repo/debian/debian_yandex
 # Codename auto-detected from the base image (bookworm for python:3.13-slim)
