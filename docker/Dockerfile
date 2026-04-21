@@ -16,14 +16,14 @@ ARG APT_MIRROR_TOKEN=""
 RUN if [ -n "$APT_MIRROR_URL" ]; then \
       CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME"); \
       MIRROR_HOST=$(echo "$APT_MIRROR_URL" | sed 's|https\?://||; s|/.*||'); \
-      rm -f /etc/apt/sources.list.d/*; \
-      echo "deb [trusted=yes] ${APT_MIRROR_URL} ${CODENAME} main" > /etc/apt/sources.list; \
-      echo "deb [trusted=yes] ${APT_MIRROR_URL} ${CODENAME}-updates main contrib" >> /etc/apt/sources.list; \
-      echo "deb [trusted=yes] ${APT_MIRROR_URL}_security ${CODENAME}-security main contrib" >> /etc/apt/sources.list; \
       if [ -n "$APT_MIRROR_TOKEN" ]; then \
         mkdir -p /etc/apt/auth.conf.d; \
         echo "machine ${MIRROR_HOST} login token password ${APT_MIRROR_TOKEN}" > /etc/apt/auth.conf.d/corp.conf; \
       fi; \
+      rm -f /etc/apt/sources.list.d/*; \
+      echo "deb ${APT_MIRROR_URL} ${CODENAME} main" > /etc/apt/sources.list; \
+      echo "deb ${APT_MIRROR_URL} ${CODENAME}-updates main contrib" >> /etc/apt/sources.list; \
+      echo "deb ${APT_MIRROR_URL}_security ${CODENAME}-security main contrib" >> /etc/apt/sources.list; \
     fi
 
 # ── System deps ──────────────────────────────────────────
