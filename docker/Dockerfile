@@ -20,6 +20,11 @@ RUN if [ -n "$APT_MIRROR_URL" ]; then \
         mkdir -p /etc/apt/auth.conf.d; \
         echo "machine ${MIRROR_HOST} login token password ${APT_MIRROR_TOKEN}" > /etc/apt/auth.conf.d/corp.conf; \
       fi; \
+      CLIENT_CERT=$(ls /usr/local/share/ca-certificates/corp/client.pem 2>/dev/null || true); \
+      if [ -n "$CLIENT_CERT" ]; then \
+        echo "Acquire::https::${MIRROR_HOST}::SslCert \"${CLIENT_CERT}\";" > /etc/apt/apt.conf.d/99client-cert; \
+        echo "APT mTLS: using ${CLIENT_CERT}"; \
+      fi; \
       rm -f /etc/apt/sources.list.d/*; \
       echo "deb [allow-insecure=yes] ${APT_MIRROR_URL} ${CODENAME} main" > /etc/apt/sources.list; \
       echo "deb [allow-insecure=yes] ${APT_MIRROR_URL} ${CODENAME}-updates main contrib" >> /etc/apt/sources.list; \
