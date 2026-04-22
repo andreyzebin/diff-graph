@@ -3,8 +3,28 @@ FROM ${DOCKER_REGISTRY}python:3.13-slim
 
 # ── Corporate CA bundle (optional, for pip SSL during build) ─
 COPY docker/certs/ /usr/local/share/ca-certificates/corp/
+RUN echo "=== docker/certs/ contents ===" && \
+    ls -la /usr/local/share/ca-certificates/corp/ && \
+    echo "=== cert fingerprints ===" && \
+    for f in /usr/local/share/ca-certificates/corp/*.crt /usr/local/share/ca-certificates/corp/*.pem; do \
+      [ -f "$f" ] && echo "-- $f --" && \
+      openssl x509 -in "$f" -noout -subject -issuer 2>/dev/null || \
+      (echo "(bundle, scanning...)" && awk '/BEGIN CERT/,/END CERT/' "$f" | openssl x509 -noout -subject -issuer 2>/dev/null | head -20); \
+    done || true
 RUN chmod -R 644 /usr/local/share/ca-certificates/corp/* 2>/dev/null || true
-RUN update-ca-certificates 2>/dev/null || true
+RUN echo "=== /etc/ssl/certs/ca-certificates.crt BEFORE update: $(wc -c < /etc/ssl/certs/ca-certificates.crt) bytes ===" && \
+    echo "=== /usr/lib/ssl/cert.pem BEFORE: $(wc -c < /usr/lib/ssl/cert.pem 2>/dev/null || echo missing) bytes ===" && \
+    update-ca-certificates && \
+    echo "=== /etc/ssl/certs/ca-certificates.crt AFTER update: $(wc -c < /etc/ssl/certs/ca-certificates.crt) bytes ===" && \
+    echo "=== /usr/lib/ssl/cert.pem AFTER: $(wc -c < /usr/lib/ssl/cert.pem 2>/dev/null || echo missing) bytes ==="
+# Python reads /usr/lib/ssl/cert.pem by default, which update-ca-certificates
+# does NOT touch on Debian. Mirror corp CAs there too so Python trusts them
+# even without REQUESTS_CA_BUNDLE set.
+RUN if ls /usr/local/share/ca-certificates/corp/*.crt /usr/local/share/ca-certificates/corp/*.pem >/dev/null 2>&1; then \
+      echo "=== Appending corp certs to /usr/lib/ssl/cert.pem ==="; \
+      cat /usr/local/share/ca-certificates/corp/*.crt /usr/local/share/ca-certificates/corp/*.pem 2>/dev/null >> /usr/lib/ssl/cert.pem || true; \
+      echo "=== /usr/lib/ssl/cert.pem FINAL: $(wc -c < /usr/lib/ssl/cert.pem) bytes ==="; \
+    fi
 
 # ── System deps ──────────────────────────────────────────────
 # git is the only system dep. If apt is blocked by corporate firewall,
