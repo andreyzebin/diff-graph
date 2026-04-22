@@ -57,6 +57,14 @@ if [[ -n "$REQUESTS_CA_BUNDLE" && ! -f "$REQUESTS_CA_BUNDLE" ]]; then
     export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 fi
 
+# Default to the system bundle that update-ca-certificates writes to.
+# Python on python:3.13-slim reads /usr/lib/ssl/cert.pem by default, which
+# does NOT contain corp CAs added at build time.
+if [[ -z "$REQUESTS_CA_BUNDLE" && -f /etc/ssl/certs/ca-certificates.crt ]]; then
+    export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+    dbg "REQUESTS_CA_BUNDLE defaulted to /etc/ssl/certs/ca-certificates.crt"
+fi
+
 if [[ -n "$REQUESTS_CA_BUNDLE" ]]; then
     export SSL_CERT_FILE="${REQUESTS_CA_BUNDLE}"
     export CURL_CA_BUNDLE="${REQUESTS_CA_BUNDLE}"
