@@ -17,14 +17,16 @@ RUN echo "=== /etc/ssl/certs/ca-certificates.crt BEFORE update: $(wc -c < /etc/s
     update-ca-certificates && \
     echo "=== /etc/ssl/certs/ca-certificates.crt AFTER update: $(wc -c < /etc/ssl/certs/ca-certificates.crt) bytes ===" && \
     echo "=== /usr/lib/ssl/cert.pem AFTER: $(wc -c < /usr/lib/ssl/cert.pem 2>/dev/null || echo missing) bytes ==="
-# Python reads /usr/lib/ssl/cert.pem by default, which update-ca-certificates
-# does NOT touch on Debian. Mirror corp CAs there too so Python trusts them
-# even without REQUESTS_CA_BUNDLE set.
-RUN if ls /usr/local/share/ca-certificates/corp/*.crt /usr/local/share/ca-certificates/corp/*.pem >/dev/null 2>&1; then \
-      echo "=== Appending corp certs to /usr/lib/ssl/cert.pem ==="; \
-      cat /usr/local/share/ca-certificates/corp/*.crt /usr/local/share/ca-certificates/corp/*.pem 2>/dev/null >> /usr/lib/ssl/cert.pem || true; \
-      echo "=== /usr/lib/ssl/cert.pem FINAL: $(wc -c < /usr/lib/ssl/cert.pem) bytes ==="; \
-    fi
+# Verify: /usr/lib/ssl/cert.pem is a symlink to /etc/ssl/certs/ca-certificates.crt
+# on Debian, so update-ca-certificates updates both. Print proof.
+RUN echo "=== /usr/lib/ssl/cert.pem:" && ls -la /usr/lib/ssl/cert.pem && \
+    echo "=== /etc/ssl/certs/ca-certificates.crt:" && ls -la /etc/ssl/certs/ca-certificates.crt && \
+    echo "=== corp CA subjects present in final bundle ===" && \
+    awk '/BEGIN CERT/,/END CERT/' /usr/lib/ssl/cert.pem | \
+      openssl crl2pkcs7 -nocrl -certfile /dev/stdin 2>/dev/null | \
+      openssl pkcs7 -print_certs -noout 2>/dev/null | \
+      grep -E "^(subject|issuer)" | grep -i "cplsb\|corp\|sber" || \
+    echo "  (no corp CA subjects found — bundle may be incomplete)"
 
 # ── System deps ──────────────────────────────────────────────
 # git is the only system dep. If apt is blocked by corporate firewall,
