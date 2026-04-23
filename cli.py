@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import os
+# Force UTF-8 mode (fixes Windows cp1251 issues with redirect to file)
+os.environ.setdefault("PYTHONUTF8", "1")
+
+# Use OS trust store for SSL (picks up corporate proxy CAs like CheckPoint, Zscaler)
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 import asyncio
 import datetime
-import os
 import sys
 from pathlib import Path
 from typing import Optional
