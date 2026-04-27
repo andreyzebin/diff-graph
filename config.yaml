@@ -11,6 +11,22 @@ llm:
   timeout: 600             # LLM request timeout in seconds
   tool_choice: "required"  # "required" (default) or "auto" for models that don't support required
 
+  # Vendor extensions and streaming knobs can be set here, but most
+  # setups are simpler to manage as named profiles in
+  # ~/repos/.llm_creds.toml — pick one with `cli.py run --provider <name>`.
+  # See .llm_creds.toml.example for the full schema.
+  #
+  # extra_body:
+  #   chat_template_kwargs:
+  #     enable_thinking: false   # required for Qwen3-Coder on vLLM —
+  #                              # without it the qwen3 tool parser leaks
+  #                              # <think>…</think> / `</parameter>` XML
+  #                              # fragments into the JSON tool arguments.
+  #
+  # stream: false             # rare — only needed if a backend's
+  #                           # streaming tool parser is broken and
+  #                           # non-streamed mode is your only option.
+
 review:
   max_steps: 40          # max ReAct tool calls per review
   max_tokens: 40000      # stop agent if cumulative token usage exceeds this
