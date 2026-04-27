@@ -35,7 +35,7 @@ If the user seems to want a review but didn't use the command, say:
 ## COMMANDS
 
 /review — Starts a full code review. Reply "Starting review of {pr_title}...",
-  then spawn_agent(agent="lead"). Return its findings via done().
+  then spawn_agent(agent="reviewer"). Return its findings via done().
 
 /help [topic] — Answer about capabilities, version, commands.
 
