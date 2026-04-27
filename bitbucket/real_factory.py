@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 
 from atlassian import Bitbucket
+
+log = logging.getLogger(__name__)
 
 from .base import (
     AgentPRViewFactory, AgentPRView, CommentAnchor, CommentThread, ReviewStatus,
@@ -58,14 +61,37 @@ class RealBitbucketPRProxy(AgentPRView):
     # ── AgentPRView interface ──────────────────────────────────────────
 
     async def close(self) -> None:
+        log.info("declining PR #%d (%s/%s)", self._pr_id, self._project, self._repo)
         pr = await self._run(
             self._client.get_pull_request, self._project, self._repo, self._pr_id
         )
         version = (pr or {}).get("version", 0)
-        await self._run(
-            self._client.decline_pull_request,
-            self._project, self._repo, self._pr_id, version,
+        # atlassian-python-api's decline_pull_request silently 403s on Bitbucket
+        # Server when the request lacks `X-Atlassian-Token: no-check` (XSRF
+        # protection). Hit the REST endpoint directly and check the response so
+        # a failure becomes a real exception, not a phantom "PR auto-closed".
+        await self._run(self._decline_via_rest, self._pr_id, version)
+        log.info("PR #%d declined", self._pr_id)
+
+    def _decline_via_rest(self, pr_id: int, version: int) -> None:
+        # Go through atlassian-python-api's request layer so verify/cert
+        # configured on the client (corp CA + mTLS) are applied. Calling
+        # self._client._session.post directly skipped both, so the request
+        # silently failed on corporate Bitbucket Server installs.
+        path = (
+            f"rest/api/1.0/projects/{self._project}"
+            f"/repos/{self._repo}/pull-requests/{pr_id}/decline"
         )
+        resp = self._client.post(
+            path,
+            params={"version": version},
+            headers={"X-Atlassian-Token": "no-check"},
+            advanced_mode=True,   # return raw Response so we can check status
+        )
+        if resp.status_code >= 400:
+            raise ProviderError(
+                f"decline PR #{pr_id} failed: HTTP {resp.status_code} {resp.text[:200]}"
+            )
 
     async def get_comments(self) -> list[CommentThread]:
         """Return comments posted by the agent account only."""

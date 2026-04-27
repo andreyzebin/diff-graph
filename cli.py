@@ -355,25 +355,52 @@ async def _run_async(
                 os.environ["DIFFGRAPH_TRACE_PATH"] = str(agent_dir)
 
             bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
-            proxy = await build_proxy(bb_cfg)
+            # Wrap the whole iteration so a failure in build_proxy / agent /
+            # judge / decline does NOT abort the matrix — record an "error"
+            # result and move on to the next provider/scenario.
+            result = None
+            proxy = None
             try:
-                async with proxy:
-                    judge = LLMJudge(
-                        llm_client, proxy,
-                        judge_dir=judge_dir,
-                        model=judge_cfg.get("model", ""),
-                    )
-                    result = await run_scenario(
-                        scenario=s,
-                        proxy=proxy,
-                        trigger=trigger,
-                        judge=judge,
-                    )
-            finally:
-                if saved_path is None:
-                    os.environ.pop("DIFFGRAPH_TRACE_PATH", None)
-                else:
-                    os.environ["DIFFGRAPH_TRACE_PATH"] = saved_path
+                proxy = await build_proxy(bb_cfg)
+                try:
+                    async with proxy:
+                        judge = LLMJudge(
+                            llm_client, proxy,
+                            judge_dir=judge_dir,
+                            model=judge_cfg.get("model", ""),
+                        )
+                        result = await run_scenario(
+                            scenario=s,
+                            proxy=proxy,
+                            trigger=trigger,
+                            judge=judge,
+                        )
+                finally:
+                    if saved_path is None:
+                        os.environ.pop("DIFFGRAPH_TRACE_PATH", None)
+                    else:
+                        os.environ["DIFFGRAPH_TRACE_PATH"] = saved_path
+            except Exception as exc:
+                from runner.scorer import ScenarioResult
+                err_msg = f"{type(exc).__name__}: {exc}"
+                console.print(f"   [red dim]iteration failed: {err_msg}[/red dim]")
+                result = ScenarioResult(
+                    scenario_id=s.id,
+                    scenario_name=s.name,
+                    verdict="error",
+                    score=0.0,
+                    required_found=0,
+                    required_total=len(s.expected_output.required_comments),
+                    false_positives=0,
+                    location_accuracy=0.0,
+                    status_change_verdict="n/a",
+                    inline_ratio=0.0,
+                    total_comments=0,
+                    duration_seconds=0.0,
+                    judge_summary=err_msg,
+                    error=err_msg,
+                    pr_url=getattr(proxy, "pr_url", None) if proxy else None,
+                )
 
             prov_results.append(result)
             results.append(result)
