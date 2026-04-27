@@ -1,0 +1,61 @@
+# DiffGraph LLM provider profiles.
+#
+# Copy this file to ~/repos/.llm_creds.toml (or anywhere up the path),
+# fill in env-var names, then `source .env` to load the secrets.
+#
+# Lookup order (first hit wins):
+#   1. $LLM_CREDS_FILE
+#   2. .llm_creds.toml in cwd, walking up to filesystem root
+#   3. ~/.llm_creds.toml
+#   4. ~/repos/.llm_creds.toml
+#
+# Pick a profile via:
+#   python cli.py run --provider <name> --pr-url ...
+#   python cli.py run --provider deepseek --agent reviewer --pr-url ...
+#
+# Per-provider knobs recognised by the loader:
+#
+#   base_url      OpenAI-compatible /v1 endpoint
+#   api_key       ${ENV_VAR} reference; secrets stay in shell env
+#   model         model identifier
+#   tool_choice   "required" | "auto"  (some models reject "required")
+#   timeout       request timeout in seconds (default 600)
+#   ca_bundle     path to CA bundle for the LLM endpoint TLS
+#   stream        bool — set false for backends with broken streaming
+#                 tool-call parsers (older vLLM Qwen3-Coder builds)
+#   extra_body    table of vendor extensions, e.g.
+#                 {"chat_template_kwargs": {"enable_thinking": false}}
+#   headers       table of extra HTTP headers (rare; not yet wired)
+
+[providers.deepseek]
+base_url    = "https://api.deepseek.com/v1"
+api_key     = "${DEEPSEEK_API_KEY}"
+model       = "deepseek-chat"
+tool_choice = "required"
+timeout     = 600
+
+[providers.deepseek-reasoner]
+base_url    = "https://api.deepseek.com/v1"
+api_key     = "${DEEPSEEK_API_KEY}"
+model       = "deepseek-reasoner"
+tool_choice = "required"
+timeout     = 1200
+
+# Qwen3-Coder served via vLLM. enable_thinking=false is required —
+# without it the qwen3 tool parser leaves <think>…</think> /
+# `</parameter>` XML fragments inside JSON tool arguments.
+[providers.qwen3]
+base_url    = "https://foundation-models.api.cloud.ru/v1"
+api_key     = "${CLOUD_RU_QWEN3_API_KEY}"
+model       = "Qwen/Qwen3-Coder-480B-A35B-Instruct"
+tool_choice = "auto"
+timeout     = 600
+extra_body  = { chat_template_kwargs = { enable_thinking = false } }
+
+[providers.qwen3-6]
+base_url    = "https://<your-modelrun-id>.modelrun.inference.cloud.ru/v1"
+api_key     = "${CLOUD_RU_QWEN3_6_API_KEY}"
+model       = "<your-model-name>"
+tool_choice = "auto"
+timeout     = 600
+extra_body  = { chat_template_kwargs = { enable_thinking = false } }

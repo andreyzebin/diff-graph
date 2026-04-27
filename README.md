@@ -213,7 +213,10 @@ python cli.py run --repo . --base HEAD~1
 | `--repo` / `-r` | Path to local repository (local mode) |
 | `--base` | Base ref (commit/branch to merge into) |
 | `--source` | Source ref (default: HEAD) |
-| `--model` / `-m` | LLM model override |
+| `--provider` | LLM provider profile from `~/repos/.llm_creds.toml` (e.g. `deepseek`, `qwen3-6`) |
+| `--model` / `-m` | LLM model override (overrides provider's `model`) |
+| `--api-url` / `--api-key` | Endpoint overrides |
+| `--trace-dir` | Mirror traces to a filesystem layout (in addition to SQLite) |
 | `--output` / `-o` | Write findings as JSON |
 | `--max-steps` | Max ReAct tool calls |
 | `--max-tokens` | Max token budget |
@@ -221,6 +224,57 @@ python cli.py run --repo . --base HEAD~1
 | `--log-level` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `-v` / `--verbose` | Shortcut for `--log-level DEBUG` |
 | `--no-verify-ssl` | Disable SSL verification |
+
+### LLM provider profiles
+
+Profiles live in `~/repos/.llm_creds.toml` (see `.llm_creds.toml.example`).
+Each section declares one endpoint and its quirks:
+
+```toml
+[providers.deepseek]
+base_url    = "https://api.deepseek.com/v1"
+api_key     = "${DEEPSEEK_API_KEY}"
+model       = "deepseek-chat"
+tool_choice = "required"
+
+[providers.qwen3-6]
+base_url    = "https://<id>.modelrun.inference.cloud.ru/v1"
+api_key     = "${CLOUD_RU_QWEN3_6_API_KEY}"
+model       = "<model-name>"
+tool_choice = "auto"
+extra_body  = { chat_template_kwargs = { enable_thinking = false } }
+```
+
+`extra_body` is forwarded to the OpenAI client and used for vendor knobs.
+For Qwen3-Coder on vLLM, `enable_thinking=false` is required: without
+it the qwen3 tool parser leaves `</parameter>` XML fragments in JSON
+arguments and tool calls fail.
+
+Override precedence: CLI flag > provider profile > `config.local.yaml` > `config.yaml`.
+
+### Filesystem trace mirror
+
+Pass `--trace-dir <base>` (or set `DIFFGRAPH_TRACE_DIR`) to dump every
+LLM and tool API call to disk alongside the SQLite store. Layout:
+
+```
+<base>/runs/<run-id>/
+  run.json
+  events.jsonl
+  agents/<name>-N/
+    meta.json
+    step-NN-request.json            # LLM request (messages, tools, params)
+    step-NN-response.json           # LLM response
+    step-NN-tool-SS-request.json    # tool request
+    step-NN-tool-SS-response.json   # tool response
+    artifacts/                      # free-form via agent.dump_artifact()
+```
+
+Files are written write-ahead with atomic rename, so a crash mid-step
+still leaves the request payload on disk for inspection.
+
+Set `DIFFGRAPH_TRACE_PATH=<exact-dir>` instead when a parent runner
+(e.g. the benchmark) dictates the target path.
 
 ### `trace` -- view execution traces
 
