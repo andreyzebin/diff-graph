@@ -18,6 +18,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 INSTALL_USER="${INSTALL_USER:-${SUDO_USER:-$(id -un)}}"
+INSTALL_GROUP="${INSTALL_GROUP:-$(id -gn "$INSTALL_USER" 2>/dev/null || echo "$INSTALL_USER")}"
 SYSTEMD_DIR="/etc/systemd/system"
 
 ENABLE=1
@@ -66,9 +67,12 @@ install_unit() {
     sed \
         -e "s|__INSTALL_DIR__|${INSTALL_DIR}|g" \
         -e "s|__USER__|${INSTALL_USER}|g" \
+        -e "s|__GROUP__|${INSTALL_GROUP}|g" \
         "$template" > "$dest"
     chmod 644 "$dest"
 }
+
+echo "User=${INSTALL_USER}  Group=${INSTALL_GROUP}"
 
 install_unit "${SCRIPT_DIR}/diffgraph-webhook.service"
 install_unit "${SCRIPT_DIR}/diffgraph-trace.service"

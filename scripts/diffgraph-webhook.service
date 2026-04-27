@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=__USER__
-Group=__USER__
+Group=__GROUP__
 WorkingDirectory=__INSTALL_DIR__
 
 # Load .env (supports "export KEY=value" lines)
