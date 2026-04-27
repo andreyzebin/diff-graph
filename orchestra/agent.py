@@ -454,12 +454,33 @@ class Agent:
             step_record = StepRecord(step=step, llm_params=step_params)
             findings_from_done = None
 
-            for tc in msg.tool_calls:
+            for tool_seq, tc in enumerate(msg.tool_calls, start=1):
+                try:
+                    tc_args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    tc_args = {}
+                # Tool API boundary — request side. Captured before dispatch
+                # so a crash inside the tool still leaves the request on disk.
+                self.event_bus.emit(EventType.AGENT_TOOL_REQUEST,
+                                   agent_id=self.agent_id, agent_name=self.config.name,
+                                   step=step, seq=tool_seq,
+                                   tool=tc.function.name,
+                                   tool_call_id=tc.id,
+                                   args=tc_args)
                 content = self._handle_tool_call(tc, dispatch_results, step)
+                # Tool API boundary — response side. Full content (sanitised).
+                clean_content = _sanitize_tool_content(content)
+                self.event_bus.emit(EventType.AGENT_TOOL_RESPONSE,
+                                   agent_id=self.agent_id, agent_name=self.config.name,
+                                   step=step, seq=tool_seq,
+                                   tool=tc.function.name,
+                                   tool_call_id=tc.id,
+                                   content=clean_content,
+                                   content_len=len(clean_content))
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": _sanitize_tool_content(content),
+                    "content": clean_content,
                 })
 
                 if tc.function.name == "done":

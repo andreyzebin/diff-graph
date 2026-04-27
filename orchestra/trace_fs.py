@@ -1,20 +1,27 @@
 """
 Filesystem trace dump (opt-in, in addition to the SQLite store).
 
+API-boundary tracing: we capture the two API edges that matter —
+LLM API (us ↔ LLM) and Tool API (LLM ↔ our tools). Each call writes
+its request before going out and its response after returning. Crash
+between the two = request file still on disk.
+
 Layout under base_dir:
 
     runs/<run-id>/
-        run.json              # top-level: model, pr_url, prompt_hash, started/finished, ...
-        events.jsonl          # raw event stream, one JSON object per line, append-only
+        run.json                                # top-level metadata
+        events.jsonl                            # full event stream, append-only
         agents/
             <name>-<n>/
-                meta.json     # agent_id, parent_id, depth, started/finished, status
-                step-01.json  # one file per step: messages_in, response, tool_calls, tool_results, usage
-                step-02.json
-                artifacts/    # free-form dumps via agent.dump_artifact(name, data)
+                meta.json                       # agent_id, parent_id, depth, started/finished
+                step-NN-request.json            # LLM request (messages, tools, params)
+                step-NN-response.json           # LLM response (content, tool_calls, usage)
+                step-NN-tool-SS-request.json    # Tool request (name, args, tool_call_id)
+                step-NN-tool-SS-response.json   # Tool response (full content)
+                artifacts/                      # free-form dumps via agent.dump_artifact
 
-The DB stays primary (fast queries, indexed list). FS is an opt-in
-human-readable mirror — easy to grep/jq/diff between runs.
+NN = LLM step number, SS = tool sequence within that step.
+The DB stays primary for cross-run queries. FS is the inspectable mirror.
 """
 from __future__ import annotations
 
@@ -66,7 +73,6 @@ class TraceFSWriter:
         self._agent_dirs: dict[str, Path] = {}        # agent_id -> Path
         self._agent_name_idx: dict[str, int] = {}     # agent_name -> next idx
         self._agent_meta: dict[str, dict] = {}        # agent_id -> meta dict
-        self._current_step: dict[str, dict] = {}      # agent_id -> step buffer
 
         self._write_run_stub()
 
@@ -86,11 +92,8 @@ class TraceFSWriter:
                    prompt_source: str = "", prompt_hash: str = "",
                    status: str = "completed",
                    **extra: Any) -> None:
-        """Update run.json with final fields. Flush remaining step buffers."""
+        """Update run.json with final fields."""
         with self._lock:
-            for agent_id in list(self._current_step):
-                self._flush_step(agent_id)
-
             run_data = self._read_run_json()
             run_data.update({
                 "finished_at": datetime.now().isoformat(),
@@ -199,64 +202,9 @@ class TraceFSWriter:
         # Lazy-create agent dir if started event was missed
         adir = self._agent_dir(agent_id, agent_name)
 
-        if event_type == "agent_step":
-            # New step starting — flush previous one for this agent
-            with self._lock:
-                self._flush_step(agent_id)
-                self._current_step[agent_id] = {
-                    "step": kw.get("step"),
-                    "started_at": datetime.now().isoformat(),
-                    "llm_params": _serialize(kw.get("llm_params")),
-                    "tool_calls_planned": _serialize(kw.get("tool_calls", [])),
-                }
-            return
-
-        if event_type == "agent_llm_request":
-            with self._lock:
-                buf = self._current_step.setdefault(agent_id, {})
-                buf["llm_request"] = {
-                    "messages": _serialize(kw.get("messages", [])),
-                    "tools": _serialize(kw.get("tools", [])),
-                    "model": kw.get("model"),
-                }
-            return
-
-        if event_type == "agent_llm_response":
-            with self._lock:
-                buf = self._current_step.setdefault(agent_id, {})
-                buf["llm_response"] = {
-                    "content": _serialize(kw.get("content", "")),
-                    "tool_calls": _serialize(kw.get("tool_calls", [])),
-                    "usage": _serialize(kw.get("usage")),
-                }
-            return
-
-        if event_type == "agent_tool_result":
-            with self._lock:
-                buf = self._current_step.setdefault(agent_id, {})
-                buf.setdefault("tool_results", []).append({
-                    "tool": kw.get("tool"),
-                    "args": _serialize(kw.get("args")),
-                    "result_preview": kw.get("result_preview"),
-                    "result_len": kw.get("result_len"),
-                    "result_count": kw.get("result_count"),
-                })
-            return
-
-        if event_type == "agent_reflect":
-            with self._lock:
-                buf = self._current_step.setdefault(agent_id, {})
-                buf.setdefault("reflects", []).append({
-                    "confidence": kw.get("confidence"),
-                    "reasoning": _serialize(kw.get("reasoning", "")),
-                    "concerns": _serialize(kw.get("concerns", [])),
-                    "open_questions": _serialize(kw.get("open_questions", [])),
-                })
-            return
-
+        # ── Agent lifecycle → meta.json ───────────────────────────────────
         if event_type in ("agent_done", "agent_forced_done"):
             with self._lock:
-                self._flush_step(agent_id)
                 meta = self._agent_meta.setdefault(agent_id, {
                     "agent_id": agent_id, "agent_name": agent_name,
                 })
@@ -275,22 +223,81 @@ class TraceFSWriter:
             self.dump_artifact(agent_id, kw.get("name", "artifact"), kw.get("data"))
             return
 
-    def _flush_step(self, agent_id: str) -> None:
-        buf = self._current_step.pop(agent_id, None)
-        if not buf:
-            return
-        adir = self._agent_dirs.get(agent_id)
-        if not adir:
-            return
-        step_n = buf.get("step")
+        # ── LLM API boundary: exactly two files per step ──────────────────
+        step_n = kw.get("step")
         if step_n is None:
             return
-        path = adir / f"step-{int(step_n):02d}.json"
+
+        if event_type == "agent_llm_request":
+            payload = {
+                "step": step_n,
+                "ts": datetime.now().isoformat(),
+                "messages": _serialize(kw.get("messages", [])),
+                "tools": _serialize(kw.get("tools", [])),
+                "llm_params": _serialize(kw.get("llm_params")),
+            }
+            self._atomic_write(adir / f"step-{int(step_n):02d}-request.json", payload)
+            return
+
+        if event_type == "agent_llm_response":
+            payload = {
+                "step": step_n,
+                "ts": datetime.now().isoformat(),
+                "content": _serialize(kw.get("content", "")),
+                "tool_calls": _serialize(kw.get("tool_calls", [])),
+                "usage": _serialize(kw.get("usage")),
+            }
+            self._atomic_write(adir / f"step-{int(step_n):02d}-response.json", payload)
+            return
+
+        # ── Tool API boundary ─────────────────────────────────────────────
+        seq = kw.get("seq")
+        if event_type == "agent_tool_request" and seq is not None:
+            payload = {
+                "step": step_n,
+                "seq": seq,
+                "ts": datetime.now().isoformat(),
+                "tool": kw.get("tool"),
+                "tool_call_id": kw.get("tool_call_id"),
+                "args": _serialize(kw.get("args")),
+            }
+            self._atomic_write(
+                adir / f"step-{int(step_n):02d}-tool-{int(seq):02d}-request.json",
+                payload,
+            )
+            return
+
+        if event_type == "agent_tool_response" and seq is not None:
+            payload = {
+                "step": step_n,
+                "seq": seq,
+                "ts": datetime.now().isoformat(),
+                "tool": kw.get("tool"),
+                "tool_call_id": kw.get("tool_call_id"),
+                "content": _serialize(kw.get("content", "")),
+                "content_len": kw.get("content_len"),
+            }
+            self._atomic_write(
+                adir / f"step-{int(step_n):02d}-tool-{int(seq):02d}-response.json",
+                payload,
+            )
+            return
+        # Other step-tagged events (agent_step, agent_reflect, agent_tool_result
+        # preview) are captured implicitly inside the next LLM request.
+
+    def _atomic_write(self, path: Path, data: Any) -> None:
+        """Write JSON atomically: tmp file + rename. Survives mid-write crashes."""
+        tmp = path.with_suffix(path.suffix + ".tmp")
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(buf, f, ensure_ascii=False, indent=2, default=str)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+            tmp.replace(path)
         except Exception:
-            log.debug("flush_step failed for %s step %s", agent_id, step_n, exc_info=True)
+            log.debug("atomic_write failed: %s", path, exc_info=True)
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _write_agent_meta(self, adir: Path, meta: dict) -> None:
         path = adir / "meta.json"

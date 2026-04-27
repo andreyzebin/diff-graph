@@ -24,6 +24,9 @@ class EventType(Enum):
     # Streaming
     AGENT_STREAM = "agent_stream"
     AGENT_TOOL_RESULT = "agent_tool_result"
+    # Tool API boundary (full payloads, for tracing)
+    AGENT_TOOL_REQUEST = "agent_tool_request"
+    AGENT_TOOL_RESPONSE = "agent_tool_response"
     # LLM calls (full prompts and responses for tracing)
     AGENT_LLM_REQUEST = "agent_llm_request"
     AGENT_LLM_RESPONSE = "agent_llm_response"
