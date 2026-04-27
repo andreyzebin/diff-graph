@@ -144,9 +144,28 @@ def run(
     agent_url: Optional[str] = typer.Option(None, "--agent-url", help="Override agent URL from config"),
     prompts: Optional[str] = typer.Option(None, "--prompts", help="Prompt resource URI (passed to agent CLI as --prompts)"),
     no_verify_ssl: bool = typer.Option(False, "--no-verify-ssl", help="Skip TLS certificate verification (corporate self-signed certs)"),
+    provider: Optional[list[str]] = typer.Option(None, "--provider", "-p", help="LLM provider profile to pass to the agent CLI (repeatable). Without it, the agent uses its own config."),
+    all_providers: bool = typer.Option(False, "--all-providers", help="Run scenarios against every provider listed in agent.providers (config.local.yaml)."),
 ):
     """Run benchmark scenarios."""
-    asyncio.run(_run_async(scenario, tag or [], dry_run, compare_with, agent_url, prompts, no_verify_ssl))
+    asyncio.run(_run_async(scenario, tag or [], dry_run, compare_with, agent_url, prompts, no_verify_ssl,
+                           list(provider or []), all_providers))
+
+
+_PROVIDER_FLAG_RE = __import__("re").compile(r"\s*--provider[= ]\{provider\}")
+
+
+def _inject_provider(cmd: str, provider: str | None) -> str:
+    """Substitute {provider} or strip the flag entirely when no provider is chosen.
+
+    With provider:    --provider={provider}  ->  --provider=deepseek
+    Without provider: drop "--provider={provider}" so the agent uses its own config.
+    """
+    if provider is None:
+        return _PROVIDER_FLAG_RE.sub("", cmd)
+    if "{provider}" in cmd:
+        return cmd.replace("{provider}", provider)
+    return cmd + f' --provider={provider}'
 
 
 async def _run_async(
@@ -157,6 +176,8 @@ async def _run_async(
     agent_url_override: str | None,
     prompts_override: str | None = None,
     no_verify_ssl: bool = False,
+    providers: list[str] | None = None,
+    all_providers: bool = False,
 ):
     from bitbucket import build_proxy
     from runner.scenario_loader import load_scenarios
@@ -179,6 +200,16 @@ async def _run_async(
     judge_cfg = cfg.get("judge", {})
     results_cfg = cfg.get("results", {})
 
+    # Resolve providers: explicit list > --all-providers (from config) > [None] (no-op pass-through)
+    providers = list(providers or [])
+    if all_providers:
+        providers = list(agent_cfg.get("providers", []))
+        if not providers:
+            console.print("[yellow]--all-providers given but agent.providers is empty in config[/yellow]")
+            raise typer.Exit(1)
+    if not providers:
+        providers = [None]   # single run, agent uses its own config
+
     scenarios = load_scenarios(SCENARIOS_DIR, tags=tags, scenario_id=scenario_id)
 
     if not scenarios:
@@ -186,67 +217,92 @@ async def _run_async(
         raise typer.Exit(1)
 
     if dry_run:
-        console.print(f"\n[bold]Dry run — {len(scenarios)} scenario(s) found:[/bold]\n")
+        console.print(f"\n[bold]Dry run — {len(scenarios)} scenario(s) × {len(providers)} provider(s):[/bold]\n")
         for s in scenarios:
             req = len(s.expected_output.required_comments)
             console.print(
                 f"  [cyan]{s.id:12}[/cyan] {s.name}  "
                 f"[dim]{', '.join(s.tags)}  required={req}[/dim]"
             )
+        for p in providers:
+            console.print(f"  provider: [magenta]{p or '(default)'}[/magenta]")
         raise typer.Exit(0)
 
-    trigger = _make_trigger(agent_cfg, bitbucket_connection)
     llm_client = _make_llm_client(judge_cfg)
     store = ResultsStore(
         store_path=Path(results_cfg.get("store_path", str(RESULTS_DIR))),
         db_path=Path(results_cfg.get("db_path", str(RESULTS_DIR / "benchmark.db"))),
     )
 
-    _print_trigger_summary(agent_cfg, console)
-    console.print(f"\n[bold]Running {len(scenarios)} scenario(s)...[/bold]\n")
+    matrix: dict[str, list] = {}    # provider -> list[ScenarioResult]
+    results: list = []              # flat list across all providers (for store.save_run)
 
-    results = []
-    for s in scenarios:
-        bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
-        proxy = await build_proxy(bb_cfg)
-        async with proxy:
-            judge = LLMJudge(llm_client, proxy)
-            result = await run_scenario(
-                scenario=s,
-                proxy=proxy,
-                trigger=trigger,
-                judge=judge,
+    for prov in providers:
+        prov_label = prov or "(default)"
+        run_agent_cfg = dict(agent_cfg)
+        if run_agent_cfg.get("trigger") == "cli":
+            run_agent_cfg["command"] = _inject_provider(run_agent_cfg.get("command", ""), prov)
+
+        console.print(f"\n[bold magenta]── provider: {prov_label} ─────────────────────────────────────[/bold magenta]")
+        _print_trigger_summary(run_agent_cfg, console)
+        console.print(f"\n[bold]Running {len(scenarios)} scenario(s)...[/bold]\n")
+
+        trigger = _make_trigger(run_agent_cfg, bitbucket_connection)
+        prov_results: list = []
+
+        for s in scenarios:
+            bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
+            proxy = await build_proxy(bb_cfg)
+            async with proxy:
+                judge = LLMJudge(llm_client, proxy)
+                result = await run_scenario(
+                    scenario=s,
+                    proxy=proxy,
+                    trigger=trigger,
+                    judge=judge,
+                )
+            prov_results.append(result)
+            results.append(result)
+
+            if result.verdict == "pass":
+                icon = "[green]✅[/green]"
+            elif result.verdict == "error":
+                icon = "[red]❌[/red]"
+            else:
+                icon = "[yellow]⚠️ [/yellow]"
+            fail_reason = ""
+            if result.verdict == "fail":
+                fail_reason = f"  [red][FAIL: min_score={s.expected_output.thresholds.min_score:.2f}][/red]"
+            console.print(
+                f"{icon} {s.id:12} {s.name[:38]:38} "
+                f"score=[bold]{result.score:.2f}[/bold]  "
+                f"comments={result.total_comments}  "
+                f"{result.duration_seconds:.1f}s"
+                f"{fail_reason}"
             )
-        results.append(result)
+            if result.verdict == "error" and result.error:
+                console.print(f"   [red dim]{result.error}[/red dim]")
 
-        if result.verdict == "pass":
-            icon = "[green]✅[/green]"
-        elif result.verdict == "error":
-            icon = "[red]❌[/red]"
-        else:
-            icon = "[yellow]⚠️ [/yellow]"
+        matrix[prov_label] = prov_results
 
-        fail_reason = ""
-        if result.verdict == "fail":
-            fail_reason = f"  [red][FAIL: min_score={s.expected_output.thresholds.min_score:.2f}][/red]"
-
+    # ── Per-provider summaries + cross-provider matrix ─────────────────
+    console.print(f"\n{'─' * 70}")
+    for prov_label, prov_results in matrix.items():
+        prov_passed = sum(1 for r in prov_results if r.passed)
+        prov_avg = sum(r.score for r in prov_results) / max(len(prov_results), 1)
+        prov_total = sum(r.duration_seconds for r in prov_results)
         console.print(
-            f"{icon} {s.id:12} {s.name[:38]:38} "
-            f"score=[bold]{result.score:.2f}[/bold]  "
-            f"comments={result.total_comments}  "
-            f"{result.duration_seconds:.1f}s"
-            f"{fail_reason}"
+            f"[bold magenta]{prov_label:24}[/bold magenta] "
+            f"{prov_passed}/{len(prov_results)} passed   "
+            f"avg_score={prov_avg:.2f}   total={prov_total:.1f}s"
         )
-        if result.verdict == "error" and result.error:
-            console.print(f"   [red dim]{result.error}[/red dim]")
 
     passed = sum(1 for r in results if r.passed)
     avg_score = sum(r.score for r in results) / len(results)
     total_time = sum(r.duration_seconds for r in results)
-
-    console.print(f"\n{'─' * 70}")
+    console.print(f"{'─' * 70}")
     console.print(
-        f"[bold]Results : {passed}/{len(results)} passed   "
+        f"[bold]Overall : {passed}/{len(results)} passed   "
         f"avg_score={avg_score:.2f}   total={total_time:.1f}s[/bold]"
     )
 
