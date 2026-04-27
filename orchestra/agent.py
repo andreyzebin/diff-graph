@@ -188,6 +188,11 @@ class Agent:
             params["model"] = lp.model
         if lp.tool_choice and lp.tool_choice != "required":
             params["tool_choice"] = lp.tool_choice
+        # Backend-specific knobs from the provider profile.
+        if lp.stream is False:
+            params["stream"] = False
+        if lp.extra_body:
+            params["extra_body"] = lp.extra_body
         return params
 
     # ── Public API ────────────────────────────────────────────────────────────

@@ -100,6 +100,10 @@ def apply_provider(llm_cfg: dict, provider_name: str) -> dict:
         "timeout": "timeout",
         "ca_bundle": "ca_bundle",
         "headers": "headers",
+        "stream": "stream",         # bool — disable to dodge broken streaming
+                                    # tool parsers (vLLM Qwen3-Coder)
+        "extra_body": "extra_body", # vendor extensions
+                                    # ({"chat_template_kwargs": {"enable_thinking": False}})
     }
     for src_key, dst_key in mapping.items():
         if src_key in profile and profile[src_key] not in ("", None):

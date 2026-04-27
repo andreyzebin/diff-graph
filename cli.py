@@ -252,6 +252,8 @@ def _run_with_dispatcher(
         trace_writer=_trace_writer,
         prompt_resource=prompts,
         tool_choice=llm_cfg.get("tool_choice", ""),
+        stream=llm_cfg.get("stream"),
+        extra_body=llm_cfg.get("extra_body"),
     )
 
     # ── Post-run: post replies, findings, cleanup ─────────────────────────

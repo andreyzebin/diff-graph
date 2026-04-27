@@ -152,6 +152,8 @@ def run_agent(
     trace_writer: Optional[Callable] = None,
     prompt_resource: Optional[str] = None,
     tool_choice: str = "",
+    stream: Optional[bool] = None,
+    extra_body: Optional[dict] = None,
 ) -> dict:
     """
     Run any prompt-defined agent by name.
@@ -178,13 +180,25 @@ def run_agent(
     from orchestra.agent import resolve_agent_data
     data = resolve_agent_data(config, data, registry)
 
-    # Override tool_choice for all agents (root + children)
-    if tool_choice:
+    # Override LLM-level overrides for all agents (root + children).
+    # tool_choice / stream / extra_body come from the provider profile, so
+    # the same Qwen3-Coder hosted on a vLLM with broken streaming parser
+    # transparently switches to non-streaming for every spawned investigator
+    # too — without touching the prompt files.
+    overrides_present = (
+        bool(tool_choice) or stream is not None or extra_body is not None
+    )
+    if overrides_present:
         from orchestra.types import LLMParamsConfig
         for ac in [config] + list(agent_registry.get_all_configs().values()):
             if ac.llm_params is None:
                 ac.llm_params = LLMParamsConfig()
-            ac.llm_params.tool_choice = tool_choice
+            if tool_choice:
+                ac.llm_params.tool_choice = tool_choice
+            if stream is not None:
+                ac.llm_params.stream = stream
+            if extra_body is not None:
+                ac.llm_params.extra_body = extra_body
 
     # Event bus
     event_bus = EventBus()

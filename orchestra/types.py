@@ -77,6 +77,11 @@ class LLMParamsConfig:
     presence_penalty: float = 0.0
     max_completion_tokens: int = 4096
     tool_choice: str = "required"  # "required" | "auto"
+    stream: bool = True              # set False for backends with broken
+                                     # streaming tool-call parsers (e.g. some
+                                     # vLLM Qwen3-Coder deployments)
+    extra_body: Optional[dict] = None  # vendor extensions, e.g.
+                                       # {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 # ── Agent ─────────────────────────────────────────────────────────────────────

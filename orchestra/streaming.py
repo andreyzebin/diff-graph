@@ -62,24 +62,29 @@ def stream_llm(
     tool_choice: str | dict = "required",
     temperature: float = 0,
     on_token: Optional[OnToken] = None,
+    stream: bool = True,
+    extra_body: Optional[dict] = None,
     **llm_params: Any,
 ) -> StreamedResponse:
     """
-    Stream an LLM tool-calling request and assemble the full response.
+    Call an LLM for tool-calling and assemble the full response.
 
     on_token(tool_name, args_so_far, chunk_count) is called for every streamed
-    chunk so the caller can update a live display.
+    chunk so the caller can update a live display (only when stream=True).
 
     Extra **llm_params are passed through to the LLM API call (e.g.,
     top_p, frequency_penalty, presence_penalty, max_completion_tokens).
 
+    `stream=False` falls back to non-streaming completion. Required for
+    backends with broken streaming tool-call parsers (notably vLLM's
+    Qwen3CoderToolParser, which can leak raw `</parameter>` XML
+    fragments into JSON keys when streamed).
+
+    `extra_body` is forwarded to the OpenAI client for vendor extensions
+    like `chat_template_kwargs={"enable_thinking": False}` on Qwen3.
+
     Returns a StreamedResponse compatible with the non-streaming OpenAI interface.
     """
-    tc_acc: dict[int, dict] = {}  # index -> {id, name, args}
-    content_acc = ""
-    usage = None
-    chunk_count = 0
-
     # Build API kwargs — filter out None values
     create_kwargs: dict[str, Any] = {
         "model": model,
@@ -87,17 +92,37 @@ def stream_llm(
         "tools": tools,
         "tool_choice": tool_choice,
         "temperature": temperature,
-        "stream": True,
-        "stream_options": {"include_usage": True},
     }
+    if stream:
+        create_kwargs["stream"] = True
+        create_kwargs["stream_options"] = {"include_usage": True}
+    if extra_body:
+        create_kwargs["extra_body"] = extra_body
     # Merge adaptive params (top_p, frequency_penalty, etc.)
     for k, v in llm_params.items():
         if v is not None:
             create_kwargs[k] = v
 
-    stream = llm.chat.completions.create(**create_kwargs)
+    if not stream:
+        # Non-streaming path: response shape already matches what we return.
+        resp = llm.chat.completions.create(**create_kwargs)
+        msg = resp.choices[0].message
+        tcs = []
+        for tc in (msg.tool_calls or []):
+            tcs.append(_TC(id=tc.id, function=_Fn(name=tc.function.name,
+                                                   arguments=tc.function.arguments)))
+        return StreamedResponse(
+            choices=[_Choice(message=_Msg(tool_calls=tcs, content=msg.content or ""))],
+            usage=getattr(resp, "usage", None),
+        )
 
-    for chunk in stream:
+    tc_acc: dict[int, dict] = {}  # index -> {id, name, args}
+    content_acc = ""
+    usage = None
+    chunk_count = 0
+    stream_obj = llm.chat.completions.create(**create_kwargs)
+
+    for chunk in stream_obj:
         # Final chunk carries usage when stream_options=include_usage
         if getattr(chunk, "usage", None):
             usage = chunk.usage
