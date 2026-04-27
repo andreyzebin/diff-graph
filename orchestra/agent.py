@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,6 +29,17 @@ from .prompts import load_prompt, interpolate
 from .tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
+
+# Strip C0 control chars except \t, \n, \r before sending to LLM API.
+# Some endpoints reject any other control char in JSON string fields with
+# 400 "Invalid control character".
+_CTRL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _sanitize_tool_content(content: str) -> str:
+    if not isinstance(content, str):
+        return content
+    return _CTRL_CHARS_RE.sub("", content)
 
 
 @dataclass
@@ -444,7 +456,11 @@ class Agent:
 
             for tc in msg.tool_calls:
                 content = self._handle_tool_call(tc, dispatch_results, step)
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": _sanitize_tool_content(content),
+                })
 
                 if tc.function.name == "done":
                     try:
