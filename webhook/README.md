@@ -59,6 +59,9 @@ timeout = 600
 #   --bot-user <slug>   tag the bot's own existing comments as [SELF]
 #                       (or export BOT_USER=<slug> in .env)
 #   --trace-dir <path>  mirror per-step LLM/tool traces to disk
+#   --prompts <uri>     pin prompts (path, file://, bitbucket://...). The
+#                       directory name → generation; content hash → mutation
+#                       (visible to the dispatcher prompt and trace DB).
 
 # PR-Agent — forward raw event
 [agents.pra]

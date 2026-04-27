@@ -14,9 +14,15 @@ port = 8000
 #   --bot-user <slug>   tag own existing comments as [SELF] in context
 #                       (alternative: export BOT_USER=<slug> in .env)
 #   --trace-dir <path>  mirror per-step LLM/tool traces to disk for inspection
+#   --prompts <uri>     pin a prompt set — local path, file://..., or
+#                       bitbucket://server/PROJECT/repo/refs/<sha-or-branch>/<dir>.
+#                       The directory's name becomes "generation" and the
+#                       compiled prompts' content hash becomes "mutation"
+#                       (both surface in the dispatcher prompt and trace DB),
+#                       so each route can A/B-test a different prompt set.
 #
-# Example with provider + bot user:
-#   command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id} --provider=deepseek --bot-user=review-bot'
+# Example with provider + bot user + pinned prompts version:
+#   command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id} --provider=deepseek --bot-user=review-bot --prompts=bitbucket://server/SBLOOM/diffgraph-prompts/refs/main/prompts'
 [agents.dg]
 trigger = "cli"
 command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id}'
