@@ -6,7 +6,17 @@ port = 8000
 # ── Agents ──────────────────────────────────────────────
 
 # DiffGraph — dispatcher as entry point (handles /help, /ask, plain text;
-# spawns reviewer on /review; lazy clone only when needed)
+# spawns reviewer on /review; lazy clone only when needed).
+#
+# Common cli.py flags worth wiring through the trigger command:
+#   --provider <name>   pick an LLM profile from ~/repos/.llm_creds.toml
+#                       (deepseek, qwen3, qwen3-6, ...)
+#   --bot-user <slug>   tag own existing comments as [SELF] in context
+#                       (alternative: export BOT_USER=<slug> in .env)
+#   --trace-dir <path>  mirror per-step LLM/tool traces to disk for inspection
+#
+# Example with provider + bot user:
+#   command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id} --provider=deepseek --bot-user=review-bot'
 [agents.dg]
 trigger = "cli"
 command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id}'

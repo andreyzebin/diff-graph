@@ -53,6 +53,13 @@ trigger = "cli"
 command = '... cli.py run --pr-url="{pr_url}" --agent=reviewer'
 timeout = 600
 
+# Useful cli.py flags worth wiring through the command:
+#   --provider <name>   pick an LLM profile from ~/repos/.llm_creds.toml
+#                       (deepseek, qwen3, qwen3-6, ...)
+#   --bot-user <slug>   tag the bot's own existing comments as [SELF]
+#                       (or export BOT_USER=<slug> in .env)
+#   --trace-dir <path>  mirror per-step LLM/tool traces to disk
+
 # PR-Agent — forward raw event
 [agents.pra]
 trigger = "webhook"

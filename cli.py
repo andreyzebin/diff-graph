@@ -342,6 +342,7 @@ def run(
     api_key:       Optional[str] = typer.Option(None,  "--api-key",            help="API key override"),
     provider:      Optional[str] = typer.Option(None,  "--provider",           help="LLM provider profile from ~/.llm_creds.toml (e.g. deepseek, qwen3-coder)"),
     trace_dir:     Optional[str] = typer.Option(None,  "--trace-dir",          help="Mirror traces to a filesystem layout (in addition to SQLite). Defaults to $DIFFGRAPH_TRACE_DIR."),
+    bot_user:      Optional[str] = typer.Option(None,  "--bot-user",           help="Bitbucket slug of the bot account. Own comments are tagged [SELF]. Overrides review.bot_user from config and $BOT_USER."),
     output:        Optional[str] = typer.Option(None,  "--output",       "-o", help="Write findings as JSON to file"),
     max_steps:     Optional[int] = typer.Option(None,  "--max-steps",          help="Max ReAct steps (default: from config)"),
     max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
@@ -404,6 +405,10 @@ def run(
     if api_url:  llm_cfg["api_url"] = api_url
     if api_key:  llm_cfg["api_key"] = api_key
     if model:    llm_cfg["model"]   = model
+    # bot_user precedence: --bot-user > $BOT_USER > config.review.bot_user
+    bot_user_resolved = bot_user or os.environ.get("BOT_USER") or review_cfg.get("bot_user", "")
+    if bot_user_resolved:
+        review_cfg["bot_user"] = bot_user_resolved
 
     effective_model     = llm_cfg.get("model", "gpt-4o-mini")
     effective_steps     = max_steps  if max_steps  is not None else review_cfg.get("max_steps",  40)
