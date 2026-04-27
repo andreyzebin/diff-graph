@@ -219,11 +219,20 @@ def run_agent(
         return {}
     if isinstance(output, dict):
         return output
+    # Agent.done(findings=[...]) — agent.py unwraps the list out of {"findings": ...},
+    # so a bare list back here means "this is the findings array".
+    if isinstance(output, list):
+        return {"findings": output}
     if isinstance(output, str):
         try:
-            return json.loads(output)
+            parsed = json.loads(output)
         except (json.JSONDecodeError, ValueError):
             return {"text": output}
+        if isinstance(parsed, list):
+            return {"findings": parsed}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"text": output}
     return {"output": output}
 
 

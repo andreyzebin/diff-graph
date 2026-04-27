@@ -557,6 +557,21 @@ class Agent:
             messages=messages, budget_state=self.budget_state, trace=trace,
         )
 
+    # ── Free-form artifact dump ───────────────────────────────────────────────
+
+    def dump_artifact(self, name: str, data: Any) -> None:
+        """
+        Drop arbitrary JSON-serialisable data into the trace under this agent.
+
+        Picked up by trace sinks (FS writer creates artifacts/<name>.json,
+        DB writer stores it as an event row). No-op when no event bus is
+        attached, so safe to call from anywhere.
+        """
+        self.event_bus.emit(EventType.AGENT_ARTIFACT,
+                            agent_id=self.agent_id,
+                            agent_name=self.config.name,
+                            name=name, data=data)
+
     # ── Tool call handling ────────────────────────────────────────────────────
 
     def _handle_tool_call(self, tc, dispatch_results: dict, step: int) -> str:

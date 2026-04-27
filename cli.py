@@ -103,6 +103,7 @@ def _run_with_dispatcher(
     prompts: Optional[str],
     agent_name: str = "dispatcher",
     extra_data: Optional[dict] = None,
+    trace_dir: Optional[str] = None,
 ) -> None:
     """
     Run any agent with lazy repo init.
@@ -210,10 +211,23 @@ def _run_with_dispatcher(
 
     from orchestra.trace_db import TraceDBWriter
     _trace_db = TraceDBWriter()
+
+    # Optional FS mirror — share the same run_id so DB and FS line up.
+    _trace_fs = None
+    fs_target = trace_dir or os.environ.get("DIFFGRAPH_TRACE_DIR")
+    if fs_target:
+        from orchestra.trace_fs import TraceFSWriter
+        _trace_fs = TraceFSWriter(fs_target, run_id=_trace_db.run_id)
+
     event_handler = _make_event_handler(effective_model)
 
     def _on_event(event: str, **kw):
         event_handler(event, **kw)
+
+    def _trace_writer(event: str, **kw):
+        _trace_db.on_event(event, **kw)
+        if _trace_fs:
+            _trace_fs.on_event(event, **kw)
 
     result = run_agent(
         agent_name=agent_name,
@@ -222,7 +236,7 @@ def _run_with_dispatcher(
         model=effective_model,
         tool_registry=tool_registry,
         on_event=_on_event,
-        trace_writer=_trace_db.on_event,
+        trace_writer=_trace_writer,
         prompt_resource=prompts,
         tool_choice=llm_cfg.get("tool_choice", ""),
     )
@@ -244,6 +258,15 @@ def _run_with_dispatcher(
     )
     _trace_db.close()
     console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")
+    if _trace_fs:
+        _trace_fs.finish_run(
+            model=effective_model, pr_url=pr_url,
+            findings_count=len(findings),
+            prompt_source=str(prompt_source), prompt_hash=mutation,
+            agent_name=agent_name,
+        )
+        _trace_fs.close()
+        console.print(f"[dim]  trace-fs: {_trace_fs.run_dir}[/dim]")
 
     if findings:
         _print_findings(findings)
@@ -302,6 +325,8 @@ def run(
     model:         Optional[str] = typer.Option(None,  "--model",        "-m", help="LLM model override"),
     api_url:       Optional[str] = typer.Option(None,  "--api-url",            help="OpenAI-compatible API base URL override"),
     api_key:       Optional[str] = typer.Option(None,  "--api-key",            help="API key override"),
+    provider:      Optional[str] = typer.Option(None,  "--provider",           help="LLM provider profile from ~/.llm_creds.toml (e.g. deepseek, qwen3-coder)"),
+    trace_dir:     Optional[str] = typer.Option(None,  "--trace-dir",          help="Mirror traces to a filesystem layout (in addition to SQLite). Defaults to $DIFFGRAPH_TRACE_DIR."),
     output:        Optional[str] = typer.Option(None,  "--output",       "-o", help="Write findings as JSON to file"),
     max_steps:     Optional[int] = typer.Option(None,  "--max-steps",          help="Max ReAct steps (default: from config)"),
     max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
@@ -355,6 +380,12 @@ def run(
     llm_cfg    = cfg.get("llm", {})
     review_cfg = cfg.get("review", {})
 
+    # Provider profile: applied AFTER yaml config, BEFORE per-flag overrides.
+    # Order of precedence (highest wins): CLI flag > provider profile > config files.
+    if provider:
+        from diffgraph.llm_creds import apply_provider
+        apply_provider(llm_cfg, provider)
+
     if api_url:  llm_cfg["api_url"] = api_url
     if api_key:  llm_cfg["api_key"] = api_key
     if model:    llm_cfg["model"]   = model
@@ -398,6 +429,7 @@ def run(
             prompts=prompts,
             agent_name=agent_name,
             extra_data=extra_data,
+            trace_dir=trace_dir,
         )
         raise typer.Exit(0)
 

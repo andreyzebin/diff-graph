@@ -35,6 +35,8 @@ class EventType(Enum):
     STUCK_DETECTED = "stuck_detected"
     # Condensation
     CONDENSATION_TRIGGERED = "condensation_triggered"
+    # Free-form artifact dump (agent or tool drops arbitrary JSON for inspection)
+    AGENT_ARTIFACT = "agent_artifact"
 
 
 class EventBus:
