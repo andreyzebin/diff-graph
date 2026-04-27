@@ -101,19 +101,36 @@ class OpenAILLMClient(LLMClient):
     """Any OpenAI-compatible endpoint (OpenAI, DeepSeek, Ollama, vLLM, etc.)."""
 
     def __init__(self, model: str, api_url: str, api_key: str = "", temperature: float = 0,
-                 stream_output: bool = False):
+                 stream_output: bool = False, extra_body: dict | None = None,
+                 timeout: int | None = None):
         self._model = model
         self._temperature = temperature
         self._stream_output = stream_output
-        self._client = openai.OpenAI(base_url=api_url, api_key=api_key or "none")
+        # Forwarded to every request — vendor extensions like
+        # {"chat_template_kwargs": {"enable_thinking": False}} for Qwen3
+        # on vLLM (without it the qwen3 tool parser leaks <think>…</think>
+        # / `</parameter>` XML fragments into the JSON output).
+        self._extra_body = extra_body or None
+        kwargs: dict = {"base_url": api_url, "api_key": api_key or "none"}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        self._client = openai.OpenAI(**kwargs)
+
+    def _create_kwargs(self, prompt: str) -> dict:
+        kw: dict = {
+            "model": self._model,
+            "temperature": self._temperature,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if self._extra_body:
+            kw["extra_body"] = self._extra_body
+        return kw
 
     def complete_json(self, prompt: str) -> dict:
         if self._stream_output:
             accumulated = ""
             response = self._client.chat.completions.create(
-                model=self._model,
-                temperature=self._temperature,
-                messages=[{"role": "user", "content": prompt}],
+                **self._create_kwargs(prompt),
                 stream=True,
             )
             for chunk in response:
@@ -123,11 +140,7 @@ class OpenAILLMClient(LLMClient):
             print(flush=True)
             return _parse_raw(accumulated)
 
-        response = self._client.chat.completions.create(
-            model=self._model,
-            temperature=self._temperature,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        response = self._client.chat.completions.create(**self._create_kwargs(prompt))
         return _parse_raw(response.choices[0].message.content)
 
 

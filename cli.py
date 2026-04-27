@@ -88,9 +88,12 @@ def _make_llm_client(judge_cfg: dict):
     api_url = _expand_env(judge_cfg.get("api_url", ""))
     api_key = _expand_env(judge_cfg.get("api_key", ""))
     stream_output = judge_cfg.get("output", "log") == "stream"
+    extra_body = judge_cfg.get("extra_body") or None
+    timeout = judge_cfg.get("timeout")
     if api_url:
         return OpenAILLMClient(model=model, api_url=api_url, api_key=api_key,
-                               temperature=temperature, stream_output=stream_output)
+                               temperature=temperature, stream_output=stream_output,
+                               extra_body=extra_body, timeout=timeout)
     return AnthropicLLMClient(model=model, temperature=temperature, stream_output=stream_output)
 
 

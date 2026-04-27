@@ -49,6 +49,15 @@ judge:
   # If api_url is set, OpenAI-compatible client is used instead of Anthropic.
   # api_url: "https://api.deepseek.com/v1"
   # api_key: "${DEEPSEEK_API_KEY}"
+  # timeout: 600
+  #
+  # Vendor extensions for the OpenAI-compatible client. The judge does
+  # NOT use tool calls (just JSON output), so the Qwen3 tool-parser bug
+  # doesn't bite — but enable_thinking=false still helps avoid noisy
+  # <think>…</think> blocks polluting the judge's JSON.
+  # extra_body:
+  #   chat_template_kwargs:
+  #     enable_thinking: false
 
 results:
   store_path: "results"
