@@ -969,6 +969,9 @@ class Agent:
             prompt_text = interpolate(prompt_text, **self.prompt_vars)
         messages = [{"role": "system", "content": prompt_text}]
         messages.extend(self.context_messages)
+        # Some endpoints reject requests without a user-role message.
+        if not any(m.get("role") == "user" for m in messages):
+            messages.append({"role": "user", "content": "Begin."})
         return messages
 
     def _build_tool_names(self) -> list[str]:
