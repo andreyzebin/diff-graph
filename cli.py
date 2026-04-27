@@ -13,6 +13,7 @@ except ImportError:
 
 import asyncio
 import datetime
+import json
 import sys
 from pathlib import Path
 from typing import Optional
@@ -155,6 +156,43 @@ def run(
 _PROVIDER_FLAG_RE = __import__("re").compile(r"\s*--provider[= ]\{provider\}")
 
 
+def _next_attempt_dir(parent: Path) -> Path:
+    """parent/attempt-NN where NN = max(existing) + 1, starting at 01."""
+    parent.mkdir(parents=True, exist_ok=True)
+    existing = [p for p in parent.iterdir() if p.is_dir() and p.name.startswith("attempt-")]
+    n = 1
+    if existing:
+        nums = []
+        for p in existing:
+            try:
+                nums.append(int(p.name.split("-", 1)[1]))
+            except (IndexError, ValueError):
+                continue
+        if nums:
+            n = max(nums) + 1
+    d = parent / f"attempt-{n:02d}"
+    d.mkdir()
+    return d
+
+
+def _safe_seg(s: str) -> str:
+    import re as _re
+    return _re.sub(r"[^A-Za-z0-9_.-]+", "_", s).strip("_") or "unnamed"
+
+
+def _git_sha(path: Path) -> str:
+    """Best-effort git rev-parse HEAD. Empty string on failure."""
+    import subprocess
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL, timeout=2,
+        )
+        return out.decode().strip()
+    except Exception:
+        return ""
+
+
 def _inject_provider(cmd: str, provider: str | None) -> str:
     """Substitute {provider} or strip the flag entirely when no provider is chosen.
 
@@ -234,8 +272,57 @@ async def _run_async(
         db_path=Path(results_cfg.get("db_path", str(RESULTS_DIR / "benchmark.db"))),
     )
 
+    # ── Session dir layout ────────────────────────────────────────────
+    # Set BENCHMARK_TRACE_DIR (or pass --trace-dir) to enable. Inside:
+    #   <session-id>/
+    #     bench.json
+    #     summary.json
+    #     <provider>/<scenario>/attempt-NN/
+    #       agent/      <- DIFFGRAPH_TRACE_PATH points here for the subprocess
+    #       judge/      <- judge writes request/response/error here
+    #       result.json <- final score & verdict for this attempt
+    bench_root = os.environ.get("BENCHMARK_TRACE_DIR")
+    session_dir: Path | None = None
+    if bench_root:
+        label = os.environ.get("BENCH_LABEL", "")
+        ts = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        session_id = f"{ts}-{_safe_seg(label)}" if label else ts
+        session_dir = Path(bench_root).expanduser() / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        # Capture identity of the agent under test (best effort).
+        agent_repo_path = Path(agent_cfg.get("cwd") or ".").expanduser()
+        if not agent_repo_path.is_absolute():
+            agent_repo_path = Path.cwd() / agent_repo_path
+        # Try to extract diff-graph repo path from `cd <path> && ...` template.
+        cmd_str = agent_cfg.get("command", "")
+        cd_match = __import__("re").search(r"cd\s+(\S+)", cmd_str)
+        if cd_match:
+            agent_repo_path = Path(cd_match.group(1)).expanduser()
+        bench_meta = {
+            "session_id": session_id,
+            "started_at": datetime.datetime.utcnow().isoformat(),
+            "label": label,
+            "providers": [p or "(default)" for p in providers],
+            "scenarios": [s.id for s in scenarios],
+            "agent": {
+                "command": cmd_str,
+                "cwd": agent_cfg.get("cwd", ""),
+                "git_sha": _git_sha(agent_repo_path),
+                "repo_path": str(agent_repo_path),
+            },
+            "judge": {
+                "model": judge_cfg.get("model", ""),
+                "api_url": judge_cfg.get("api_url", ""),
+            },
+        }
+        (session_dir / "bench.json").write_text(
+            json.dumps(bench_meta, ensure_ascii=False, indent=2),
+        )
+        console.print(f"[dim]Session: {session_dir}[/dim]")
+
     matrix: dict[str, list] = {}    # provider -> list[ScenarioResult]
     results: list = []              # flat list across all providers (for store.save_run)
+    summary_rows: list[dict] = []
 
     for prov in providers:
         prov_label = prov or "(default)"
@@ -251,18 +338,65 @@ async def _run_async(
         prov_results: list = []
 
         for s in scenarios:
+            # Per (provider, scenario) attempt dir. Repeat runs on the same
+            # bench session bump attempt-NN automatically — easy variance
+            # measurement without manual housekeeping.
+            attempt_dir: Path | None = None
+            agent_dir: Path | None = None
+            judge_dir: Path | None = None
+            saved_path = os.environ.get("DIFFGRAPH_TRACE_PATH")
+            if session_dir is not None:
+                sc_parent = session_dir / _safe_seg(prov_label) / _safe_seg(s.id)
+                attempt_dir = _next_attempt_dir(sc_parent)
+                agent_dir = attempt_dir / "agent"
+                judge_dir = attempt_dir / "judge"
+                agent_dir.mkdir()
+                judge_dir.mkdir()
+                os.environ["DIFFGRAPH_TRACE_PATH"] = str(agent_dir)
+
             bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
             proxy = await build_proxy(bb_cfg)
-            async with proxy:
-                judge = LLMJudge(llm_client, proxy)
-                result = await run_scenario(
-                    scenario=s,
-                    proxy=proxy,
-                    trigger=trigger,
-                    judge=judge,
-                )
+            try:
+                async with proxy:
+                    judge = LLMJudge(
+                        llm_client, proxy,
+                        judge_dir=judge_dir,
+                        model=judge_cfg.get("model", ""),
+                    )
+                    result = await run_scenario(
+                        scenario=s,
+                        proxy=proxy,
+                        trigger=trigger,
+                        judge=judge,
+                    )
+            finally:
+                if saved_path is None:
+                    os.environ.pop("DIFFGRAPH_TRACE_PATH", None)
+                else:
+                    os.environ["DIFFGRAPH_TRACE_PATH"] = saved_path
+
             prov_results.append(result)
             results.append(result)
+
+            # Persist per-attempt result.json
+            if attempt_dir is not None:
+                (attempt_dir / "result.json").write_text(json.dumps({
+                    "scenario": s.id,
+                    "provider": prov_label,
+                    "attempt": attempt_dir.name,
+                    "verdict": result.verdict,
+                    "score": result.score,
+                    "comments": result.total_comments,
+                    "duration_seconds": result.duration_seconds,
+                    "error": result.error,
+                }, ensure_ascii=False, indent=2))
+                summary_rows.append({
+                    "provider": prov_label, "scenario": s.id,
+                    "attempt": attempt_dir.name, "score": result.score,
+                    "verdict": result.verdict, "comments": result.total_comments,
+                    "duration_seconds": result.duration_seconds,
+                    "path": str(attempt_dir.relative_to(session_dir)),
+                })
 
             if result.verdict == "pass":
                 icon = "[green]✅[/green]"
@@ -305,6 +439,32 @@ async def _run_async(
         f"[bold]Overall : {passed}/{len(results)} passed   "
         f"avg_score={avg_score:.2f}   total={total_time:.1f}s[/bold]"
     )
+
+    # Write the bench session summary alongside bench.json.
+    if session_dir is not None:
+        summary = {
+            "session_id": session_dir.name,
+            "finished_at": datetime.datetime.utcnow().isoformat(),
+            "totals": {
+                "passed": passed,
+                "total": len(results),
+                "avg_score": avg_score,
+                "total_seconds": total_time,
+            },
+            "by_provider": {
+                p: {
+                    "passed": sum(1 for r in rs if r.passed),
+                    "total": len(rs),
+                    "avg_score": sum(r.score for r in rs) / max(len(rs), 1),
+                    "total_seconds": sum(r.duration_seconds for r in rs),
+                } for p, rs in matrix.items()
+            },
+            "rows": summary_rows,
+        }
+        (session_dir / "summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2),
+        )
+        console.print(f"[dim]Session summary: {session_dir / 'summary.json'}[/dim]")
 
     run_id = f"run-{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
     json_path = store.save_run(run_id, results, agent_url=agent_url, tags=tags)

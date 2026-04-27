@@ -153,21 +153,78 @@ class LLMJudge(Judge):
     at every call site.
     """
 
-    def __init__(self, llm_client: LLMClient, view: AgentPRView):
+    def __init__(self, llm_client: LLMClient, view: AgentPRView,
+                 judge_dir: str | Path | None = None,
+                 model: str = ""):
         self._llm_client = llm_client
         self._view = view
         self._template = PROMPT_TEMPLATE_PATH.read_text()
+        # When set, dump request/response of every judge LLM call into this
+        # exact directory. The benchmark passes <attempt_dir>/judge/.
+        self._judge_dir_path = Path(judge_dir).expanduser() if judge_dir else None
+        self._model = model
 
     async def evaluate(self, scenario: Scenario) -> JudgeOutput:
         comments = await self._view.get_comments()
         review_status = await self._view.get_review_status()
 
         prompt = _build_prompt(self._template, scenario, comments, review_status)
-        data = self._llm_client.complete_json(prompt)
+        self._trace_request(scenario.id, prompt)
+        try:
+            data = self._llm_client.complete_json(prompt)
+        except Exception as exc:
+            self._trace_error(scenario.id, exc)
+            raise
+        self._trace_response(scenario.id, data)
         output = _interpret(data, scenario.expected_output.required_comments)
         output.comments = comments
         output.review_status = review_status
         return output
+
+    # ── trace helpers ────────────────────────────────────────────────
+    def _judge_dir(self, scenario_id: str) -> Path | None:
+        if self._judge_dir_path is None:
+            return None
+        self._judge_dir_path.mkdir(parents=True, exist_ok=True)
+        return self._judge_dir_path
+
+    def _atomic_write(self, path: Path, data: dict) -> None:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        tmp.replace(path)
+
+    def _trace_request(self, scenario_id: str, prompt: str) -> None:
+        d = self._judge_dir(scenario_id)
+        if not d:
+            return
+        from datetime import datetime
+        self._atomic_write(d / "request.json", {
+            "ts": datetime.now().isoformat(),
+            "model": self._model,
+            "prompt": prompt,
+        })
+
+    def _trace_response(self, scenario_id: str, data: dict) -> None:
+        d = self._judge_dir(scenario_id)
+        if not d:
+            return
+        from datetime import datetime
+        self._atomic_write(d / "response.json", {
+            "ts": datetime.now().isoformat(),
+            "data": data,
+        })
+
+    def _trace_error(self, scenario_id: str, exc: Exception) -> None:
+        d = self._judge_dir(scenario_id)
+        if not d:
+            return
+        from datetime import datetime
+        self._atomic_write(d / "error.json", {
+            "ts": datetime.now().isoformat(),
+            "error": str(exc),
+            "type": type(exc).__name__,
+        })
 
 
 # ── Pure helpers ───────────────────────────────────────────────────
