@@ -104,6 +104,7 @@ def _run_with_dispatcher(
     agent_name: str = "dispatcher",
     extra_data: Optional[dict] = None,
     trace_dir: Optional[str] = None,
+    comment_tag: str = "dg",
 ) -> None:
     """
     Run any agent with lazy repo init.
@@ -286,37 +287,21 @@ def _run_with_dispatcher(
     if findings:
         _print_findings(findings)
 
-    # Post findings as inline comments
-    if pr_url and findings and ctx._initialized:
-        from diffgraph.bitbucket import post_review_comments
-        comments_to_post = [_finding_to_comment(f) for f in findings]
-        changed_lines = {
-            path: set(fd.after_changed_lines)
-            for path, fd in ctx.diff_result.files.items()
-        }
-        console.print(f"\n[bold]Posting[/bold]  {len(comments_to_post)} findings to PR...\n")
-        posted = post_review_comments(
-            pr_url, comments_to_post,
-            on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
-            changed_lines=changed_lines,
-        )
-        console.print(f"\n[green]Posted {posted}/{len(comments_to_post)} comments[/green]")
-
-    # Post replies and resolves
-    if pr_url and (review_ctx.comment_replies or review_ctx.comment_resolves):
-        from diffgraph.bitbucket import reply_to_pr_comment, resolve_pr_comment
-        for reply in review_ctx.comment_replies:
-            try:
-                reply_to_pr_comment(pr_url, reply["comment_id"], reply["text"])
-                console.print(f"  [dim]replied to #{reply['comment_id']}[/dim]")
-            except Exception as exc:
-                console.print(f"  [yellow]reply #{reply['comment_id']} failed: {exc}[/yellow]")
-        for cid in review_ctx.comment_resolves:
-            try:
-                resolve_pr_comment(pr_url, cid)
-                console.print(f"  [dim]resolved #{cid}[/dim]")
-            except Exception as exc:
-                console.print(f"  [yellow]resolve #{cid} failed: {exc}[/yellow]")
+    from diffgraph.comment_meta import build_comment_meta
+    meta = build_comment_meta(
+        prompt_source=str(prompt_source),
+        prompt_hash=mutation if mutation != "unknown" else "",
+        run_id=_trace_db.run_id,
+        prefix=comment_tag,
+    )
+    _publish_to_pr(
+        pr_url,
+        findings=findings if ctx._initialized else (),
+        replies=review_ctx.comment_replies,
+        resolves=review_ctx.comment_resolves,
+        diff_result=ctx.diff_result if ctx._initialized else None,
+        meta=meta,
+    )
 
     # Cleanup cloned repo if it was created
     if _cleanup_fn["fn"]:
@@ -343,6 +328,7 @@ def run(
     provider:      Optional[str] = typer.Option(None,  "--provider",           help="LLM provider profile from ~/.llm_creds.toml (e.g. deepseek, qwen3-coder)"),
     trace_dir:     Optional[str] = typer.Option(None,  "--trace-dir",          help="Mirror traces to a filesystem layout (in addition to SQLite). Defaults to $DIFFGRAPH_TRACE_DIR."),
     bot_user:      Optional[str] = typer.Option(None,  "--bot-user",           help="Bitbucket slug of the bot account. Own comments are tagged [SELF]. Overrides review.bot_user from config and $BOT_USER."),
+    comment_tag:   Optional[str] = typer.Option(None,  "--comment-tag",        help="Prefix for the traceability footer appended to posted comments (`<prefix>:<gen>:<mutation>:<run>`). Empty string disables. Overrides review.comment_tag (default: dg)."),
     output:        Optional[str] = typer.Option(None,  "--output",       "-o", help="Write findings as JSON to file"),
     max_steps:     Optional[int] = typer.Option(None,  "--max-steps",          help="Max ReAct steps (default: from config)"),
     max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
@@ -410,6 +396,15 @@ def run(
     if bot_user_resolved:
         review_cfg["bot_user"] = bot_user_resolved
 
+    # comment_tag precedence: --comment-tag > config.review.comment_tag > "dg".
+    # Empty string ("") explicitly disables tagging.
+    if comment_tag is not None:
+        comment_tag_resolved = comment_tag
+    elif "comment_tag" in review_cfg:
+        comment_tag_resolved = review_cfg["comment_tag"]
+    else:
+        comment_tag_resolved = "dg"
+
     effective_model     = llm_cfg.get("model", "gpt-4o-mini")
     effective_steps     = max_steps  if max_steps  is not None else review_cfg.get("max_steps",  40)
     effective_tokens    = max_tokens if max_tokens is not None else review_cfg.get("max_tokens", 40000)
@@ -450,6 +445,7 @@ def run(
             agent_name=agent_name,
             extra_data=extra_data,
             trace_dir=trace_dir,
+            comment_tag=comment_tag_resolved,
         )
         raise typer.Exit(0)
 
@@ -595,51 +591,21 @@ def run(
     console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")
     console.print(f"[dim]  view:  python cli.py trace --log  |  python cli.py serve[/dim]")
 
-    # Build comment metadata tag for traceability
-    _comment_meta = None
-    if _prompt_info["source"] or _prompt_info["hash"]:
-        src = _prompt_info["source"]
-        gen = src.rstrip("/").rsplit("/", 1)[-1] if "/" in src else src
-        if gen == "prompts" and "/" in src:
-            gen = src.rstrip("/").rsplit("/", 2)[-2]
-        _comment_meta = {
-            "gen": gen,
-            "hash": _prompt_info["hash"][:7] if _prompt_info["hash"] else "",
-            "run": _trace_db.run_id,
-        }
-
-    if pr_url and findings:
-        from diffgraph.bitbucket import post_review_comments
-        comments_to_post = [_finding_to_comment(f) for f in findings]
-        changed_lines = {
-            path: set(fd.after_changed_lines)
-            for path, fd in diff_result.files.items()
-        }
-        console.print(f"\n[bold]Posting[/bold]  {len(comments_to_post)} findings to PR...\n")
-        posted = post_review_comments(
-            pr_url, comments_to_post,
-            on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
-            changed_lines=changed_lines,
-            comment_meta=_comment_meta,
-        )
-        console.print(f"\n[green]Posted {posted}/{len(comments_to_post)} comments[/green]")
-
-    if pr_url:
-        if review_ctx.comment_replies or review_ctx.comment_resolves:
-            from diffgraph.bitbucket import reply_to_pr_comment, resolve_pr_comment
-            for reply in review_ctx.comment_replies:
-                try:
-                    reply_to_pr_comment(pr_url, reply["comment_id"], reply["text"],
-                                        comment_meta=_comment_meta)
-                    console.print(f"  [dim]replied to #{reply['comment_id']}[/dim]")
-                except Exception as exc:
-                    console.print(f"  [yellow]reply #{reply['comment_id']} failed: {exc}[/yellow]")
-            for cid in review_ctx.comment_resolves:
-                try:
-                    resolve_pr_comment(pr_url, cid)
-                    console.print(f"  [dim]resolved #{cid}[/dim]")
-                except Exception as exc:
-                    console.print(f"  [yellow]resolve #{cid} failed: {exc}[/yellow]")
+    from diffgraph.comment_meta import build_comment_meta
+    meta = build_comment_meta(
+        prompt_source=_prompt_info["source"],
+        prompt_hash=_prompt_info["hash"],
+        run_id=_trace_db.run_id,
+        prefix=comment_tag_resolved,
+    )
+    _publish_to_pr(
+        pr_url,
+        findings=findings,
+        replies=review_ctx.comment_replies,
+        resolves=review_ctx.comment_resolves,
+        diff_result=diff_result,
+        meta=meta,
+    )
 
     if output:
         Path(output).write_text(
@@ -1004,6 +970,64 @@ def _finding_to_comment(finding):
     c.comment = body
     c.suggestion = finding.suggestion or None
     return c
+
+
+def _publish_to_pr(
+    pr_url: str,
+    *,
+    findings: list = (),
+    replies: list = (),
+    resolves: list = (),
+    diff_result=None,
+    meta=None,
+) -> None:
+    """
+    Single entry-point for posting all DiffGraph output to a PR.
+
+    Builds the body decorator from `meta` once and applies it uniformly to
+    findings (via post_review_comments) and to reply text. Both flows
+    (dispatcher and direct review) call this helper, so the tagging decision
+    lives in exactly one place.
+    """
+    if not pr_url:
+        return
+
+    decorate = meta.decorate if meta else None
+    from diffgraph.bitbucket import (
+        post_review_comments, reply_to_pr_comment, resolve_pr_comment,
+    )
+
+    if findings:
+        comments_to_post = [_finding_to_comment(f) for f in findings]
+        changed_lines = None
+        if diff_result is not None:
+            changed_lines = {
+                path: set(fd.after_changed_lines)
+                for path, fd in diff_result.files.items()
+            }
+        console.print(f"\n[bold]Posting[/bold]  {len(comments_to_post)} findings to PR...\n")
+        posted = post_review_comments(
+            pr_url, comments_to_post,
+            on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+            changed_lines=changed_lines,
+            decorate=decorate,
+        )
+        console.print(f"\n[green]Posted {posted}/{len(comments_to_post)} comments[/green]")
+
+    for reply in replies:
+        text = decorate(reply["text"]) if decorate else reply["text"]
+        try:
+            reply_to_pr_comment(pr_url, reply["comment_id"], text)
+            console.print(f"  [dim]replied to #{reply['comment_id']}[/dim]")
+        except Exception as exc:
+            console.print(f"  [yellow]reply #{reply['comment_id']} failed: {exc}[/yellow]")
+
+    for cid in resolves:
+        try:
+            resolve_pr_comment(pr_url, cid)
+            console.print(f"  [dim]resolved #{cid}[/dim]")
+        except Exception as exc:
+            console.print(f"  [yellow]resolve #{cid} failed: {exc}[/yellow]")
 
 
 _agent_log = __import__("logging").getLogger("diffgraph.agent")

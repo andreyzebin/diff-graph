@@ -213,7 +213,7 @@ def post_review_comments(
     client_cert: str | None = None,
     on_status: Callable[[str], None] | None = None,
     changed_lines: dict | None = None,
-    comment_meta: dict | None = None,
+    decorate: Callable[[str], str] | None = None,
 ) -> int:
     """
     Post review comments to a Bitbucket Server PR as inline anchored comments.
@@ -224,6 +224,9 @@ def post_review_comments(
     When provided, each comment's line is snapped to the nearest changed line so
     the Bitbucket anchor is valid. Comments whose file has no changed lines are
     posted without an anchor (general PR comment).
+
+    decorate: optional pure text→text post-processor applied to each body
+    before POST (e.g. to append a traceability footer). Transport-agnostic.
     """
     token      = token      or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
     ca_bundle  = ca_bundle  or os.environ.get("REQUESTS_CA_BUNDLE")
@@ -243,7 +246,9 @@ def post_review_comments(
 
     posted = 0
     for c in comments:
-        body = _build_comment_body(c, meta=comment_meta)
+        body = _build_comment_body(c)
+        if decorate:
+            body = decorate(body)
         anchor = _make_anchor(c.file, c.line, changed_lines)
         payload: dict = {"text": body, "severity": _SEV.get(c.severity, "NORMAL")}
         if anchor:
@@ -357,21 +362,18 @@ def reply_to_pr_comment(
     token: str | None = None,
     ca_bundle: str | None = None,
     client_cert: str | None = None,
-    comment_meta: dict | None = None,
 ) -> None:
-    """Post a reply to an existing PR comment thread."""
+    """Post a reply to an existing PR comment thread.
+
+    Posts `text` verbatim — any traceability footer must be applied by the
+    caller (see diffgraph.comment_meta.CommentMeta.decorate).
+    """
     token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
     ca_bundle   = ca_bundle   or os.environ.get("REQUESTS_CA_BUNDLE")
     client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
 
     if not token:
         raise ValueError("BITBUCKET_SERVER_BEARER_TOKEN is required")
-
-    if comment_meta:
-        gen = comment_meta.get("gen", "")
-        h = comment_meta.get("hash", "")
-        run = comment_meta.get("run", "")
-        text += f"\n\n`dg:{gen}:{h}:{run}`"
 
     server_url, project, repo, pr_id = parse_pr_url(pr_url)
     endpoint = (
@@ -503,15 +505,10 @@ def _api_put(url: str, token: str, ca_bundle: str | None, client_cert: str | Non
         raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
 
 
-def _build_comment_body(c, meta: dict | None = None) -> str:
+def _build_comment_body(c) -> str:
     text = c.comment
     if c.suggestion:
         text += f"\n\n**Suggestion:** {c.suggestion}"
-    if meta:
-        gen = meta.get("gen", "")
-        h = meta.get("hash", "")
-        run = meta.get("run", "")
-        text += f"\n\n`dg:{gen}:{h}:{run}`"
     return text
 
 

@@ -218,6 +218,7 @@ python cli.py run --repo . --base HEAD~1
 | `--api-url` / `--api-key` | Endpoint overrides |
 | `--trace-dir` | Mirror traces to a filesystem layout (in addition to SQLite) |
 | `--bot-user` | Bitbucket slug of the bot account; own comments are tagged `[SELF]`. Overrides `$BOT_USER` and `review.bot_user`. |
+| `--comment-tag` | Prefix for the traceability footer appended to every posted comment (`<prefix>:<gen>:<mutation>:<run>`). Empty string disables. Overrides `review.comment_tag` (default: `dg`). |
 | `--output` / `-o` | Write findings as JSON |
 | `--max-steps` | Max ReAct tool calls |
 | `--max-tokens` | Max token budget |

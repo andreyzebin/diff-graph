@@ -31,3 +31,5 @@ review:
   max_steps: 40          # max ReAct tool calls per review
   max_tokens: 40000      # stop agent if cumulative token usage exceeds this
   bot_user: ""           # Bitbucket username/slug of the bot account — own comments marked [SELF]
+  comment_tag: "dg"      # prefix for the traceability footer appended to posted comments
+                         # (`<prefix>:<gen>:<mutation>:<run>`). Empty string disables tagging.
