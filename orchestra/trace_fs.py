@@ -29,7 +29,6 @@ import json
 import logging
 import re
 import threading
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -59,12 +58,14 @@ class TraceFSWriter:
     both without conditional logic.
     """
 
-    def __init__(self, base_dir: str | Path, run_id: str = ""):
-        self.run_id = run_id or str(uuid.uuid4())[:12]
-        self.base_dir = Path(base_dir).expanduser()
-        self.run_dir = self.base_dir / "runs" / self.run_id
+    def __init__(self, run_dir: str | Path):
+        # The caller passes the exact directory to write into. No implicit
+        # `runs/<uuid>/` nesting — that's the caller's job (cli.py wraps
+        # standalone invocations, benchmark dictates its own layout).
+        self.run_dir = Path(run_dir).expanduser()
         (self.run_dir / "agents").mkdir(parents=True, exist_ok=True)
 
+        self.run_id = self.run_dir.name
         self.started_at = datetime.now().isoformat()
         self._lock = threading.Lock()
         self._events_fp = open(self.run_dir / "events.jsonl", "a", encoding="utf-8")

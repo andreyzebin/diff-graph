@@ -212,12 +212,25 @@ def _run_with_dispatcher(
     from orchestra.trace_db import TraceDBWriter
     _trace_db = TraceDBWriter()
 
-    # Optional FS mirror — share the same run_id so DB and FS line up.
+    # Optional FS mirror.
+    # Two modes:
+    #   DIFFGRAPH_TRACE_PATH=<exact-dir>  — parent dictates the layout
+    #                                       (used by the benchmark runner)
+    #   --trace-dir <base>  /  DIFFGRAPH_TRACE_DIR=<base>
+    #                                     — standalone: write into a fresh
+    #                                       <base>/runs/<run-id>/ subdir
     _trace_fs = None
+    fs_path = os.environ.get("DIFFGRAPH_TRACE_PATH")
     fs_target = trace_dir or os.environ.get("DIFFGRAPH_TRACE_DIR")
-    if fs_target:
+    fs_dir = None
+    if fs_path:
+        fs_dir = Path(fs_path).expanduser()
+    elif fs_target:
+        fs_dir = Path(fs_target).expanduser() / "runs" / _trace_db.run_id
+    if fs_dir is not None:
         from orchestra.trace_fs import TraceFSWriter
-        _trace_fs = TraceFSWriter(fs_target, run_id=_trace_db.run_id)
+        fs_dir.mkdir(parents=True, exist_ok=True)
+        _trace_fs = TraceFSWriter(fs_dir)
 
     event_handler = _make_event_handler(effective_model)
 
