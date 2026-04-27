@@ -17,6 +17,7 @@ Multi-agent PR code reviewer powered by the **Orchestra** framework. All agents 
   - [Three-phase review](#three-phase-review-methodology)
 - [Orchestra Framework](#orchestra-framework)
 - [Architecture](#architecture)
+- [Running as systemd services on RHEL](#running-as-systemd-services-on-rhel)
 - [Docker](docker/README.md)
 
 ```
@@ -395,6 +396,116 @@ tracing/                     Trace web server (FastAPI + Alpine.js)
 evolution/                   Self-sustaining prompt development
 docker/                      Dockerfile + entrypoint
 ```
+
+## Running as systemd services on RHEL
+
+Two daemons ship with DiffGraph:
+
+- **Webhook router** — `python -m webhook --config webhook.toml` (default port `8000`)
+- **Trace server** — FastAPI UI over `~/.diffgraph/traces.db` (default port `8080`)
+
+Systemd unit templates + install/reload helpers live under `scripts/`.
+
+### Prerequisites
+
+Clone the repo, create the venv, install deps, and fill in configs as usual:
+
+```bash
+cd /opt/diffgraph                            # or wherever you checked out the repo
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env                         # edit: API keys, tokens, CA bundle
+cp webhook/config.example.toml webhook.toml  # edit: routes, agents
+cp config.yaml config.local.yaml             # edit: LLM api_url / model
+```
+
+`.env` with `export KEY=value` lines works as-is — the units source it via `bash -lc 'set -a && source .env && exec ...'`.
+
+### Install
+
+```bash
+sudo ./scripts/install-services.sh
+# or, to install as a dedicated user that owns the checkout:
+sudo INSTALL_USER=diffgraph ./scripts/install-services.sh
+```
+
+The installer:
+
+1. Substitutes `__INSTALL_DIR__` / `__USER__` in the unit templates.
+2. Writes `diffgraph-webhook.service` and `diffgraph-trace.service` to `/etc/systemd/system/`.
+3. `systemctl daemon-reload && systemctl enable --now` both units.
+
+Ports are overridable via `.env`: `export WEBHOOK_PORT=8000` / `export TRACE_PORT=8080`.
+
+SELinux: if the repo lives outside a standard location (`/home/...`, `/opt/...`), you may need `chcon -R -t bin_t .venv/bin` or run `semanage fcontext` — check `journalctl` for `avc: denied`.
+
+Firewall (firewalld):
+
+```bash
+sudo firewall-cmd --permanent --add-port=8000/tcp
+sudo firewall-cmd --permanent --add-port=8080/tcp
+sudo firewall-cmd --reload
+```
+
+### Manage
+
+```bash
+sudo systemctl status  diffgraph-webhook diffgraph-trace
+sudo systemctl restart diffgraph-webhook diffgraph-trace
+sudo systemctl stop    diffgraph-webhook diffgraph-trace
+sudo systemctl disable diffgraph-webhook diffgraph-trace   # stop auto-start on boot
+```
+
+### Logs
+
+Both services log to the systemd journal under their `SyslogIdentifier`:
+
+```bash
+# Follow live
+journalctl -u diffgraph-webhook -f
+journalctl -u diffgraph-trace -f
+
+# Last N lines
+journalctl -u diffgraph-webhook -n 200 --no-pager
+
+# Since a time window
+journalctl -u diffgraph-webhook --since "1 hour ago"
+journalctl -u diffgraph-webhook --since today
+
+# Errors only
+journalctl -u diffgraph-webhook -p err
+
+# Both at once, live
+journalctl -u diffgraph-webhook -u diffgraph-trace -f
+```
+
+### Reload after `git pull` or config change
+
+```bash
+# After pulling new sources (runs: git pull → pip install -r requirements.txt → restart both)
+./scripts/reload-services.sh
+
+# After editing only webhook.toml / config.local.yaml / .env (no code pull, no pip)
+./scripts/reload-services.sh --no-pull --no-pip
+
+# Restart only one service
+./scripts/reload-services.sh --no-pull --no-pip webhook
+./scripts/reload-services.sh --no-pull --no-pip trace
+```
+
+Run the reload script as the checkout's owner (NOT root) — it needs `git pull` rights on the working tree and uses `sudo systemctl restart` only for the final step.
+
+### Updating the unit files themselves
+
+If you edit anything under `scripts/*.service`, rerun the installer to push the new version to `/etc/systemd/system/`:
+
+```bash
+sudo ./scripts/install-services.sh
+```
+
+`daemon-reload` happens automatically.
+
+---
 
 ## Tests
 

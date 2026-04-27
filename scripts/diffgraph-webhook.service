@@ -1,0 +1,25 @@
+[Unit]
+Description=DiffGraph Webhook Router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__INSTALL_DIR__
+
+# Load .env (supports "export KEY=value" lines)
+ExecStart=/bin/bash -lc 'set -a && source .env && exec .venv/bin/python -m webhook --config webhook.toml --host 0.0.0.0 --port ${WEBHOOK_PORT:-8000}'
+
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=diffgraph-webhook
+
+[Install]
+WantedBy=multi-user.target

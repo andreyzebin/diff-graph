@@ -1,0 +1,25 @@
+[Unit]
+Description=DiffGraph Trace Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__INSTALL_DIR__
+
+# Load .env (supports "export KEY=value" lines). TRACE_BASE_PATH optional for reverse proxy.
+ExecStart=/bin/bash -lc 'set -a && source .env && exec .venv/bin/python -c "import uvicorn; from tracing.server.app import app; uvicorn.run(app, host=\"0.0.0.0\", port=int(\"${TRACE_PORT:-8080}\"), log_level=\"info\")"'
+
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=diffgraph-trace
+
+[Install]
+WantedBy=multi-user.target
