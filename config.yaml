@@ -21,14 +21,20 @@ agent:
   #   Use when the agent is invoked via CLI (e.g. pr-agent, custom scripts).
   #   The command is executed via the shell so source, pipes, etc. work.
   #   Placeholders available in the command string:
-  #     {pr_url}  — full Bitbucket PR URL
-  #     {pr_id}   — integer PR ID
+  #     {pr_url}    — full Bitbucket PR URL
+  #     {pr_id}     — integer PR ID
+  #     {provider}  — LLM provider profile name (only used with -p / --all-providers)
   #   Example:
   #     trigger: "cli"
   #     command: 'source .env && python pr_agent/cli.py --pr_url="{pr_url}" improve --extended'
   #     cwd: "/path/to/pr-agent"
   #     timeout_seconds: 300
   #     output: "stream"   # stream — single updating line / log — one line per output (default)
+  #   For LLM matrix runs, list provider profile names (from ~/repos/.llm_creds.toml):
+  #     providers:
+  #       - deepseek
+  #       - qwen3-6
+  #   Then run: cli.py run --all-providers   (or -p deepseek -p qwen3-6 ad-hoc)
   trigger: "http"
   base_url: "http://localhost:8080"   # used only when trigger=http
   api_key: "${AGENT_API_KEY}"         # used only when trigger=http
