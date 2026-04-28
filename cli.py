@@ -408,6 +408,20 @@ async def _run_async(
             prov_results.append(result)
             results.append(result)
 
+            # Pull prompt generation/mutation from the agent's own run.json
+            # so the benchmark surfaces which prompt set actually ran.
+            generation = ""
+            mutation = ""
+            if agent_dir is not None and (agent_dir / "run.json").exists():
+                try:
+                    agent_run = json.loads((agent_dir / "run.json").read_text())
+                    generation = agent_run.get("prompt_source", "") or ""
+                    if generation and "/" in generation:
+                        generation = generation.rsplit("/", 1)[-1]
+                    mutation = agent_run.get("prompt_hash", "") or ""
+                except Exception:
+                    pass
+
             # Persist per-attempt result.json
             if attempt_dir is not None:
                 (attempt_dir / "result.json").write_text(json.dumps({
@@ -419,12 +433,15 @@ async def _run_async(
                     "comments": result.total_comments,
                     "duration_seconds": result.duration_seconds,
                     "error": result.error,
+                    "generation": generation,
+                    "mutation": mutation,
                 }, ensure_ascii=False, indent=2))
                 summary_rows.append({
                     "provider": prov_label, "scenario": s.id,
                     "attempt": attempt_dir.name, "score": result.score,
                     "verdict": result.verdict, "comments": result.total_comments,
                     "duration_seconds": result.duration_seconds,
+                    "generation": generation, "mutation": mutation,
                     "path": str(attempt_dir.relative_to(session_dir)),
                 })
 
@@ -469,12 +486,27 @@ async def _run_async(
         f"[bold]Overall : {passed}/{len(results)} passed   "
         f"avg_score={avg_score:.2f}   total={total_time:.1f}s[/bold]"
     )
+    seen_generations = sorted({r.get("generation", "") for r in summary_rows if r.get("generation")})
+    seen_mutations = sorted({r.get("mutation", "") for r in summary_rows if r.get("mutation")})
+    if seen_generations or seen_mutations:
+        gen_str = ", ".join(seen_generations) or "(none)"
+        mut_str = ", ".join(seen_mutations) or "(none)"
+        console.print(f"Prompts : generation=[cyan]{gen_str}[/cyan]  mutation=[cyan]{mut_str}[/cyan]")
 
     # Write the bench session summary alongside bench.json.
     if session_dir is not None:
+        # Collect distinct prompt generations/mutations seen across the run.
+        # Usually one each; multiple values mean attempts were inconsistent
+        # (e.g. caller passed --prompts to some routes and not others).
+        generations = sorted({r["generation"] for r in summary_rows if r.get("generation")})
+        mutations = sorted({r["mutation"] for r in summary_rows if r.get("mutation")})
         summary = {
             "session_id": session_dir.name,
             "finished_at": datetime.datetime.utcnow().isoformat(),
+            "prompts": {
+                "generations": generations,
+                "mutations": mutations,
+            },
             "totals": {
                 "passed": passed,
                 "total": len(results),
