@@ -25,9 +25,13 @@ async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Tri
     if any (rare for auto-triggered scenarios), then the configured
     trigger (HttpTrigger / WebhookTrigger / CliTrigger) fires.
     """
-    for body in scenario.setup.seed_comments:
+    n_seeds = len(scenario.setup.seed_comments)
+    if n_seeds:
+        print(f"   ↻  posting {n_seeds} seed comment(s)...", flush=True)
+    for i, body in enumerate(scenario.setup.seed_comments, start=1):
         try:
             await proxy.add_comment(body)
+            print(f"   ↻  [{i}/{n_seeds}] seeded: {body[:60]}{'…' if len(body) > 60 else ''}", flush=True)
             await asyncio.sleep(0.5)   # space out so order is preserved
         except NotImplementedError:
             log.warning("scenario %s: proxy does not support add_comment, "
@@ -39,12 +43,14 @@ async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Tri
     if scenario.trigger.type == "comment" and scenario.trigger.text:
         # Posting the trigger comment fires `pr:comment:added` directly,
         # so for comment-mode scenarios we don't call trigger.activate().
+        print(f"   ↻  trigger comment: {scenario.trigger.text[:80]}", flush=True)
         try:
             await proxy.add_comment(scenario.trigger.text)
         except Exception as exc:
             raise RuntimeError(f"trigger comment failed: {exc}") from exc
         # Give the webhook + agent time to work. Wait for the agent to
         # reply, with a budget; fall back to a fixed sleep on timeout.
+        print(f"   ↻  waiting for agent reply (up to 600s)...", flush=True)
         await _wait_for_agent_reply(proxy, timeout=600)
         return
 
@@ -56,14 +62,22 @@ async def _wait_for_agent_reply(proxy: AgentPRView, timeout: int = 600) -> None:
     """Poll the PR for any agent-authored comment that didn't exist before."""
     deadline = time.monotonic() + timeout
     seen_pre = {c.id for c in await proxy.get_comments()}
+    last_log = time.monotonic()
     while time.monotonic() < deadline:
         await asyncio.sleep(5)
         try:
             now = await proxy.get_comments()
         except Exception:
             continue
-        if any(c.id not in seen_pre for c in now):
+        new_ids = [c.id for c in now if c.id not in seen_pre]
+        if new_ids:
+            print(f"   ↻  agent replied (comment id={new_ids[0]})", flush=True)
             return
+        if time.monotonic() - last_log >= 30:
+            elapsed = int(time.monotonic() - (deadline - timeout))
+            print(f"   ↻  still waiting... ({elapsed}s elapsed, "
+                  f"{len(now)} agent-authored comment(s) seen so far)", flush=True)
+            last_log = time.monotonic()
     log.warning("agent did not reply within %ds — proceeding to judge anyway", timeout)
 
 
