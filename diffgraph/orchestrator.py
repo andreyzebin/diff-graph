@@ -101,8 +101,6 @@ def run_review(
     prompt_resource: Optional[str] = None,
     tool_choice: str = "",
     bot_user: str = "",
-    stream: Optional[bool] = None,
-    extra_body: Optional[dict] = None,
 ) -> tuple[list[ReviewFinding], ReviewContext]:
     """Run lead agent directly (no dispatcher). For --pr-url without --message."""
     diff_result = parse_diff(diff_text)
@@ -128,8 +126,6 @@ def run_review(
         trace_writer=trace_writer,
         prompt_resource=prompt_resource,
         tool_choice=tool_choice,
-        stream=stream,
-        extra_body=extra_body,
     )
 
     raw_findings = result.get("findings", result.get("tasks", []))
