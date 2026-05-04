@@ -4,6 +4,8 @@
 @tools: reply_to_comment, resolve_comment
 @budget: 30000 tokens, 10 steps
 @llm: temperature=0.3
+@guards:
+  text_response: "You wrote a plain text response, but the user can ONLY see tool calls. If COMMENT_ID > 0, call reply_to_comment(comment_id={comment_id}, text=...) with what you wrote. If COMMENT_ID == 0, call done(findings=[...]) — copy the findings array from the previous spawn_agent(reviewer) tool result verbatim. Do NOT write text — call a tool."
 @data:
   message: string -- the full user message (may contain /command, or just plain text). Empty string when invoked outside a PR comment.
   comment_id: integer -- ID of the invoking comment. 0 means no comment context (CLI / auto-trigger / benchmark).
