@@ -13,9 +13,15 @@ from runner.scorer import ScenarioResult, score_scenario
 log = logging.getLogger(__name__)
 
 
-async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Trigger) -> None:
+async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Trigger) -> list[int]:
     """
     Apply scenario.setup.seed_comments, then fire the trigger.
+
+    Returns the list of comment ids the runner itself posted (seed
+    comments + trigger comment) so the judge can exclude them from the
+    agent's replies — with a single Bitbucket account everything is
+    authored by the same user, and without this filter the judge sees
+    `/help` (the trigger) and concludes the agent "merely echoed".
 
     For trigger.type == "comment": seed comments are posted in Bitbucket
     so the agent has thread context, then the trigger.text is posted as
@@ -26,12 +32,16 @@ async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Tri
     For trigger.type == "auto" (default): trigger fires as before (e.g.
     CliTrigger with the review command, or WebhookTrigger).
     """
+    posted_ids: list[int] = []
+
     n_seeds = len(scenario.setup.seed_comments)
     if n_seeds:
         print(f"   ↻  posting {n_seeds} seed comment(s)...", flush=True)
     for i, body in enumerate(scenario.setup.seed_comments, start=1):
         try:
-            await proxy.add_comment(body)
+            cid = await proxy.add_comment(body)
+            if cid:
+                posted_ids.append(cid)
             print(f"   ↻  [{i}/{n_seeds}] seeded: {body[:60]}{'…' if len(body) > 60 else ''}", flush=True)
             await asyncio.sleep(0.5)   # space out so order is preserved
         except NotImplementedError:
@@ -49,6 +59,7 @@ async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Tri
             raise RuntimeError(f"trigger comment failed: {exc}") from exc
         if not comment_id:
             raise RuntimeError("trigger comment returned id=0 — can't drive agent")
+        posted_ids.append(comment_id)
 
         # Run the agent CLI locally with the dispatcher inputs. The
         # configured CliTrigger command must accept {message} and
@@ -66,10 +77,11 @@ async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Tri
                 "configured trigger does not support interaction scenarios; "
                 "update CliTrigger or pin to one that does"
             )
-        return
+        return posted_ids
 
     # Default path: existing trigger strategies (http / webhook / cli)
     await trigger.activate(proxy)
+    return posted_ids
 
 
 async def run_scenario(
@@ -80,8 +92,9 @@ async def run_scenario(
 ) -> ScenarioResult:
     start = time.monotonic()
 
+    posted_ids: list[int] = []
     try:
-        await _seed_and_trigger(scenario, proxy, trigger)
+        posted_ids = await _seed_and_trigger(scenario, proxy, trigger)
     except Exception as e:
         return ScenarioResult(
             scenario_id=scenario.id,
@@ -101,7 +114,7 @@ async def run_scenario(
             pr_url=proxy.pr_url,
         )
 
-    judge_output = await judge.evaluate(scenario=scenario)
+    judge_output = await judge.evaluate(scenario=scenario, exclude_comment_ids=set(posted_ids))
     duration = time.monotonic() - start
 
     result = score_scenario(

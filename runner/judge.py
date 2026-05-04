@@ -177,9 +177,18 @@ class LLMJudge(Judge):
         self._judge_dir_path = Path(judge_dir).expanduser() if judge_dir else None
         self._model = model
 
-    async def evaluate(self, scenario: Scenario) -> JudgeOutput:
+    async def evaluate(self, scenario: Scenario,
+                       exclude_comment_ids: set[int] | None = None) -> JudgeOutput:
         comments = await self._view.get_comments()
         review_status = await self._view.get_review_status()
+
+        # When the bench posts seed_comments + the trigger comment via the
+        # same Bitbucket account as the agent (single-token setup), those
+        # ids land in `comments` too. Filter them out so the judge only
+        # sees the agent's actual replies.
+        exclude_comment_ids = exclude_comment_ids or set()
+        if exclude_comment_ids:
+            comments = [c for c in comments if c.id not in exclude_comment_ids]
 
         # Interaction scenarios (/ask /help): score the agent's reply text
         # against expected_output.reply, plus check side_effects.
@@ -188,7 +197,8 @@ class LLMJudge(Judge):
                 full_thread = await self._view.get_all_comments()
             except NotImplementedError:
                 full_thread = comments
-            prompt = _build_reply_prompt(scenario, full_thread, comments)
+            prompt = _build_reply_prompt(scenario, full_thread, comments,
+                                         exclude_comment_ids)
             self._trace_request(scenario.id, prompt)
             try:
                 data = self._llm_client.complete_json(prompt)
@@ -353,24 +363,22 @@ def _format_comments(comments: list[CommentThread]) -> str:
 
 REPLY_PROMPT = """You are an LLM-as-judge evaluating a CONVERSATIONAL agent on a Bitbucket PR.
 
-The agent is supposed to reply IN THE THREAD to a user message. You score the reply against
-explicit expectations: what topics it MUST mention, what question it MUST address, and
-which topics MUST be absent.
+The agent is supposed to reply IN THE THREAD to a user message. You score ONLY the
+agent's reply text — not the user's messages — against explicit expectations.
 
-CONVERSATION (full thread, oldest → newest):
+CONVERSATION (full thread, oldest → newest, each line tagged USER or AGENT):
 {thread}
 
-USER REQUEST that triggered the agent:
+USER REQUEST that triggered the agent (also visible in the thread above):
 {trigger_text}
 
 EXPECTED REPLY:
 {expectations}
 
-AGENT'S OWN COMMENTS posted on this PR:
+AGENT'S REPLY TEXT (this is what you score — collected by author from the thread):
 {agent_comments}
 
-INLINE COMMENTS POSTED BY AGENT:
-{inline_count}
+INLINE COMMENTS POSTED BY AGENT (count): {inline_count}
 
 Return STRICT JSON, no prose:
 {{
@@ -387,8 +395,12 @@ Return STRICT JSON, no prose:
 }}
 
 Scoring rubric:
-- Each must_mention row matches if any of its alternatives appears semantically (synonyms ok).
-- must_address checks the agent gave an explicit answer to the user's question (yes/no, fixed/not, etc).
+- Score the AGENT's text only. Lines tagged USER are the conversation context, NOT
+  the agent's output — never count them as "the agent merely echoed X".
+- Each must_mention row matches if any of its alternatives appears semantically (synonyms ok)
+  in the agent's reply.
+- must_address checks the agent gave an explicit answer to the user's question
+  (yes/no, fixed/not, etc) in its reply.
 - forbidden_topics counts a hit if the agent introduced a topic not asked about.
 - side_effects: scenario specifies whether inline_comments / status changes are allowed.
 - overall_score: weighted average. Subtract heavily for missing must_address (that's the whole point).
@@ -396,7 +408,8 @@ Scoring rubric:
 
 
 def _build_reply_prompt(scenario: Scenario, full_thread: list[CommentThread],
-                        agent_comments: list[CommentThread]) -> str:
+                        agent_comments: list[CommentThread],
+                        exclude_comment_ids: set[int] | None = None) -> str:
     eo = scenario.expected_output
     reply = eo.reply
     expectations = json.dumps({
@@ -413,9 +426,17 @@ def _build_reply_prompt(scenario: Scenario, full_thread: list[CommentThread],
         },
     }, ensure_ascii=False, indent=2)
 
-    thread = "\n".join(
-        f"[{i+1}] {c.text}" for i, c in enumerate(full_thread)
-    ) or "(empty thread)"
+    # Tag each thread comment so the judge can tell who said what even
+    # though everything came from the same Bitbucket account. Comments
+    # whose id is in exclude_comment_ids were posted by the bench itself
+    # (seed messages + the trigger /command); everything else is the
+    # agent's reply.
+    exclude = exclude_comment_ids or set()
+    thread_lines = []
+    for i, c in enumerate(full_thread, start=1):
+        role = "USER" if c.id in exclude else "AGENT"
+        thread_lines.append(f"[{i}] ({role}) {c.text}")
+    thread = "\n".join(thread_lines) or "(empty thread)"
 
     inline_count = sum(1 for c in agent_comments if c.anchor)
 
