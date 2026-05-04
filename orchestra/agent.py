@@ -414,8 +414,18 @@ class Agent:
                                tok_cached=self.budget_state.tokens_cached)
 
             if not msg.tool_calls:
-                # Check text_response guard
+                # Re-prompt sequence when the model emits text without any
+                # tool call:
+                #   1) text_response guard — generic "you must call a tool"
+                #   2) require_tool:<name> guards — fire if a mandatory tool
+                #      (typically `done`) was never called. Without this the
+                #      agent natural-stops with output=None, the caller sees
+                #      no findings, and side-effects already produced
+                #      (e.g. reply_to_comment) silently get duplicated when
+                #      the LLM is later asked to "call a tool" again.
                 guard_msg = self._check_guard("text_response", _guard_retries, _MAX_GUARD_RETRIES)
+                if guard_msg is None:
+                    guard_msg = self._check_require_tool_guards(_called_tools, _guard_retries, _MAX_GUARD_RETRIES)
                 if guard_msg:
                     messages.append({"role": "assistant", "content": msg.content or ""})
                     messages.append({"role": "user", "content": guard_msg})
