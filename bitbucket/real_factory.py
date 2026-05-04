@@ -141,6 +141,9 @@ class RealBitbucketPRProxy(AgentPRView):
         Returns the new comment id (for follow-up replies in a thread).
         Goes through the SDK request layer so verify/cert and the
         XSRF-noop header are applied — same pattern as _decline_via_rest.
+
+        Pass body via `json=` so the SDK sets Content-Type: application/json;
+        Bitbucket rejects this endpoint with HTTP 415 otherwise.
         """
         path = (
             f"rest/api/1.0/projects/{self._project}/repos/{self._repo}"
@@ -151,7 +154,7 @@ class RealBitbucketPRProxy(AgentPRView):
             body["parent"] = {"id": parent_id}
         resp = await self._run(
             self._client.post, path,
-            data=body,
+            json=body,
             headers={"X-Atlassian-Token": "no-check"},
             advanced_mode=True,
         )
