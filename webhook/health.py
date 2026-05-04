@@ -99,6 +99,7 @@ async def _runner(hc: HealthCheck) -> None:
     log.info("health[%s] scheduled every %ds  window=%s  tz=%s  days=%s",
              hc.name, hc.interval_seconds, hc.time_window or "always",
              hc.timezone, hc.days or "all")
+    skip_count = 0
     while True:
         try:
             now = datetime.now(tz) if tz else datetime.now()
@@ -106,8 +107,14 @@ async def _runner(hc: HealthCheck) -> None:
                 # Run in background so a slow cold-start (10–15 min) doesn't
                 # delay the next interval tick.
                 asyncio.create_task(_run_once(hc))
+                skip_count = 0
             else:
-                log.debug("health[%s] outside window, skipping", hc.name)
+                # Heartbeat: log every Nth skip at INFO so the operator can
+                # tell the runner is alive even outside the active window.
+                skip_count += 1
+                if skip_count == 1 or skip_count % 20 == 0:
+                    log.info("health[%s] outside window (now=%s) — sleeping",
+                             hc.name, now.strftime("%a %H:%M %Z"))
             await asyncio.sleep(hc.interval_seconds)
         except asyncio.CancelledError:
             return
