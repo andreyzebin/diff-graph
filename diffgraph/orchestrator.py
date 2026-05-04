@@ -279,13 +279,22 @@ def _parse_findings(raw: list) -> list[ReviewFinding]:
     _order = {"BLOCKER": 0, "MAJOR": 1, "MINOR": 2, "COMMENT": 3}
     findings = []
     for f in raw:
-        if not isinstance(f, dict) or "file" not in f:
+        if not isinstance(f, dict) or not f.get("file"):
             continue
+        # Models occasionally emit `line: null` (or strings, or floats) and
+        # skip optional fields — coerce defensively so a single quirky
+        # finding doesn't crash the whole post-run path.
+        try:
+            line = int(f.get("line") or 1)
+        except (TypeError, ValueError):
+            line = 1
         findings.append(ReviewFinding(
-            file=f["file"], line=int(f.get("line", 1)),
-            severity=f.get("severity", "MINOR"), title=f.get("title", ""),
-            explanation=f.get("explanation", ""), evidence=f.get("evidence", ""),
-            suggestion=f.get("suggestion", ""),
+            file=str(f["file"]), line=line,
+            severity=str(f.get("severity") or "MINOR"),
+            title=str(f.get("title") or ""),
+            explanation=str(f.get("explanation") or ""),
+            evidence=str(f.get("evidence") or ""),
+            suggestion=str(f.get("suggestion") or ""),
         ))
     return sorted(findings, key=lambda f: _order.get(f.severity, 2))
 
