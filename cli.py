@@ -542,6 +542,8 @@ def run(
         max_tokens=effective_tokens,
         tool_choice=llm_cfg.get("tool_choice", ""),
         bot_user=review_cfg.get("bot_user", ""),
+        stream=llm_cfg.get("stream"),
+        extra_body=llm_cfg.get("extra_body"),
     )
 
     _root_agent_ref: dict = {"agent": None}
