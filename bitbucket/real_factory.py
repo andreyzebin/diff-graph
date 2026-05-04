@@ -95,35 +95,8 @@ class RealBitbucketPRProxy(AgentPRView):
 
     async def get_comments(self) -> list[CommentThread]:
         """Return comments posted by the agent account only."""
-        activities = await self._run(
-            lambda: list(self._client.get_pull_requests_activities(
-                self._project, self._repo, self._pr_id
-            ))
-        )
-        raw = [
-            a["comment"] for a in (activities or [])
-            if a.get("action") == "COMMENTED" and "comment" in a
-        ]
-        comments = []
-        for item in raw:
-            author = item.get("author", {})
-            if author.get("slug") != self._agent_username:
-                continue
-            anchor_data = item.get("anchor")
-            anchor = None
-            if anchor_data:
-                anchor = CommentAnchor(
-                    path=anchor_data.get("path", ""),
-                    line=anchor_data.get("line", 0),
-                    line_type=anchor_data.get("lineType", "ADDED"),
-                )
-            comments.append(CommentThread(
-                id=item["id"],
-                text=item.get("text", ""),
-                anchor=anchor,
-                severity=item.get("severity", "NORMAL"),
-            ))
-        return comments
+        return [c for c in await self._fetch_all_comments()
+                if c._author == self._agent_username]
 
     async def add_reviewer(self, username: str) -> None:
         """Add *username* as a reviewer, triggering any configured Bitbucket webhooks."""
@@ -169,17 +142,30 @@ class RealBitbucketPRProxy(AgentPRView):
 
     async def get_all_comments(self) -> list[CommentThread]:
         """Return every comment on the PR, regardless of author."""
+        return await self._fetch_all_comments()
+
+    async def _fetch_all_comments(self) -> list[CommentThread]:
+        """Walk PR activity, flatten root + nested replies into one list.
+
+        Bitbucket Server's activity API returns each top-level COMMENTED
+        activity as { "comment": { ..., "comments": [reply, ...] } } — the
+        replies are nested INSIDE the root comment's `comments` field, not
+        as separate activities. Earlier versions only consumed the root,
+        so reply_to_comment() outputs were invisible to the bench.
+        """
         activities = await self._run(
             lambda: list(self._client.get_pull_requests_activities(
                 self._project, self._repo, self._pr_id
             ))
         )
-        raw = [
+        roots = [
             a["comment"] for a in (activities or [])
             if a.get("action") == "COMMENTED" and "comment" in a
         ]
-        comments = []
-        for item in raw:
+        flat: list[CommentThread] = []
+        stack = list(roots)
+        while stack:
+            item = stack.pop()
             anchor_data = item.get("anchor")
             anchor = None
             if anchor_data:
@@ -188,13 +174,20 @@ class RealBitbucketPRProxy(AgentPRView):
                     line=anchor_data.get("line", 0),
                     line_type=anchor_data.get("lineType", "ADDED"),
                 )
-            comments.append(CommentThread(
+            ct = CommentThread(
                 id=item.get("id", 0),
                 text=item.get("text", ""),
                 anchor=anchor,
                 severity=item.get("severity", "NORMAL"),
-            ))
-        return comments
+            )
+            # Stash author on the dataclass instance for downstream filter.
+            # CommentThread doesn't carry author publicly to keep the API
+            # narrow; this is bench-internal state.
+            ct._author = item.get("author", {}).get("slug", "")
+            flat.append(ct)
+            for child in item.get("comments", []) or []:
+                stack.append(child)
+        return flat
 
     async def get_review_status(self) -> ReviewStatus | None:
         """Return the review status set by the agent account, or None."""
