@@ -23,6 +23,7 @@ app = FastAPI(title="DiffGraph Webhook Router")
 
 _config: WebhookConfig | None = None
 _config_path: str | Path = ""
+_health_tasks: list[asyncio.Task] = []
 
 
 def init_app(config_path: str | Path) -> FastAPI:
@@ -30,8 +31,25 @@ def init_app(config_path: str | Path) -> FastAPI:
     global _config, _config_path
     _config_path = config_path
     _config = load_config(config_path)
-    log.info("loaded %d agents, %d routes", len(_config.agents), len(_config.routes))
+    log.info("loaded %d agents, %d routes, %d health checks",
+             len(_config.agents), len(_config.routes), len(_config.health_checks))
     return app
+
+
+@app.on_event("startup")
+async def _start_background_tasks() -> None:
+    """Spawn the health-check scheduler once the event loop is running."""
+    global _health_tasks
+    if _config and _config.health_checks:
+        from .health import start_scheduler
+        _health_tasks = start_scheduler(_config.health_checks)
+
+
+@app.on_event("shutdown")
+async def _stop_background_tasks() -> None:
+    for t in _health_tasks:
+        t.cancel()
+    _health_tasks.clear()
 
 
 @app.post("/webhook")

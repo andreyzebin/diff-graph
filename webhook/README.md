@@ -62,6 +62,23 @@ timeout = 600
 #   --prompts <uri>     pin prompts (path, file://, bitbucket://...). The
 #                       directory name → generation; content hash → mutation
 #                       (visible to the dispatcher prompt and trace DB).
+```
+
+## Health checks
+
+Rented-GPU vLLM endpoints suspend after ~30 min idle and take 10–15 min
+to cold-start. The router can keep one or more endpoints warm by firing
+a tiny `cli.py health` ping on a schedule.
+
+```toml
+[[health]]
+name             = "qwen3-6"
+command          = "cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py health --provider qwen3-6 -q"
+interval_seconds = 180          # every 3 min
+timeout_seconds  = 1200         # tolerate cold start (20 min)
+time_window      = "09:00-19:00"
+timezone         = "Europe/Moscow"
+days             = [1, 2, 3, 4, 5]  # Mon-Fri (empty/omitted = every day)
 
 # PR-Agent — forward raw event
 [agents.pra]

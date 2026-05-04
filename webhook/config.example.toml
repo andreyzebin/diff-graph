@@ -73,3 +73,23 @@ name = "default"
 when = "true"
 agent = "dg"
 review = "dg-review"          # /review and auto-review → direct reviewer
+
+# ── Health checks (optional) ────────────────────────────────────────
+# Keep rented-GPU vLLM endpoints warm during working hours. Each entry
+# fires `command` every `interval_seconds` while the local time falls
+# inside `time_window` (timezone-aware) and `days` (ISO weekdays
+# 1=Mon..7=Sun, empty = all). The command is opaque — typically
+# `cli.py health --provider <name> -q`, but anything that exits 0 = ok.
+#
+# A non-zero exit, a timeout, or a launch error is logged at WARNING.
+# Cold-start latency is up to 10–15 min on rented GPUs, so set
+# timeout_seconds generously (1200s default = 20 min).
+#
+# [[health]]
+# name = "qwen3-6"
+# command = "cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py health --provider qwen3-6 -q"
+# interval_seconds = 180        # every 3 min
+# timeout_seconds  = 1200       # tolerate cold-start
+# time_window      = "09:00-19:00"
+# timezone         = "Europe/Moscow"
+# days             = [1, 2, 3, 4, 5]   # Mon–Fri only

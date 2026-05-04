@@ -31,10 +31,23 @@ class Route:
 
 
 @dataclass
+class HealthCheck:
+    """A single scheduled health-check entry."""
+    name: str
+    command: str                        # shell command to run; non-zero exit = unhealthy
+    interval_seconds: int = 180         # how often to fire (default 3 min)
+    timeout_seconds: int = 1200         # per-call timeout (default 20 min — covers cold start)
+    time_window: str = ""               # "HH:MM-HH:MM" in `timezone`; empty = always
+    timezone: str = "Europe/Moscow"     # IANA tz name
+    days: list[int] = field(default_factory=list)  # ISO weekdays 1=Mon..7=Sun; empty = all
+
+
+@dataclass
 class WebhookConfig:
     agents: dict[str, AgentConfig]
     events: dict[str, list[str] | str]  # event_key → commands or "parse"
     routes: list[Route]
+    health_checks: list[HealthCheck] = field(default_factory=list)
     secret: str = ""
     port: int = 8000
 
@@ -85,10 +98,28 @@ def load_config(path: str | Path) -> WebhookConfig:
             commands=commands,
         ))
 
+    # Health checks — keep LLM endpoints warm during working hours.
+    raw_health = raw.get("health", [])
+    if isinstance(raw_health, dict):
+        # Support both [[health]] (list of tables) and one [health] block.
+        raw_health = [raw_health]
+    health_checks: list[HealthCheck] = []
+    for idx, hc in enumerate(raw_health):
+        health_checks.append(HealthCheck(
+            name=hc.get("name", f"health-{idx}"),
+            command=hc.get("command", ""),
+            interval_seconds=int(hc.get("interval_seconds", 180)),
+            timeout_seconds=int(hc.get("timeout_seconds", 1200)),
+            time_window=hc.get("time_window", ""),
+            timezone=hc.get("timezone", "Europe/Moscow"),
+            days=list(hc.get("days", [])) or [],
+        ))
+
     return WebhookConfig(
         agents=agents,
         events=events,
         routes=routes,
+        health_checks=health_checks,
         secret=raw.get("server", {}).get("secret", ""),
         port=raw.get("server", {}).get("port", 8000),
     )

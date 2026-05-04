@@ -683,6 +683,65 @@ def trace(
 
 
 @app.command()
+def health(
+    provider: Optional[str] = typer.Option(None, "--provider", help="LLM provider profile to ping"),
+    api_url: Optional[str] = typer.Option(None, "--api-url", help="Endpoint override"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", help="API key override"),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model override"),
+    timeout: int = typer.Option(1200, "--timeout", help="Request timeout in seconds. Default 1200s — rented-GPU vLLM nodes can take 10–15 min to cold-start; the call must outlast the wake-up."),
+    no_verify_ssl: bool = typer.Option(False, "--no-verify-ssl"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress output, just exit code"),
+):
+    """
+    Wake up / ping an LLM endpoint with a single tiny completion.
+
+    Useful for keeping rented-GPU vLLM nodes warm — they often suspend
+    after ~30 min idle and take 10+ minutes to cold-start. A 3-min
+    health check during working hours stops the suspend timer.
+
+    \b
+      python cli.py health --provider qwen3-6
+      python cli.py health --provider deepseek -q && echo "alive"
+    """
+    if no_verify_ssl:
+        os.environ["GIT_SSL_NO_VERIFY"] = "1"
+
+    cfg = _load_config()
+    llm_cfg = cfg.get("llm", {})
+    if provider:
+        from diffgraph.llm_creds import apply_provider
+        apply_provider(llm_cfg, provider)
+    if api_url: llm_cfg["api_url"] = api_url
+    if api_key: llm_cfg["api_key"] = api_key
+    if model:   llm_cfg["model"]   = model
+    llm_cfg["timeout"] = timeout
+
+    effective_model = llm_cfg.get("model", "gpt-4o-mini")
+    client = _make_llm_client(llm_cfg)
+
+    import time
+    started = time.monotonic()
+    try:
+        kwargs: dict = {
+            "model": effective_model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 4,
+            "temperature": 0,
+        }
+        if llm_cfg.get("extra_body"):
+            kwargs["extra_body"] = llm_cfg["extra_body"]
+        client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        elapsed = time.monotonic() - started
+        if not quiet:
+            console.print(f"[red]✗[/red] {provider or effective_model}  {type(exc).__name__}: {exc}  ({elapsed:.1f}s)")
+        raise typer.Exit(1)
+    elapsed = time.monotonic() - started
+    if not quiet:
+        console.print(f"[green]✓[/green] {provider or effective_model}  {elapsed:.2f}s")
+
+
+@app.command()
 def serve(
     port: int = typer.Option(8080, "--port", "-p", help="Port to listen on"),
     host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
