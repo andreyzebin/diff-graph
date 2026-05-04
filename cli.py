@@ -337,7 +337,7 @@ def run(
     verbose:       bool          = typer.Option(False, "--verbose", "-v",      help="Shortcut for --log-level DEBUG (shows HTTP, LLM calls)"),
     no_verify_ssl: bool          = typer.Option(False, "--no-verify-ssl",      help="Disable SSL verification for all connections (LLM + Bitbucket)"),
     message:       Optional[str] = typer.Option(None,  "--message",             help="User message (e.g. '/review', '/help commands'). Runs dispatcher by default."),
-    comment_id:    Optional[int] = typer.Option(None,  "--comment-id",         help="Bitbucket comment ID that triggered this invocation"),
+    comment_id:    Optional[str] = typer.Option(None,  "--comment-id",         help="Bitbucket comment ID that triggered this invocation. Empty string is accepted (auto-triggered events from the webhook substitute an empty {comment_id} placeholder)."),
     agent:         Optional[str] = typer.Option(None,  "--agent",              help="Run a specific agent by name (dispatcher, reviewer, investigator)"),
     data:          Optional[list[str]] = typer.Option(None, "--data", "-d",    help="Data key=value pairs for the agent (e.g. -d focus='null safety')"),
 ):
@@ -427,17 +427,26 @@ def run(
 
     # ── Agent mode: run any agent with lazy clone ─────────────────────────
     if agent_name and pr_url:
+        # Webhook auto-triggers (pr:opened, repo:refs_changed) substitute
+        # `{comment_id}` with "" — accept that as "no comment context".
+        cid_int: int = 0
+        if comment_id:
+            try:
+                cid_int = int(comment_id)
+            except (TypeError, ValueError):
+                cid_int = 0
+
         # Build data from CLI flags + extra --data pairs
         agent_data = dict(extra_data)
         if message is not None:
             agent_data["message"] = message
-        if comment_id:
-            agent_data["comment_id"] = str(comment_id)
+        if cid_int:
+            agent_data["comment_id"] = str(cid_int)
 
         _run_with_dispatcher(
             pr_url=pr_url,
             message=message or "",
-            comment_id=comment_id or 0,
+            comment_id=cid_int,
             llm_cfg=llm_cfg,
             review_cfg=review_cfg,
             effective_model=effective_model,
