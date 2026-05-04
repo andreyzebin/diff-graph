@@ -1,0 +1,55 @@
+id: SCEN-201
+name: "/ask references a prior thread reply — must read it"
+tags: [interaction, ask, thread]
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "hotfix/ORD-287-cancel-npe"
+      to_branch: "master"
+      title: "[BENCHMARK] SCEN-201: /ask with thread context"
+      description: |
+        Interaction scenario — agent must use prior thread messages
+        when answering an /ask. The seed_comments simulate a multi-author
+        discussion (single Bitbucket account, distinguished by [name]
+        prefixes in the comment text).
+
+  setup:
+    seed_comments:
+      - "[alice] Looks like the new null guard is in cancelOrder, but I'm worried about createOrder — it iterates items the same way."
+      - "[bob] @alice good point, but actually createOrder receives items from the API layer where they're already validated, so null is impossible there."
+      - "[alice] @bob right. So only legacy import is the risk?"
+
+  trigger:
+    type: comment
+    text: "/ask Based on the discussion above, is the legacy import path the only place where order.getItems() can still be null?"
+
+expected_output:
+  reply:
+    must_mention:
+      - ["legacy", "import"]
+      - ["createOrder", "createorder"]    # must reference what bob said
+      - ["yes", "no", "only", "also"]     # explicit answer one way or another
+    must_address: ["yes", "no", "correct", "indeed", "actually"]
+    forbidden_topics:
+      - ["pricing", "discount"]            # off-topic
+    rationale: |
+      The agent must read the seed thread, recognize that bob already
+      ruled out createOrder via the API-layer validation argument, and
+      either confirm or refute alice's "only legacy import" hypothesis
+      with reference to the actual code state.
+
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+
+  thresholds:
+    min_score: 0.65
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: small
+  scenario_type: interaction
+  capabilities: [dispatcher, ask, thread-context]

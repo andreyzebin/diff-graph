@@ -1,0 +1,49 @@
+id: SCEN-202
+name: "Unknown /command — agent must say 'not supported' and list options"
+tags: [interaction, help, unknown-command]
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "hotfix/ORD-287-cancel-npe"
+      to_branch: "master"
+      title: "[BENCHMARK] SCEN-202: unknown /command fallback"
+      description: |
+        Checks the dispatcher behaviour for slash commands it does not
+        implement (/improve, /describe, etc). It must reply explicitly
+        that the command is not supported and point at the three that
+        are — NOT silently treat it as a question (/ask).
+
+  trigger:
+    type: comment
+    text: "/improve"
+
+expected_output:
+  reply:
+    must_mention:
+      - ["not supported", "not implemented", "unsupported", "coming soon", "unknown"]
+      - ["/review"]
+      - ["/ask"]
+    must_address: ["/improve", "improve"]   # must echo what user typed
+    forbidden_topics:
+      - ["null", "items", "cancelOrder"]    # must NOT start reviewing
+      - ["MAJOR", "BLOCKER", "finding"]
+    rationale: |
+      Strictly forbidden: silently fulfilling /improve as /ask. The
+      dispatcher must call out the unknown command by name and list
+      what IS supported.
+
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+
+  thresholds:
+    min_score: 0.70
+
+metadata:
+  difficulty: easy
+  language: any
+  pr_size: small
+  scenario_type: interaction
+  capabilities: [dispatcher, unknown-command-handling]

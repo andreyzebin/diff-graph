@@ -1,0 +1,47 @@
+id: SCEN-200
+name: "/help on a fresh PR — list supported commands"
+tags: [interaction, help, severity:none]
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "hotfix/ORD-287-cancel-npe"
+      to_branch: "master"
+      title: "[BENCHMARK] SCEN-200: /help command"
+      description: |
+        Interaction scenario — checks that the dispatcher answers /help
+        with the list of supported commands and does not start a review.
+
+  trigger:
+    type: comment
+    text: "/help"
+
+expected_output:
+  reply:
+    must_mention:
+      - ["/review"]
+      - ["/ask"]
+      - ["/help"]
+    must_address: ["available", "supported", "commands"]
+    forbidden_topics:
+      - ["null", "items"]              # must not start reviewing the diff
+      - ["finding", "MAJOR", "BLOCKER"]
+    rationale: |
+      The dispatcher should reply in-thread listing the three supported
+      commands. It must not invoke the reviewer, post inline comments, or
+      change PR status.
+
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+
+  thresholds:
+    min_score: 0.70
+
+metadata:
+  difficulty: easy
+  language: any
+  pr_size: small
+  scenario_type: interaction
+  capabilities: [dispatcher, help]

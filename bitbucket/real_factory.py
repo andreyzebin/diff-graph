@@ -134,6 +134,65 @@ class RealBitbucketPRProxy(AgentPRView):
         payload = {"user": {"name": username}, "role": "REVIEWER"}
         await self._run(self._client.post, url, data=payload)
 
+    async def add_comment(self, text: str, parent_id: int | None = None) -> int:
+        """
+        Post a general PR comment. Fires `pr:comment:added` webhook.
+
+        Returns the new comment id (for follow-up replies in a thread).
+        Goes through the SDK request layer so verify/cert and the
+        XSRF-noop header are applied — same pattern as _decline_via_rest.
+        """
+        path = (
+            f"rest/api/1.0/projects/{self._project}/repos/{self._repo}"
+            f"/pull-requests/{self._pr_id}/comments"
+        )
+        body: dict = {"text": text}
+        if parent_id is not None:
+            body["parent"] = {"id": parent_id}
+        resp = await self._run(
+            self._client.post, path,
+            data=body,
+            headers={"X-Atlassian-Token": "no-check"},
+            advanced_mode=True,
+        )
+        if resp.status_code >= 400:
+            raise ProviderError(
+                f"add_comment failed: HTTP {resp.status_code} {resp.text[:200]}"
+            )
+        try:
+            return int(resp.json().get("id", 0))
+        except (ValueError, AttributeError):
+            return 0
+
+    async def get_all_comments(self) -> list[CommentThread]:
+        """Return every comment on the PR, regardless of author."""
+        activities = await self._run(
+            lambda: list(self._client.get_pull_requests_activities(
+                self._project, self._repo, self._pr_id
+            ))
+        )
+        raw = [
+            a["comment"] for a in (activities or [])
+            if a.get("action") == "COMMENTED" and "comment" in a
+        ]
+        comments = []
+        for item in raw:
+            anchor_data = item.get("anchor")
+            anchor = None
+            if anchor_data:
+                anchor = CommentAnchor(
+                    path=anchor_data.get("path", ""),
+                    line=anchor_data.get("line", 0),
+                    line_type=anchor_data.get("lineType", "ADDED"),
+                )
+            comments.append(CommentThread(
+                id=item.get("id", 0),
+                text=item.get("text", ""),
+                anchor=anchor,
+                severity=item.get("severity", "NORMAL"),
+            ))
+        return comments
+
     async def get_review_status(self) -> ReviewStatus | None:
         """Return the review status set by the agent account, or None."""
         url = (

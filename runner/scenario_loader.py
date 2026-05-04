@@ -59,11 +59,43 @@ class Thresholds:
 
 
 @dataclass
+class ExpectedReply:
+    """Score the agent's reply text on the PR thread (vs inline comments)."""
+    must_mention: list[list[str]] = field(default_factory=list)   # AND-of-OR semantic match
+    must_address: list[str] = field(default_factory=list)         # at least one must appear
+    forbidden_topics: list[list[str]] = field(default_factory=list)
+    forbidden_keywords: list[list[str]] = field(default_factory=list)
+    rationale: str = ""
+
+
+@dataclass
+class SideEffectExpectations:
+    """What MUST NOT change for /ask /help (these are read-only commands)."""
+    inline_comments: int | None = None    # exact count expected (0 for /ask /help)
+    review_status_change: bool | None = None  # False = must stay UNAPPROVED
+
+
+@dataclass
+class TriggerSpec:
+    """How the scenario invokes the agent."""
+    type: str = "auto"                  # auto (pr:opened) | comment | review
+    text: str = ""                      # comment body when type=comment
+
+
+@dataclass
+class ScenarioSetup:
+    """State to seed in the PR before the trigger fires."""
+    seed_comments: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ExpectedOutput:
     required_comments: list[ExpectedComment]
     forbidden_comments: list[ForbiddenComment]
     expected_status_change: str | None
     thresholds: Thresholds
+    reply: ExpectedReply | None = None
+    side_effects: SideEffectExpectations | None = None
 
 
 @dataclass
@@ -85,6 +117,8 @@ class Scenario:
     input: dict
     expected_output: ExpectedOutput
     metadata: ScenarioMetadata
+    setup: ScenarioSetup = field(default_factory=ScenarioSetup)
+    trigger: TriggerSpec = field(default_factory=TriggerSpec)
     source_path: Path | None = None
 
 
@@ -132,6 +166,36 @@ def load_scenario(path: Path) -> Scenario:
         created=meta_data.get("created", ""),
     )
 
+    # Optional reply / side-effect blocks (interaction scenarios)
+    reply = None
+    if "reply" in eo and isinstance(eo["reply"], dict):
+        r = eo["reply"]
+        reply = ExpectedReply(
+            must_mention=r.get("must_mention", []) or [],
+            must_address=r.get("must_address", []) or [],
+            forbidden_topics=r.get("forbidden_topics", []) or [],
+            forbidden_keywords=r.get("forbidden_keywords", []) or [],
+            rationale=r.get("rationale", ""),
+        )
+    side_effects = None
+    if "side_effects" in eo and isinstance(eo["side_effects"], dict):
+        se = eo["side_effects"]
+        side_effects = SideEffectExpectations(
+            inline_comments=se.get("inline_comments"),
+            review_status_change=se.get("review_status_change"),
+        )
+
+    setup_data = data.get("input", {}).get("setup", {}) or {}
+    setup = ScenarioSetup(
+        seed_comments=list(setup_data.get("seed_comments", []) or []),
+    )
+
+    trig_data = data.get("input", {}).get("trigger", {}) or {}
+    trigger = TriggerSpec(
+        type=trig_data.get("type", "auto"),
+        text=trig_data.get("text", ""),
+    )
+
     return Scenario(
         id=data["id"],
         name=data["name"],
@@ -142,8 +206,12 @@ def load_scenario(path: Path) -> Scenario:
             forbidden_comments=forbidden,
             expected_status_change=eo.get("expected_status_change"),
             thresholds=thresholds,
+            reply=reply,
+            side_effects=side_effects,
         ),
         metadata=metadata,
+        setup=setup,
+        trigger=trigger,
         source_path=path,
     )
 

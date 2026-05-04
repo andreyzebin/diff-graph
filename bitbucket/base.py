@@ -100,6 +100,30 @@ class AgentPRView(ABC):
         """
         raise NotImplementedError
 
+    async def add_comment(self, text: str, parent_id: int | None = None) -> int:
+        """
+        Post a general (non-inline) comment on the PR.
+
+        Returns the new comment's id. Implementations that don't support
+        this may raise NotImplementedError.
+
+        Used by interaction scenarios that need to seed a thread before
+        triggering the agent (/ask, /help, multi-turn conversations) and
+        by the comment-based trigger which posts a "/command" message
+        as the last seed_comment to fire `pr:comment:added`.
+        """
+        raise NotImplementedError
+
+    async def get_all_comments(self) -> list[CommentThread]:
+        """
+        Return EVERY comment on the PR, regardless of author.
+
+        Differs from get_comments() which filters to the agent account.
+        Used by the reply-scoring judge: it needs to see the full thread
+        the agent saw, including seed comments posted by the runner.
+        """
+        raise NotImplementedError
+
     async def __aenter__(self) -> "AgentPRView":
         return self
 

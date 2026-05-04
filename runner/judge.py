@@ -181,6 +181,27 @@ class LLMJudge(Judge):
         comments = await self._view.get_comments()
         review_status = await self._view.get_review_status()
 
+        # Interaction scenarios (/ask /help): score the agent's reply text
+        # against expected_output.reply, plus check side_effects.
+        if scenario.expected_output.reply is not None:
+            try:
+                full_thread = await self._view.get_all_comments()
+            except NotImplementedError:
+                full_thread = comments
+            prompt = _build_reply_prompt(scenario, full_thread, comments)
+            self._trace_request(scenario.id, prompt)
+            try:
+                data = self._llm_client.complete_json(prompt)
+            except Exception as exc:
+                self._trace_error(scenario.id, exc)
+                raise
+            self._trace_response(scenario.id, data)
+            output = _interpret_reply(data, scenario, comments, review_status)
+            output.comments = comments
+            output.review_status = review_status
+            return output
+
+        # Default: review scoring against required_comments / forbidden / status
         prompt = _build_prompt(self._template, scenario, comments, review_status)
         self._trace_request(scenario.id, prompt)
         try:
@@ -326,3 +347,115 @@ def _format_comments(comments: list[CommentThread]) -> str:
         else:
             parts.append(f"[general] {c.text}")
     return "\n".join(parts) if parts else "(no comments)"
+
+
+# ── Interaction scenario scoring (/ask /help) ────────────────────────
+
+REPLY_PROMPT = """You are an LLM-as-judge evaluating a CONVERSATIONAL agent on a Bitbucket PR.
+
+The agent is supposed to reply IN THE THREAD to a user message. You score the reply against
+explicit expectations: what topics it MUST mention, what question it MUST address, and
+which topics MUST be absent.
+
+CONVERSATION (full thread, oldest → newest):
+{thread}
+
+USER REQUEST that triggered the agent:
+{trigger_text}
+
+EXPECTED REPLY:
+{expectations}
+
+AGENT'S OWN COMMENTS posted on this PR:
+{agent_comments}
+
+INLINE COMMENTS POSTED BY AGENT:
+{inline_count}
+
+Return STRICT JSON, no prose:
+{{
+  "overall_score": 0.0..1.0,
+  "must_mention": [
+    {{"row": 0, "matched": true|false, "matched_words": [...], "reasoning": "..."}}
+  ],
+  "must_address_satisfied": true|false,
+  "forbidden_present": [{{"row": 0, "reasoning": "..."}}],
+  "side_effects_ok": true|false,
+  "side_effects_reasoning": "...",
+  "verdict": "pass" | "fail" | "error",
+  "summary": "1-2 sentence verdict"
+}}
+
+Scoring rubric:
+- Each must_mention row matches if any of its alternatives appears semantically (synonyms ok).
+- must_address checks the agent gave an explicit answer to the user's question (yes/no, fixed/not, etc).
+- forbidden_topics counts a hit if the agent introduced a topic not asked about.
+- side_effects: scenario specifies whether inline_comments / status changes are allowed.
+- overall_score: weighted average. Subtract heavily for missing must_address (that's the whole point).
+"""
+
+
+def _build_reply_prompt(scenario: Scenario, full_thread: list[CommentThread],
+                        agent_comments: list[CommentThread]) -> str:
+    eo = scenario.expected_output
+    reply = eo.reply
+    expectations = json.dumps({
+        "must_mention": reply.must_mention if reply else [],
+        "must_address": reply.must_address if reply else [],
+        "forbidden_topics": reply.forbidden_topics if reply else [],
+        "forbidden_keywords": reply.forbidden_keywords if reply else [],
+        "rationale": reply.rationale if reply else "",
+        "side_effects": {
+            "inline_comments_max": eo.side_effects.inline_comments
+            if eo.side_effects and eo.side_effects.inline_comments is not None else "any",
+            "review_status_change_allowed": eo.side_effects.review_status_change
+            if eo.side_effects else "any",
+        },
+    }, ensure_ascii=False, indent=2)
+
+    thread = "\n".join(
+        f"[{i+1}] {c.text}" for i, c in enumerate(full_thread)
+    ) or "(empty thread)"
+
+    inline_count = sum(1 for c in agent_comments if c.anchor)
+
+    return REPLY_PROMPT.format(
+        thread=thread,
+        trigger_text=scenario.trigger.text or "(auto-trigger / no comment)",
+        expectations=expectations,
+        agent_comments=_format_comments(agent_comments),
+        inline_count=inline_count,
+    )
+
+
+def _interpret_reply(data: dict, scenario: Scenario,
+                     agent_comments: list[CommentThread],
+                     review_status: ReviewStatus | None) -> JudgeOutput:
+    """Adapt reply-judge output into the existing JudgeOutput shape."""
+    score = float(data.get("overall_score", 0.0))
+    summary = data.get("summary", "")
+
+    # Verdict default: pass if score >= threshold
+    verdict = data.get("verdict") or (
+        "pass" if score >= scenario.expected_output.thresholds.min_score else "fail"
+    )
+
+    # Status verdict for interaction scenarios:
+    se = scenario.expected_output.side_effects
+    if se and se.review_status_change is False:
+        # Must NOT change status
+        if review_status is None:
+            status_verdict = "correct"
+        else:
+            status_verdict = "incorrect"
+    else:
+        status_verdict = "n/a"
+
+    return JudgeOutput(
+        overall_score=score,
+        required_comments=[],     # not applicable
+        false_positives=[],       # could populate from forbidden_present, but verdict text suffices
+        status_change_verdict=status_verdict,
+        verdict=verdict,
+        summary=summary,
+    )

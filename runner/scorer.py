@@ -55,11 +55,20 @@ def score_scenario(
 
     false_positives = len(judge_output.false_positives)
 
-    passed = (
-        judge_output.overall_score >= thresholds.min_score
-        and required_found >= thresholds.min_required_found
-        and false_positives <= thresholds.max_false_positives
-    )
+    # Interaction scenarios (/ask /help): there are no required_comments,
+    # so min_required_found doesn't apply. Use score+verdict only.
+    is_interaction = scenario.expected_output.reply is not None
+    if is_interaction:
+        passed = (
+            judge_output.overall_score >= thresholds.min_score
+            and judge_output.verdict == "pass"
+        )
+    else:
+        passed = (
+            judge_output.overall_score >= thresholds.min_score
+            and required_found >= thresholds.min_required_found
+            and false_positives <= thresholds.max_false_positives
+        )
 
     return ScenarioResult(
         scenario_id=scenario.id,
