@@ -17,13 +17,14 @@ async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Tri
     """
     Apply scenario.setup.seed_comments, then fire the trigger.
 
-    For trigger.type == "comment": seed comments are posted in order;
-    the LAST seed_comment OR a freshly-posted trigger.text becomes the
-    one that fires `pr:comment:added`. Webhook then drives the agent.
+    For trigger.type == "comment": seed comments are posted in Bitbucket
+    so the agent has thread context, then the trigger.text is posted as
+    the LAST comment (capturing its id), and the configured trigger
+    runs the agent CLI locally with --message=trigger.text and
+    --comment-id=<id>. The agent replies via its own Bitbucket session.
 
-    For trigger.type == "auto" (default): seed comments still get posted
-    if any (rare for auto-triggered scenarios), then the configured
-    trigger (HttpTrigger / WebhookTrigger / CliTrigger) fires.
+    For trigger.type == "auto" (default): trigger fires as before (e.g.
+    CliTrigger with the review command, or WebhookTrigger).
     """
     n_seeds = len(scenario.setup.seed_comments)
     if n_seeds:
@@ -41,44 +42,34 @@ async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Tri
             log.warning("scenario %s: seed_comment failed: %s", scenario.id, exc)
 
     if scenario.trigger.type == "comment" and scenario.trigger.text:
-        # Posting the trigger comment fires `pr:comment:added` directly,
-        # so for comment-mode scenarios we don't call trigger.activate().
         print(f"   ↻  trigger comment: {scenario.trigger.text[:80]}", flush=True)
         try:
-            await proxy.add_comment(scenario.trigger.text)
+            comment_id = await proxy.add_comment(scenario.trigger.text)
         except Exception as exc:
             raise RuntimeError(f"trigger comment failed: {exc}") from exc
-        # Give the webhook + agent time to work. Wait for the agent to
-        # reply, with a budget; fall back to a fixed sleep on timeout.
-        print(f"   ↻  waiting for agent reply (up to 600s)...", flush=True)
-        await _wait_for_agent_reply(proxy, timeout=600)
+        if not comment_id:
+            raise RuntimeError("trigger comment returned id=0 — can't drive agent")
+
+        # Run the agent CLI locally with the dispatcher inputs. The
+        # configured CliTrigger command must accept {message} and
+        # {comment_id} placeholders for interaction scenarios — see the
+        # benchmark config.local.yaml example.
+        try:
+            await trigger.activate(
+                proxy,
+                message=scenario.trigger.text,
+                comment_id=str(comment_id),
+            )
+        except TypeError:
+            # Older trigger that doesn't accept extra placeholders
+            raise RuntimeError(
+                "configured trigger does not support interaction scenarios; "
+                "update CliTrigger or pin to one that does"
+            )
         return
 
     # Default path: existing trigger strategies (http / webhook / cli)
     await trigger.activate(proxy)
-
-
-async def _wait_for_agent_reply(proxy: AgentPRView, timeout: int = 600) -> None:
-    """Poll the PR for any agent-authored comment that didn't exist before."""
-    deadline = time.monotonic() + timeout
-    seen_pre = {c.id for c in await proxy.get_comments()}
-    last_log = time.monotonic()
-    while time.monotonic() < deadline:
-        await asyncio.sleep(5)
-        try:
-            now = await proxy.get_comments()
-        except Exception:
-            continue
-        new_ids = [c.id for c in now if c.id not in seen_pre]
-        if new_ids:
-            print(f"   ↻  agent replied (comment id={new_ids[0]})", flush=True)
-            return
-        if time.monotonic() - last_log >= 30:
-            elapsed = int(time.monotonic() - (deadline - timeout))
-            print(f"   ↻  still waiting... ({elapsed}s elapsed, "
-                  f"{len(now)} agent-authored comment(s) seen so far)", flush=True)
-            last_log = time.monotonic()
-    log.warning("agent did not reply within %ds — proceeding to judge anyway", timeout)
 
 
 async def run_scenario(

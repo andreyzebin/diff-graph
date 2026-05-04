@@ -43,6 +43,12 @@ def _make_trigger(agent_cfg: dict, bitbucket_connection: dict):
         return WebhookTrigger(agent_account=agent_account, timeout_seconds=timeout)
     if mode == "cli":
         command = agent_cfg.get("command", "")
+        # Optional second template for interaction scenarios (/help,
+        # /ask, unknown command). When a scenario triggers via a posted
+        # comment, the runner uses this template with {message} and
+        # {comment_id} placeholders; cli.py's dispatcher path picks it
+        # up. Falls back to `command` if missing.
+        interaction_command = agent_cfg.get("interaction_command", "") or None
         cwd = agent_cfg.get("cwd") or None
         output = agent_cfg.get("output", "log")
         base_url = bitbucket_connection.get("base_url", "").rstrip("/")
@@ -57,6 +63,7 @@ def _make_trigger(agent_cfg: dict, bitbucket_connection: dict):
             timeout_seconds=timeout,
             cwd=cwd,
             output=output,
+            interaction_command_template=interaction_command,
         )
     # default: http
     from runner.agent_client import AgentClient

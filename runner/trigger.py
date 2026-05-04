@@ -82,16 +82,52 @@ class CliTrigger(Trigger):
         timeout_seconds: int = 300,
         cwd: str | None = None,
         output: str = "log",
+        interaction_command_template: str | None = None,
     ) -> None:
         self._command_template = command_template
+        # Used when a scenario fires through a comment (/help, /ask, …)
+        # — drives the dispatcher path of cli.py with --message and
+        # --comment-id. Optional: scenarios that don't use comment
+        # triggers won't touch this.
+        self._interaction_command_template = interaction_command_template
         self._pr_url_template = pr_url_template
         self._timeout = timeout_seconds
         self._cwd = os.path.expanduser(cwd) if cwd else None
         self._output = output  # "log" | "stream"
 
-    async def activate(self, proxy: AgentPRView) -> None:
+    async def activate(self, proxy: AgentPRView, **extra_placeholders) -> None:
+        """
+        Run the configured shell command. Caller can pass extra placeholder
+        values to substitute (e.g. {message}, {comment_id} for interaction
+        scenarios that drive the dispatcher path of cli.py).
+
+        When `message` is provided in extra_placeholders AND
+        interaction_command_template is configured, that template is
+        used instead of the default command. This lets a single benchmark
+        config support both review (--agent reviewer) and interaction
+        (--message ... --comment-id ...) flows.
+        """
+        is_interaction = bool(extra_placeholders.get("message"))
+        if is_interaction and self._interaction_command_template:
+            template = self._interaction_command_template
+        else:
+            template = self._command_template
+
         pr_url = self._pr_url_template.format(pr_id=proxy.pr_id)
-        command = self._command_template.format(pr_id=proxy.pr_id, pr_url=pr_url)
+        # Defaults: keep placeholders that the template might reference
+        # but the caller didn't fill — substituted with empty strings so
+        # `--message="{message}"` becomes `--message=""`.
+        ctx = {"message": "", "comment_id": "", "provider": ""}
+        ctx.update(extra_placeholders)
+        ctx["pr_id"] = proxy.pr_id
+        ctx["pr_url"] = pr_url
+        try:
+            command = template.format(**ctx)
+        except KeyError as exc:
+            raise RuntimeError(
+                f"CliTrigger: command template references unknown "
+                f"placeholder {exc} (known: {sorted(ctx)})"
+            ) from exc
 
         logger.info("CliTrigger running: %s", command)
         print(f"  → {command}", flush=True)

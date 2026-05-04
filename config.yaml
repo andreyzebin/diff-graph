@@ -40,6 +40,19 @@ agent:
   api_key: "${AGENT_API_KEY}"         # used only when trigger=http
   timeout_seconds: 120                # http: request timeout / webhook: wait time / cli: process timeout
 
+  # ── Interaction scenarios (cli trigger only) ──────────────────────
+  # When a scenario triggers via a posted comment (e.g. /help, /ask),
+  # the runner posts the comment to Bitbucket and then invokes this
+  # second cli command with {message} and {comment_id} placeholders
+  # filled in. This drives the dispatcher path of cli.py — different
+  # from the default `command` which usually invokes the reviewer
+  # directly via --agent reviewer.
+  #
+  # Falls back to `command` if missing — but most agents can't tell
+  # /help from /review on a single command shape, so set it explicitly.
+  #
+  #   interaction_command: 'cd /path/to/agent && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id} --provider={provider}'
+
 judge:
   model: "claude-opus-4-6"
   temperature: 0
