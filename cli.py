@@ -339,6 +339,12 @@ async def _run_async(
         run_agent_cfg = dict(agent_cfg)
         if run_agent_cfg.get("trigger") == "cli":
             run_agent_cfg["command"] = _inject_provider(run_agent_cfg.get("command", ""), prov)
+            # Same {provider} substitution for the second template used by
+            # interaction scenarios — otherwise --provider= ends up empty.
+            if run_agent_cfg.get("interaction_command"):
+                run_agent_cfg["interaction_command"] = _inject_provider(
+                    run_agent_cfg["interaction_command"], prov,
+                )
 
         console.print(f"\n[bold magenta]── provider: {prov_label} ─────────────────────────────────────[/bold magenta]")
         _print_trigger_summary(run_agent_cfg, console)
