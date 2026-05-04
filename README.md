@@ -19,6 +19,7 @@ Multi-agent PR code reviewer powered by the **Orchestra** framework. All agents 
 - [Architecture](#architecture)
 - [Running as systemd services on RHEL](#running-as-systemd-services-on-rhel)
 - [Docker](docker/README.md)
+- [Webhook router & health checks](webhook/README.md)
 
 ```
 PR comment / event
@@ -286,6 +287,30 @@ python cli.py trace --log        # print trace to console
 python cli.py trace --list       # list recent runs
 python cli.py trace --run ID     # specific run
 ```
+
+### `health` -- ping an LLM endpoint
+
+A single tiny chat completion. Useful for keeping rented-GPU vLLM
+nodes (cloud.ru, etc.) warm — they often suspend after ~30 min idle
+and take 10–15 min to cold-start, so the first real PR comment
+otherwise pays that latency end-to-end.
+
+```bash
+python cli.py health --provider qwen3-6
+python cli.py health --provider deepseek -q && echo "alive"
+```
+
+| Flag | Description |
+|------|-------------|
+| `--provider` | LLM profile from `~/repos/.llm_creds.toml` |
+| `--model` / `-m` | Model override |
+| `--api-url` / `--api-key` | Endpoint overrides |
+| `--timeout` | Request timeout (default 1200s — covers cold start) |
+| `-q` / `--quiet` | Suppress output, just exit code |
+| `--no-verify-ssl` | Disable SSL verification |
+
+The webhook router can run this on a schedule via `[[health]]` —
+see [webhook/README.md](webhook/README.md#health-checks).
 
 ### Prompt versioning
 

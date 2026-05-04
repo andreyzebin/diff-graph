@@ -62,23 +62,6 @@ timeout = 600
 #   --prompts <uri>     pin prompts (path, file://, bitbucket://...). The
 #                       directory name → generation; content hash → mutation
 #                       (visible to the dispatcher prompt and trace DB).
-```
-
-## Health checks
-
-Rented-GPU vLLM endpoints suspend after ~30 min idle and take 10–15 min
-to cold-start. The router can keep one or more endpoints warm by firing
-a tiny `cli.py health` ping on a schedule.
-
-```toml
-[[health]]
-name             = "qwen3-6"
-command          = "cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py health --provider qwen3-6 -q"
-interval_seconds = 180          # every 3 min
-timeout_seconds  = 1200         # tolerate cold start (20 min)
-time_window      = "09:00-19:00"
-timezone         = "Europe/Moscow"
-days             = [1, 2, 3, 4, 5]  # Mon-Fri (empty/omitted = every day)
 
 # PR-Agent — forward raw event
 [agents.pra]
@@ -97,6 +80,39 @@ when = "true"
 agent = "dg"
 review = "dg-review"        # auto-review and /review → direct reviewer
 ```
+
+## Health checks
+
+Rented-GPU vLLM endpoints (cloud.ru, etc.) suspend after ~30 min idle
+and take 10–15 min to cold-start. The router can keep one or more
+endpoints warm by firing a tiny `cli.py health` ping on a schedule.
+
+```toml
+[[health]]
+name             = "qwen3-6"
+command          = "cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py health --provider qwen3-6 -q"
+interval_seconds = 180          # every 3 min
+timeout_seconds  = 1200         # tolerate cold start (20 min)
+time_window      = "09:00-19:00" # MSK working hours; empty = always
+timezone         = "Europe/Moscow"
+days             = [1, 2, 3, 4, 5]  # Mon-Fri; empty/omitted = every day
+```
+
+Multiple `[[health]]` blocks run in parallel — one per endpoint.
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `command` | _(required)_ | Shell command. Exit 0 = healthy, anything else = WARNING in logs. |
+| `interval_seconds` | `180` | How often to fire the check. |
+| `timeout_seconds` | `1200` | Per-call timeout. Cold starts can take 10–15 min, so default is generous. |
+| `time_window` | `""` _(always)_ | `HH:MM-HH:MM` in `timezone`. Window across midnight is supported (e.g. `22:00-06:00`). |
+| `timezone` | `Europe/Moscow` | IANA tz name. |
+| `days` | `[]` _(all)_ | ISO weekdays — `1=Mon..7=Sun`. |
+
+Each tick spawns the command in the background, so a 15-minute
+cold-start does not block the next interval. Failures (non-zero exit,
+timeout, launch error) are logged at `WARNING` — there's no retry,
+the next tick will try again.
 
 ## Two routing modes
 
