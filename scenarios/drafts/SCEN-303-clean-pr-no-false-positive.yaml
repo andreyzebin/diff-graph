@@ -2,25 +2,24 @@ id: SCEN-303
 name: "Clean PR — agent must NOT invent issues"
 tags: [java, false-positive-resistance, clean-pr, severity:none]
 
-# DRAFT — requires a clean (no-bug) branch in code-review-examples/orderflow.
-# Suggested branch: `chore/extract-tax-rate-constant` — a tiny, well-scoped
-# refactor that pulls the BigDecimal tax rate into a package-level constant.
-# No behaviour change, no edge cases introduced. Should be APPROVED with
-# zero or only COMMENT-level findings.
+# Branch in orderflow: `chore/javadoc-order-service` — pure documentation,
+# adds class- and method-level javadoc to OrderService. No signature,
+# behaviour, or transaction-boundary changes. Should be APPROVED.
 
 input:
   bitbucket:
     provider: real
     pull_request:
-      from_branch: "chore/extract-tax-rate-constant"
+      from_branch: "chore/javadoc-order-service"
       to_branch: "master"
-      title: "[BENCHMARK] SCEN-303: Extract TAX_RATE constant (chore)"
+      title: "[BENCHMARK] SCEN-303: Javadoc OrderService (chore)"
       description: |
-        ## Refactor: extract TAX_RATE constant
+        ## Docs: javadoc OrderService public methods
 
-        Pulls the hardcoded `new BigDecimal("0.20")` literal out of
-        PricingService into a package-private static final field.
-        No behaviour change.
+        Adds class-level and per-method javadoc to OrderService — the
+        existing methods were undocumented even though they're called
+        from controllers. Pure documentation; no signature, behaviour,
+        or transaction-boundary changes.
 
   trigger:
     type: comment
@@ -33,10 +32,10 @@ expected_output:
   # is purely mechanical. Listing the specific shapes the agent should NOT
   # invent so the judge can flag them precisely.
   forbidden_comments:
-    - description: "Suggesting validation of TAX_RATE bounds (it's a literal constant)"
-    - description: "Concerns about magic numbers — the refactor IS the magic-number fix"
-    - description: "Asking for unit tests of the constant declaration"
-    - description: "Style nits about the constant naming or placement (it follows the codebase pattern)"
+    - description: "Asking for tests of methods whose logic isn't being changed (this PR only adds javadoc)"
+    - description: "Style nits about javadoc wording, line length, or @param presence"
+    - description: "Suggesting code changes (refactors, extractions) on the documented methods — out of scope"
+    - description: "Pre-existing concerns rediscovered while reading the methods (the PR didn't touch them)"
 
   expected_status_change: "APPROVED"
 
@@ -54,6 +53,6 @@ metadata:
   pr_size: tiny
   scenario_type: false_positive_resistance
   capabilities: [restraint, no_false_positives, approval_path]
-  status: "DRAFT — requires chore/extract-tax-rate-constant branch in orderflow"
+  status: "DRAFT — orderflow branch chore/javadoc-order-service ready, runnable once promoted out of drafts/"
   author: "team"
   created: "2026-05-05"
