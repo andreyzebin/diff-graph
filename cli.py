@@ -1167,8 +1167,11 @@ def _publish_to_pr(
 
         if mode in ("comment", "both"):
             from diffgraph.bitbucket import post_general_pr_comment
-            reason = (review_status_reason or "").strip()
-            body = f"[verdict:{review_status}] " + (reason or f"Reviewer verdict: {review_status}.")
+            # Minimal technical marker — no rationale, no narrative. The
+            # bench judge reads this as the equivalent of a participants-
+            # endpoint status flip; treating it as a content comment would
+            # let it sneak into reply-scoring or agent_warnings.
+            body = f"[verdict:{review_status}]"
             if author_prefix and not body.lstrip().startswith(author_prefix):
                 body = f"{author_prefix} {body}"
             text = decorate(body) if decorate else body
