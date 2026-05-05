@@ -88,24 +88,23 @@ def register_builtins(
         registry.register_tool_def(ToolDef(
             name="spawn_agent",
             description=(
-                "Spawn a sub-agent. Use list_agents() first to see available agents and "
-                "their required input data. Pass data fields matching the agent's @data schema — "
-                "they are injected into the agent's prompt {placeholders}."
+                "Spawn a sub-agent on a focused task. The sub-agent runs to "
+                "completion and its result is returned. Multiple spawn_agent "
+                "calls in the same step run in parallel."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "agent": {"type": "string", "description": "Agent name from the registry."},
-                    "data": {"type": "object", "description": "Input data matching the agent's @data schema. Injected into prompt {placeholders}."},
-                    "focus": {"type": "string", "description": "Additional focus instruction (appended to context)."},
-                    "context_handoff": {
+                    "agent": {
                         "type": "string",
-                        "description": "Context to pass: sgr_outcomes, full_history, findings_only, condensed.",
-                        "enum": ["sgr_outcomes", "full_history", "findings_only", "condensed"],
+                        "description": "Agent name from the registry (use list_agents() to see what's available).",
                     },
-                    "wait": {"type": "boolean", "description": "Wait for completion (default true)."},
+                    "focus": {
+                        "type": "string",
+                        "description": "What this sub-agent should investigate / do.",
+                    },
                 },
-                "required": ["agent"],
+                "required": ["agent", "focus"],
             },
             handler=_meta_handler("_meta_spawn_agent"),
             is_builtin=True,
