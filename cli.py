@@ -427,6 +427,42 @@ async def _run_async(
                         pr_url=getattr(proxy, "pr_url", None) if proxy else None,
                     )
 
+                # Persist per-attempt result.json + summary row immediately
+                # so the per-attempt artefacts are complete even when the
+                # process is killed mid-aggregation.
+                _generation = ""
+                _mutation = ""
+                if agent_dir is not None and (agent_dir / "run.json").exists():
+                    try:
+                        _agent_run = json.loads((agent_dir / "run.json").read_text())
+                        _generation = _agent_run.get("prompt_source", "") or ""
+                        if _generation and "/" in _generation:
+                            _generation = _generation.rsplit("/", 1)[-1]
+                        _mutation = _agent_run.get("prompt_hash", "") or ""
+                    except Exception:
+                        pass
+                if attempt_dir is not None:
+                    (attempt_dir / "result.json").write_text(json.dumps({
+                        "scenario": s.id,
+                        "provider": prov_label,
+                        "attempt": attempt_dir.name,
+                        "verdict": result.verdict,
+                        "score": result.score,
+                        "comments": result.total_comments,
+                        "duration_seconds": result.duration_seconds,
+                        "error": result.error,
+                        "generation": _generation,
+                        "mutation": _mutation,
+                    }, ensure_ascii=False, indent=2))
+                    summary_rows.append({
+                        "provider": prov_label, "scenario": s.id,
+                        "attempt": attempt_dir.name, "score": result.score,
+                        "verdict": result.verdict, "comments": result.total_comments,
+                        "duration_seconds": result.duration_seconds,
+                        "generation": _generation, "mutation": _mutation,
+                        "path": str(attempt_dir.relative_to(session_dir)),
+                    })
+
                 attempt_results.append((result, attempt_dir, agent_dir))
 
             # Aggregate across attempts when --repeat > 1; otherwise the
@@ -442,8 +478,6 @@ async def _run_async(
             prov_results.append(result)
             results.append(result)
 
-            # Pull prompt generation/mutation from the agent's own run.json
-            # so the benchmark surfaces which prompt set actually ran.
             generation = ""
             mutation = ""
             if agent_dir is not None and (agent_dir / "run.json").exists():
@@ -455,29 +489,6 @@ async def _run_async(
                     mutation = agent_run.get("prompt_hash", "") or ""
                 except Exception:
                     pass
-
-            # Persist per-attempt result.json
-            if attempt_dir is not None:
-                (attempt_dir / "result.json").write_text(json.dumps({
-                    "scenario": s.id,
-                    "provider": prov_label,
-                    "attempt": attempt_dir.name,
-                    "verdict": result.verdict,
-                    "score": result.score,
-                    "comments": result.total_comments,
-                    "duration_seconds": result.duration_seconds,
-                    "error": result.error,
-                    "generation": generation,
-                    "mutation": mutation,
-                }, ensure_ascii=False, indent=2))
-                summary_rows.append({
-                    "provider": prov_label, "scenario": s.id,
-                    "attempt": attempt_dir.name, "score": result.score,
-                    "verdict": result.verdict, "comments": result.total_comments,
-                    "duration_seconds": result.duration_seconds,
-                    "generation": generation, "mutation": mutation,
-                    "path": str(attempt_dir.relative_to(session_dir)),
-                })
 
             if result.verdict == "pass":
                 icon = "[green]✅[/green]"
