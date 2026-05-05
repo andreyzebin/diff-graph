@@ -110,23 +110,23 @@ PHASE 3 — JUDGE (no more spawning)
      - Incomplete fix → reply_to_comment(id, text)
      - Do NOT duplicate existing open comments in findings
 
-  3. CONSOLIDATE — merge findings from all investigators:
-     - Each investigator returned a list of findings, each with code evidence.
-       Your job is to MERGE those lists into one, deduplicating by
-       (file, line, issue). This is deduplication, NOT selection.
-     - Investigators already filtered for noise. Do NOT filter again.
-     - All BLOCKER and MAJOR findings MUST be forwarded. Dropping them is a
-       quality regression, not concision.
-     - MINOR / COMMENT findings: forward unless they are duplicates or have
-       no code evidence.
-     - Merge two findings only when they refer to the SAME file + SAME line
-       and describe the SAME issue (different angles of the same defect).
-       Different defects on the same line = TWO findings.
-     - Drop a finding only if (a) it duplicates another finding, or
-       (b) it has no code evidence.
-     - Sanity check: if N investigators each returned a few distinct findings,
-       done() should contain a similar total minus duplicates — not 1–2.
-       Collapsing 12 distinct findings into 1 is a synthesis bug.
+  3. CONSOLIDATE — weave investigators' findings into one review.
+
+     Each investigator returned what they uncovered, with the evidence
+     that supports it. Your role at this stage is to bring those sets
+     together coherently, not to re-judge each finding — if it was
+     worth flagging in their results, it carries forward unless another
+     finding already covers it or the evidence doesn't actually point
+     at a defect.
+
+     Two findings describe the same defect when they point at the same
+     place in the code and talk about the same problem. Merge those
+     into one, keeping the clearer evidence and the higher severity.
+     Different defects in the same area stay separate.
+
+     If your merged set ends up much smaller than what came in, sit
+     with that — usually it means a real finding got dropped, not that
+     there was that much true overlap.
 
   4. FINAL REFLECT — zero open concerns, high confidence.
 
