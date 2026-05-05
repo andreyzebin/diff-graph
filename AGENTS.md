@@ -7,10 +7,11 @@ This document describes the codebase for AI agents and coding assistants.
 DiffGraph is a multi-agent PR code reviewer built on the Orchestra framework. It takes a raw `git diff` (or fetches one from Bitbucket Server), runs a three-phase review pipeline via prompt-defined agents, and produces structured `ReviewFinding` objects -- optionally posted as inline PR comments.
 
 **Agents (defined by `.prompt` files):**
-- **Lead** (react) -- three-phase review lead: analyze the diff, form concerns scaled to diff size (1-2 small, 2-3 medium, 3-5 large), spawn reviewer(s) without SGR handoff (one round), consolidate and judge.
-- **Reviewer** (react with SGR) -- focused investigator. Gets one concern, investigates first (get_diff, read_outline), then reflects with only genuinely unknown questions. Returns findings with evidence. No spawning, no PR interaction.
+- **Dispatcher** (react) — entry point for comment-triggered interactions (`/review`, `/ask`, `/help`, unknown commands). Routes to the right downstream agent or replies inline. Sees existing PR comments and the trigger comment thread.
+- **Reviewer** (react with SGR + spawn_many) — three-phase review lead: analyze the diff, form concerns scaled to diff size (1–2 small, 2–3 medium, 3–5 large), spawn investigators in one round, merge their findings, set the PR review status, and call done.
+- **Investigator** (react with SGR) — focused worker. Gets one concern, investigates first (read_file, read_outline, search), reflects with only genuinely unknown questions, returns findings with evidence. No spawning, no PR interaction.
 
-No pre-indexing, no database, no persistent state. One `run_review()` call per diff. The orchestrator is ~35 lines of logic -- all methodology lives in the `.prompt` files.
+No pre-indexing, no database, no persistent state. One `run_review()` call per diff. The orchestrator is ~35 lines of logic — all methodology lives in the `.prompt` files.
 
 ## Repository layout
 
@@ -51,8 +52,9 @@ diffgraph/                       Code review domain
 +-- outline.py                   tree-sitter structural outline
 +-- bitbucket.py                 Bitbucket Server integration
 +-- prompts/
-    +-- lead.prompt        Three-phase review lead (analyze -> investigate -> judge)
-    +-- reviewer.prompt          Focused investigator with SGR
+    +-- dispatcher.prompt        Comment-triggered routing (/review, /ask, /help, unknown)
+    +-- reviewer.prompt          Three-phase review lead (analyze -> investigate -> judge)
+    +-- investigator.prompt      Focused investigator with SGR
 
 tests/
 +-- test_diff_parser.py
@@ -76,15 +78,16 @@ run_review(diff_text, repo_path, llm, model, existing_comments?)
   +-> compile_prompts()          -> agent registry from .prompt files
   +-> register_diffgraph_tools() -> domain tools as closures over context
   +-> build lead config    -> inject diff_summary, existing_comments
-  +-> Agent(lead).run()
+  +-> Agent(reviewer).run()
         |
-        Lead (react):
-          Phase 1: ANALYZE -- read diff, form 3-5 concerns
-          Phase 2: INVESTIGATE -- spawn_agent("reviewer", focus=concern)
-              +-> Reviewer (react + SGR):
+        Reviewer (react):
+          Phase 1: ANALYZE -- read diff, form concerns scaled to diff size
+          Phase 2: INVESTIGATE -- spawn_many("investigator", focus=concern)
+              +-> Investigator (react + SGR):
                     ReAct loop: find_files, read_file, read_outline,
-                    search, get_diff, reflect(), done(findings)
-          Phase 3: JUDGE -- consolidate, deduplicate, done(findings)
+                    search, reflect(), done(findings)
+          Phase 3: JUDGE -- merge investigator findings (dedup, not select),
+                            set_review_status, done(findings)
         |
   +-> parse findings -> list[ReviewFinding]
   +-> ReviewContext (comment_replies, comment_resolves)
@@ -115,8 +118,40 @@ Output of the review. Fields:
 ### `ReviewContext` (`orchestrator.py`)
 
 Side-effectful actions collected during the review:
-- `comment_replies` -- `[{comment_id, text}]` to POST after the run
-- `comment_resolves` -- `[comment_id]` to mark resolved after the run
+- `comment_replies` — `[{comment_id, text}]` to POST after the run
+- `comment_resolves` — `[comment_id]` to mark resolved after the run
+- `review_status` — `Optional[str]`: `"APPROVED"` / `"NEEDS_WORK"` / `"UNAPPROVED"` or `None` (don't touch). Set via `set_review_status` tool.
+- `review_status_reason` — short text recorded for audit alongside the status.
+
+### `set_review_status` tool (`orchestra_tools.py`)
+
+The reviewer's verdict on the PR as a whole. Default policy lives in
+`reviewer.prompt`: BLOCKER/MAJOR finding stands → `NEEDS_WORK`; only
+MINOR/COMMENT or no findings → `APPROVED`; honestly unable to judge
+→ leave unset. Strictness is described in prose, not hardcoded
+numbers — the prompt explicitly notes that the rule adjusts to the
+situation (chore vs critical-path feature).
+
+The tool is a no-op in production unless `--bot-user` is configured —
+without an explicit account, we never alter the PR's reviewer status.
+
+### Output interface contract
+
+Every comment the agent posts must:
+
+- start with the bot's account tag in square brackets (e.g.
+  `[tuz_spasibo__qodo]`) when `--subject-pattern` + `--bot-user` are set.
+  Lets analytics, judges, and follow-up rounds tell agent comments from
+  human ones even when everything posts under the same Bitbucket token.
+- end with the dg traceability footer in inline code:
+  `dg:diffgraph:<prompt_hash>:<run_id>`. Built by
+  `comment_meta.build_comment_meta` and applied via the `decorate`
+  callback in `_publish_to_pr`. Lets pr-analytics group acceptance /
+  feedback rates per prompt generation.
+
+Stamping is done at the publish layer, not in the prompt: agents write
+plain text, `_publish_to_pr` adds the prefix (when configured) and the
+footer (always).
 
 ### Agent (`orchestra/agent.py`)
 
@@ -204,10 +239,48 @@ Tree-sitter structural outline of a source file. Returns plain text:
 ### Change review methodology
 
 Edit the `.prompt` files in `diffgraph/prompts/`:
-- `lead.prompt` -- three-phase methodology, concern types, system type examples
-- `reviewer.prompt` -- investigation workflow, severity guide, tool usage rules
+- `dispatcher.prompt` — comment-triggered routing, when to /review vs /ask vs unknown-command, context-focus rules (deep thread → focus on thread; shallow → primary context is whole PR)
+- `reviewer.prompt` — three-phase methodology, concern scaling, severity guide, set_review_status policy
+- `investigator.prompt` — investigation workflow, evidence requirements, when to call done
 
 All methodology lives in prompts, not in Python code. The orchestrator is ~35 lines.
+
+### Prompts-as-methodology principle
+
+Prompts describe **how to think and collaborate** in code review, the way
+an experienced reviewer would explain it to a junior. They do not assert
+fixed numeric thresholds, MUST/SHALL contracts, or counts the model has to
+hit. Examples of what *not* to write:
+
+> Bad: "Drop a finding ONLY if it duplicates another OR has no evidence.
+>      MUST forward all BLOCKERs. Sanity check: 12 → 1 is a synthesis bug."
+>
+> Good: "Investigators already filter for noise — your role at this stage
+>      is to weave their sets together, not to re-judge each finding. If
+>      your merged set ends up much smaller than what came in, sit with
+>      that — usually it means a real finding got dropped, not that there
+>      was that much true overlap."
+
+Reasons:
+- LLMs interpret rigid directives as adversarial puzzles to satisfy
+  literally. Methodology in prose lets the model exercise judgement.
+- Hardcoded numbers age badly — "12 distinct findings → 1 is a bug"
+  cues the model to count, not to reason about content.
+- Different PR shapes need different defaults; rigid prompts can't
+  adapt to chore vs feature vs hotfix.
+
+When you must convey a default, make it a default-with-room: "default
+policy: <X>; adjust strictness to the situation". Concrete consequences
+of this principle are visible in the CONSOLIDATE step (reviewer.prompt)
+and the SET REVIEW STATUS step.
+
+### Investigators filter, reviewer merges
+
+Each investigator returns findings already filtered for evidence on
+their end. The reviewer's CONSOLIDATE step is **deduplication, not
+selection** — same file + same line + same problem merges; everything
+else carries forward. A reviewer that drops half the investigators'
+findings without duplicates is a synthesis bug, not concision.
 
 ### Change agent behavior at runtime
 
