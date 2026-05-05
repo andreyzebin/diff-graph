@@ -234,23 +234,82 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         return text
 
     @registry.register(
-        name="reply_to_comment",
-        description="Reply to an existing PR review comment thread.",
+        name="post_comment",
+        description=(
+            "Post a single comment on the PR. One tool covers all three "
+            "shapes that share Bitbucket's comments endpoint:\n"
+            "- general comment: just `text`.\n"
+            "- inline finding: `text` + `file` + `line` (+ optional `severity`).\n"
+            "- reply to existing thread: `text` + `parent_id`.\n"
+            "Severity is one of BLOCKER / MAJOR / MINOR / COMMENT and only "
+            "matters for inline comments. Returns the posted comment id."
+        ),
         parameters={
             "type": "object",
             "properties": {
-                "comment_id": {"type": "integer"},
                 "text": {"type": "string"},
+                "file": {"type": "string", "description": "Relative path; pair with `line` for an inline anchor."},
+                "line": {"type": "integer", "description": "1-indexed line in the changed (right) version."},
+                "severity": {
+                    "type": "string",
+                    "enum": ["BLOCKER", "MAJOR", "MINOR", "COMMENT"],
+                    "description": "Only meaningful for inline comments.",
+                },
+                "parent_id": {"type": "integer", "description": "Comment id to reply under."},
             },
-            "required": ["comment_id", "text"],
+            "required": ["text"],
         },
     )
-    def reply_to_comment_tool(comment_id: int = 0, text: str = "") -> dict:
-        ctx.review_context.comment_replies.append({
-            "comment_id": comment_id,
-            "text": text,
+    def post_comment_tool(text: str = "",
+                          file: str = "",
+                          line: int = 0,
+                          severity: str = "",
+                          parent_id: int = 0) -> dict:
+        pr_url = getattr(ctx, "_pr_url", "") or ""
+        if not pr_url:
+            return {"status": "skipped",
+                    "message": "no pr_url on ctx; running locally — comments not posted"}
+        if not text or not text.strip():
+            return {"status": "error", "message": "text is required"}
+
+        decorate = getattr(ctx, "_decorate", None)
+        author_prefix = getattr(ctx, "_author_prefix", "") or ""
+        body = text
+        if author_prefix and not body.lstrip().startswith(author_prefix):
+            body = f"{author_prefix} {body}"
+        if decorate:
+            body = decorate(body)
+
+        # Best-effort line snap when we have a diff result and the agent
+        # picked a line that's near (but not exactly on) a changed line.
+        snapped_line = int(line or 0)
+        if file and snapped_line and ctx._initialized and ctx.diff_result is not None:
+            fd = ctx.diff_result.files.get(file)
+            if fd is not None:
+                changed = fd.after_changed_lines
+                if changed and snapped_line not in changed:
+                    snapped_line = min(changed, key=lambda L: abs(L - snapped_line))
+
+        from diffgraph.bitbucket import post_pr_comment
+        try:
+            cid = post_pr_comment(
+                pr_url,
+                text=body,
+                file=file or "",
+                line=snapped_line,
+                severity=severity or "",
+                parent_id=int(parent_id or 0),
+            )
+        except Exception as exc:
+            return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
+
+        mode = "reply" if parent_id else ("inline" if (file and line) else "general")
+        ctx.review_context.posted_comments.append({
+            "comment_id": cid, "mode": mode,
+            "file": file, "line": snapped_line,
+            "parent_id": int(parent_id or 0),
         })
-        return {"status": "queued"}
+        return {"status": "posted", "comment_id": cid, "mode": mode}
 
     @registry.register(
         name="resolve_comment",
@@ -298,107 +357,6 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         ctx.review_context.review_status_reason = reason or ""
         return {"status": "queued", "review_status": normalised}
 
-    @registry.register(
-        name="post_findings",
-        description=(
-            "Post inline review comments to the PR immediately. Each finding "
-            "becomes a comment anchored to its file/line. Call this from the "
-            "agent that owns the review (typically the reviewer) before done() "
-            "so findings reach the PR even if you have no parent agent to "
-            "forward them through."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "findings": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "file": {"type": "string"},
-                            "line": {"type": "integer"},
-                            "severity": {
-                                "type": "string",
-                                "enum": ["BLOCKER", "MAJOR", "MINOR", "COMMENT"],
-                            },
-                            "title": {"type": "string"},
-                            "explanation": {"type": "string"},
-                            "evidence": {"type": "string"},
-                            "suggestion": {"type": "string"},
-                        },
-                        "required": ["file", "line", "severity", "title", "explanation"],
-                    },
-                },
-            },
-            "required": ["findings"],
-        },
-    )
-    def post_findings_tool(findings: list = ()) -> dict:
-        pr_url = getattr(ctx, "_pr_url", "") or ""
-        if not pr_url:
-            return {"status": "skipped",
-                    "message": "no pr_url on ctx; running locally — findings are still in done()"}
-        if not findings:
-            return {"status": "noop", "posted": 0}
-
-        from diffgraph.bitbucket import post_review_comments
-        from diffgraph.orchestrator import ReviewFinding
-
-        decorate = getattr(ctx, "_decorate", None)
-        author_prefix = getattr(ctx, "_author_prefix", "") or ""
-
-        # Snap to changed lines if we have a diff result.
-        changed_lines = None
-        if ctx._initialized and ctx.diff_result is not None:
-            changed_lines = {
-                path: set(fd.after_changed_lines)
-                for path, fd in ctx.diff_result.files.items()
-            }
-
-        # Lightweight comment-shaped objects matching the bitbucket helper's
-        # duck-type expectations (file, line, severity, comment, suggestion).
-        class _C:
-            pass
-
-        comments = []
-        for f in findings:
-            c = _C()
-            c.file = f.get("file", "")
-            c.line = int(f.get("line", 0) or 0)
-            c.severity = f.get("severity", "COMMENT")
-            body = f"**{f.get('title', '').strip()}**\n\n{f.get('explanation', '').strip()}"
-            ev = f.get("evidence", "").strip()
-            if ev:
-                body += f"\n\n*Evidence:* {ev}"
-            if author_prefix and not body.lstrip().startswith(author_prefix):
-                body = f"{author_prefix} {body}"
-            c.comment = body
-            sug = f.get("suggestion", "")
-            c.suggestion = sug.strip() if sug else None
-            comments.append(c)
-            # Track for downstream reporting (judge counters, run.json, etc).
-            try:
-                from diffgraph.orchestrator import ReviewFinding as _RF
-                ctx.review_context.posted_findings.append(_RF(
-                    file=c.file, line=c.line, severity=c.severity,
-                    title=f.get("title", ""), explanation=f.get("explanation", ""),
-                    evidence=ev, suggestion=c.suggestion or "",
-                ))
-            except Exception:
-                pass
-
-        try:
-            posted = post_review_comments(
-                pr_url, comments,
-                changed_lines=changed_lines,
-                decorate=decorate,
-            )
-            return {"status": "posted", "posted": int(posted),
-                    "of": len(comments)}
-        except Exception as exc:
-            return {"status": "error",
-                    "message": f"{type(exc).__name__}: {exc}",
-                    "of": len(comments)}
 
 
 def _extract_file_diff(path: str, diff_text: str) -> str:

@@ -65,11 +65,12 @@ class ReviewContext:
     # of "APPROVED" / "NEEDS_WORK" / "UNAPPROVED".
     review_status: Optional[str] = None
     review_status_reason: str = ""
-    # Findings the agent already published to the PR via the post_findings
-    # tool (immediate-post path). Tracked here so downstream reporting
-    # (run.json findings_count, trace, judge counters) sees them even when
-    # nothing came back through the top-level done() forwarding chain.
-    posted_findings: list["ReviewFinding"] = field(default_factory=list)
+    # Comments the agent already published to the PR via the post_comment
+    # tool (immediate-post path). Each entry: {comment_id, mode, file, line,
+    # parent_id}. Tracked here so cli.py can skip its bulk-publish (would
+    # otherwise double-post) and downstream reporting can count what
+    # actually landed.
+    posted_comments: list[dict] = field(default_factory=list)
 
 
 @dataclass

@@ -317,7 +317,7 @@ def _run_with_dispatcher(
     author_prefix = ctx._author_prefix
     # Findings published immediately via post_findings tool — don't double-post
     # via the bulk path.
-    bulk_findings = () if review_ctx.posted_findings else (findings if ctx._initialized else ())
+    bulk_findings = () if review_ctx.posted_comments else (findings if ctx._initialized else ())
     _publish_to_pr(
         pr_url,
         findings=bulk_findings,
@@ -642,7 +642,7 @@ def run(
     )
     # If the reviewer published findings mid-run via post_findings, skip the
     # bulk publish below — otherwise comments would double up on the PR.
-    bulk_findings = () if getattr(review_ctx, "posted_findings", []) else findings
+    bulk_findings = () if getattr(review_ctx, "posted_comments", []) else findings
     _publish_to_pr(
         pr_url,
         findings=bulk_findings,

@@ -1,7 +1,7 @@
 @agent: reviewer
 @mode: react
 @capabilities: sgr, spawn, spawn_many, observe_agents, adjust_agent
-@tools: read_file, read_outline, reply_to_comment, resolve_comment, set_review_status, post_findings
+@tools: read_file, read_outline, post_comment, resolve_comment, set_review_status
 @budget: 50000 tokens, 50 steps
 @sgr_interval: 5
 @llm: temperature=0.2
@@ -32,13 +32,16 @@ YOUR TOOLS:
 - spawn_many(agents, merge) — spawn multiple investigators in parallel
 - observe_agents() — check progress of running investigators
 - adjust_agent(agent_id, ...) — steer a stuck investigator
-- reply_to_comment(comment_id, text) — reply to an existing PR comment
-- resolve_comment(comment_id) — mark a comment as resolved
-- post_findings(findings) — publish your inline review comments to the
-  PR right now. Each finding becomes an anchored comment on its
-  file/line. Call this BEFORE done() so the comments land regardless
-  of how you were spawned (top-level review run or as a child of the
-  dispatcher). The findings argument has the same shape as done()'s.
+- post_comment(text, file?, line?, severity?, parent_id?) — single
+  unified tool for putting any kind of comment on the PR:
+    - inline finding: text + file + line + severity (`BLOCKER` /
+      `MAJOR` / `MINOR` / `COMMENT`).
+    - general comment: just text.
+    - reply to an existing thread: text + parent_id.
+  Posts immediately. Returns the new comment id. Call once per
+  finding or per reply — orchestra dispatches multiple tool calls
+  in parallel, so emitting all of them in one step is fine.
+- resolve_comment(comment_id) — mark a comment thread as resolved.
 - set_review_status(status, reason) — your verdict on the PR as a whole;
   status is "APPROVED" / "NEEDS_WORK" / "UNAPPROVED". This is what
   closes the review on the PR — without it the PR sits as if you
@@ -116,7 +119,7 @@ PHASE 3 — JUDGE (no more spawning)
 
   2. EXISTING COMMENTS — handle PR threads:
      - Addressed by diff → resolve_comment(id)
-     - Incomplete fix → reply_to_comment(id, text)
+     - Incomplete fix → post_comment(text=..., parent_id=id)
      - Do NOT duplicate existing open comments in findings
 
   3. CONSOLIDATE — weave investigators' findings into one review.
@@ -139,10 +142,12 @@ PHASE 3 — JUDGE (no more spawning)
 
   4. FINAL REFLECT — zero open concerns, high confidence.
 
-  4b. POST FINDINGS — call post_findings(findings) with the consolidated
-      list. This is what makes the inline comments appear on the PR.
-      Skipping it means humans see no review even if you wrote a perfect
-      one — done() alone doesn't publish.
+  4b. POST FINDINGS — for each consolidated finding, call
+      post_comment(text=..., file=..., line=..., severity=...). One
+      call per finding; the framework dispatches parallel tool calls
+      from a single step, so listing them all at once is fine. This is
+      what makes the inline comments appear on the PR — done() alone
+      doesn't publish.
 
   5. SET REVIEW STATUS — your verdict on the PR as a whole.
 

@@ -1,11 +1,11 @@
 @agent: dispatcher
 @mode: react
 @capabilities: spawn
-@tools: reply_to_comment, resolve_comment
+@tools: post_comment, resolve_comment
 @budget: 30000 tokens, 10 steps
 @llm: temperature=0.3
 @guards:
-  require_tool:reply_to_comment: "You stopped without replying. The user can only see reply_to_comment() output. Call reply_to_comment(comment_id={comment_id}, text=...) once, then finish with done()."
+  require_tool:post_comment: "You stopped without replying. The user can only see post_comment() output. Call post_comment(text=..., parent_id={comment_id}) once, then finish with done()."
 @data:
   message: string -- the full user message (may contain /command, or just plain text). Empty string when invoked outside a PR comment.
   comment_id: integer -- ID of the invoking comment. 0 means no comment context (CLI / auto-trigger / benchmark).
@@ -38,7 +38,7 @@ If the user seems to want a review but didn't use the command, say:
 Exactly three commands are supported.
 
 /review — Start a full code review. Acknowledge briefly via
-  reply_to_comment ("Starting review of {pr_title}..."), then
+  post_comment(text="Starting review of {pr_title}...", parent_id={comment_id}), then
   spawn_agent(agent="reviewer"), then done().
 
   The reviewer publishes its own inline findings (via post_findings),
@@ -101,12 +101,12 @@ auto-trigger / benchmark). Skip thread reasoning entirely.
 
 ## REPLYING
 
-If COMMENT_ID > 0: the user can only see reply_to_comment() calls.
-  Always reply via reply_to_comment(comment_id={comment_id}, text="...") before
+If COMMENT_ID > 0: the user can only see your post_comment() output.
+  Always reply via post_comment(text="...", parent_id={comment_id}) before
   finishing. Never mention costs, budgets, tokens, or internals.
 
 If COMMENT_ID == 0 (CLI / auto-trigger / benchmark): no human is waiting on a
-  comment. Do NOT call reply_to_comment. Spawn the reviewer if appropriate
+  comment. Do NOT call post_comment. Spawn the reviewer if appropriate
   and return its findings via done() — that is the response.
 
 ---

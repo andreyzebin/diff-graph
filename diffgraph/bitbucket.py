@@ -527,11 +527,40 @@ def post_general_pr_comment(
     ca_bundle: str | None = None,
     client_cert: str | None = None,
 ) -> int:
-    """Post a top-level (non-anchored, non-reply) comment on the PR.
+    """Convenience: post a top-level (non-anchored, non-reply) comment.
 
-    Used by the verdict-as-comment mode where the agent surfaces its
-    APPROVED/NEEDS_WORK call as a general comment when it can't (or
-    shouldn't) write to the participants endpoint.
+    Thin wrapper around post_pr_comment for callers that don't need
+    anchor / parent semantics.
+    """
+    return post_pr_comment(pr_url, text=text,
+                           token=token, ca_bundle=ca_bundle, client_cert=client_cert)
+
+
+def post_pr_comment(
+    pr_url: str,
+    *,
+    text: str,
+    file: str = "",
+    line: int = 0,
+    severity: str = "",
+    parent_id: int = 0,
+    line_type: str = "ADDED",
+    token: str | None = None,
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+) -> int:
+    """Post any kind of PR comment via the unified comments endpoint.
+
+    Bitbucket Server's `POST /pull-requests/{id}/comments` accepts
+    a single body shape that varies by which fields are present:
+
+    - general:  `{text}`
+    - inline:   `{text, anchor: {path, line, lineType}, severity?}`
+    - reply:    `{text, parent: {id}}`
+
+    Pass `file` + `line` for an inline anchored comment. Pass
+    `parent_id` for a reply (anchor + parent_id together would reply
+    inside an inline thread, but most callers won't need that).
 
     Returns the new comment's id, or 0 if Bitbucket didn't echo one.
     """
@@ -546,7 +575,22 @@ def post_general_pr_comment(
         f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
         f"/pull-requests/{pr_id}/comments"
     )
-    resp = _api_post(endpoint, token, ca_bundle, client_cert, {"text": text})
+    body: dict = {"text": text}
+    if parent_id:
+        body["parent"] = {"id": int(parent_id)}
+    if file and line:
+        body["anchor"] = {
+            "path": file,
+            "line": int(line),
+            "lineType": (line_type or "ADDED").upper(),
+            "fileType": "TO",
+        }
+        sev = (severity or "").strip().upper()
+        if sev in ("BLOCKER", "MAJOR"):
+            body["severity"] = "BLOCKER"
+        elif sev in ("MINOR", "COMMENT"):
+            body["severity"] = "NORMAL"
+    resp = _api_post(endpoint, token, ca_bundle, client_cert, body)
     try:
         return int((resp or {}).get("id", 0))
     except (ValueError, TypeError):
