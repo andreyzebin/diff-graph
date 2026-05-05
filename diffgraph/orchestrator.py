@@ -325,9 +325,38 @@ def _make_diff_summary(diff_result: DiffResult) -> str:
 
 _MAX_COMMENTS = 20
 
+# Optional regex for "synthetic author" recognition. When `subject_pattern`
+# is set (CLI flag --subject-pattern, see cli.py), comment text is matched
+# against it; if the first capture group fires, that string is used as the
+# author name instead of the Bitbucket author slug. Designed for the
+# benchmark suite which simulates multiple humans through a single
+# Bitbucket account by prefixing comments with `[alice]`, `[bob]`, etc.
+# Off by default — production users don't write `[name]` prefixes
+# deliberately, but a stray match would mislabel them.
+import re as _re
 
-def _format_existing_comments(comments: list[dict], bot_user: str = "") -> str:
-    """Format comments for prompt injection. Keeps unresolved + last N resolved."""
+
+def _strip_subject_prefix(text: str, pattern: _re.Pattern | None) -> tuple[str, str]:
+    """Return (synthetic_author, remaining_text). Empty author when no match."""
+    if not pattern or not text:
+        return "", text
+    m = pattern.match(text)
+    if not m or not m.groups():
+        return "", text
+    name = (m.group(1) or "").strip()
+    rest = text[m.end():].lstrip()
+    return name, rest
+
+
+def _format_existing_comments(comments: list[dict], bot_user: str = "",
+                              subject_pattern: _re.Pattern | None = None) -> str:
+    """Format comments for prompt injection. Keeps unresolved + last N resolved.
+
+    If `subject_pattern` matches a comment's text, the captured group is
+    treated as the author for [SELF]/[HUMAN] labelling — overriding the
+    Bitbucket author slug. Used by the bench harness to simulate a
+    multi-author thread under a single account.
+    """
     if not comments:
         return "(none)"
 
@@ -344,13 +373,21 @@ def _format_existing_comments(comments: list[dict], bot_user: str = "") -> str:
         resolved = " [RESOLVED]" if c.get("resolved") else ""
         author = c.get("author", "")
         slug = c.get("author_slug", "")
-        if bot_user and slug and slug == bot_user:
+        text_raw = str(c.get("text", ""))
+        synth_author, text = _strip_subject_prefix(text_raw, subject_pattern)
+        if synth_author:
+            # Synthetic author wins over Bitbucket slug for labelling.
+            if bot_user and synth_author == bot_user:
+                who = f"[SELF:{synth_author}]"
+            else:
+                who = f"[{synth_author}]"
+        elif bot_user and slug and slug == bot_user:
             who = f"[SELF:{author}]"
         else:
             who = f"[{author}]" if author else ""
         lines.append(
             f"  #{c['id']} {who} {c.get('file', '')}:{c.get('line', '')} — "
-            f"{str(c.get('text', ''))[:100]}{resolved}"
+            f"{text[:100]}{resolved}"
         )
 
     total = len(comments)

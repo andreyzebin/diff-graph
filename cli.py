@@ -105,6 +105,7 @@ def _run_with_dispatcher(
     extra_data: Optional[dict] = None,
     trace_dir: Optional[str] = None,
     comment_tag: str = "dg",
+    subject_pattern: Optional[str] = None,
 ) -> None:
     """
     Run any agent with lazy repo init.
@@ -158,7 +159,16 @@ def _run_with_dispatcher(
 
     bot_user = review_cfg.get("bot_user", "")
     from diffgraph.orchestrator import _format_existing_comments
-    existing_comments_str = _format_existing_comments(existing_comments, bot_user=bot_user)
+    import re as _re
+    pat = None
+    if subject_pattern:
+        try:
+            pat = _re.compile(subject_pattern)
+        except _re.error as exc:
+            console.print(f"[yellow]invalid --subject-pattern, ignored: {exc}[/yellow]")
+    existing_comments_str = _format_existing_comments(
+        existing_comments, bot_user=bot_user, subject_pattern=pat,
+    )
 
     # ── Lazy ctx: clone happens on first domain tool call ─────────────────
     _cleanup_fn = {"fn": None}
@@ -294,6 +304,7 @@ def _run_with_dispatcher(
         run_id=_trace_db.run_id,
         prefix=comment_tag,
     )
+    author_prefix = f"[{bot_user}]" if (subject_pattern and bot_user) else ""
     _publish_to_pr(
         pr_url,
         findings=findings if ctx._initialized else (),
@@ -301,6 +312,7 @@ def _run_with_dispatcher(
         resolves=review_ctx.comment_resolves,
         diff_result=ctx.diff_result if ctx._initialized else None,
         meta=meta,
+        author_prefix=author_prefix,
     )
 
     # Cleanup cloned repo if it was created
@@ -329,6 +341,7 @@ def run(
     trace_dir:     Optional[str] = typer.Option(None,  "--trace-dir",          help="Mirror traces to a filesystem layout (in addition to SQLite). Defaults to $DIFFGRAPH_TRACE_DIR."),
     bot_user:      Optional[str] = typer.Option(None,  "--bot-user",           help="Bitbucket slug of the bot account. Own comments are tagged [SELF]. Overrides review.bot_user from config and $BOT_USER."),
     comment_tag:   Optional[str] = typer.Option(None,  "--comment-tag",        help="Prefix for the traceability footer appended to posted comments (`<prefix>:<gen>:<mutation>:<run>`). Empty string disables. Overrides review.comment_tag (default: dg)."),
+    subject_pattern: Optional[str] = typer.Option(None, "--subject-pattern",   help="Regex with one capture group; when matched at the start of a comment's text the captured value replaces the Bitbucket author slug for [SELF]/[HUMAN] labelling. Use to simulate multi-author threads under a single account during benchmarks. Example: `^\\[(\\w+)\\]\\s+`."),
     output:        Optional[str] = typer.Option(None,  "--output",       "-o", help="Write findings as JSON to file"),
     max_steps:     Optional[int] = typer.Option(None,  "--max-steps",          help="Max ReAct steps (default: from config)"),
     max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
@@ -455,6 +468,7 @@ def run(
             extra_data=extra_data,
             trace_dir=trace_dir,
             comment_tag=comment_tag_resolved,
+            subject_pattern=subject_pattern,
         )
         raise typer.Exit(0)
 
@@ -1048,6 +1062,7 @@ def _publish_to_pr(
     resolves: list = (),
     diff_result=None,
     meta=None,
+    author_prefix: str = "",
 ) -> None:
     """
     Single entry-point for posting all DiffGraph output to a PR.
@@ -1083,7 +1098,14 @@ def _publish_to_pr(
         console.print(f"\n[green]Posted {posted}/{len(comments_to_post)} comments[/green]")
 
     for reply in replies:
-        text = decorate(reply["text"]) if decorate else reply["text"]
+        body = reply["text"]
+        # Bench-only: stamp the bot's synthetic author tag at the start so
+        # the same comment, when read back next round, matches the
+        # subject_pattern and gets labelled [SELF]. No-op in production
+        # (author_prefix is empty unless --subject-pattern is set).
+        if author_prefix and not body.lstrip().startswith(author_prefix):
+            body = f"{author_prefix} {body}"
+        text = decorate(body) if decorate else body
         try:
             reply_to_pr_comment(pr_url, reply["comment_id"], text)
             console.print(f"  [dim]replied to #{reply['comment_id']}[/dim]")
