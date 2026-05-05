@@ -256,6 +256,19 @@ class RealBitbucketFactory(AgentPRViewFactory):
         }
 
         loop = asyncio.get_running_loop()
+
+        # Bitbucket allows only one open PR per (from, to) branch pair. Stale
+        # PRs from prior interrupted runs (process killed, network blip, etc.)
+        # block fresh PR creation. Decline any existing open `[BENCHMARK]` PR
+        # on the same branch pair before creating ours.
+        await loop.run_in_executor(
+            None,
+            lambda: cls._decline_stale_benchmark_prs(
+                client, project, repo,
+                pr_cfg["from_branch"], pr_cfg["to_branch"],
+            ),
+        )
+
         try:
             resp = await loop.run_in_executor(
                 None,
@@ -268,3 +281,59 @@ class RealBitbucketFactory(AgentPRViewFactory):
             raise ProviderError(f"Unexpected response when creating PR: {resp!r}")
 
         return RealBitbucketPRProxy(client, project, repo, resp["id"], agent_username, base_url)
+
+    @staticmethod
+    def _decline_stale_benchmark_prs(client: Bitbucket, project: str, repo: str,
+                                     from_branch: str, to_branch: str) -> None:
+        """Decline any open `[BENCHMARK]` PR on the (from, to) branch pair.
+
+        Best-effort: a network blip or unexpected response shape is logged but
+        not raised — the subsequent create_pull_request call is the real
+        contract, and it will surface "duplicate PR" if cleanup didn't help.
+        """
+        path = f"rest/api/1.0/projects/{project}/repos/{repo}/pull-requests"
+        try:
+            resp = client.get(
+                path,
+                params={
+                    "state": "OPEN",
+                    "at": f"refs/heads/{from_branch}",
+                    "direction": "OUTGOING",
+                    "limit": 50,
+                },
+                advanced_mode=True,
+            )
+            if resp.status_code >= 400:
+                log.warning("list open PRs failed: HTTP %d %s",
+                            resp.status_code, resp.text[:200])
+                return
+            data = resp.json() or {}
+        except Exception as exc:
+            log.warning("list open PRs failed: %s", exc)
+            return
+
+        target_ref = f"refs/heads/{to_branch}"
+        for pr in (data.get("values") or []):
+            if (pr.get("toRef") or {}).get("id") != target_ref:
+                continue
+            title = pr.get("title", "") or ""
+            if "[BENCHMARK]" not in title:
+                # Don't touch unrelated open PRs from real users.
+                continue
+            pr_id = pr.get("id")
+            version = pr.get("version", 0)
+            try:
+                dr = client.post(
+                    f"{path}/{pr_id}/decline",
+                    params={"version": version},
+                    headers={"X-Atlassian-Token": "no-check"},
+                    advanced_mode=True,
+                )
+                if dr.status_code >= 400:
+                    log.warning("decline stale PR #%s failed: HTTP %d %s",
+                                pr_id, dr.status_code, dr.text[:200])
+                else:
+                    log.info("declined stale BENCHMARK PR #%s on %s -> %s",
+                             pr_id, from_branch, to_branch)
+            except Exception as exc:
+                log.warning("decline stale PR #%s raised: %s", pr_id, exc)
