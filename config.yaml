@@ -52,6 +52,14 @@ agent:
   # /help from /review on a single command shape, so set it explicitly.
   #
   #   interaction_command: 'cd /path/to/agent && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id} --provider={provider}'
+  #
+  # If your interaction scenarios seed multi-author threads via [name]
+  # prefixes (see scenarios/interaction/SCEN-201, 203), pass diff-graph's
+  # --subject-pattern + --bot-user so the agent treats those prefixes as
+  # distinct authors at the rendering layer (single Bitbucket account
+  # is no obstacle):
+  #
+  #   interaction_command: '... cli.py run ... --bot-user=<bot-slug> --subject-pattern=''^\[(\w+)\]\s+'''
 
 judge:
   model: "claude-opus-4-6"

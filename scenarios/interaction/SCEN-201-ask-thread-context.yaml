@@ -1,6 +1,6 @@
 id: SCEN-201
-name: "/ask references a prior thread reply — must read it"
-tags: [interaction, ask, thread]
+name: "/ask reads parallel root comments (no thread depth)"
+tags: [interaction, ask, root-comments]
 
 input:
   bitbucket:
@@ -8,12 +8,15 @@ input:
     pull_request:
       from_branch: "hotfix/ORD-287-cancel-npe"
       to_branch: "master"
-      title: "[BENCHMARK] SCEN-201: /ask with thread context"
+      title: "[BENCHMARK] SCEN-201: /ask with parallel root comments"
       description: |
-        Interaction scenario — agent must use prior thread messages
-        when answering an /ask. The seed_comments simulate a multi-author
-        discussion (single Bitbucket account, distinguished by [name]
-        prefixes in the comment text).
+        Tests that /ask reads every root-level comment on the PR and
+        synthesises an answer across them. There's NO thread depth here —
+        all seed comments are siblings at the root. The complementary
+        deep-thread scenario is SCEN-203.
+
+        Multi-author simulation runs on a single Bitbucket account via
+        `[<name>] ` prefixes parsed by diff-graph's --subject-pattern.
 
   setup:
     seed_comments:

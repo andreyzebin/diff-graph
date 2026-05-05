@@ -1,0 +1,76 @@
+id: SCEN-203
+name: "/ask inside a deep thread — focus on the thread, ignore parallel noise"
+tags: [interaction, ask, thread, deep]
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "hotfix/ORD-287-cancel-npe"
+      to_branch: "master"
+      title: "[BENCHMARK] SCEN-203: /ask inside deep thread"
+      description: |
+        Tests that the agent prioritises the thread it was tagged in and
+        does NOT get distracted by unrelated parallel root comments.
+
+        Two distractor root comments cover off-topic concerns. A separate
+        three-level deep thread carries the actual context (legacy import
+        risk, createOrder validation, cancelOrder residual risk). The
+        trigger /ask is planted INSIDE that deep thread (in_reply_to:
+        [2,0,0] = 3rd root → 1st reply → 1st reply).
+
+        The agent must reference the deep-thread reasoning concretely
+        and avoid mentioning the distractor topics.
+
+  setup:
+    seed_comments:
+      # Distractor root #1 — unrelated approval noise
+      - text: "[carol] LGTM, ready to merge from my side once CI is green"
+
+      # Distractor root #2 — also unrelated
+      - text: "[dave] Updated the changelog separately under ORD-290"
+
+      # The actual context-bearing thread — three levels deep
+      - text: "[alice] worried about createOrder for legacy imports — it iterates items the same way"
+        replies:
+          - text: "[bob] @alice API layer validates items before createOrder, so null is impossible there. cancelOrder is still risky though."
+            replies:
+              - text: "[alice] @bob right — so only the cancelOrder path has residual NPE risk?"
+
+  trigger:
+    type: comment
+    in_reply_to: [2, 0, 0]
+    text: "/ask given this thread, where exactly is the residual risk and is it really only cancelOrder?"
+
+expected_output:
+  reply:
+    must_mention:
+      - ["cancelOrder"]                       # the focused thread topic
+      - ["createOrder"]                       # what bob ruled out
+      - ["legacy", "import", "validation"]    # alice's earlier concern
+      - ["yes", "no", "only", "also", "correct"]   # explicit answer one way
+    must_address: ["yes", "no", "correct", "indeed", "actually"]
+    forbidden_topics:
+      - ["LGTM", "carol", "ready to merge"]   # must NOT be distracted by carol
+      - ["changelog", "dave", "ORD-290"]      # nor by dave
+    rationale: |
+      The trigger is planted INSIDE the alice-bob thread. The agent must
+      reason about the thread's content (createOrder validated by API
+      layer; cancelOrder path holding residual risk) and ignore the
+      sibling root comments from carol/dave which are about unrelated
+      concerns. A reply that mentions carol's LGTM or dave's changelog
+      is a distractor failure.
+
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+
+  thresholds:
+    min_score: 0.65
+
+metadata:
+  difficulty: hard
+  language: java
+  pr_size: small
+  scenario_type: interaction
+  capabilities: [dispatcher, ask, thread-focus, distractor-resistance]
