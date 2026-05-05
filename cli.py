@@ -157,10 +157,11 @@ def run(
     no_verify_ssl: bool = typer.Option(False, "--no-verify-ssl", help="Skip TLS certificate verification (corporate self-signed certs)"),
     provider: Optional[list[str]] = typer.Option(None, "--provider", "-p", help="LLM provider profile to pass to the agent CLI (repeatable). Without it, the agent uses its own config."),
     all_providers: bool = typer.Option(False, "--all-providers", help="Run scenarios against every provider listed in agent.providers (config.local.yaml)."),
+    repeat: int = typer.Option(1, "--repeat", "-n", help="Run each scenario N times and aggregate (median score, union of warnings). Useful for variance-prone agents/judges."),
 ):
     """Run benchmark scenarios."""
     asyncio.run(_run_async(scenario, tag or [], dry_run, compare_with, agent_url, prompts, no_verify_ssl,
-                           list(provider or []), all_providers))
+                           list(provider or []), all_providers, repeat))
 
 
 _PROVIDER_FLAG_RE = __import__("re").compile(r"\s*--provider[= ]\{provider\}")
@@ -226,6 +227,7 @@ async def _run_async(
     no_verify_ssl: bool = False,
     providers: list[str] | None = None,
     all_providers: bool = False,
+    repeat: int = 1,
 ):
     from bitbucket import build_proxy
     from runner.scenario_loader import load_scenarios
@@ -354,69 +356,88 @@ async def _run_async(
         prov_results: list = []
 
         for s in scenarios:
-            # Per (provider, scenario) attempt dir. Repeat runs on the same
-            # bench session bump attempt-NN automatically — easy variance
-            # measurement without manual housekeeping.
-            attempt_dir: Path | None = None
-            agent_dir: Path | None = None
-            judge_dir: Path | None = None
-            saved_path = os.environ.get("DIFFGRAPH_TRACE_PATH")
-            if session_dir is not None:
-                sc_parent = session_dir / _safe_seg(prov_label) / _safe_seg(s.id)
-                attempt_dir = _next_attempt_dir(sc_parent)
-                agent_dir = attempt_dir / "agent"
-                judge_dir = attempt_dir / "judge"
-                agent_dir.mkdir()
-                judge_dir.mkdir()
-                os.environ["DIFFGRAPH_TRACE_PATH"] = str(agent_dir)
+            # Per (provider, scenario) the bench may run N attempts (--repeat).
+            # Per-attempt directories live under the scenario; the aggregated
+            # result is what gets pushed into prov_results / results.
+            attempt_results: list = []
+            last_attempt_dir: Path | None = None
+            last_agent_dir: Path | None = None
 
-            bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
-            # Wrap the whole iteration so a failure in build_proxy / agent /
-            # judge / decline does NOT abort the matrix — record an "error"
-            # result and move on to the next provider/scenario.
-            result = None
-            proxy = None
-            try:
-                proxy = await build_proxy(bb_cfg)
+            for attempt_idx in range(max(1, repeat)):
+                attempt_dir: Path | None = None
+                agent_dir: Path | None = None
+                judge_dir: Path | None = None
+                saved_path = os.environ.get("DIFFGRAPH_TRACE_PATH")
+                if session_dir is not None:
+                    sc_parent = session_dir / _safe_seg(prov_label) / _safe_seg(s.id)
+                    attempt_dir = _next_attempt_dir(sc_parent)
+                    agent_dir = attempt_dir / "agent"
+                    judge_dir = attempt_dir / "judge"
+                    agent_dir.mkdir()
+                    judge_dir.mkdir()
+                    os.environ["DIFFGRAPH_TRACE_PATH"] = str(agent_dir)
+                last_attempt_dir = attempt_dir
+                last_agent_dir = agent_dir
+
+                bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
+                # Wrap the whole iteration so a failure in build_proxy / agent /
+                # judge / decline does NOT abort the matrix — record an "error"
+                # result and move on to the next provider/scenario.
+                result = None
+                proxy = None
                 try:
-                    async with proxy:
-                        judge = LLMJudge(
-                            llm_client, proxy,
-                            judge_dir=judge_dir,
-                            model=judge_cfg.get("model", ""),
-                        )
-                        result = await run_scenario(
-                            scenario=s,
-                            proxy=proxy,
-                            trigger=trigger,
-                            judge=judge,
-                        )
-                finally:
-                    if saved_path is None:
-                        os.environ.pop("DIFFGRAPH_TRACE_PATH", None)
-                    else:
-                        os.environ["DIFFGRAPH_TRACE_PATH"] = saved_path
-            except Exception as exc:
-                from runner.scorer import ScenarioResult
-                err_msg = f"{type(exc).__name__}: {exc}"
-                console.print(f"   [red dim]iteration failed: {err_msg}[/red dim]")
-                result = ScenarioResult(
-                    scenario_id=s.id,
-                    scenario_name=s.name,
-                    verdict="error",
-                    score=0.0,
-                    required_found=0,
-                    required_total=len(s.expected_output.required_comments),
-                    false_positives=0,
-                    location_accuracy=0.0,
-                    status_change_verdict="n/a",
-                    inline_ratio=0.0,
-                    total_comments=0,
-                    duration_seconds=0.0,
-                    judge_summary=err_msg,
-                    error=err_msg,
-                    pr_url=getattr(proxy, "pr_url", None) if proxy else None,
-                )
+                    proxy = await build_proxy(bb_cfg)
+                    try:
+                        async with proxy:
+                            judge = LLMJudge(
+                                llm_client, proxy,
+                                judge_dir=judge_dir,
+                                model=judge_cfg.get("model", ""),
+                            )
+                            result = await run_scenario(
+                                scenario=s,
+                                proxy=proxy,
+                                trigger=trigger,
+                                judge=judge,
+                            )
+                    finally:
+                        if saved_path is None:
+                            os.environ.pop("DIFFGRAPH_TRACE_PATH", None)
+                        else:
+                            os.environ["DIFFGRAPH_TRACE_PATH"] = saved_path
+                except Exception as exc:
+                    from runner.scorer import ScenarioResult
+                    err_msg = f"{type(exc).__name__}: {exc}"
+                    console.print(f"   [red dim]iteration failed: {err_msg}[/red dim]")
+                    result = ScenarioResult(
+                        scenario_id=s.id,
+                        scenario_name=s.name,
+                        verdict="error",
+                        score=0.0,
+                        required_found=0,
+                        required_total=len(s.expected_output.required_comments),
+                        false_positives=0,
+                        location_accuracy=0.0,
+                        status_change_verdict="n/a",
+                        inline_ratio=0.0,
+                        total_comments=0,
+                        duration_seconds=0.0,
+                        judge_summary=err_msg,
+                        error=err_msg,
+                        pr_url=getattr(proxy, "pr_url", None) if proxy else None,
+                    )
+
+                attempt_results.append((result, attempt_dir, agent_dir))
+
+            # Aggregate across attempts when --repeat > 1; otherwise the
+            # single attempt result IS the final.
+            from runner.scorer import aggregate_results
+            attempt_only_results = [r for r, _, _ in attempt_results]
+            result = aggregate_results(attempt_only_results)
+
+            # Pick "last" trace dirs for downstream metadata (prompt hash etc).
+            attempt_dir = last_attempt_dir
+            agent_dir = last_agent_dir
 
             prov_results.append(result)
             results.append(result)
@@ -467,9 +488,16 @@ async def _run_async(
             fail_reason = ""
             if result.verdict == "fail":
                 fail_reason = f"  [red][FAIL: min_score={s.expected_output.thresholds.min_score:.2f}][/red]"
+            score_disp = f"[bold]{result.score:.2f}[/bold]"
+            if result.attempts and result.score_min is not None and result.score_max is not None:
+                score_disp = (
+                    f"[bold]{result.score:.2f}[/bold] "
+                    f"[dim]median over {len(result.attempts)} "
+                    f"({result.score_min:.2f}..{result.score_max:.2f})[/dim]"
+                )
             console.print(
                 f"{icon} {s.id:12} {s.name[:38]:38} "
-                f"score=[bold]{result.score:.2f}[/bold]  "
+                f"score={score_disp}  "
                 f"comments={result.total_comments}  "
                 f"{result.duration_seconds:.1f}s"
                 f"{fail_reason}"
