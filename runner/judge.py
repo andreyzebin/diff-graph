@@ -572,7 +572,7 @@ def _parse_scenario_warnings(data: dict) -> list[ScenarioWarning]:
     for w in raw:
         if not isinstance(w, dict):
             continue
-        kind = str(w.get("kind", "other")).strip() or "other"
+        kind = str(w.get("kind") or w.get("type") or "other").strip() or "other"
         detail = str(w.get("detail", "")).strip()
         if not detail:
             continue
@@ -586,7 +586,10 @@ def _parse_agent_warnings(data: dict) -> list[AgentWarning]:
     for w in raw:
         if not isinstance(w, dict):
             continue
-        kind = str(w.get("kind", "other")).strip() or "other"
+        # Some judges (e.g. deepseek-chat) emit the taxonomy under "type"
+        # rather than the schema's "kind" — accept both so the user-facing
+        # category survives instead of falling back to "other".
+        kind = str(w.get("kind") or w.get("type") or "other").strip() or "other"
         detail = str(w.get("detail", "")).strip()
         if not detail:
             continue
