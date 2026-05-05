@@ -198,21 +198,6 @@ def _run_with_dispatcher(
     ctx._init_fn = _lazy_init
     ctx._bot_user = bot_user
 
-    # Build the dg footer + author prefix decorators up front so the
-    # post_findings tool can apply them when the reviewer publishes
-    # mid-run instead of waiting for the parent's done() to come back.
-    from diffgraph.comment_meta import build_comment_meta as _bcm
-    _early_meta = _bcm(
-        prompt_source=str(prompt_source),
-        prompt_hash=mutation if mutation != "unknown" else "",
-        run_id=_trace_db.run_id,
-        prefix=comment_tag,
-    )
-    ctx._decorate = _early_meta.decorate
-    ctx._author_prefix = (
-        f"[{bot_user}]" if (subject_pattern and bot_user) else ""
-    )
-
     # ── Tool registry with all domain tools ───────────────────────────────
     tool_registry = ToolRegistry()
     register_diffgraph_tools(tool_registry, ctx)
@@ -238,6 +223,21 @@ def _run_with_dispatcher(
 
     from orchestra.trace_db import TraceDBWriter
     _trace_db = TraceDBWriter()
+
+    # Build the dg footer + author prefix decorators up front so the
+    # post_comment tool can apply them when the reviewer publishes
+    # mid-run instead of waiting for the parent's done() to come back.
+    from diffgraph.comment_meta import build_comment_meta as _bcm
+    _early_meta = _bcm(
+        prompt_source=str(prompt_source),
+        prompt_hash=mutation if mutation != "unknown" else "",
+        run_id=_trace_db.run_id,
+        prefix=comment_tag,
+    )
+    ctx._decorate = _early_meta.decorate
+    ctx._author_prefix = (
+        f"[{bot_user}]" if (subject_pattern and bot_user) else ""
+    )
 
     # Optional FS mirror.
     # Two modes:
