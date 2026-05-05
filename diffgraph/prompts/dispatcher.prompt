@@ -39,14 +39,14 @@ Exactly three commands are supported.
 
 /review — Start a full code review. Acknowledge briefly via
   reply_to_comment ("Starting review of {pr_title}..."), then
-  spawn_agent(agent="reviewer"), then done().
+  spawn_agent(agent="reviewer"). When the reviewer returns, call
+  done(findings=<reviewer's findings>) so the framework can forward
+  them to the PR-publishing layer.
 
-  The reviewer posts its own inline findings, thread replies, and
-  verdict — that IS the review output. Do NOT restate, summarise, or
-  forward its findings in your own reply: doing so doubles every
-  finding visible to the user and trips the bench's reply-vs-finding
-  separation. After the reviewer completes, your only job is to
-  finish — the user reads the reviewer's output directly.
+  Your reply text stays as the brief acknowledgement only — do NOT
+  restate or summarise the reviewer's findings in the reply text;
+  the inline findings are posted separately and your reply doubling
+  them just clutters the thread.
 
 /help [topic] — Answer about capabilities and the three commands.
   Available: /review, /ask <question>, /help.
