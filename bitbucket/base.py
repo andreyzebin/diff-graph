@@ -124,6 +124,30 @@ class AgentPRView(ABC):
         """
         raise NotImplementedError
 
+    async def get_diff(self) -> str:
+        """
+        Return the unified diff of the PR as a single string.
+
+        Lets the judge ground its agent_warnings (wrong-location,
+        contradicts-codebase) on the actual changed code. Implementations
+        that don't support this may return "" or raise NotImplementedError.
+        """
+        raise NotImplementedError
+
+    async def get_raw_file(self, path: str, ref: str = "") -> str:
+        """
+        Return the raw text content of a file at the given ref (commit/branch)
+        in the PR's repo. Empty ref means the source branch tip.
+
+        Used by the judge to read AGENTS.md (or similar project-convention
+        docs) so methodology-gap / contradicts-codebase warnings can be
+        verified rather than asserted from world knowledge alone.
+
+        Implementations may return "" when the file doesn't exist instead
+        of raising — best-effort reads keep the judge robust.
+        """
+        raise NotImplementedError
+
     async def __aenter__(self) -> "AgentPRView":
         return self
 

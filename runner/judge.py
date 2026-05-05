@@ -216,6 +216,30 @@ class LLMJudge(Judge):
         if exclude_comment_ids:
             comments = [c for c in comments if c.id not in exclude_comment_ids]
 
+        # Pull extra grounding so the judge can verify wrong-location and
+        # contradicts-codebase claims against actual code instead of relying
+        # on world knowledge alone. Best-effort — providers that don't
+        # support these methods just feed the judge an empty string.
+        pr_diff = ""
+        agents_md = ""
+        try:
+            pr_diff = await self._view.get_diff()
+        except NotImplementedError:
+            pass
+        except Exception as exc:
+            log_module = __import__("logging")
+            log_module.getLogger(__name__).warning("get_diff failed: %s", exc)
+        try:
+            from_branch = (scenario.input.get("bitbucket", {})
+                           .get("pull_request", {})
+                           .get("from_branch", ""))
+            agents_md = await self._view.get_raw_file("AGENTS.md", from_branch)
+        except NotImplementedError:
+            pass
+        except Exception as exc:
+            log_module = __import__("logging")
+            log_module.getLogger(__name__).warning("get_raw_file AGENTS.md failed: %s", exc)
+
         # Interaction scenarios (/ask /help): score the agent's reply text
         # against expected_output.reply, plus check side_effects.
         if scenario.expected_output.reply is not None:
@@ -224,7 +248,8 @@ class LLMJudge(Judge):
             except NotImplementedError:
                 full_thread = comments
             prompt = _build_reply_prompt(scenario, full_thread, comments,
-                                         exclude_comment_ids)
+                                         exclude_comment_ids,
+                                         pr_diff=pr_diff, agents_md=agents_md)
             self._trace_request(scenario.id, prompt)
             try:
                 data = self._llm_client.complete_json(prompt)
@@ -238,7 +263,8 @@ class LLMJudge(Judge):
             return output
 
         # Default: review scoring against required_comments / forbidden / status
-        prompt = _build_prompt(self._template, scenario, comments, review_status)
+        prompt = _build_prompt(self._template, scenario, comments, review_status,
+                               pr_diff=pr_diff, agents_md=agents_md)
         self._trace_request(scenario.id, prompt)
         try:
             data = self._llm_client.complete_json(prompt)
@@ -304,6 +330,8 @@ def _build_prompt(
     scenario: Scenario,
     comments: list[CommentThread],
     review_status: ReviewStatus | None,
+    pr_diff: str = "",
+    agents_md: str = "",
 ) -> str:
     eo = scenario.expected_output
     required_str = json.dumps([
@@ -329,7 +357,21 @@ def _build_prompt(
         forbidden_comments=forbidden_str,
         expected_status_change=eo.expected_status_change or "none",
         actual_status_change=review_status.status if review_status else "none",
+        pr_diff=_truncate(pr_diff, 30_000) or "(diff unavailable)",
+        agents_md=_truncate(agents_md, 10_000) or "(AGENTS.md unavailable)",
     )
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    """Cap a long blob with a clear marker. Keeps the prompt size bounded
+    when a PR diff or AGENTS.md happens to be enormous.
+    """
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    head = text[: max_chars - 200]
+    return head + f"\n\n... [truncated; original was {len(text)} chars]"
 
 
 def _interpret(data: dict, required_comments) -> JudgeOutput:
@@ -414,6 +456,14 @@ AGENT'S REPLY TEXT (this is what you score — collected by author from the thre
 
 INLINE COMMENTS POSTED BY AGENT (count): {inline_count}
 
+PR DIFF (the changed code the conversation is about — use to verify
+agent claims about file/line locations):
+{pr_diff}
+
+AGENTS.md (project conventions — use to verify methodology-gap and
+contradicts-codebase claims grounded in the actual ruleset):
+{agents_md}
+
 Return STRICT JSON, no prose:
 {{
   "overall_score": 0.0..1.0,
@@ -491,7 +541,9 @@ low for unrelated reasons (e.g. coverage gaps).
 
 def _build_reply_prompt(scenario: Scenario, full_thread: list[CommentThread],
                         agent_comments: list[CommentThread],
-                        exclude_comment_ids: set[int] | None = None) -> str:
+                        exclude_comment_ids: set[int] | None = None,
+                        pr_diff: str = "",
+                        agents_md: str = "") -> str:
     eo = scenario.expected_output
     reply = eo.reply
     expectations = json.dumps({
@@ -528,6 +580,8 @@ def _build_reply_prompt(scenario: Scenario, full_thread: list[CommentThread],
         expectations=expectations,
         agent_comments=_format_comments(agent_comments),
         inline_count=inline_count,
+        pr_diff=_truncate(pr_diff, 30_000) or "(diff unavailable)",
+        agents_md=_truncate(agents_md, 10_000) or "(AGENTS.md unavailable)",
     )
 
 

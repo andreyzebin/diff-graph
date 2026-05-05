@@ -178,6 +178,51 @@ class RealBitbucketPRProxy(AgentPRView):
         """Return every comment on the PR, regardless of author."""
         return await self._fetch_all_comments()
 
+    async def get_diff(self) -> str:
+        """Fetch the PR's unified diff. Returns "" on transient failure."""
+        path = (
+            f"rest/api/1.0/projects/{self._project}/repos/{self._repo}"
+            f"/pull-requests/{self._pr_id}/diff"
+        )
+        def _do() -> str:
+            try:
+                resp = _retry(lambda: self._client.get(path, advanced_mode=True))
+                if resp.status_code >= 400:
+                    log.warning("get_diff #%d HTTP %d", self._pr_id, resp.status_code)
+                    return ""
+                return resp.text or ""
+            except Exception as exc:
+                log.warning("get_diff #%d failed: %s", self._pr_id, exc)
+                return ""
+        return await self._run(_do)
+
+    async def get_raw_file(self, file_path: str, ref: str = "") -> str:
+        """Fetch raw file content at *ref* (default: source branch tip).
+
+        Returns "" when the file doesn't exist or the request fails — the
+        judge uses this best-effort, so a missing AGENTS.md should not
+        crash the evaluation.
+        """
+        path = (
+            f"rest/api/1.0/projects/{self._project}/repos/{self._repo}/raw/{file_path}"
+        )
+        def _do() -> str:
+            try:
+                params = {"at": f"refs/heads/{ref}"} if ref else None
+                resp = _retry(lambda: self._client.get(
+                    path, params=params, advanced_mode=True
+                ))
+                if resp.status_code == 404:
+                    return ""
+                if resp.status_code >= 400:
+                    log.warning("get_raw_file %s HTTP %d", file_path, resp.status_code)
+                    return ""
+                return resp.text or ""
+            except Exception as exc:
+                log.warning("get_raw_file %s failed: %s", file_path, exc)
+                return ""
+        return await self._run(_do)
+
     async def _fetch_all_comments(self) -> list[CommentThread]:
         """Walk PR activity, flatten root + nested replies into one list.
 
