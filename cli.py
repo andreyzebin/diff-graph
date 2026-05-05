@@ -1082,6 +1082,14 @@ def _publish_to_pr(
 
     if findings:
         comments_to_post = [_finding_to_comment(f) for f in findings]
+        # Stamp the bot's synthetic-author tag on each finding body, same
+        # rationale as replies: when the same comment is read back next
+        # round it must match subject_pattern and label as [SELF]. Empty
+        # in production (only set when --subject-pattern is configured).
+        if author_prefix:
+            for c in comments_to_post:
+                if not c.comment.lstrip().startswith(author_prefix):
+                    c.comment = f"{author_prefix} {c.comment}"
         changed_lines = None
         if diff_result is not None:
             changed_lines = {
