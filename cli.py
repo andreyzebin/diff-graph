@@ -313,6 +313,8 @@ def _run_with_dispatcher(
         diff_result=ctx.diff_result if ctx._initialized else None,
         meta=meta,
         author_prefix=author_prefix,
+        review_status=review_ctx.review_status or "",
+        bot_user=bot_user,
     )
 
     # Cleanup cloned repo if it was created
@@ -628,6 +630,8 @@ def run(
         resolves=review_ctx.comment_resolves,
         diff_result=diff_result,
         meta=meta,
+        review_status=review_ctx.review_status or "",
+        bot_user=bot_user_resolved,
     )
 
     if output:
@@ -1063,6 +1067,8 @@ def _publish_to_pr(
     diff_result=None,
     meta=None,
     author_prefix: str = "",
+    review_status: str = "",
+    bot_user: str = "",
 ) -> None:
     """
     Single entry-point for posting all DiffGraph output to a PR.
@@ -1126,6 +1132,18 @@ def _publish_to_pr(
             console.print(f"  [dim]resolved #{cid}[/dim]")
         except Exception as exc:
             console.print(f"  [yellow]resolve #{cid} failed: {exc}[/yellow]")
+
+    if review_status and bot_user:
+        from diffgraph.bitbucket import set_review_status as _set_status
+        try:
+            _set_status(pr_url, bot_user, review_status)
+            console.print(f"  [dim]review status: {review_status}[/dim]")
+        except Exception as exc:
+            console.print(f"  [yellow]set_review_status({review_status}) failed: {exc}[/yellow]")
+    elif review_status and not bot_user:
+        console.print(
+            "  [yellow]review status not posted: --bot-user not set[/yellow]"
+        )
 
 
 _agent_log = __import__("logging").getLogger("diffgraph.agent")

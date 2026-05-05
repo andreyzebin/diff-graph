@@ -265,6 +265,39 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         ctx.review_context.comment_resolves.append(comment_id)
         return {"status": "queued"}
 
+    @registry.register(
+        name="set_review_status",
+        description=(
+            "Set the agent's overall verdict on the PR. Use APPROVED when no "
+            "blocking issues are present, NEEDS_WORK when at least one "
+            "BLOCKER or MAJOR finding stands, UNAPPROVED to clear a prior "
+            "decision. Strictness — when to approve vs request changes — is "
+            "guided by the agent prompt, not this tool."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["APPROVED", "NEEDS_WORK", "UNAPPROVED"],
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "One-sentence explanation, recorded for audit.",
+                },
+            },
+            "required": ["status"],
+        },
+    )
+    def set_review_status_tool(status: str = "", reason: str = "") -> dict:
+        normalised = (status or "").strip().upper()
+        if normalised not in ("APPROVED", "NEEDS_WORK", "UNAPPROVED"):
+            return {"status": "error",
+                    "message": f"unknown status {status!r}; expected APPROVED / NEEDS_WORK / UNAPPROVED"}
+        ctx.review_context.review_status = normalised
+        ctx.review_context.review_status_reason = reason or ""
+        return {"status": "queued", "review_status": normalised}
+
 
 def _extract_file_diff(path: str, diff_text: str) -> str:
     out: list[str] = []

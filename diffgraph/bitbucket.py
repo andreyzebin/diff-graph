@@ -482,6 +482,44 @@ def get_comment_thread(
     return "\n\n".join(lines) if lines else "(empty thread)"
 
 
+def set_review_status(
+    pr_url: str,
+    user_slug: str,
+    status: str,
+    token: str | None = None,
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+) -> None:
+    """Set the agent's reviewer status on the PR (APPROVED / NEEDS_WORK /
+    UNAPPROVED). Uses the participants endpoint with the agent's own user
+    slug — Bitbucket Server treats the slug embedded in the path as the
+    target reviewer, and the bearer token authenticates the caller.
+
+    No-op if user_slug is empty (production path: never set status without
+    the bot user being explicitly configured).
+    """
+    if not user_slug:
+        return
+    normalised = (status or "").strip().upper()
+    if normalised not in ("APPROVED", "NEEDS_WORK", "UNAPPROVED"):
+        raise ValueError(
+            f"unknown review status {status!r}; expected APPROVED / NEEDS_WORK / UNAPPROVED"
+        )
+
+    token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
+    ca_bundle   = ca_bundle   or os.environ.get("REQUESTS_CA_BUNDLE")
+    client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
+    if not token:
+        raise ValueError("BITBUCKET_SERVER_BEARER_TOKEN is required")
+
+    server_url, project, repo, pr_id = parse_pr_url(pr_url)
+    endpoint = (
+        f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
+        f"/pull-requests/{pr_id}/participants/{user_slug}"
+    )
+    _api_put(endpoint, token, ca_bundle, client_cert, {"status": normalised})
+
+
 def _api_put(url: str, token: str, ca_bundle: str | None, client_cert: str | None, payload: dict) -> dict:
     import ssl
     from urllib.error import HTTPError

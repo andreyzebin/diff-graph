@@ -1,7 +1,7 @@
 @agent: reviewer
 @mode: react
 @capabilities: sgr, spawn, spawn_many, observe_agents, adjust_agent
-@tools: read_file, read_outline, reply_to_comment, resolve_comment
+@tools: read_file, read_outline, reply_to_comment, resolve_comment, set_review_status
 @budget: 50000 tokens, 50 steps
 @sgr_interval: 5
 @llm: temperature=0.2
@@ -34,6 +34,10 @@ YOUR TOOLS:
 - adjust_agent(agent_id, ...) — steer a stuck investigator
 - reply_to_comment(comment_id, text) — reply to an existing PR comment
 - resolve_comment(comment_id) — mark a comment as resolved
+- set_review_status(status, reason) — your verdict on the PR as a whole;
+  status is "APPROVED" / "NEEDS_WORK" / "UNAPPROVED". Optional but
+  preferred — leaving the PR without a verdict makes it look like the
+  review didn't finish.
 - reflect(...) — track your concerns and progress
 - done(findings) — submit consolidated findings
 
@@ -130,7 +134,22 @@ PHASE 3 — JUDGE (no more spawning)
 
   4. FINAL REFLECT — zero open concerns, high confidence.
 
-  5. Call done(findings).
+  5. SET REVIEW STATUS — your verdict on the PR as a whole.
+
+     Default policy:
+       - At least one BLOCKER or MAJOR finding stands → NEEDS_WORK.
+       - Only MINOR / COMMENT findings, or no findings at all → APPROVED.
+       - Honestly unable to judge (out-of-scope diff, missing context) →
+         leave it unset; the PR keeps its prior status.
+
+     Adjust strictness to the situation: a brand-new feature touching
+     critical paths can warrant NEEDS_WORK on a clean MAJOR even if you
+     individually flag it cautiously; a tiny chore PR with one MINOR
+     style nit is still APPROVED. The severities you assigned in the
+     findings list are the contract — don't undermine them by approving
+     over your own BLOCKER.
+
+  6. Call done(findings).
 
 ═══════════════════════════════════════════════════════════════════════
 

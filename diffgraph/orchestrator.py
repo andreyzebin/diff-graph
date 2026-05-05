@@ -60,6 +60,11 @@ class ReviewFinding:
 class ReviewContext:
     comment_replies: list[dict] = field(default_factory=list)
     comment_resolves: list[int] = field(default_factory=list)
+    # Reviewer's verdict on the PR as a whole. None means the agent didn't
+    # call set_review_status — keep current status untouched. Otherwise one
+    # of "APPROVED" / "NEEDS_WORK" / "UNAPPROVED".
+    review_status: Optional[str] = None
+    review_status_reason: str = ""
 
 
 @dataclass
