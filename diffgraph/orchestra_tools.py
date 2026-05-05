@@ -312,17 +312,46 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         return {"status": "posted", "comment_id": cid, "mode": mode}
 
     @registry.register(
-        name="resolve_comment",
-        description="Mark an existing PR comment thread as resolved (issue addressed in this diff).",
+        name="react_to_comment",
+        description=(
+            "Add a reaction emoji to an existing PR comment. The agent's "
+            "lightweight way to acknowledge a thread without writing a "
+            "reply: thumbs_up for 'addressed / agree', thumbs_down for "
+            "'still not OK', eyes for 'looking into this', tada for "
+            "'fixed nicely', etc. Use this in place of a verbal 'resolved' "
+            "reply when the diff already speaks for itself."
+        ),
         parameters={
             "type": "object",
-            "properties": {"comment_id": {"type": "integer"}},
-            "required": ["comment_id"],
+            "properties": {
+                "comment_id": {"type": "integer"},
+                "emoticon": {
+                    "type": "string",
+                    "description": (
+                        "Reaction name without colons. Common values: "
+                        "thumbs_up, thumbs_down, heart, smile, tada, "
+                        "confused, eyes, rocket."
+                    ),
+                },
+            },
+            "required": ["comment_id", "emoticon"],
         },
     )
-    def resolve_comment_tool(comment_id: int = 0) -> dict:
-        ctx.review_context.comment_resolves.append(comment_id)
-        return {"status": "queued"}
+    def react_to_comment_tool(comment_id: int = 0, emoticon: str = "") -> dict:
+        pr_url = getattr(ctx, "_pr_url", "") or ""
+        if not pr_url:
+            return {"status": "skipped",
+                    "message": "no pr_url on ctx; running locally — reaction not posted"}
+        if not comment_id:
+            return {"status": "error", "message": "comment_id is required"}
+        from diffgraph.bitbucket import react_to_pr_comment
+        try:
+            react_to_pr_comment(pr_url, int(comment_id), emoticon)
+            return {"status": "posted",
+                    "comment_id": int(comment_id),
+                    "emoticon": emoticon.strip().strip(":")}
+        except Exception as exc:
+            return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
 
     @registry.register(
         name="set_review_status",

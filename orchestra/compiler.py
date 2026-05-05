@@ -69,17 +69,21 @@ class AgentRegistryEntry:
         # Treat meta-tool names listed under @tools the same way as if
         # they appeared under @capabilities — lets prompts unify the
         # tool surface ("@tools: post_comment, spawn_agent" instead of
-        # splitting between @capabilities and @tools). The `sgr` flag
-        # stays a capability since it's not a tool.
+        # splitting between @capabilities and @tools). `reflect` enables
+        # the SGR flag rather than registering a new tool — it's the
+        # framework's structured-generation reflection step.
         known_meta = {
             "spawn_agent", "spawn_many", "plan", "fork",
             "adjust_agent", "observe_agents", "list_agents",
         }
+        sgr_flag = self.sgr
         domain_tools: list[str] = []
         for t in self.tools:
             if t in known_meta:
                 if t not in meta_tools:
                     meta_tools.append(t)
+            elif t == "reflect":
+                sgr_flag = True
             else:
                 domain_tools.append(t)
 
@@ -87,7 +91,7 @@ class AgentRegistryEntry:
             name=self.name,
             system_prompt=self.prompt_template,
             mode=self.mode,
-            sgr=self.sgr,
+            sgr=sgr_flag,
             sgr_interval=self.sgr_interval,
             tools=domain_tools,
             meta_tools=meta_tools,

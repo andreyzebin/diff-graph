@@ -536,6 +536,43 @@ def post_general_pr_comment(
                            token=token, ca_bundle=ca_bundle, client_cert=client_cert)
 
 
+def react_to_pr_comment(
+    pr_url: str,
+    comment_id: int,
+    emoticon: str,
+    token: str | None = None,
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+) -> None:
+    """Add a reaction emoji to an existing PR comment.
+
+    Bitbucket Server reactions API:
+      POST /rest/api/1.0/projects/{P}/repos/{R}/pull-requests/{ID}
+           /comments/{commentId}/reactions/{emoticon}
+
+    `emoticon` is the bare name without colons (e.g. "thumbs_up",
+    "thumbs_down", "heart", "smile", "tada", "confused", "eyes",
+    "rocket"). A leading/trailing ":" is stripped if the caller
+    accidentally passes the wrapped form.
+    """
+    token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
+    ca_bundle   = ca_bundle   or os.environ.get("REQUESTS_CA_BUNDLE")
+    client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
+    if not token:
+        raise ValueError("BITBUCKET_SERVER_BEARER_TOKEN is required")
+
+    name = (emoticon or "").strip().strip(":")
+    if not name:
+        raise ValueError("emoticon name is required (e.g. 'thumbs_up')")
+
+    server_url, project, repo, pr_id = parse_pr_url(pr_url)
+    endpoint = (
+        f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
+        f"/pull-requests/{pr_id}/comments/{comment_id}/reactions/{name}"
+    )
+    _api_post(endpoint, token, ca_bundle, client_cert, {})
+
+
 def post_pr_comment(
     pr_url: str,
     *,

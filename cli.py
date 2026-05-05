@@ -322,7 +322,6 @@ def _run_with_dispatcher(
         pr_url,
         findings=bulk_findings,
         replies=review_ctx.comment_replies,
-        resolves=review_ctx.comment_resolves,
         diff_result=ctx.diff_result if ctx._initialized else None,
         meta=meta,
         author_prefix=author_prefix,
@@ -647,7 +646,6 @@ def run(
         pr_url,
         findings=bulk_findings,
         replies=review_ctx.comment_replies,
-        resolves=review_ctx.comment_resolves,
         diff_result=diff_result,
         meta=meta,
         review_status=review_ctx.review_status or "",
@@ -1085,7 +1083,6 @@ def _publish_to_pr(
     *,
     findings: list = (),
     replies: list = (),
-    resolves: list = (),
     diff_result=None,
     meta=None,
     author_prefix: str = "",
@@ -1107,7 +1104,7 @@ def _publish_to_pr(
 
     decorate = meta.decorate if meta else None
     from diffgraph.bitbucket import (
-        post_review_comments, reply_to_pr_comment, resolve_pr_comment,
+        post_review_comments, reply_to_pr_comment,
     )
 
     if findings:
@@ -1150,12 +1147,9 @@ def _publish_to_pr(
         except Exception as exc:
             console.print(f"  [yellow]reply #{reply['comment_id']} failed: {exc}[/yellow]")
 
-    for cid in resolves:
-        try:
-            resolve_pr_comment(pr_url, cid)
-            console.print(f"  [dim]resolved #{cid}[/dim]")
-        except Exception as exc:
-            console.print(f"  [yellow]resolve #{cid} failed: {exc}[/yellow]")
+    # resolve_comment was removed: target Bitbucket doesn't expose the
+    # resolve operation we'd need. Light-touch resolution UX is handled
+    # by the agent's react_to_comment tool (thumbs_up = addressed).
 
     if review_status:
         mode = (verdict_mode or "api").strip().lower()
