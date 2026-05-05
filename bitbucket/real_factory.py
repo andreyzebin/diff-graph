@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 
 from atlassian import Bitbucket
+import requests.exceptions as _re
 
 log = logging.getLogger(__name__)
 
@@ -12,6 +14,36 @@ from .base import (
     AgentPRViewFactory, AgentPRView, CommentAnchor, CommentThread, ReviewStatus,
     ProviderError,
 )
+
+
+# Transient network/HTTP errors that should be retried — corp Bitbucket
+# instances over VPN occasionally drop a single request and a tight retry
+# brings the next one back. We deliberately don't retry HTTP 4xx/5xx that
+# come back as a real Response, only network-layer failures.
+_TRANSIENT = (
+    _re.ConnectTimeout,
+    _re.ReadTimeout,
+    _re.ConnectionError,
+)
+
+
+def _retry(fn, *, attempts: int = 3, delay: float = 2.0):
+    """Call fn() with up to *attempts* tries, sleeping *delay* between them.
+
+    Re-raises the last exception if every attempt fails.
+    """
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except _TRANSIENT as exc:
+            last = exc
+            log.warning("transient bitbucket error (try %d/%d): %s",
+                        i + 1, attempts, exc)
+            if i + 1 < attempts:
+                time.sleep(delay)
+    assert last is not None
+    raise last
 
 
 class RealBitbucketPRProxy(AgentPRView):
@@ -63,7 +95,9 @@ class RealBitbucketPRProxy(AgentPRView):
     async def close(self) -> None:
         log.info("declining PR #%d (%s/%s)", self._pr_id, self._project, self._repo)
         pr = await self._run(
-            self._client.get_pull_request, self._project, self._repo, self._pr_id
+            lambda: _retry(lambda: self._client.get_pull_request(
+                self._project, self._repo, self._pr_id
+            ))
         )
         version = (pr or {}).get("version", 0)
         # atlassian-python-api's decline_pull_request silently 403s on Bitbucket
@@ -154,9 +188,9 @@ class RealBitbucketPRProxy(AgentPRView):
         so reply_to_comment() outputs were invisible to the bench.
         """
         activities = await self._run(
-            lambda: list(self._client.get_pull_requests_activities(
+            lambda: _retry(lambda: list(self._client.get_pull_requests_activities(
                 self._project, self._repo, self._pr_id
-            ))
+            )))
         )
         roots = [
             a["comment"] for a in (activities or [])
@@ -195,7 +229,7 @@ class RealBitbucketPRProxy(AgentPRView):
             f"rest/api/1.0/projects/{self._project}/repos/{self._repo}"
             f"/pull-requests/{self._pr_id}/participants"
         )
-        data = await self._run(self._client.get, url)
+        data = await self._run(lambda: _retry(lambda: self._client.get(url)))
         for p in (data or {}).get("values", []):
             user = p.get("user", {})
             if user.get("slug") != self._agent_username:
