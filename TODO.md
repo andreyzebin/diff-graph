@@ -76,6 +76,53 @@ Tool the lead can call to see remaining budget, children cost, affordable count.
 **Where:** `orchestra/tools/builtin.py` + `orchestra/agent.py`.
 **Effort:** Small.
 
+### 1.6 Wall-clock pusher with hierarchy propagation
+
+**Context.** Java reviewer scenarios timeout at the 600s bench CLI cap and get
+SIGKILL'd before posting findings (SCEN-009/010 in the May-2026 matrix:
+4 investigators × 10–12 steps each, never `done`'d). The wall-pusher
+infrastructure already exists but is unused, and parent pushers don't
+reach live children — investigators keep burning wall time while the
+reviewer's pusher has already fired.
+
+**What's already in place** (do not rebuild):
+
+- `BudgetState.wall_ratio()` (`orchestra/budget.py:70`) — `elapsed / max_wall_time`
+- `BudgetState.max_ratio()` includes wall in the value `check_pushers()` compares against `pusher.at`
+- `_parse_budget_header` (`orchestra/compiler.py:443`) understands `s`/`m` suffixes in `@budget` — but nothing currently uses them
+- `Agent._children: dict[str, Agent]` (`orchestra/agent.py:163`) holds every live descendant
+- `Agent.inject_message(msg)` is thread-safe (`agent.py:253`) and drains at the start of each step (`agent.py:310`)
+
+So both halves of the mechanism are wired — they just don't talk to each other.
+
+**Design.**
+
+1. `PusherConfig.propagate: bool = False` — when true, the pusher's action also fires on every live child.
+2. `_apply_pusher` (`agent.py:1101`): after the local effect, if `action.propagate`, iterate `self._children.values()` and call `child.inject_message(action.message)`. Don't restrict child tools — let the child decide whether the message means "scope down" or "finalize" based on its own ratio.
+3. Default pusher set (in `_parse_budget_header`):
+   - `0.50: NUDGE propagate` — "halftime, pick most impactful direction"
+   - `0.75: NUDGE propagate` — "75%, wrap current investigation, prepare findings"
+   - `1.00: FORCE_DONE propagate` — restrict tools to `done`, message inherits
+4. Per-agent wall budgets in prompt headers:
+   - `reviewer.prompt`: `@budget: 50000 tokens, 50 steps, 900s`
+   - `investigator.prompt`: `@budget: 15000 tokens, 20 steps, 240s`
+   - `dispatcher.prompt`: `@budget: 30000 tokens, 10 steps, 60s`
+5. Bench harness: `triggers.cli.timeout: 1200` in `code-review-benchmarks/benchmark/config.local.yaml` — leaves headroom over the reviewer's 900s.
+
+**Why propagate by default.** A parent's "finalize" push that doesn't reach live leaves is empty calories: the parent is blocked on `join`, time keeps advancing, leaves keep exploring. The natural behavior we want is leaves wrap up first → parent unblocks → synthesizes → calls own `done`. Propagation makes that automatic.
+
+**Edge cases / decisions to make:**
+
+- Should NUDGE propagation include the parent's ratio in the child's message ("parent at 75% wall, you have ≈Y seconds left")? Probably yes — children make better decisions with the absolute deadline, not just a vague "wrap up".
+- Should `FORCE_DONE` propagate restrict child tools too? Probably yes for symmetry — child should also collapse to `done`.
+- `allocate_child` already gives a child a fraction of the parent's *remaining* wall — passive propagation for new spawns. Active propagation (this item) covers already-running spawns.
+
+**Where:** `orchestra/types.py` (PusherConfig), `orchestra/agent.py` (_apply_pusher), `orchestra/compiler.py` (default pushers), three `.prompt` headers, bench `config.local.yaml`.
+
+**Effort:** Small. The hardest part is naming and writing the messages well.
+
+---
+
 ### 1.5 Historical cost tracking with complexity tiers
 
 Track cost across runs indexed by complexity (tiny/small/medium/large). Percentile distributions per model. Feeds into budget context injection.
@@ -269,6 +316,64 @@ python cli.py run --pr-url ... --model gpt-4o --compare deepseek-chat
 
 **Where:** `cli.py` — run twice, diff findings.
 **Effort:** Medium.
+
+---
+
+## 5b. Jira context — agent reads the ticket and follows links
+
+**Why.** Today the reviewer only sees the PR description. A real
+reviewer reads the Jira ticket the PR claims to fix, follows links
+("relates to", "blocks", "duplicates", "child of") to peer tickets,
+and walks up to the epic to understand the broader effort. That
+context turns a "cancelOrder NPE hotfix" diff from a single-line
+review into "is this hotfix consistent with the wider null-safety
+initiative the epic is tracking?"
+
+**Sketch.**
+
+- New domain tools the reviewer (and possibly investigator) can call:
+  - `read_ticket(ticket_id)` — fetch summary, description, status,
+    AC, current state, parent epic. Truncate huge bodies.
+  - `list_ticket_links(ticket_id)` — return outgoing links with
+    type and direction (`relates_to`, `blocks`, `is_blocked_by`,
+    `parent`, `epic_link`, `duplicates`, …).
+  - Optional: `walk_to_epic(ticket_id, max_depth=3)` — traverses
+    parent / epic_link until it finds a ticket of type Epic; returns
+    the path. Cheaper than asking the agent to compose two tools.
+- Resolution:
+  - Pull ticket id from PR title / branch name (e.g. `ORD-287` from
+    `hotfix/ORD-287-cancel-npe`).
+  - Make it a `_Ctx._jira_ticket_id` injected at run start; tools
+    default to it when the agent calls them without args.
+- Methodology nudge in reviewer.prompt LOOK phase:
+  - "If the PR claims to address a Jira ticket, read it before
+    forming concerns. If the ticket is part of a larger initiative
+    (epic, sibling tickets), skim those too — a one-line hotfix
+    inside a wider null-safety effort calls for different
+    severity calibration than the same line in isolation."
+- Provider abstraction: `diffgraph/jira.py` mirroring
+  `bitbucket.py` — `fetch_ticket(id) → TicketContext` and
+  `list_links(id) → list[Link]`. Auth + base URL via env vars
+  (`JIRA_URL`, `JIRA_TOKEN`). Should be drop-in for any other
+  tracker that exposes a similar shape.
+- Bench scenarios: `setup.jira_tickets:` block — load fixtures
+  from a YAML file mirroring Jira's REST shape so scenarios run
+  hermetically without hitting a real Jira. Or stub via a mock
+  provider in `bitbucket/base.py`-style.
+
+**What we'd see in a passing run.**
+- Agent reads `ORD-287` ticket, walks `is_part_of` link to
+  `ORD-EPIC-NULL-SAFETY`.
+- One of the findings cites the epic explicitly: "Epic
+  EP-NULL-SAFETY mandates @PostLoad-driven invariants for all
+  @OneToMany; this hotfix masks the symptom rather than meeting
+  that direction."
+- agent_warnings stays clean — no "methodology-gap: didn't
+  consult ticket" because the agent did.
+
+**Effort:** Medium. Tools + provider + prompt nudge + scenario
+fixtures. Mostly well-trodden REST + closure pattern; biggest
+work is fixture infra so bench can run without a live Jira.
 
 ---
 
@@ -574,6 +679,8 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 1.3 | Pre-spawn validation | High | Medium | Do second |
 | 2.1 | Agent prefix in trace | Medium | Small | Do second |
 | 1.2 | Smart pushers | Medium | Medium | Do third |
+| 1.6 | Wall-clock pusher + hierarchy propagation | **High** | Small | **Do first** |
+| 5b  | Jira ticket reading + link traversal | **High** | Medium | **Do first** |
 | 1.5 | Historical cost tracking | Medium | Medium | Do third |
 | 2.2 | Live parallel progress | Medium | Medium | Do third |
 | 4.1 | ~~Trace web server Phase 1 (basic server)~~ | ~~Done~~ | | |
