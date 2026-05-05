@@ -53,6 +53,6 @@ metadata:
   pr_size: tiny
   scenario_type: false_positive_resistance
   capabilities: [restraint, no_false_positives, approval_path]
-  status: "DRAFT — orderflow branch chore/javadoc-order-service ready, runnable once promoted out of drafts/"
+  status: "runnable"
   author: "team"
   created: "2026-05-05"

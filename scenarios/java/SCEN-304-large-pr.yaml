@@ -2,12 +2,11 @@ id: SCEN-304
 name: "Large PR (10+ files) — agent budgets investigation under load"
 tags: [java, large-pr, budget-stress, severity:critical, cost:expensive]
 
-# DRAFT — requires a `feature/ORD-450-warehouse-rewrite` branch in orderflow
-# touching ≥10 files: WarehouseService, InventoryService, OrderService,
-# PricingService updates, plus tests and DTOs. Several distinct issues
-# planted across files so the reviewer must triage rather than exhaust
-# one corner. The point is to test BUDGET ALLOCATION on a large PR, not
-# to find every single issue.
+# Branch `feature/ORD-450-warehouse-rewrite` is in orderflow (11 files):
+# new WarehouseService + InventoryService + DTOs + config + bulk import
+# script + tests, plus a small change to OrderService to use the new
+# service. Tests budget allocation under load — reviewer should triage
+# rather than try to find every single issue.
 
 input:
   bitbucket:
@@ -41,39 +40,42 @@ expected_output:
       severity: critical
       location:
         file: "src/main/java/com/flowmart/orders/service/OrderService.java"
-        line: 0  # actual line filled in when the branch is built
+        line: 46
       description_keywords:
         - ["transaction", "@Transactional", "atomicity"]
-        - ["inventory release", "cancelOrder"]
+        - ["cancelOrder", "inventory", "release"]
       rationale: |
-        The new releaseInventory call doesn't preserve the @Transactional
-        boundary — see AGENTS.md "Transactional methods stay transactional
-        when callees change".
+        cancelOrder used to be @Transactional; the warehouse rewrite drops
+        the annotation. The status update and the warehouse release are no
+        longer in the same transaction — partial cancel can leave the
+        order CANCELLED but inventory not released, or vice versa.
 
     - id: EXP-2
       type: inline
-      severity: critical
+      severity: major
       location:
         file: "src/main/java/com/flowmart/orders/script/BulkImport.java"
-        line: 0
+        line: 21
       description_keywords:
-        - ["batch", "saveAll", "performance", "N+1"]
+        - ["loop", "per-item", "batch", "performance", "N"]
       rationale: |
-        BulkImport calls warehouseService.reserve() inside a per-item
-        loop, replacing the prior batched call. Causes N+1 on large
-        imports.
+        The script issues one warehouseService.reserve() call per item in
+        a for-each. On a large import that's N round-trips; the prior
+        WarehouseClient interface had a batched reserveAll variant.
 
     - id: EXP-3
       type: inline
       severity: major
       location:
         file: "src/main/java/com/flowmart/orders/service/InventoryService.java"
-        line: 0
+        line: 15
       description_keywords:
-        - ["null", "Optional", "missing item"]
+        - ["null", "Optional", "missing", "absent"]
       rationale: |
-        InventoryService.lookup() returns null when item is missing;
-        callers don't check.
+        lookup() returns null when the item id isn't in the store. Every
+        caller (WarehouseService.reserve / release, decrement) dereferences
+        the result without checking — NPE on any unknown id, plus surprises
+        anyone reading the signature without seeing the bug.
 
   forbidden_comments:
     - description: "Suggesting full deprecation of WarehouseClient is rushed (the rewrite IS the deprecation)"
@@ -94,6 +96,6 @@ metadata:
   pr_size: large
   scenario_type: bug
   capabilities: [budget_allocation, triage, transaction_safety, performance]
-  status: "DRAFT — requires feature/ORD-450-warehouse-rewrite branch (10+ files) in orderflow"
+  status: "runnable"
   author: "team"
   created: "2026-05-05"
