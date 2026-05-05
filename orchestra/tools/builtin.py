@@ -45,30 +45,31 @@ def register_builtins(
         ))
 
     # ── done ──────────────────────────────────────────────────────────────
-    done_params: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "findings": {
-                "type": "array",
-                "items": {"type": "object"},
-                "description": "Array of structured findings.",
-            },
-        },
-        "required": ["findings"],
-    }
-    if agent_config.output_schema and isinstance(agent_config.output_schema, dict):
-        done_params = {
+    if "done" in (agent_config.tools or []):
+        done_params: dict[str, Any] = {
             "type": "object",
-            "properties": {"findings": agent_config.output_schema},
+            "properties": {
+                "findings": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Array of structured findings.",
+                },
+            },
             "required": ["findings"],
         }
-    registry.register_tool_def(ToolDef(
-        name="done",
-        description="Submit all findings and stop.",
-        parameters=done_params,
-        handler=lambda **kw: "Output submitted.",
-        is_builtin=True,
-    ))
+        if agent_config.output_schema and isinstance(agent_config.output_schema, dict):
+            done_params = {
+                "type": "object",
+                "properties": {"findings": agent_config.output_schema},
+                "required": ["findings"],
+            }
+        registry.register_tool_def(ToolDef(
+            name="done",
+            description="Submit all findings and stop.",
+            parameters=done_params,
+            handler=lambda **kw: "Output submitted.",
+            is_builtin=True,
+        ))
 
     # ── Framework tools (schemas only — Agent handles execution) ──────────
     # Single source of truth: AgentConfig.tools holds every tool the agent

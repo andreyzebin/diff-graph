@@ -819,9 +819,6 @@ class Agent:
         # Hide spawn_agent at max depth so we don't recurse infinitely.
         if self.depth >= self.config.max_depth:
             names = [t for t in names if t != "spawn_agent"]
-        # `done` is implicit — every agent can end its run.
-        if self.registry.has("done") and "done" not in names:
-            names.append("done")
         return names
 
     def _drain_injected(self, messages: list[dict]) -> None:

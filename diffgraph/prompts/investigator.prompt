@@ -1,6 +1,6 @@
 @agent: investigator
 @mode: react
-@tools: find_files, read_file, read_outline, search, reflect
+@tools: find_files, read_file, read_outline, search, reflect, done
 @budget: 15000 tokens, 20 steps
 @sgr_interval: 3
 @llm: temperature=0

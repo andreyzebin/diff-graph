@@ -1,6 +1,6 @@
 @agent: reviewer
 @mode: react
-@tools: read_file, read_outline, post_comment, react_to_comment, set_review_status, spawn_agent, reflect
+@tools: read_file, read_outline, post_comment, react_to_comment, set_review_status, spawn_agent, reflect, done
 @budget: 50000 tokens, 50 steps
 @sgr_interval: 5
 @llm: temperature=0.2
