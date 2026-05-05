@@ -1,6 +1,6 @@
 id: SCEN-302
 name: "Two-round review: agent reviews fix push after own prior comments"
-tags: [java, incremental, two-round, refs-update, severity:major]
+tags: [java, incremental, two-round, refs-update, severity:major, cost:expensive]
 
 # DRAFT — requires bench-side BranchUpdater (see TODO marker at the end of
 # this file). Without that capability, this scenario is loaded but skipped.

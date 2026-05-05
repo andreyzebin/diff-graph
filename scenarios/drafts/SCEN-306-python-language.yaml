@@ -1,0 +1,85 @@
+id: SCEN-306
+name: "Python PR — agent works on a non-Java codebase"
+tags: [python, multi-language, severity:major, cost:expensive]
+
+# DRAFT — requires a separate Python test repo (orderflow currently is
+# Java-only). Suggested: code-review-examples/orderflow-py — a Django/FastAPI
+# analogue of orderflow with a similar bug taxonomy. See bottom for the
+# bench-side TODOs.
+
+input:
+  bitbucket:
+    provider: real
+    connection_override:
+      # When set, overrides the global config's project/repo so this
+      # scenario can target a different repo (orderflow-py) without
+      # touching config.local.yaml. Bench-side support TBD.
+      project: "${BITBUCKET_PROJECT_PY}"
+      repo: "code-review-example-orderflow-py"
+    pull_request:
+      from_branch: "fix/cancel-order-iter"
+      to_branch: "main"
+      title: "[BENCHMARK] SCEN-306: cancel_order iterates None items"
+      description: |
+        ## Fix NoneType iteration in cancel_order
+
+        Production traceback: `TypeError: 'NoneType' object is not iterable`
+        in cancel_order when iterating order.items for legacy-imported
+        orders where items=None.
+
+        ### Fix
+        Guard `if order.items:` before the iteration.
+
+expected_output:
+  required_comments:
+    - id: EXP-1
+      type: inline
+      severity: major
+      location:
+        file: "orderflow/services/orders.py"
+        line: 0
+      description_keywords:
+        - ["null", "None", "default_factory=list"]
+        - ["root cause", "guard hides", "data integrity"]
+      rationale: |
+        Same shape as the Java SCEN-011 — Python-side: dataclass items
+        should default to `field(default_factory=list)`, never None.
+        The guard masks a model layer bug.
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.65
+    min_required_found: 1
+    max_false_positives: 2
+
+metadata:
+  difficulty: medium
+  language: python
+  pr_size: small
+  scenario_type: bug
+  capabilities: [python, cross_language, null_safety]
+  status: "DRAFT — requires orderflow-py repo + bench-side connection_override support"
+  author: "team"
+  created: "2026-05-05"
+
+# ────────────────────────────────────────────────────────────────────────────
+# Bench-side TODO (required to enable this scenario):
+#
+# 1. Create code-review-examples/orderflow-py — a Python analogue of
+#    orderflow with at least:
+#      - main branch with healthy code
+#      - fix/cancel-order-iter branch with the symptom-fix
+#      - AGENTS.md analogous to the Java one
+#
+# 2. Bitbucket project for the Python repo (BITBUCKET_PROJECT_PY env var)
+#    or reuse the same project with a different repo name.
+#
+# 3. Extend ScenarioInput.bitbucket with optional `connection_override`
+#    (project, repo) — falls back to global config when absent. Without
+#    this, every Python scenario must duplicate the global connection
+#    block.
+#
+# 4. Decide whether the LLM judge model needs to swap for Python
+#    scenarios (not strictly required — code judging is language-aware).
+# ────────────────────────────────────────────────────────────────────────────

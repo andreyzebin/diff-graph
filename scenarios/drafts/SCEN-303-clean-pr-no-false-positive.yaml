@@ -1,0 +1,59 @@
+id: SCEN-303
+name: "Clean PR — agent must NOT invent issues"
+tags: [java, false-positive-resistance, clean-pr, severity:none]
+
+# DRAFT — requires a clean (no-bug) branch in code-review-examples/orderflow.
+# Suggested branch: `chore/extract-tax-rate-constant` — a tiny, well-scoped
+# refactor that pulls the BigDecimal tax rate into a package-level constant.
+# No behaviour change, no edge cases introduced. Should be APPROVED with
+# zero or only COMMENT-level findings.
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "chore/extract-tax-rate-constant"
+      to_branch: "master"
+      title: "[BENCHMARK] SCEN-303: Extract TAX_RATE constant (chore)"
+      description: |
+        ## Refactor: extract TAX_RATE constant
+
+        Pulls the hardcoded `new BigDecimal("0.20")` literal out of
+        PricingService into a package-private static final field.
+        No behaviour change.
+
+  trigger:
+    type: comment
+    text: "/review"
+
+expected_output:
+  required_comments: []
+
+  # Anything stronger than a COMMENT here is a false positive — the change
+  # is purely mechanical. Listing the specific shapes the agent should NOT
+  # invent so the judge can flag them precisely.
+  forbidden_comments:
+    - description: "Suggesting validation of TAX_RATE bounds (it's a literal constant)"
+    - description: "Concerns about magic numbers — the refactor IS the magic-number fix"
+    - description: "Asking for unit tests of the constant declaration"
+    - description: "Style nits about the constant naming or placement (it follows the codebase pattern)"
+
+  expected_status_change: "APPROVED"
+
+  thresholds:
+    # Pass when the agent posts NO findings of severity > COMMENT.
+    # Score should land near 1.0; the bench treats forbidden_comments hits
+    # as false positives that subtract.
+    min_score: 0.80
+    min_required_found: 0
+    max_false_positives: 1
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: tiny
+  scenario_type: false_positive_resistance
+  capabilities: [restraint, no_false_positives, approval_path]
+  status: "DRAFT — requires chore/extract-tax-rate-constant branch in orderflow"
+  author: "team"
+  created: "2026-05-05"

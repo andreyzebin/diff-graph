@@ -1,0 +1,74 @@
+id: SCEN-305
+name: "AGENTS.md-driven decision — agent must cite the project rule"
+tags: [java, agents-md, conventions, severity:major]
+
+# DRAFT — runnable today against the existing hotfix/ORD-287-cancel-npe
+# branch (same as SCEN-011). The wrinkle: this scenario specifically
+# tests that the agent grounds its objection in AGENTS.md, not just in
+# generic JPA knowledge. Judge looks for an explicit AGENTS.md citation
+# in the finding's evidence/explanation.
+#
+# Status: ready to run once the bench is comfortable enforcing
+# "must cite AGENTS.md" as a required-comment matching criterion.
+# The current required_comments matcher is keyword-based so adding
+# AGENTS.md-related terms in description_keywords is enough — but the
+# scenario benefits more from a separate `must_cite` field on the
+# scoring rubric.
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "hotfix/ORD-287-cancel-npe"
+      to_branch: "master"
+      title: "[BENCHMARK] SCEN-305: Fix NPE on order cancellation (ORD-287)"
+      description: |
+        ## ORD-287: NPE on order cancellation when items list is null
+
+        Adds null guard before iterating items in cancelOrder().
+
+  trigger:
+    type: comment
+    text: "/review"
+
+expected_output:
+  required_comments:
+    - id: EXP-1
+      type: inline
+      severity: major
+      location:
+        file: "src/main/java/com/flowmart/orders/service/OrderService.java"
+        line: 59
+      description_keywords:
+        # Must combine root-cause framing with explicit AGENTS.md citation.
+        - ["AGENTS.md", "project convention", "team rule", "documented"]
+        - ["@OneToMany", "Hibernate", "never null", "empty collection"]
+        - ["root cause", "guard hides", "symptom", "data integrity"]
+      rationale: |
+        The agent should not just object on JPA grounds — it should ground
+        the objection in the project's own AGENTS.md, which states "JPA
+        @OneToMany collections are initialised by Hibernate as empty lists
+        and should never be null in normal flow". An agent that has read
+        AGENTS.md will quote it; an agent relying purely on world knowledge
+        will say the same thing without the citation. This scenario
+        rewards the citation explicitly.
+
+  forbidden_comments:
+    - description: "Suggesting to add a logging.warn on the null branch (treats symptom, not the AGENTS.md root rule)"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.70
+    min_required_found: 1
+    max_false_positives: 2
+
+metadata:
+  difficulty: hard
+  language: java
+  pr_size: small
+  scenario_type: bug
+  capabilities: [agents_md_awareness, root_cause_analysis, project_conventions]
+  status: "DRAFT — runnable, but matcher upgrade needed to enforce AGENTS.md citation"
+  author: "team"
+  created: "2026-05-05"
