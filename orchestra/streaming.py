@@ -10,10 +10,50 @@ passthrough for adaptive parameter control.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 log = logging.getLogger(__name__)
+
+
+def _llm_call_with_retry(create_fn: Callable[[], Any],
+                         attempts: int = 3,
+                         base_delay: float = 1.0) -> Any:
+    """Run an LLM call with retries on transient connection errors.
+
+    The OpenAI SDK retries some failures internally, but vLLM endpoints
+    over corp networks blip often enough that one extra layer of
+    explicit retry — catching APIConnectionError / APITimeoutError /
+    RateLimitError — keeps a single agent step from collapsing the run.
+    Other errors (4xx schema problems, auth) are still raised
+    immediately — a retry loop on those would just waste budget.
+    """
+    try:
+        from openai import (
+            APIConnectionError, APITimeoutError, RateLimitError,
+            InternalServerError,
+        )
+        transient = (
+            APIConnectionError, APITimeoutError, RateLimitError,
+            InternalServerError,
+        )
+    except Exception:
+        transient = (Exception,)  # fallback: retry anything if SDK shape changes
+
+    last: Optional[BaseException] = None
+    for i in range(attempts):
+        try:
+            return create_fn()
+        except transient as exc:  # type: ignore[misc]
+            last = exc
+            if i + 1 < attempts:
+                delay = base_delay * (2 ** i)
+                log.warning("LLM call transient failure (try %d/%d): %s — retry in %.1fs",
+                            i + 1, attempts, type(exc).__name__, delay)
+                time.sleep(delay)
+    assert last is not None
+    raise last
 
 
 # ── lightweight response types (drop-in for openai ChatCompletion) ────────────
@@ -105,7 +145,7 @@ def stream_llm(
 
     if not stream:
         # Non-streaming path: response shape already matches what we return.
-        resp = llm.chat.completions.create(**create_kwargs)
+        resp = _llm_call_with_retry(lambda: llm.chat.completions.create(**create_kwargs))
         msg = resp.choices[0].message
         tcs = []
         for tc in (msg.tool_calls or []):
@@ -120,7 +160,7 @@ def stream_llm(
     content_acc = ""
     usage = None
     chunk_count = 0
-    stream_obj = llm.chat.completions.create(**create_kwargs)
+    stream_obj = _llm_call_with_retry(lambda: llm.chat.completions.create(**create_kwargs))
 
     for chunk in stream_obj:
         # Final chunk carries usage when stream_options=include_usage

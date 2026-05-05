@@ -260,12 +260,13 @@ class Agent:
     def _run_single(self) -> AgentResult:
         messages = self._build_messages()
         try:
-            response = self.llm.chat.completions.create(
+            from .streaming import _llm_call_with_retry
+            response = _llm_call_with_retry(lambda: self.llm.chat.completions.create(
                 model=self.llm_params.get("model", self.model),
                 messages=messages,
                 temperature=self.llm_params.get("temperature", 0),
                 stream=False,
-            )
+            ))
             content = (response.choices[0].message.content or "").strip()
             output = _try_parse_json(content)
         except Exception as exc:
