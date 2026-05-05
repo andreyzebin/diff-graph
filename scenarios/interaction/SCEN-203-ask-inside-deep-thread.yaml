@@ -8,19 +8,20 @@ input:
     pull_request:
       from_branch: "hotfix/ORD-287-cancel-npe"
       to_branch: "master"
-      title: "[BENCHMARK] SCEN-203: /ask inside deep thread"
+      title: "[BENCHMARK] SCEN-203: Fix NPE on order cancellation (ORD-287)"
       description: |
-        Tests that the agent prioritises the thread it was tagged in and
-        does NOT get distracted by unrelated parallel root comments.
+        ## ORD-287: NPE on order cancellation when items list is null
 
-        Two distractor root comments cover off-topic concerns. A separate
-        three-level deep thread carries the actual context (legacy import
-        risk, createOrder validation, cancelOrder residual risk). The
-        trigger /ask is planted INSIDE that deep thread (in_reply_to:
-        [2,0,0] = 3rd root → 1st reply → 1st reply).
+        **Incident:** Production NPE in `cancelOrder()` when iterating
+        `order.getItems()` for orders created via the legacy import path
+        (items=null instead of empty list).
 
-        The agent must reference the deep-thread reasoning concretely
-        and avoid mentioning the distractor topics.
+        ### Fix
+        Added a null guard before iterating items in `cancelOrder()`.
+
+        ### Acceptance criteria
+        - `cancelOrder()` no longer throws NPE when items is null
+        - Existing cancellation behaviour unchanged for normal orders
 
   setup:
     seed_comments:

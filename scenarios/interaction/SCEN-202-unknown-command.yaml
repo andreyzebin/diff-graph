@@ -8,12 +8,20 @@ input:
     pull_request:
       from_branch: "hotfix/ORD-287-cancel-npe"
       to_branch: "master"
-      title: "[BENCHMARK] SCEN-202: unknown /command fallback"
+      title: "[BENCHMARK] SCEN-202: Fix NPE on order cancellation (ORD-287)"
       description: |
-        Checks the dispatcher behaviour for slash commands it does not
-        implement (/improve, /describe, etc). It must reply explicitly
-        that the command is not supported and point at the three that
-        are — NOT silently treat it as a question (/ask).
+        ## ORD-287: NPE on order cancellation when items list is null
+
+        **Incident:** Production NPE in `cancelOrder()` when iterating
+        `order.getItems()` for orders created via the legacy import path
+        (items=null instead of empty list).
+
+        ### Fix
+        Added a null guard before iterating items in `cancelOrder()`.
+
+        ### Acceptance criteria
+        - `cancelOrder()` no longer throws NPE when items is null
+        - Existing cancellation behaviour unchanged for normal orders
 
   trigger:
     type: comment

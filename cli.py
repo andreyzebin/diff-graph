@@ -476,6 +476,12 @@ async def _run_async(
             )
             if result.verdict == "error" and result.error:
                 console.print(f"   [red dim]{result.error}[/red dim]")
+            warnings = (result.judge_output.scenario_warnings
+                        if result.judge_output else [])
+            for w in warnings:
+                console.print(
+                    f"   [yellow]⚠ scenario:[/yellow] [bold]{w.kind}[/bold] — {w.detail}"
+                )
 
         matrix[prov_label] = prov_results
 
@@ -499,6 +505,21 @@ async def _run_async(
         f"[bold]Overall : {passed}/{len(results)} passed   "
         f"avg_score={avg_score:.2f}   total={total_time:.1f}s[/bold]"
     )
+    flagged = [
+        (r.scenario_id, w)
+        for r in results
+        if r.judge_output
+        for w in r.judge_output.scenario_warnings
+    ]
+    if flagged:
+        console.print(
+            f"[yellow]Scenario warnings: {len(flagged)} across "
+            f"{len({sid for sid, _ in flagged})} scenario(s)[/yellow]"
+        )
+        for sid, w in flagged:
+            console.print(
+                f"  [yellow]⚠[/yellow] {sid}: [bold]{w.kind}[/bold] — {w.detail}"
+            )
     seen_generations = sorted({r.get("generation", "") for r in summary_rows if r.get("generation")})
     seen_mutations = sorted({r.get("mutation", "") for r in summary_rows if r.get("mutation")})
     if seen_generations or seen_mutations:

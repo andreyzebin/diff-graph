@@ -8,15 +8,20 @@ input:
     pull_request:
       from_branch: "hotfix/ORD-287-cancel-npe"
       to_branch: "master"
-      title: "[BENCHMARK] SCEN-201: /ask with parallel root comments"
+      title: "[BENCHMARK] SCEN-201: Fix NPE on order cancellation (ORD-287)"
       description: |
-        Tests that /ask reads every root-level comment on the PR and
-        synthesises an answer across them. There's NO thread depth here —
-        all seed comments are siblings at the root. The complementary
-        deep-thread scenario is SCEN-203.
+        ## ORD-287: NPE on order cancellation when items list is null
 
-        Multi-author simulation runs on a single Bitbucket account via
-        `[<name>] ` prefixes parsed by diff-graph's --subject-pattern.
+        **Incident:** Production NPE in `cancelOrder()` when iterating
+        `order.getItems()` for orders created via the legacy import path
+        (items=null instead of empty list).
+
+        ### Fix
+        Added a null guard before iterating items in `cancelOrder()`.
+
+        ### Acceptance criteria
+        - `cancelOrder()` no longer throws NPE when items is null
+        - Existing cancellation behaviour unchanged for normal orders
 
   setup:
     seed_comments:

@@ -34,6 +34,12 @@ class FalsePositive:
 
 
 @dataclass
+class ScenarioWarning:
+    kind: str       # leaky-description | unfulfillable-expectation | contradiction | trigger-mismatch | other
+    detail: str
+
+
+@dataclass
 class JudgeOutput:
     overall_score: float
     required_comments: list[CommentJudgement]
@@ -46,6 +52,8 @@ class JudgeOutput:
     # without needing to re-fetch from Bitbucket.
     comments: list[CommentThread] = field(default_factory=list)
     review_status: ReviewStatus | None = None
+    # Judge's critique of the scenario itself, independent of the agent's verdict.
+    scenario_warnings: list[ScenarioWarning] = field(default_factory=list)
 
 
 # ── LLM client abstraction ─────────────────────────────────────────
@@ -330,6 +338,7 @@ def _interpret(data: dict, required_comments) -> JudgeOutput:
         status_change_verdict=data.get("status_change_verdict", "unknown"),
         verdict=data.get("verdict", "fail"),
         summary=data.get("summary", ""),
+        scenario_warnings=_parse_scenario_warnings(data),
     )
 
 
@@ -363,8 +372,11 @@ def _format_comments(comments: list[CommentThread]) -> str:
 
 REPLY_PROMPT = """You are an LLM-as-judge evaluating a CONVERSATIONAL agent on a Bitbucket PR.
 
-The agent is supposed to reply IN THE THREAD to a user message. You score ONLY the
-agent's reply text — not the user's messages — against explicit expectations.
+You have TWO jobs:
+
+(A) Score the agent's reply against the expectations.
+(B) Critique the SCENARIO itself — flag issues that make the test unfair or
+    leaky regardless of how the agent behaved.
 
 CONVERSATION (full thread, oldest → newest, each line tagged USER or AGENT):
 {thread}
@@ -391,10 +403,14 @@ Return STRICT JSON, no prose:
   "side_effects_ok": true|false,
   "side_effects_reasoning": "...",
   "verdict": "pass" | "fail" | "error",
-  "summary": "1-2 sentence verdict"
+  "summary": "1-2 sentence verdict",
+  "scenario_warnings": [
+    {{"kind": "leaky-description"|"unfulfillable-expectation"|"contradiction"|"trigger-mismatch"|"other",
+      "detail": "1-sentence concern about the scenario itself"}}
+  ]
 }}
 
-Scoring rubric:
+Scoring rubric (job A):
 - Score the AGENT's text only. Lines tagged USER are the conversation context, NOT
   the agent's output — never count them as "the agent merely echoed X".
 - Each must_mention row matches if any of its alternatives appears semantically (synonyms ok)
@@ -404,6 +420,19 @@ Scoring rubric:
 - forbidden_topics counts a hit if the agent introduced a topic not asked about.
 - side_effects: scenario specifies whether inline_comments / status changes are allowed.
 - overall_score: weighted average. Subtract heavily for missing must_address (that's the whole point).
+
+Scenario critique (job B) — emit a warning when you see:
+- "leaky-description": the PR description or a seed comment leaks the test intent
+  (e.g. "we are checking that the agent does X"), making the agent's output
+  trivially aligned. A natural PR description never says what's being tested.
+- "unfulfillable-expectation": a must_mention row asks for information the agent
+  could not have plausibly known from the thread + PR.
+- "contradiction": expectations contradict each other or contradict the trigger
+  (e.g. must_mention X but forbidden_topics also bans X).
+- "trigger-mismatch": the user's question can't be answered with the seeded context
+  (the conversation lacks the data needed to satisfy must_address).
+- "other": anything else that smells off about the scenario design.
+Empty list when the scenario looks clean.
 """
 
 
@@ -479,4 +508,19 @@ def _interpret_reply(data: dict, scenario: Scenario,
         status_change_verdict=status_verdict,
         verdict=verdict,
         summary=summary,
+        scenario_warnings=_parse_scenario_warnings(data),
     )
+
+
+def _parse_scenario_warnings(data: dict) -> list[ScenarioWarning]:
+    raw = data.get("scenario_warnings") or []
+    out: list[ScenarioWarning] = []
+    for w in raw:
+        if not isinstance(w, dict):
+            continue
+        kind = str(w.get("kind", "other")).strip() or "other"
+        detail = str(w.get("detail", "")).strip()
+        if not detail:
+            continue
+        out.append(ScenarioWarning(kind=kind, detail=detail))
+    return out

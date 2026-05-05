@@ -128,7 +128,16 @@ class AgentPRView(ABC):
         return self
 
     async def __aexit__(self, *exc) -> None:
-        await self.close()
+        # Defensive: a failure in close() must NOT poison the next
+        # iteration. If decline returns 5xx or the network blips, log
+        # and move on — the benchmark loop tolerates leftover PRs by
+        # auto-declining stale BENCHMARK PRs at next session start.
+        import logging
+        log = logging.getLogger(__name__)
+        try:
+            await self.close()
+        except Exception as e:
+            log.warning("AgentPRView.close() failed (non-fatal): %s", e)
 
 
 class AgentPRViewFactory(ABC):
