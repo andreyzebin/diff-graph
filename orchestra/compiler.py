@@ -51,50 +51,29 @@ class AgentRegistryEntry:
     source_hash: str = ""
 
     def to_agent_config(self) -> AgentConfig:
-        """Convert to AgentConfig for agent instantiation."""
-        meta_tools = []
-        cap_to_meta = {
-            "sgr": [],  # handled by sgr flag
+        """Convert to AgentConfig. tools is a single flat list — the
+        framework registry knows which handler to call for each name."""
+        tools = list(self.tools)
+
+        # Backward compat: prompts that still declare framework features
+        # via @capabilities (sgr, spawn, …) get translated into the
+        # equivalent @tools entries. New prompts skip @capabilities.
+        cap_to_tools = {
+            "sgr": ["reflect"],
             "spawn": ["spawn_agent"],
-            "spawn_many": ["spawn_many"],
-            "plan": ["plan"],
-            "fork": ["fork"],
-            "adjust_agent": ["adjust_agent"],
-            "observe_agents": ["observe_agents"],
             "list_agents": ["list_agents"],
         }
         for cap in self.capabilities:
-            meta_tools.extend(cap_to_meta.get(cap, []))
-
-        # Treat meta-tool names listed under @tools the same way as if
-        # they appeared under @capabilities — lets prompts unify the
-        # tool surface ("@tools: post_comment, spawn_agent" instead of
-        # splitting between @capabilities and @tools). `reflect` enables
-        # the SGR flag rather than registering a new tool — it's the
-        # framework's structured-generation reflection step.
-        known_meta = {
-            "spawn_agent", "spawn_many", "plan", "fork",
-            "adjust_agent", "observe_agents", "list_agents",
-        }
-        sgr_flag = self.sgr
-        domain_tools: list[str] = []
-        for t in self.tools:
-            if t in known_meta:
-                if t not in meta_tools:
-                    meta_tools.append(t)
-            elif t == "reflect":
-                sgr_flag = True
-            else:
-                domain_tools.append(t)
+            for t in cap_to_tools.get(cap, []):
+                if t not in tools:
+                    tools.append(t)
 
         return AgentConfig(
             name=self.name,
             system_prompt=self.prompt_template,
             mode=self.mode,
-            sgr=sgr_flag,
             sgr_interval=self.sgr_interval,
-            tools=domain_tools,
-            meta_tools=meta_tools,
+            tools=tools,
             budget=self.budget,
             llm_params=self.llm_params,
             input_schema=self.input_schema,

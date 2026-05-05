@@ -149,7 +149,7 @@ class Agent:
         self.data_scope: dict[str, str] = {}  # resolved @data values for inheritance
 
         # SGR
-        self.sgr = SGRTracker(config.sgr_extensions) if config.sgr else None
+        self.sgr = SGRTracker(config.sgr_extensions) if "reflect" in config.tools else None
 
         # Budget
         self.budget_tracker = BudgetTracker(config.budget, self.event_bus)
@@ -394,8 +394,7 @@ class Agent:
                 for tc in msg.tool_calls:
                     tool_names.append(tc.function.name)
                     _called_tools.add(tc.function.name)
-                    if tc.function.name not in ("done", "reflect", "spawn_agent", "spawn_many",
-                                                "plan", "fork", "adjust_agent", "observe_agents"):
+                    if tc.function.name not in ("done", "reflect", "spawn_agent"):
                         dispatch_tcs.append(tc)
 
             # Emit AGENT_STEP for every LLM round — even text-only (WAL: before dispatch)
@@ -784,241 +783,6 @@ class Agent:
             threading.Thread(target=_run, daemon=True).start()
             return json.dumps({"status": "spawned", "agent_id": child.agent_id})
 
-    def _meta_spawn_many(self, args: dict) -> str:
-        """spawn_many: fan-out N agents in parallel, wait for all, return merged results."""
-        agents_specs = args.get("agents", [])
-        if not agents_specs:
-            return json.dumps({"error": "no agents specified"})
-        if self.depth >= self.config.max_depth:
-            return json.dumps({"error": "max depth reached"})
-
-        from .merge import get_merge_strategy
-
-        handoff_mode = args.get("context_handoff", "")
-        merge_name = args.get("merge", "union")
-
-        results: list[AgentResult] = []
-
-        def _run_one(spec: dict) -> AgentResult:
-            agent_name = spec.get("agent", "")
-            agent_config = self._resolve_agent_config(agent_name)
-            if not agent_config:
-                return AgentResult(agent_name=agent_name, output={"error": f"unknown: {agent_name}"})
-
-            # Data inheritance: always inherit parent scope, merge explicit data
-            spec_data = spec.get("data", {})
-            resolved_data = dict(self.data_scope)  # start with parent's scope
-            if spec_data:
-                explicit = self._resolve_data_inheritance(spec_data)
-                resolved_data.update(explicit)
-            # Merge top-level focus
-            focus_from_spec = spec.get("focus", "")
-            if focus_from_spec and "focus" not in resolved_data:
-                resolved_data["focus"] = focus_from_spec
-            # Single path: resolve from: providers + interpolate prompt
-            resolved_data = resolve_agent_data(agent_config, resolved_data, self.registry)
-
-            # Pass handoff context if requested
-            context: list[dict] = []
-            if handoff_mode:
-                from .handoff import get_handoff
-                handoff = get_handoff(handoff_mode)
-                context = handoff.apply(
-                    [], self.sgr.history if self.sgr else [], None, self.llm, self.model
-                )
-
-            # Child uses its own budget from .prompt config
-            child_config = agent_config
-
-            from .tools.builtin import register_builtins
-            child_registry = self.registry.clone()
-            child = Agent(
-                config=child_config, tool_registry=child_registry,
-                llm=self.llm, model=self.model, event_bus=self.event_bus,
-                parent_id=self.agent_id, parent=self, depth=self.depth + 1,
-                context_messages=context, agent_configs=self.agent_configs, agent_registry=self.agent_registry,
-            )
-            register_builtins(child_registry, child_config, sgr_tracker=child.sgr, agent=child)
-            child.data_scope = resolved_data
-            with self._children_lock:
-                self._children[child.agent_id] = child
-            self.event_bus.emit(EventType.AGENT_SPAWNED,
-                               parent_id=self.agent_id, child_id=child.agent_id,
-                               agent_name=agent_name, focus=focus_from_spec,
-                               data_keys=list(resolved_data.keys()) if resolved_data else [])
-            r = child.run()
-            if child.budget_state:
-                self.budget_tracker.debit_child(self.budget_state, child.budget_state)
-            return r
-
-        with ThreadPoolExecutor(max_workers=len(agents_specs)) as executor:
-            futures = {executor.submit(_run_one, s): s for s in agents_specs}
-            for future in as_completed(futures):
-                try:
-                    results.append(future.result())
-                except Exception as e:
-                    log.warning("spawn_many child failed: %s", e)
-
-        merge_strategy = get_merge_strategy(merge_name, llm=self.llm, model=self.model)
-        merged = merge_strategy.merge(results)
-
-        return json.dumps({
-            "status": "completed",
-            "agent_count": len(results),
-            "merged_output": merged,
-            "individual_outputs": [{"agent": r.agent_name, "output": r.output} for r in results],
-        }, ensure_ascii=False, indent=2, default=str)
-
-    def _meta_plan(self, args: dict) -> str:
-        """plan: spawn a lightweight planner sub-agent."""
-        from .tools.builtin import DEFAULT_PLAN_PROMPT
-
-        goal = args.get("goal", "")
-        constraints = args.get("constraints", "")
-        output_hint = args.get("output_hint", "")
-
-        user_content = f"Goal: {goal}"
-        if constraints:
-            user_content += f"\nConstraints: {constraints}"
-        if output_hint:
-            user_content += f"\nOutput format: {output_hint}"
-        if self.sgr and self.sgr.last:
-            user_content += f"\n\nCurrent knowledge:\n{self.sgr.last.learned[:500]}"
-            if self.sgr.last.questions_remaining:
-                user_content += "\nOpen questions:\n" + "\n".join(
-                    f"- {q}" for q in self.sgr.last.questions_remaining[:5]
-                )
-
-        try:
-            resp = self.llm.chat.completions.create(
-                model=self.llm_params.get("model", self.model),
-                messages=[
-                    {"role": "system", "content": DEFAULT_PLAN_PROMPT},
-                    {"role": "user", "content": user_content},
-                ],
-                temperature=0,
-                stream=False,
-            )
-            content = (resp.choices[0].message.content or "").strip()
-            if content.startswith("```"):
-                content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            return content
-        except Exception as e:
-            return json.dumps({"error": f"plan failed: {e}"})
-
-    def _meta_fork(self, args: dict) -> str:
-        """fork: clone self into N parallel branches with different focus."""
-        branches = args.get("branches", [])
-        if not branches:
-            return json.dumps({"error": "no branches specified"})
-        if self.depth >= self.config.max_depth:
-            return json.dumps({"error": "max depth reached"})
-
-        from .handoff import get_handoff
-        from .merge import get_merge_strategy
-
-        handoff_mode = args.get("context_handoff", "full_history")
-        merge_name = args.get("merge", "best_confidence")
-        n = min(len(branches), 4)
-
-        results: list[AgentResult] = []
-
-        def _run_branch(branch: dict) -> AgentResult:
-            handoff = get_handoff(handoff_mode)
-            context = handoff.apply(
-                self.context_messages, self.sgr.history if self.sgr else [],
-                None, self.llm, self.model
-            )
-            focus = branch.get("focus", "")
-            if focus:
-                context.append({"role": "user", "content": f"Focus: {focus}"})
-
-            child_budget = self.budget_tracker.allocate_child(self.budget_state, 0.8 / n)
-            child_config = AgentConfig(
-                name=f"{self.config.name}_fork", system_prompt=self.config.system_prompt,
-                mode=self.config.mode, sgr=self.config.sgr,
-                tools=list(self.config.tools), meta_tools=[],  # forks don't get meta-tools
-                output_schema=self.config.output_schema, budget=child_budget,
-                llm_params=self.config.llm_params, max_depth=self.config.max_depth,
-            )
-
-            from .tools.builtin import register_builtins
-            child_registry = self.registry.clone()
-            child = Agent(
-                config=child_config, tool_registry=child_registry,
-                llm=self.llm, model=self.model, event_bus=self.event_bus,
-                parent_id=self.agent_id, parent=self, depth=self.depth + 1,
-                context_messages=context, agent_configs=self.agent_configs, agent_registry=self.agent_registry,
-            )
-            register_builtins(child_registry, child_config, sgr_tracker=child.sgr, agent=child)
-            return child.run()
-
-        with ThreadPoolExecutor(max_workers=n) as executor:
-            futures = {executor.submit(_run_branch, b): b for b in branches[:n]}
-            for future in as_completed(futures):
-                try:
-                    results.append(future.result())
-                except Exception as e:
-                    log.warning("fork branch failed: %s", e)
-
-        merge_strategy = get_merge_strategy(merge_name, llm=self.llm, model=self.model)
-        merged = merge_strategy.merge(results)
-
-        return json.dumps({
-            "status": "completed",
-            "branch_count": len(results),
-            "merged_output": merged,
-        }, ensure_ascii=False, indent=2, default=str)
-
-    def _meta_adjust_agent(self, args: dict) -> str:
-        """adjust_agent: modify a child agent's LLM params, inject message, or adjust budget."""
-        target_id = args.get("agent_id", "")
-        with self._children_lock:
-            child = self._children.get(target_id)
-        if not child:
-            return json.dumps({"error": f"agent {target_id} not found or not a child"})
-
-        result: dict[str, Any] = {"agent_id": target_id}
-
-        # Adjust params
-        param_keys = ("temperature", "frequency_penalty", "presence_penalty",
-                      "top_p", "max_completion_tokens", "model")
-        param_changes = {k: args[k] for k in param_keys if k in args}
-        if param_changes:
-            applied = child.adjust_params(param_changes, source=self.agent_id)
-            result["params_adjusted"] = applied
-
-        # Inject message
-        message = args.get("inject_message", "")
-        if message:
-            child.inject_message(message)
-            result["message_injected"] = True
-
-        # Budget adjustment
-        extend_steps = args.get("extend_budget_steps", 0)
-        if extend_steps and child.budget_state:
-            max_delta = self.config.budget.max_feedback_budget_delta
-            extend_steps = min(extend_steps, max_delta)
-            child.budget_state.original_steps += extend_steps
-            result["budget_extended_steps"] = extend_steps
-
-        return json.dumps(result, indent=2, default=str)
-
-    def _meta_observe_agents(self, args: dict) -> str:
-        """observe_agents: return status of all child agents."""
-        with self._children_lock:
-            children = list(self._children.values())
-        statuses = [c.get_status() for c in children]
-        # Include results for completed children
-        with self._children_lock:
-            for status in statuses:
-                aid = status["agent_id"]
-                if aid in self._children_results:
-                    r = self._children_results[aid]
-                    status["output"] = r.output
-                    status["status"] = "done"
-        return json.dumps(statuses, indent=2, default=str)
-
     def _meta_list_agents(self, args: dict) -> str:
         """list_agents: return the agent registry for discovery."""
         if self.agent_registry:
@@ -1031,7 +795,6 @@ class Agent:
                 "summary": cfg.system_prompt[:200] if cfg.system_prompt else "",
                 "mode": cfg.mode.value if hasattr(cfg.mode, 'value') else str(cfg.mode),
                 "tools": cfg.tools,
-                "meta_tools": cfg.meta_tools,
             })
         return json.dumps(listing, indent=2, ensure_ascii=False)
 
@@ -1049,17 +812,14 @@ class Agent:
         return messages
 
     def _build_tool_names(self) -> list[str]:
-        names = list(self.config.tools)
-        # Add meta-tools if not at max depth
-        if self.depth < self.config.max_depth:
-            for mt in self.config.meta_tools:
-                if self.registry.has(mt) and mt not in names:
-                    names.append(mt)
-        # SGR
-        if self.config.sgr and self.registry.has("reflect"):
-            if "reflect" not in names:
-                names.append("reflect")
-        # Done
+        # Single source of truth: AgentConfig.tools holds every tool the
+        # agent should see. The registry knows which handler to call for
+        # each name (domain closure vs framework meta).
+        names = [t for t in self.config.tools if self.registry.has(t)]
+        # Hide spawn_agent at max depth so we don't recurse infinitely.
+        if self.depth >= self.config.max_depth:
+            names = [t for t in names if t != "spawn_agent"]
+        # `done` is implicit — every agent can end its run.
         if self.registry.has("done") and "done" not in names:
             names.append("done")
         return names

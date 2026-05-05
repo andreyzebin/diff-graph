@@ -163,11 +163,16 @@ def _parse_agent(name: str, d: dict) -> AgentConfig:
         name=name,
         system_prompt=d.get("system_prompt", ""),
         mode=AgentMode(d.get("mode", "react")),
-        sgr=d.get("sgr", False),
         sgr_interval=d.get("sgr_interval", 3),
         sgr_extensions=d.get("sgr_extensions"),
-        tools=d.get("tools", []),
-        meta_tools=d.get("meta_tools", []),
+        # Single tool list. Legacy YAML configs that set meta_tools or
+        # sgr separately get merged into tools so behaviour stays the
+        # same — but new configs should just list everything in `tools`.
+        tools=(
+            list(d.get("tools", []))
+            + [t for t in d.get("meta_tools", []) if t not in d.get("tools", [])]
+            + (["reflect"] if d.get("sgr") and "reflect" not in d.get("tools", []) else [])
+        ),
         output_schema=d.get("output_schema"),
         budget=budget,
         condensation=condensation,

@@ -106,7 +106,7 @@ def prepare_for_template(trace: dict) -> dict:
     return _prepare_agent(trace, depth=0)
 
 
-_SKIP_ARGS = {"spawn_agent", "spawn_many", "reflect", "done"}
+_SKIP_ARGS = {"spawn_agent", "reflect", "done"}
 _SKIP_PARAMS = {"changes_only", "before", "after", "line_numbers", "ref", "regex"}
 
 

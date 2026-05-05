@@ -91,16 +91,18 @@ class AgentConfig:
     name: str
     system_prompt: str = ""  # raw text or file path
     mode: AgentMode = AgentMode.REACT  # single | react
-    sgr: bool = False
     sgr_interval: int = 3
     sgr_extensions: Optional[dict[str, Any]] = None  # extra reflect() fields
-    tools: list[str] = field(default_factory=list)  # domain tools
-    meta_tools: list[str] = field(default_factory=list)  # spawn_agent, spawn_many, plan, fork, adjust_agent, observe_agents
+    # Every tool the agent can call — domain (post_comment, read_file, …)
+    # and framework (spawn_agent, reflect, list_agents). The presence of
+    # `reflect` here is what we used to call SGR; consumers check for it
+    # directly rather than via a separate flag.
+    tools: list[str] = field(default_factory=list)
     output_schema: Optional[Any] = None  # JSON Schema for done() output
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     condensation: Optional[CondensationConfig] = None
     llm_params: Optional[LLMParamsConfig] = None
-    max_depth: int = 3  # max spawn/fork depth
+    max_depth: int = 3  # max spawn depth
     input_schema: Optional[dict] = None  # @data fields with from: metadata
     guards: Optional[dict[str, str]] = None  # {trigger_name: message} from @guards
 

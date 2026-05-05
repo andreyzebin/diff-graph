@@ -1,10 +1,10 @@
 """
-Builtin tools: reflect, done, plan, spawn_agent, spawn_many,
-fork, adjust_agent, observe_agents.
+Builtin tools: reflect, done, spawn_agent, list_agents.
 
-Registered automatically based on agent config (sgr, meta_tools).
-Meta-tools are handled directly by Agent — these registrations
-just provide the OpenAI function schemas.
+Registered automatically based on AgentConfig.tools — the same flat
+list every other tool comes from. The framework-built-in handlers
+live on the Agent (e.g. _meta_spawn_agent); these registrations just
+provide the OpenAI function schemas.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def register_builtins(
     """
 
     # ── reflect ───────────────────────────────────────────────────────────
-    if agent_config.sgr and sgr_tracker:
+    if "reflect" in (agent_config.tools or []) and sgr_tracker:
         schema = sgr_tracker.build_reflect_schema()
         registry.register_tool_def(ToolDef(
             name="reflect",
@@ -70,21 +70,24 @@ def register_builtins(
         is_builtin=True,
     ))
 
-    # ── Meta-tools (schemas only — Agent handles execution) ───────────────
-    meta = set(agent_config.meta_tools or [])
+    # ── Framework tools (schemas only — Agent handles execution) ──────────
+    # Single source of truth: AgentConfig.tools holds every tool the agent
+    # can call. The names below resolve to internal Agent methods rather
+    # than to closures registered by the domain layer.
+    tool_names = set(agent_config.tools or [])
 
     def _meta_handler(method_name: str) -> Callable:
         """Return agent's meta-method as handler, or placeholder if no agent.
 
-        Meta-methods take a single `args` dict, but dispatch() calls handler(**kwargs).
-        This wrapper bridges the two conventions.
+        Meta-methods take a single `args` dict, but dispatch() calls
+        handler(**kwargs). This wrapper bridges the two conventions.
         """
         if agent and hasattr(agent, method_name):
             method = getattr(agent, method_name)
             return lambda **kw: method(kw)
         return lambda **kw: "handled by agent"
 
-    if "spawn_agent" in meta:
+    if "spawn_agent" in tool_names:
         registry.register_tool_def(ToolDef(
             name="spawn_agent",
             description=(
@@ -110,161 +113,15 @@ def register_builtins(
             is_builtin=True,
         ))
 
-    if "spawn_many" in meta:
-        registry.register_tool_def(ToolDef(
-            name="spawn_many",
-            description=(
-                "Spawn multiple agents in parallel and return merged results. "
-                "Use for fan-out investigation across multiple angles."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "agents": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "agent": {"type": "string"},
-                                "focus": {"type": "string"},
-                            },
-                            "required": ["agent", "focus"],
-                        },
-                    },
-                    "context_handoff": {"type": "string", "enum": ["sgr_outcomes", "findings_only"]},
-                    "merge": {"type": "string", "enum": ["union", "best_confidence", "llm_merge", "raw"]},
-                },
-                "required": ["agents"],
-            },
-            handler=_meta_handler("_meta_spawn_many"),
-            is_builtin=True,
-        ))
-
-    if "plan" in meta:
-        registry.register_tool_def(ToolDef(
-            name="plan",
-            description=(
-                "Create a structured plan for a goal. Returns JSON with tasks, "
-                "priorities, risks, and recommendations. Use when you need to "
-                "break down a complex problem or get a strategic perspective."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "goal": {"type": "string", "description": "What you need a plan for."},
-                    "constraints": {"type": "string", "description": "Context, constraints, what you already know."},
-                    "output_hint": {"type": "string", "description": "Desired plan format."},
-                },
-                "required": ["goal"],
-            },
-            handler=_meta_handler("_meta_plan"),
-            is_builtin=True,
-        ))
-
-    if "fork" in meta:
-        registry.register_tool_def(ToolDef(
-            name="fork",
-            description=(
-                "Fork into parallel branches, each exploring a different hypothesis. "
-                "Results are merged and returned."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "branches": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "focus": {"type": "string", "description": "What this branch investigates."},
-                            },
-                            "required": ["focus"],
-                        },
-                    },
-                    "context_handoff": {"type": "string", "enum": ["full_history", "sgr_outcomes"]},
-                    "merge": {"type": "string", "enum": ["best_confidence", "union", "llm_merge"]},
-                },
-                "required": ["branches"],
-            },
-            handler=_meta_handler("_meta_fork"),
-            is_builtin=True,
-        ))
-
-    if "adjust_agent" in meta:
-        registry.register_tool_def(ToolDef(
-            name="adjust_agent",
-            description=(
-                "Adjust a child agent's LLM parameters, inject a message, or extend its budget. "
-                "Use to steer child agents: raise temperature for creativity, add penalties "
-                "to break loops, inject context they're missing, or give more budget."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "agent_id": {"type": "string", "description": "ID of the child agent to adjust."},
-                    "temperature": {"type": "number", "description": "New temperature (0-2)."},
-                    "frequency_penalty": {"type": "number", "description": "New frequency penalty (-2 to 2)."},
-                    "presence_penalty": {"type": "number", "description": "New presence penalty (-2 to 2)."},
-                    "top_p": {"type": "number", "description": "New top_p (0-1)."},
-                    "max_completion_tokens": {"type": "integer"},
-                    "model": {"type": "string", "description": "Switch to a different model."},
-                    "inject_message": {"type": "string", "description": "Message to inject into agent's context."},
-                    "extend_budget_steps": {"type": "integer", "description": "Extra steps to grant."},
-                },
-                "required": ["agent_id"],
-            },
-            handler=_meta_handler("_meta_adjust_agent"),
-            is_builtin=True,
-        ))
-
-    if "observe_agents" in meta:
-        registry.register_tool_def(ToolDef(
-            name="observe_agents",
-            description=(
-                "Get the current status of all child agents: step count, budget usage, "
-                "SGR state (confidence, open questions, learned), last tool called."
-            ),
-            parameters={"type": "object", "properties": {}},
-            handler=_meta_handler("_meta_observe_agents"),
-            is_builtin=True,
-        ))
-
-    if "list_agents" in meta:
+    if "list_agents" in tool_names:
         registry.register_tool_def(ToolDef(
             name="list_agents",
             description=(
-                "Get the registry of all available agents: names, summaries, capabilities, "
-                "required input data schemas. Use this to discover which agent to spawn "
-                "for a given task."
+                "Get the registry of all available agents: names, summaries, "
+                "and required input data schemas. Use this to discover which "
+                "agent to spawn for a given task."
             ),
             parameters={"type": "object", "properties": {}},
             handler=_meta_handler("_meta_list_agents"),
             is_builtin=True,
         ))
-
-
-# ── Default prompts ───────────────────────────────────────────────────────────
-
-DEFAULT_PLAN_PROMPT = """You are a planning agent. Given a goal and optional constraints, \
-produce a structured JSON plan.
-
-OUTPUT FORMAT — return ONLY valid JSON:
-{
-  "analysis": "<1-2 sentence assessment>",
-  "tasks": [
-    {
-      "id": "<short_snake_case>",
-      "priority": "high|medium|low",
-      "focus": "<what specifically to do>",
-      "rationale": "<why this matters>"
-    }
-  ],
-  "risks": ["<potential issue>"],
-  "recommendation": "<which task to start with and why>"
-}
-
-RULES:
-- 2-5 tasks, ordered by priority.
-- Be specific: name actual things to investigate, not generic statements.
-- If constraints mention what's already known, don't duplicate that work.
-"""
