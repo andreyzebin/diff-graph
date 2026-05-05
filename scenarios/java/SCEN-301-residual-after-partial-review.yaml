@@ -91,6 +91,7 @@ expected_output:
     - description: "Suggesting to add `currentUser` ownership verification (duplicates prior comment)"
 
   expected_status_change: "NEEDS_WORK"
+  acknowledgement_required: true
 
   thresholds:
     min_score: 0.60

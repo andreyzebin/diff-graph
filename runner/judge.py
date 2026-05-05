@@ -360,6 +360,8 @@ def _build_prompt(
         for fc in eo.forbidden_comments
     ], ensure_ascii=False, indent=2)
 
+    trigger_type = getattr(scenario.trigger, "type", "") or ""
+    ack_required = bool(eo.acknowledgement_required) and trigger_type == "comment"
     return template.format(
         agent_comments=_format_comments(comments),
         required_comments=required_str,
@@ -368,6 +370,7 @@ def _build_prompt(
         actual_status_change=review_status.status if review_status else "none",
         pr_diff=_truncate(pr_diff, 30_000) or "(diff unavailable)",
         agents_md=_truncate(agents_md, 10_000) or "(AGENTS.md unavailable)",
+        acknowledgement_required="yes" if ack_required else "no",
     )
 
 
@@ -490,7 +493,7 @@ Return STRICT JSON, no prose:
       "detail": "1-sentence concern about the scenario itself"}}
   ],
   "agent_warnings": [
-    {{"kind": "wrong-location"|"wrong-reasoning"|"surface-acceptance"|"contradicts-codebase"|"methodology-gap"|"interface-violation"|"other",
+    {{"kind": "wrong-location"|"wrong-reasoning"|"surface-acceptance"|"contradicts-codebase"|"methodology-gap"|"interface-violation"|"missing-acknowledgement"|"other",
       "detail": "1-sentence concern about HOW the agent reasoned or formatted output",
       "comment_id": null|<id of the offending agent comment if applicable>}}
   ]
@@ -542,6 +545,12 @@ Agent reasoning critique (job C) — emit a warning when you see:
   analytics can't tie comments back to a prompt generation and humans
   can't tell the agent from a human author. State which piece is missing
   in `detail`.
+- "missing-acknowledgement": the agent was invoked via a PR comment
+  (e.g. `/review`) but didn't post a quick "Starting review of <PR>..."
+  reply before doing anything else. Reviews take time; without an
+  immediate ack, humans can't tell the agent picked up the request from
+  the agent silently failing. Flag only when the scenario expects an
+  acknowledgement (a `/review`-style comment trigger).
 - "other": anything else worth flagging about the agent's reasoning quality.
 Empty list when the agent's reasoning looks sound — even when the score is
 low for unrelated reasons (e.g. coverage gaps).

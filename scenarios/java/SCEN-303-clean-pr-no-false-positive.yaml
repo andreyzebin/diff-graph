@@ -38,6 +38,7 @@ expected_output:
     - description: "Pre-existing concerns rediscovered while reading the methods (the PR didn't touch them)"
 
   expected_status_change: "APPROVED"
+  acknowledgement_required: true
 
   thresholds:
     # Pass when the agent posts NO findings of severity > COMMENT.

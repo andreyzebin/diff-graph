@@ -129,6 +129,12 @@ class ExpectedOutput:
     thresholds: Thresholds
     reply: ExpectedReply | None = None
     side_effects: SideEffectExpectations | None = None
+    # When True, the judge checks that the dispatcher posted a quick
+    # "Starting review of <PR>..." reply (or similar acknowledgement)
+    # to the trigger comment BEFORE any findings appear. Only applies
+    # when scenario.trigger.type == "comment" — direct reviewer
+    # invocations don't have a comment to ack.
+    acknowledgement_required: bool = False
 
 
 @dataclass
@@ -242,6 +248,7 @@ def load_scenario(path: Path) -> Scenario:
             thresholds=thresholds,
             reply=reply,
             side_effects=side_effects,
+            acknowledgement_required=bool(eo.get("acknowledgement_required", False)),
         ),
         metadata=metadata,
         setup=setup,
