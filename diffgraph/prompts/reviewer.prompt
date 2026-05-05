@@ -1,7 +1,7 @@
 @agent: reviewer
 @mode: react
-@capabilities: sgr, spawn, spawn_many, observe_agents, adjust_agent
-@tools: read_file, read_outline, post_comment, resolve_comment, set_review_status
+@capabilities: sgr
+@tools: read_file, read_outline, post_comment, resolve_comment, set_review_status, spawn_agent, spawn_many, observe_agents, adjust_agent
 @budget: 50000 tokens, 50 steps
 @sgr_interval: 5
 @llm: temperature=0.2

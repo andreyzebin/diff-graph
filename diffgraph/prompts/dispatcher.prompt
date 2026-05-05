@@ -1,7 +1,6 @@
 @agent: dispatcher
 @mode: react
-@capabilities: spawn
-@tools: post_comment, resolve_comment
+@tools: post_comment, resolve_comment, spawn_agent
 @budget: 30000 tokens, 10 steps
 @llm: temperature=0.3
 @guards:
