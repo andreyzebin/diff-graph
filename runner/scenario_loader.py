@@ -80,12 +80,45 @@ class TriggerSpec:
     """How the scenario invokes the agent."""
     type: str = "auto"                  # auto (pr:opened) | comment | review
     text: str = ""                      # comment body when type=comment
+    # Where to plant the trigger comment:
+    #   None        — post as a new root comment (existing behaviour)
+    #   list[int]   — path of indices walking the seed_comments tree to a
+    #                 specific node; trigger becomes a reply to that node.
+    #                 e.g. [1, 0, 0] = 2nd root → 1st reply → 1st reply.
+    in_reply_to: list[int] | None = None
+
+
+@dataclass
+class SeedComment:
+    """One seeded thread node — text plus optional nested replies."""
+    text: str
+    replies: list["SeedComment"] = field(default_factory=list)
 
 
 @dataclass
 class ScenarioSetup:
-    """State to seed in the PR before the trigger fires."""
-    seed_comments: list[str] = field(default_factory=list)
+    """State to seed in the PR before the trigger fires.
+
+    Supports two YAML shapes for `seed_comments`:
+      • flat list of strings → each becomes a root comment
+      • tree of {text, replies: [...]} dicts → arbitrary depth
+    Mixing is allowed — a string is treated as a leaf SeedComment.
+    """
+    seed_comments: list[SeedComment] = field(default_factory=list)
+
+
+def _parse_seed_tree(items: list) -> list[SeedComment]:
+    """Recursive YAML → SeedComment tree."""
+    out: list[SeedComment] = []
+    for item in items or []:
+        if isinstance(item, str):
+            out.append(SeedComment(text=item))
+        elif isinstance(item, dict):
+            out.append(SeedComment(
+                text=str(item.get("text", "")),
+                replies=_parse_seed_tree(item.get("replies", []) or []),
+            ))
+    return out
 
 
 @dataclass
@@ -187,13 +220,14 @@ def load_scenario(path: Path) -> Scenario:
 
     setup_data = data.get("input", {}).get("setup", {}) or {}
     setup = ScenarioSetup(
-        seed_comments=list(setup_data.get("seed_comments", []) or []),
+        seed_comments=_parse_seed_tree(setup_data.get("seed_comments", []) or []),
     )
 
     trig_data = data.get("input", {}).get("trigger", {}) or {}
     trigger = TriggerSpec(
         type=trig_data.get("type", "auto"),
         text=trig_data.get("text", ""),
+        in_reply_to=trig_data.get("in_reply_to") or None,
     )
 
     return Scenario(

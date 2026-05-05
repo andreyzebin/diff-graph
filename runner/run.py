@@ -13,6 +13,30 @@ from runner.scorer import ScenarioResult, score_scenario
 log = logging.getLogger(__name__)
 
 
+def _walk_seed(nodes):
+    """DFS-yield every node in a SeedComment tree (for counting)."""
+    for n in nodes:
+        yield n
+        yield from _walk_seed(n.replies)
+
+
+def _resolve_path(posted_tree: list[dict], path: list[int]) -> int | None:
+    """Walk the posted-tree by integer indices and return the leaf comment id.
+
+    Each entry: {"id": <bitbucket id>, "replies": [...same shape...]}.
+    Returns None if any index is out of range.
+    """
+    cur = posted_tree
+    cid = None
+    for idx in path:
+        if not isinstance(idx, int) or idx < 0 or idx >= len(cur):
+            return None
+        node = cur[idx]
+        cid = node["id"]
+        cur = node["replies"]
+    return cid
+
+
 async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Trigger) -> list[int]:
     """
     Apply scenario.setup.seed_comments, then fire the trigger.
@@ -33,28 +57,56 @@ async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Tri
     CliTrigger with the review command, or WebhookTrigger).
     """
     posted_ids: list[int] = []
+    # Mirrors scenario.setup.seed_comments shape: each tree node carries
+    # the Bitbucket comment id assigned when it was posted, so the
+    # trigger.in_reply_to path can be resolved.
+    posted_tree: list[dict] = []
 
-    n_seeds = len(scenario.setup.seed_comments)
-    if n_seeds:
-        print(f"   ↻  posting {n_seeds} seed comment(s)...", flush=True)
-    for i, body in enumerate(scenario.setup.seed_comments, start=1):
-        try:
-            cid = await proxy.add_comment(body)
+    async def _post_tree(nodes, parent_id, posted_into: list[dict], depth=0):
+        for n in nodes:
+            try:
+                cid = await proxy.add_comment(n.text, parent_id=parent_id)
+            except NotImplementedError:
+                log.warning("scenario %s: proxy does not support add_comment",
+                            scenario.id)
+                return
+            except Exception as exc:
+                log.warning("scenario %s: seed_comment failed: %s",
+                            scenario.id, exc)
+                continue
             if cid:
                 posted_ids.append(cid)
-            print(f"   ↻  [{i}/{n_seeds}] seeded: {body[:60]}{'…' if len(body) > 60 else ''}", flush=True)
-            await asyncio.sleep(0.5)   # space out so order is preserved
-        except NotImplementedError:
-            log.warning("scenario %s: proxy does not support add_comment, "
-                        "seed_comments ignored", scenario.id)
-            break
-        except Exception as exc:
-            log.warning("scenario %s: seed_comment failed: %s", scenario.id, exc)
+            posted_into.append({"id": cid, "replies": []})
+            indent = "    " * depth
+            print(f"   ↻  {indent}seeded #{cid}: {n.text[:60]}{'…' if len(n.text) > 60 else ''}",
+                  flush=True)
+            await asyncio.sleep(0.5)
+            if n.replies:
+                await _post_tree(n.replies, cid, posted_into[-1]["replies"], depth + 1)
+
+    if scenario.setup.seed_comments:
+        n_total = sum(1 for _ in _walk_seed(scenario.setup.seed_comments))
+        print(f"   ↻  posting {n_total} seed comment(s) (tree)...", flush=True)
+        await _post_tree(scenario.setup.seed_comments, None, posted_tree)
 
     if scenario.trigger.type == "comment" and scenario.trigger.text:
-        print(f"   ↻  trigger comment: {scenario.trigger.text[:80]}", flush=True)
+        # Resolve in_reply_to path against the just-posted tree so the
+        # trigger comment lands at exactly the right depth.
+        parent_id = None
+        if scenario.trigger.in_reply_to:
+            parent_id = _resolve_path(posted_tree, scenario.trigger.in_reply_to)
+            if parent_id is None:
+                raise RuntimeError(
+                    f"trigger.in_reply_to path {scenario.trigger.in_reply_to} "
+                    f"didn't resolve against the posted seed tree"
+                )
+            print(f"   ↻  trigger comment (reply to #{parent_id}): "
+                  f"{scenario.trigger.text[:80]}", flush=True)
+        else:
+            print(f"   ↻  trigger comment: {scenario.trigger.text[:80]}", flush=True)
         try:
-            comment_id = await proxy.add_comment(scenario.trigger.text)
+            comment_id = await proxy.add_comment(scenario.trigger.text,
+                                                 parent_id=parent_id)
         except Exception as exc:
             raise RuntimeError(f"trigger comment failed: {exc}") from exc
         if not comment_id:
