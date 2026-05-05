@@ -1,0 +1,80 @@
+id: SCEN-300
+name: "Acknowledge prior-round fix — agent reads existing comments before re-flagging"
+tags: [java, incremental, prior-round, severity:minor]
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "hotfix/ORD-287-cancel-npe"
+      to_branch: "master"
+      title: "[BENCHMARK] SCEN-300: Fix NPE on order cancellation (ORD-287)"
+      description: |
+        ## ORD-287: NPE on order cancellation when items list is null
+
+        **Incident:** Production NPE reported in `cancelOrder()` when iterating
+        `order.getItems()`. Occurred on 3 orders created via the legacy import
+        script that sets items to null instead of empty list.
+
+        ### Fix
+        Added null guard before iterating items in `cancelOrder()`.
+
+        ### Acceptance criteria
+        - `cancelOrder()` no longer throws NPE when items is null
+        - Existing cancellation behaviour is unchanged for normal orders
+
+  setup:
+    seed_comments:
+      # Simulates a prior review round that already flagged the only known issue.
+      # The PR's current state already addresses this comment — the null guard
+      # at OrderService.java:59 IS the fix. The agent should NOT re-post the same
+      # complaint as a fresh inline finding.
+      - text: "[ivan] cancelOrder() iterates `order.getItems()` without checking for null — items can be null for orders imported via the legacy script. Need a guard before the loop."
+
+  trigger:
+    type: comment
+    text: "/review"
+
+expected_output:
+  # Required comments here flag the *deeper* issue (root cause) that the prior
+  # round missed. The null guard hides a data-integrity failure (silent inventory
+  # release skip) — see SCEN-011 for the same root concern.
+  required_comments:
+    - id: EXP-1
+      type: inline
+      severity: major
+      location:
+        file: "src/main/java/com/flowmart/orders/service/OrderService.java"
+        line: 59
+      description_keywords:
+        - ["null", "@OneToMany", "Hibernate", "empty collection", "never null"]
+        - ["inventory", "silent", "root cause", "guard hides", "mapping"]
+      rationale: |
+        Even after the null guard is added, the deeper issue remains: Hibernate
+        @OneToMany collections are never null. A null getItems() means a mapping
+        error or non-JPA construction (legacy import script). The guard hides
+        a data-integrity failure (silent inventory release skip) — the prior
+        round flagged "add a guard", which is symptom-level. A second-round
+        reviewer should escalate to root cause.
+
+  forbidden_comments:
+    # Critical: do NOT duplicate the prior reviewer's surface-level "add null guard"
+    # complaint. The guard is already there.
+    - description: "Re-flagging that cancelOrder() iterates items without null check (already addressed by the prior comment and the current fix)"
+    - description: "Generic 'consider checking for null' suggestions on the same loop"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.65
+    min_required_found: 1
+    max_false_positives: 2
+
+metadata:
+  difficulty: hard
+  language: java
+  pr_size: small
+  scenario_type: incremental_review
+  capabilities: [incremental_review, prior_round_awareness, root_cause_analysis, null_safety]
+  author: "team"
+  created: "2026-05-05"

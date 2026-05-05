@@ -1,0 +1,107 @@
+id: SCEN-301
+name: "Residual bugs after partial prior review — don't duplicate, find what's left"
+tags: [java, incremental, prior-round, severity:critical]
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "feature/ORD-234-buy-3-get-1-free"
+      to_branch: "master"
+      title: "[BENCHMARK] SCEN-301: Buy-3-get-1-free promotion (ORD-234)"
+      description: |
+        ## ORD-234: Implement buy-3-get-1-free promotions
+
+        **As a** marketing manager
+        **I want to** configure buy-N-get-1-free promotions per product category
+        **So that** we can run campaigns without a deploy
+
+        ### Acceptance criteria
+        - When a customer has 4+ items from a promoted category, the **cheapest**
+          item is free
+        - Discount is shown as a line item labelled with the promotion name
+        - Only one promotion applies per category — no stacking
+        - Promotion respects `startDate` and `endDate`
+        - Applies to OPEN orders only
+
+        ### Notes
+        - See `PricingService` for existing discount patterns
+        - Follow the same ownership-check pattern as `OrderController`
+
+  setup:
+    seed_comments:
+      # Simulates a prior review round that already found ONE bug (the IDOR).
+      # Four other bugs from SCEN-009 remain unaddressed in the code:
+      #   - selectFreeItem returns first instead of cheapest (PricingService:107)
+      #   - applyBulkDiscount missing @Transactional (PricingService:62)
+      #   - findApplicablePromotions has N+1 query (PricingService:94)
+      #   - Promotion.java doesn't follow Lombok convention (Promotion:9)
+      # Agent must find these without re-flagging the IDOR.
+      - text: "[ivan] applyPromotion() in PromotionController fetches the order by id but never checks `order.getCustomer().getEmail().equals(currentUser.getUsername())` — IDOR. Any authenticated user can apply promotions to anyone's order."
+
+  trigger:
+    type: comment
+    text: "/review"
+
+expected_output:
+  required_comments:
+    # Same EXP-1, EXP-3, EXP-4, EXP-5 as SCEN-009 — but EXP-2 (the IDOR) is
+    # deliberately omitted because the prior round already covered it.
+    - id: EXP-1
+      type: inline
+      severity: critical
+      location:
+        file: "src/main/java/com/flowmart/orders/service/PricingService.java"
+        line: 107
+      description_keywords:
+        - ["cheapest", "minimum", "min", "lowest price", "lowest unitPrice"]
+        - ["get(0)", "first", "free item", "wrong item"]
+      rationale: |
+        selectFreeItem() returns group.get(0) — the first item in the list.
+        AGENTS.md and the ticket AC both state the free item must be the
+        cheapest in the qualifying group.
+
+    - id: EXP-3
+      type: inline
+      severity: major
+      location:
+        file: "src/main/java/com/flowmart/orders/service/PricingService.java"
+        line: 62
+      description_keywords:
+        - ["@Transactional", "transaction", "atomic", "atomicity"]
+        - ["partial", "inconsistent", "two writes", "saveAll"]
+      rationale: |
+        applyBulkDiscount() performs two writes (orderItemRepository.saveAll +
+        orderRepository.save) without @Transactional.
+
+    - id: EXP-4
+      type: inline
+      severity: minor
+      location:
+        file: "src/main/java/com/flowmart/orders/service/PricingService.java"
+        line: 94
+      description_keywords:
+        - ["N+1", "loop", "per category", "batch", "findActiveByCategoryIn"]
+      rationale: |
+        findApplicablePromotions() runs one query per category in a for-each.
+
+  forbidden_comments:
+    # Critical: do NOT re-post the IDOR — the prior reviewer already flagged it.
+    - description: "Re-flagging IDOR / authorization / ownership check in PromotionController.applyPromotion (already covered by the prior comment)"
+    - description: "Suggesting to add `currentUser` ownership verification (duplicates prior comment)"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.60
+    min_required_found: 2
+    max_false_positives: 3
+
+metadata:
+  difficulty: hard
+  language: java
+  pr_size: medium
+  scenario_type: incremental_review
+  capabilities: [incremental_review, prior_round_awareness, business_logic, transaction_safety]
+  author: "team"
+  created: "2026-05-05"
