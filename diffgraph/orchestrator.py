@@ -65,6 +65,11 @@ class ReviewContext:
     # of "APPROVED" / "NEEDS_WORK" / "UNAPPROVED".
     review_status: Optional[str] = None
     review_status_reason: str = ""
+    # Findings the agent already published to the PR via the post_findings
+    # tool (immediate-post path). Tracked here so downstream reporting
+    # (run.json findings_count, trace, judge counters) sees them even when
+    # nothing came back through the top-level done() forwarding chain.
+    posted_findings: list["ReviewFinding"] = field(default_factory=list)
 
 
 @dataclass

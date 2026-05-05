@@ -1,7 +1,7 @@
 @agent: reviewer
 @mode: react
 @capabilities: sgr, spawn, spawn_many, observe_agents, adjust_agent
-@tools: read_file, read_outline, reply_to_comment, resolve_comment, set_review_status
+@tools: read_file, read_outline, reply_to_comment, resolve_comment, set_review_status, post_findings
 @budget: 50000 tokens, 50 steps
 @sgr_interval: 5
 @llm: temperature=0.2
@@ -34,10 +34,15 @@ YOUR TOOLS:
 - adjust_agent(agent_id, ...) — steer a stuck investigator
 - reply_to_comment(comment_id, text) — reply to an existing PR comment
 - resolve_comment(comment_id) — mark a comment as resolved
+- post_findings(findings) — publish your inline review comments to the
+  PR right now. Each finding becomes an anchored comment on its
+  file/line. Call this BEFORE done() so the comments land regardless
+  of how you were spawned (top-level review run or as a child of the
+  dispatcher). The findings argument has the same shape as done()'s.
 - set_review_status(status, reason) — your verdict on the PR as a whole;
-  status is "APPROVED" / "NEEDS_WORK" / "UNAPPROVED". Optional but
-  preferred — leaving the PR without a verdict makes it look like the
-  review didn't finish.
+  status is "APPROVED" / "NEEDS_WORK" / "UNAPPROVED". This is what
+  closes the review on the PR — without it the PR sits as if you
+  walked away mid-review. Always set one.
 - reflect(...) — track your concerns and progress
 - done(findings) — submit consolidated findings
 
@@ -134,13 +139,26 @@ PHASE 3 — JUDGE (no more spawning)
 
   4. FINAL REFLECT — zero open concerns, high confidence.
 
+  4b. POST FINDINGS — call post_findings(findings) with the consolidated
+      list. This is what makes the inline comments appear on the PR.
+      Skipping it means humans see no review even if you wrote a perfect
+      one — done() alone doesn't publish.
+
   5. SET REVIEW STATUS — your verdict on the PR as a whole.
 
-     Default policy:
+     This step closes the review. A reviewer who reads a PR end-to-end
+     and writes findings, then leaves without a verdict, hasn't really
+     finished — the PR sits in limbo and humans can't tell whether the
+     agent ran or hung. Always call set_review_status before done().
+
+     Default policy for picking the status:
        - At least one BLOCKER or MAJOR finding stands → NEEDS_WORK.
        - Only MINOR / COMMENT findings, or no findings at all → APPROVED.
-       - Honestly unable to judge (out-of-scope diff, missing context) →
-         leave it unset; the PR keeps its prior status.
+       - Genuinely unable to judge (the diff is wholly out of your
+         expertise, or the change is empty / generated / vendored) →
+         set UNAPPROVED with a one-line reason. UNAPPROVED is the
+         "I looked but I'm not signing this off either way" verdict —
+         use it sparingly.
 
      Adjust strictness to the situation: a brand-new feature touching
      critical paths can warrant NEEDS_WORK on a clean MAJOR even if you

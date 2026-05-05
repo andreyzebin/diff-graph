@@ -198,6 +198,21 @@ def _run_with_dispatcher(
     ctx._init_fn = _lazy_init
     ctx._bot_user = bot_user
 
+    # Build the dg footer + author prefix decorators up front so the
+    # post_findings tool can apply them when the reviewer publishes
+    # mid-run instead of waiting for the parent's done() to come back.
+    from diffgraph.comment_meta import build_comment_meta as _bcm
+    _early_meta = _bcm(
+        prompt_source=str(prompt_source),
+        prompt_hash=mutation if mutation != "unknown" else "",
+        run_id=_trace_db.run_id,
+        prefix=comment_tag,
+    )
+    ctx._decorate = _early_meta.decorate
+    ctx._author_prefix = (
+        f"[{bot_user}]" if (subject_pattern and bot_user) else ""
+    )
+
     # ── Tool registry with all domain tools ───────────────────────────────
     tool_registry = ToolRegistry()
     register_diffgraph_tools(tool_registry, ctx)
@@ -298,17 +313,14 @@ def _run_with_dispatcher(
     if findings:
         _print_findings(findings)
 
-    from diffgraph.comment_meta import build_comment_meta
-    meta = build_comment_meta(
-        prompt_source=str(prompt_source),
-        prompt_hash=mutation if mutation != "unknown" else "",
-        run_id=_trace_db.run_id,
-        prefix=comment_tag,
-    )
-    author_prefix = f"[{bot_user}]" if (subject_pattern and bot_user) else ""
+    meta = _early_meta
+    author_prefix = ctx._author_prefix
+    # Findings published immediately via post_findings tool — don't double-post
+    # via the bulk path.
+    bulk_findings = () if review_ctx.posted_findings else (findings if ctx._initialized else ())
     _publish_to_pr(
         pr_url,
-        findings=findings if ctx._initialized else (),
+        findings=bulk_findings,
         replies=review_ctx.comment_replies,
         resolves=review_ctx.comment_resolves,
         diff_result=ctx.diff_result if ctx._initialized else None,
@@ -628,9 +640,12 @@ def run(
         run_id=_trace_db.run_id,
         prefix=comment_tag_resolved,
     )
+    # If the reviewer published findings mid-run via post_findings, skip the
+    # bulk publish below — otherwise comments would double up on the PR.
+    bulk_findings = () if getattr(review_ctx, "posted_findings", []) else findings
     _publish_to_pr(
         pr_url,
-        findings=findings,
+        findings=bulk_findings,
         replies=review_ctx.comment_replies,
         resolves=review_ctx.comment_resolves,
         diff_result=diff_result,
