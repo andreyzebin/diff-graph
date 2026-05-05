@@ -482,6 +482,13 @@ async def _run_async(
                 console.print(
                     f"   [yellow]⚠ scenario:[/yellow] [bold]{w.kind}[/bold] — {w.detail}"
                 )
+            agent_warnings = (result.judge_output.agent_warnings
+                              if result.judge_output else [])
+            for w in agent_warnings:
+                cid = f" #{w.comment_id}" if w.comment_id else ""
+                console.print(
+                    f"   [magenta]⚠ agent{cid}:[/magenta] [bold]{w.kind}[/bold] — {w.detail}"
+                )
 
         matrix[prov_label] = prov_results
 
@@ -519,6 +526,22 @@ async def _run_async(
         for sid, w in flagged:
             console.print(
                 f"  [yellow]⚠[/yellow] {sid}: [bold]{w.kind}[/bold] — {w.detail}"
+            )
+    agent_flagged = [
+        (r.scenario_id, w)
+        for r in results
+        if r.judge_output
+        for w in r.judge_output.agent_warnings
+    ]
+    if agent_flagged:
+        console.print(
+            f"[magenta]Agent reasoning warnings: {len(agent_flagged)} across "
+            f"{len({sid for sid, _ in agent_flagged})} scenario(s)[/magenta]"
+        )
+        for sid, w in agent_flagged:
+            cid = f" #{w.comment_id}" if w.comment_id else ""
+            console.print(
+                f"  [magenta]⚠[/magenta] {sid}{cid}: [bold]{w.kind}[/bold] — {w.detail}"
             )
     seen_generations = sorted({r.get("generation", "") for r in summary_rows if r.get("generation")})
     seen_mutations = sorted({r.get("mutation", "") for r in summary_rows if r.get("mutation")})

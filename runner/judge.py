@@ -40,6 +40,18 @@ class ScenarioWarning:
 
 
 @dataclass
+class AgentWarning:
+    """Judge's call-out on the agent's reasoning quality, independent of
+    whether a required finding was matched. E.g. wrong file/line reference,
+    bogus root cause that contradicts the codebase, surface-level approval
+    of a fix the scenario expected to be challenged.
+    """
+    kind: str       # wrong-location | wrong-reasoning | surface-acceptance | contradicts-codebase | methodology-gap | other
+    detail: str
+    comment_id: int | None = None   # which agent comment the concern is about, if applicable
+
+
+@dataclass
 class JudgeOutput:
     overall_score: float
     required_comments: list[CommentJudgement]
@@ -54,6 +66,12 @@ class JudgeOutput:
     review_status: ReviewStatus | None = None
     # Judge's critique of the scenario itself, independent of the agent's verdict.
     scenario_warnings: list[ScenarioWarning] = field(default_factory=list)
+    # Judge's call-outs on the agent's reasoning quality. Doesn't affect the
+    # numeric score (those come from required_comments / forbidden / etc.) —
+    # surfaces concerns a binary scorecard would miss: wrong location, bogus
+    # root cause, surface-level acceptance of an issue the scenario expected
+    # to be challenged.
+    agent_warnings: list[AgentWarning] = field(default_factory=list)
 
 
 # ── LLM client abstraction ─────────────────────────────────────────
@@ -339,6 +357,7 @@ def _interpret(data: dict, required_comments) -> JudgeOutput:
         verdict=data.get("verdict", "fail"),
         summary=data.get("summary", ""),
         scenario_warnings=_parse_scenario_warnings(data),
+        agent_warnings=_parse_agent_warnings(data),
     )
 
 
@@ -372,11 +391,14 @@ def _format_comments(comments: list[CommentThread]) -> str:
 
 REPLY_PROMPT = """You are an LLM-as-judge evaluating a CONVERSATIONAL agent on a Bitbucket PR.
 
-You have TWO jobs:
+You have THREE jobs:
 
 (A) Score the agent's reply against the expectations.
 (B) Critique the SCENARIO itself — flag issues that make the test unfair or
     leaky regardless of how the agent behaved.
+(C) Call out the AGENT's reasoning quality — wrong references, bogus root
+    causes, surface-level acceptance — even when the binary scorecard
+    happens to land in its favour.
 
 CONVERSATION (full thread, oldest → newest, each line tagged USER or AGENT):
 {thread}
@@ -407,6 +429,11 @@ Return STRICT JSON, no prose:
   "scenario_warnings": [
     {{"kind": "leaky-description"|"unfulfillable-expectation"|"contradiction"|"trigger-mismatch"|"other",
       "detail": "1-sentence concern about the scenario itself"}}
+  ],
+  "agent_warnings": [
+    {{"kind": "wrong-location"|"wrong-reasoning"|"surface-acceptance"|"contradicts-codebase"|"methodology-gap"|"interface-violation"|"other",
+      "detail": "1-sentence concern about HOW the agent reasoned or formatted output",
+      "comment_id": null|<id of the offending agent comment if applicable>}}
   ]
 }}
 
@@ -433,6 +460,32 @@ Scenario critique (job B) — emit a warning when you see:
   (the conversation lacks the data needed to satisfy must_address).
 - "other": anything else that smells off about the scenario design.
 Empty list when the scenario looks clean.
+
+Agent reasoning critique (job C) — emit a warning when you see:
+- "wrong-location": the agent's finding references a file/line that doesn't
+  match the issue described (e.g. talks about OrderService but pins the
+  comment on Order.java).
+- "wrong-reasoning": the agent's stated explanation contradicts the codebase
+  or general knowledge of the framework in use (e.g. JPA / Hibernate /
+  language semantics) — even if the surface conclusion happens to be right.
+- "surface-acceptance": the agent treats a symptom-level patch as adequate
+  when AGENTS.md / scenario context calls for a root-cause challenge.
+- "contradicts-codebase": the explanation conflicts with patterns visible
+  in adjacent files (e.g. claims a rule that other files demonstrably
+  violate, or vice versa).
+- "methodology-gap": the agent skipped an investigation step a reasonable
+  reviewer would do (e.g. didn't open AGENTS.md when the scenario hinges
+  on a project convention).
+- "interface-violation": the comment format doesn't conform to the agreed
+  agent interface — e.g. no `[bot_user]` prefix at the start
+  (`[tuz_spasibo__qodo] ...` / `[qodo] ...`), or no dg trace footer at the
+  end (`qodo:diffgraph:abc123:run-001` in inline code). Without these,
+  analytics can't tie comments back to a prompt generation and humans
+  can't tell the agent from a human author. State which piece is missing
+  in `detail`.
+- "other": anything else worth flagging about the agent's reasoning quality.
+Empty list when the agent's reasoning looks sound — even when the score is
+low for unrelated reasons (e.g. coverage gaps).
 """
 
 
@@ -509,6 +562,7 @@ def _interpret_reply(data: dict, scenario: Scenario,
         verdict=verdict,
         summary=summary,
         scenario_warnings=_parse_scenario_warnings(data),
+        agent_warnings=_parse_agent_warnings(data),
     )
 
 
@@ -523,4 +577,24 @@ def _parse_scenario_warnings(data: dict) -> list[ScenarioWarning]:
         if not detail:
             continue
         out.append(ScenarioWarning(kind=kind, detail=detail))
+    return out
+
+
+def _parse_agent_warnings(data: dict) -> list[AgentWarning]:
+    raw = data.get("agent_warnings") or []
+    out: list[AgentWarning] = []
+    for w in raw:
+        if not isinstance(w, dict):
+            continue
+        kind = str(w.get("kind", "other")).strip() or "other"
+        detail = str(w.get("detail", "")).strip()
+        if not detail:
+            continue
+        cid = w.get("comment_id")
+        if cid is not None:
+            try:
+                cid = int(cid)
+            except (ValueError, TypeError):
+                cid = None
+        out.append(AgentWarning(kind=kind, detail=detail, comment_id=cid))
     return out
