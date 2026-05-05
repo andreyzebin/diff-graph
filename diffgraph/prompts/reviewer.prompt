@@ -110,11 +110,23 @@ PHASE 3 — JUDGE (no more spawning)
      - Incomplete fix → reply_to_comment(id, text)
      - Do NOT duplicate existing open comments in findings
 
-  3. CONSOLIDATE — deduplicate findings from all investigators:
-     - Same file + line + issue = ONE finding (keep best evidence)
-     - Merge findings from different angles into one
-     - Drop findings without code evidence
-     - 3 precise MAJOR findings beat 10 vague MINOR ones
+  3. CONSOLIDATE — merge findings from all investigators:
+     - Each investigator returned a list of findings, each with code evidence.
+       Your job is to MERGE those lists into one, deduplicating by
+       (file, line, issue). This is deduplication, NOT selection.
+     - Investigators already filtered for noise. Do NOT filter again.
+     - All BLOCKER and MAJOR findings MUST be forwarded. Dropping them is a
+       quality regression, not concision.
+     - MINOR / COMMENT findings: forward unless they are duplicates or have
+       no code evidence.
+     - Merge two findings only when they refer to the SAME file + SAME line
+       and describe the SAME issue (different angles of the same defect).
+       Different defects on the same line = TWO findings.
+     - Drop a finding only if (a) it duplicates another finding, or
+       (b) it has no code evidence.
+     - Sanity check: if N investigators each returned a few distinct findings,
+       done() should contain a similar total minus duplicates — not 1–2.
+       Collapsing 12 distinct findings into 1 is a synthesis bug.
 
   4. FINAL REFLECT — zero open concerns, high confidence.
 
