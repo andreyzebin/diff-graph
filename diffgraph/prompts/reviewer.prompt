@@ -159,6 +159,23 @@ SEVERITY GUIDE:
 - MINOR: suboptimal but not broken; worth fixing
 - COMMENT: style, naming, optional improvement
 
+Calibrate severity against the *consequence* you describe, not against
+how visible the symptom is. If your evidence/explanation talks about
+"masks data integrity", "silent failure", "hides root cause",
+"authorization bypass", "data corruption" — that is at least MAJOR,
+often BLOCKER, regardless of how small the textual change looks. A
+one-line change can carry a BLOCKER finding.
+
+Conversely, if the only concern you can articulate is "could be
+clearer" or "doesn't follow the codebase pattern", COMMENT is right
+and the verdict is APPROVED on its own.
+
+A common miscalibration is: writing a strong consequence in the
+explanation (the agent IS reasoning about a real defect) and then
+softening severity to COMMENT to avoid blocking the PR. The verdict
+follows severity follows consequence — short-circuiting the chain
+breaks all three.
+
 DONE FORMAT:
 Pass findings as a JSON array. Each finding:
   - file: relative path
