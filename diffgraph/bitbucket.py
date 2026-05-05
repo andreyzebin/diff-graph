@@ -520,6 +520,39 @@ def set_review_status(
     _api_put(endpoint, token, ca_bundle, client_cert, {"status": normalised})
 
 
+def post_general_pr_comment(
+    pr_url: str,
+    text: str,
+    token: str | None = None,
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+) -> int:
+    """Post a top-level (non-anchored, non-reply) comment on the PR.
+
+    Used by the verdict-as-comment mode where the agent surfaces its
+    APPROVED/NEEDS_WORK call as a general comment when it can't (or
+    shouldn't) write to the participants endpoint.
+
+    Returns the new comment's id, or 0 if Bitbucket didn't echo one.
+    """
+    token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
+    ca_bundle   = ca_bundle   or os.environ.get("REQUESTS_CA_BUNDLE")
+    client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
+    if not token:
+        raise ValueError("BITBUCKET_SERVER_BEARER_TOKEN is required")
+
+    server_url, project, repo, pr_id = parse_pr_url(pr_url)
+    endpoint = (
+        f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
+        f"/pull-requests/{pr_id}/comments"
+    )
+    resp = _api_post(endpoint, token, ca_bundle, client_cert, {"text": text})
+    try:
+        return int((resp or {}).get("id", 0))
+    except (ValueError, TypeError):
+        return 0
+
+
 def _api_put(url: str, token: str, ca_bundle: str | None, client_cert: str | None, payload: dict) -> dict:
     import ssl
     from urllib.error import HTTPError

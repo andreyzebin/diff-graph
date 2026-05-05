@@ -106,6 +106,7 @@ def _run_with_dispatcher(
     trace_dir: Optional[str] = None,
     comment_tag: str = "dg",
     subject_pattern: Optional[str] = None,
+    verdict_mode: str = "api",
 ) -> None:
     """
     Run any agent with lazy repo init.
@@ -314,7 +315,9 @@ def _run_with_dispatcher(
         meta=meta,
         author_prefix=author_prefix,
         review_status=review_ctx.review_status or "",
+        review_status_reason=review_ctx.review_status_reason or "",
         bot_user=bot_user,
+        verdict_mode=verdict_mode,
     )
 
     # Cleanup cloned repo if it was created
@@ -344,6 +347,7 @@ def run(
     bot_user:      Optional[str] = typer.Option(None,  "--bot-user",           help="Bitbucket slug of the bot account. Own comments are tagged [SELF]. Overrides review.bot_user from config and $BOT_USER."),
     comment_tag:   Optional[str] = typer.Option(None,  "--comment-tag",        help="Prefix for the traceability footer appended to posted comments (`<prefix>:<gen>:<mutation>:<run>`). Empty string disables. Overrides review.comment_tag (default: dg)."),
     subject_pattern: Optional[str] = typer.Option(None, "--subject-pattern",   help="Regex with one capture group; when matched at the start of a comment's text the captured value replaces the Bitbucket author slug for [SELF]/[HUMAN] labelling. Use to simulate multi-author threads under a single account during benchmarks. Example: `^\\[(\\w+)\\]\\s+`."),
+    verdict_mode: str = typer.Option("api", "--verdict-mode", help="How to surface APPROVED/NEEDS_WORK from set_review_status. 'api' calls Bitbucket's participants endpoint (production default — needs the bot to be a reviewer, not the PR author). 'comment' posts a top-level [verdict:STATUS] marker comment instead (bench-friendly when the bot opened the PR and self-approve is blocked). 'both' does both."),
     output:        Optional[str] = typer.Option(None,  "--output",       "-o", help="Write findings as JSON to file"),
     max_steps:     Optional[int] = typer.Option(None,  "--max-steps",          help="Max ReAct steps (default: from config)"),
     max_tokens:    Optional[int] = typer.Option(None,  "--max-tokens",         help="Max token budget (default: from config)"),
@@ -471,6 +475,7 @@ def run(
             trace_dir=trace_dir,
             comment_tag=comment_tag_resolved,
             subject_pattern=subject_pattern,
+            verdict_mode=verdict_mode,
         )
         raise typer.Exit(0)
 
@@ -631,7 +636,9 @@ def run(
         diff_result=diff_result,
         meta=meta,
         review_status=review_ctx.review_status or "",
+        review_status_reason=review_ctx.review_status_reason or "",
         bot_user=bot_user_resolved,
+        verdict_mode=verdict_mode,
     )
 
     if output:
@@ -1068,7 +1075,9 @@ def _publish_to_pr(
     meta=None,
     author_prefix: str = "",
     review_status: str = "",
+    review_status_reason: str = "",
     bot_user: str = "",
+    verdict_mode: str = "api",
 ) -> None:
     """
     Single entry-point for posting all DiffGraph output to a PR.
@@ -1133,17 +1142,43 @@ def _publish_to_pr(
         except Exception as exc:
             console.print(f"  [yellow]resolve #{cid} failed: {exc}[/yellow]")
 
-    if review_status and bot_user:
-        from diffgraph.bitbucket import set_review_status as _set_status
-        try:
-            _set_status(pr_url, bot_user, review_status)
-            console.print(f"  [dim]review status: {review_status}[/dim]")
-        except Exception as exc:
-            console.print(f"  [yellow]set_review_status({review_status}) failed: {exc}[/yellow]")
-    elif review_status and not bot_user:
-        console.print(
-            "  [yellow]review status not posted: --bot-user not set[/yellow]"
-        )
+    if review_status:
+        mode = (verdict_mode or "api").strip().lower()
+        if mode not in ("api", "comment", "both"):
+            console.print(
+                f"  [yellow]unknown --verdict-mode {verdict_mode!r}; falling back to 'api'[/yellow]"
+            )
+            mode = "api"
+
+        if mode in ("api", "both"):
+            if not bot_user:
+                console.print(
+                    "  [yellow]review status (api) skipped: --bot-user not set[/yellow]"
+                )
+            else:
+                from diffgraph.bitbucket import set_review_status as _set_status
+                try:
+                    _set_status(pr_url, bot_user, review_status)
+                    console.print(f"  [dim]review status (api): {review_status}[/dim]")
+                except Exception as exc:
+                    console.print(
+                        f"  [yellow]set_review_status({review_status}) failed: {exc}[/yellow]"
+                    )
+
+        if mode in ("comment", "both"):
+            from diffgraph.bitbucket import post_general_pr_comment
+            reason = (review_status_reason or "").strip()
+            body = f"[verdict:{review_status}] " + (reason or f"Reviewer verdict: {review_status}.")
+            if author_prefix and not body.lstrip().startswith(author_prefix):
+                body = f"{author_prefix} {body}"
+            text = decorate(body) if decorate else body
+            try:
+                post_general_pr_comment(pr_url, text)
+                console.print(f"  [dim]review status (comment): {review_status}[/dim]")
+            except Exception as exc:
+                console.print(
+                    f"  [yellow]verdict comment ({review_status}) failed: {exc}[/yellow]"
+                )
 
 
 _agent_log = __import__("logging").getLogger("diffgraph.agent")
