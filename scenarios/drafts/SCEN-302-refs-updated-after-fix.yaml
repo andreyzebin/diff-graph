@@ -1,0 +1,108 @@
+id: SCEN-302
+name: "Two-round review: agent reviews fix push after own prior comments"
+tags: [java, incremental, two-round, refs-update, severity:major]
+
+# DRAFT — requires bench-side BranchUpdater (see TODO marker at the end of
+# this file). Without that capability, this scenario is loaded but skipped.
+# See SCEN-300/301 for the cheaper seed_comments-only equivalents.
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "hotfix/ORD-287-cancel-npe-step0"
+      to_branch: "master"
+      title: "[BENCHMARK] SCEN-302: Fix NPE on order cancellation (ORD-287)"
+      description: |
+        ## ORD-287: NPE on order cancellation when items list is null
+
+        **Incident:** Production NPE in `cancelOrder()` when iterating
+        `order.getItems()` for orders created via the legacy import script.
+
+        ### First attempt
+        Initial fix: wrap items iteration in null guard.
+
+  setup:
+    # No seed_comments — round 1 produces the comments that round 2 must
+    # acknowledge. The agent's own outputs become the prior round.
+    seed_comments: []
+
+    # NEW field, requires bench-side support (BranchUpdater).
+    # After round 1 completes, bench pushes a second commit to the source
+    # branch (rebase or fast-forward to *_step1 branch). The PR diff updates;
+    # then round 2 fires.
+    refs_update:
+      after_round: 1
+      strategy: "fast-forward"      # or "force-push" — chooses how to update
+      target_ref: "hotfix/ORD-287-cancel-npe-step1"
+
+  trigger:
+    # Round 1 — first /review. Round 2 fires automatically after the refs
+    # update (bench reposts /review on the updated PR).
+    type: comment
+    text: "/review"
+    rounds: 2     # NEW: number of /review fires
+
+expected_output:
+  # Two-round expectations — judge looks at round-2 comments only, but with
+  # access to round-1 comments as "prior context".
+  round: 2
+
+  required_comments:
+    # Round 2 should NOT re-flag the null-guard concern (the fix is in step1).
+    # If the agent has nothing new to say, that's still a pass — see thresholds.
+    []
+
+  forbidden_comments:
+    - description: "Re-flagging the null guard / null check on cancelOrder() — the step1 commit added it"
+    - description: "Asking the author to consider null safety on the same loop"
+
+  expected_status_change: "APPROVED"
+
+  thresholds:
+    min_score: 0.60
+    min_required_found: 0      # round 2 may legitimately produce no new findings
+    max_false_positives: 1
+
+metadata:
+  difficulty: hard
+  language: java
+  pr_size: small
+  scenario_type: incremental_review
+  capabilities: [incremental_review, refs_update, two_round, root_cause_analysis]
+  status: "DRAFT — requires bench BranchUpdater"
+  author: "team"
+  created: "2026-05-05"
+
+# ────────────────────────────────────────────────────────────────────────────
+# Bench-side TODO (required to enable this scenario):
+#
+# 1. Add paired branches in the orderflow test repo:
+#      hotfix/ORD-287-cancel-npe-step0  (current step0 — buggy: missing guard)
+#      hotfix/ORD-287-cancel-npe-step1  (step0 + the null-guard fix commit)
+#
+# 2. Implement BranchUpdater in benchmark/runner/branch_update.py:
+#      - fast-forward: push HEAD of *_step1 onto *_step0 branch
+#      - force-push: alternative that overwrites
+#
+# 3. Extend ScenarioSetup with refs_update field:
+#      after_round: int    — 1 = update before round 2
+#      strategy: str       — "fast-forward" | "force-push"
+#      target_ref: str     — branch name to advance to
+#
+# 4. Extend TriggerSpec with rounds: int = 1 (default keeps current behaviour).
+#    When rounds > 1, runner does:
+#      for r in range(rounds):
+#         post_seed_comments_if_round_one
+#         post_trigger_comment(r)
+#         agent_runs
+#         capture_round_outputs
+#         if r+1 < rounds and setup.refs_update.after_round == r+1:
+#             branch_updater.advance(setup.refs_update)
+#
+# 5. Judge sees round-2 comments scored against expected_output, plus
+#    a "prior_round_comments" block in the prompt so it can verify
+#    the agent actually acknowledged what was already covered.
+#
+# 6. Trace: per-round subdirectories under attempt-NN/round-1/, round-2/.
+# ────────────────────────────────────────────────────────────────────────────

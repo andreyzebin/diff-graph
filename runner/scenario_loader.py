@@ -257,6 +257,11 @@ def load_scenarios(
 ) -> list[Scenario]:
     scenarios = []
     for yaml_path in sorted(scenarios_dir.rglob("*.yaml")):
+        # Anything under a `drafts/` directory is design-only — keeps WIP
+        # scenario specs (e.g. SCEN-302 refs-updated which needs bench-side
+        # BranchUpdater) visible in the tree without tripping the runner.
+        if "drafts" in yaml_path.parts:
+            continue
         try:
             scenario = load_scenario(yaml_path)
         except Exception as e:
