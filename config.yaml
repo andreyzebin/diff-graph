@@ -74,6 +74,16 @@ judge:
   temperature: 0
   prompt_template: "prompts/judge.txt"
   output: "log"   # stream — single updating line while LLM generates / log — silent (default)
+  # Channel through which the agent surfaces its APPROVED/NEEDS_WORK verdict
+  # — part of the agent's output interface contract:
+  #   "api"      Bitbucket participants endpoint (production default).
+  #              Needs the bot to be a reviewer, not the PR author.
+  #   "comment"  scan the agent's general comments for a [verdict:STATUS]
+  #              marker. Bench-friendly when the bot opened the PR and
+  #              self-approve via API is blocked. Pair with the agent's
+  #              --verdict-mode=comment flag.
+  #   "both"     prefer the API value, fall back to the comment marker.
+  # verdict_source: "api"
   # For any OpenAI-compatible endpoint (DeepSeek, Ollama, vLLM, OpenAI, etc.)
   # If api_url is set, OpenAI-compatible client is used instead of Anthropic.
   # api_url: "https://api.deepseek.com/v1"

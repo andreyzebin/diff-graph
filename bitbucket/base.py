@@ -76,9 +76,20 @@ class AgentPRView(ABC):
         ...
 
     @abstractmethod
-    async def get_review_status(self) -> ReviewStatus | None:
+    async def get_review_status(self, verdict_source: str = "api") -> ReviewStatus | None:
         """
         Return the review status submitted by the agent account, or ``None``.
+
+        ``verdict_source`` selects the regulated channel through which the
+        agent surfaces its verdict — part of the agent's output interface
+        contract:
+        - ``"api"`` (production): read from Bitbucket's participants
+          endpoint. The agent must be a participant; if it's the PR author
+          self-approve is typically blocked.
+        - ``"comment"`` (bench-friendly): scan the agent's general comments
+          for a ``[verdict:STATUS]`` marker. Useful when the bench creates
+          PRs under the bot's own token and the API path can't be used.
+        - ``"both"``: prefer the API value, fall back to comment marker.
 
         Implementation requirements:
         - Filter strictly by the configured agent account — statuses set by

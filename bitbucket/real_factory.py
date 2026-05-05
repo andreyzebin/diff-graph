@@ -268,8 +268,20 @@ class RealBitbucketPRProxy(AgentPRView):
                 stack.append(child)
         return flat
 
-    async def get_review_status(self) -> ReviewStatus | None:
-        """Return the review status set by the agent account, or None."""
+    async def get_review_status(self, verdict_source: str = "api") -> ReviewStatus | None:
+        """Return the review status set by the agent account, or None.
+
+        See AgentPRView.get_review_status for the verdict_source contract.
+        """
+        mode = (verdict_source or "api").strip().lower()
+        api_status = await self._read_status_from_api() if mode in ("api", "both") else None
+        if api_status is not None:
+            return api_status
+        if mode in ("comment", "both"):
+            return await self._read_status_from_comment_marker()
+        return None
+
+    async def _read_status_from_api(self) -> ReviewStatus | None:
         url = (
             f"rest/api/1.0/projects/{self._project}/repos/{self._repo}"
             f"/pull-requests/{self._pr_id}/participants"
@@ -280,6 +292,30 @@ class RealBitbucketPRProxy(AgentPRView):
             if user.get("slug") != self._agent_username:
                 continue
             status = p.get("status", "")
+            if status in ("APPROVED", "NEEDS_WORK"):
+                return ReviewStatus(status=status)
+        return None
+
+    async def _read_status_from_comment_marker(self) -> ReviewStatus | None:
+        """Scan the agent's general comments for a ``[verdict:STATUS]`` marker.
+
+        The agent posts these when running with --verdict-mode=comment so a
+        bot that opened the PR (and thus can't self-approve via the API)
+        can still surface a verdict the bench's judge can read.
+        """
+        import re as _re
+        comments = await self._fetch_all_comments()
+        marker = _re.compile(r"\[verdict:(APPROVED|NEEDS_WORK|UNAPPROVED)\]", _re.IGNORECASE)
+        # Newest-first: a later comment supersedes earlier ones.
+        for c in reversed(comments):
+            if c.anchor is not None:
+                continue  # only top-level / general comments carry the verdict
+            if c._author != self._agent_username:
+                continue
+            m = marker.search(c.text or "")
+            if not m:
+                continue
+            status = m.group(1).upper()
             if status in ("APPROVED", "NEEDS_WORK"):
                 return ReviewStatus(status=status)
         return None

@@ -194,7 +194,8 @@ class LLMJudge(Judge):
 
     def __init__(self, llm_client: LLMClient, view: AgentPRView,
                  judge_dir: str | Path | None = None,
-                 model: str = ""):
+                 model: str = "",
+                 verdict_source: str = "api"):
         self._llm_client = llm_client
         self._view = view
         self._template = PROMPT_TEMPLATE_PATH.read_text()
@@ -202,11 +203,19 @@ class LLMJudge(Judge):
         # exact directory. The benchmark passes <attempt_dir>/judge/.
         self._judge_dir_path = Path(judge_dir).expanduser() if judge_dir else None
         self._model = model
+        # Channel through which the agent surfaces its APPROVED/NEEDS_WORK
+        # verdict — the agent's output interface contract. "api" reads
+        # Bitbucket's participants endpoint (production); "comment" scans
+        # the agent's general comments for a [verdict:STATUS] marker (bench
+        # convenience when the bot is also the PR author and self-approve
+        # via API is blocked); "both" prefers the API and falls back to
+        # the marker.
+        self._verdict_source = (verdict_source or "api").strip().lower() or "api"
 
     async def evaluate(self, scenario: Scenario,
                        exclude_comment_ids: set[int] | None = None) -> JudgeOutput:
         comments = await self._view.get_comments()
-        review_status = await self._view.get_review_status()
+        review_status = await self._view.get_review_status(self._verdict_source)
 
         # When the bench posts seed_comments + the trigger comment via the
         # same Bitbucket account as the agent (single-token setup), those
