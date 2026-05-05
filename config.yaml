@@ -60,6 +60,14 @@ agent:
   # is no obstacle):
   #
   #   interaction_command: '... cli.py run ... --bot-user=<bot-slug> --subject-pattern=''^\[(\w+)\]\s+'''
+  #
+  # Same flags also belong on the regular `command` for review scenarios
+  # whenever you want the agent's findings/replies tagged with its bot
+  # slug (e.g. for incremental-review scenarios that seed prior-round
+  # comments — without the prefix, the agent's own outputs come back
+  # indistinguishable from any other author on subsequent rounds).
+  #
+  #   command: '... cli.py run ... --agent reviewer --bot-user=<bot-slug> --subject-pattern=''^\[(\w+)\]\s+'''
 
 judge:
   model: "claude-opus-4-6"
