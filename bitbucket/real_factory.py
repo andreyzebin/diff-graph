@@ -62,6 +62,7 @@ class RealBitbucketPRProxy(AgentPRView):
         _pr_id: int,
         agent_username: str,
         base_url: str = "",
+        temp_branch: str = "",
     ):
         self._client = client
         self._project = project
@@ -69,6 +70,12 @@ class RealBitbucketPRProxy(AgentPRView):
         self._pr_id = _pr_id
         self._agent_username = agent_username
         self._base_url = base_url.rstrip("/")
+        # Throw-away branch the bench created server-side so concurrent
+        # scenarios sharing the same scenario-source can run side-by-side
+        # (Bitbucket allows only one open PR per (from, to) branch pair —
+        # without temp branches, parallel runs collide). Empty string ⇒
+        # legacy mode where the bench used the scenario branch directly.
+        self._temp_branch = temp_branch
 
     @property
     def pr_id(self) -> int:
@@ -106,6 +113,51 @@ class RealBitbucketPRProxy(AgentPRView):
         # a failure becomes a real exception, not a phantom "PR auto-closed".
         await self._run(self._decline_via_rest, self._pr_id, version)
         log.info("PR #%d declined", self._pr_id)
+
+        # Throw-away branch cleanup. Always delete after declining the PR —
+        # leaving these around clutters the test repo and eventually trips
+        # the next session's pre-decline scan.
+        if self._temp_branch:
+            try:
+                await self._run(
+                    self._delete_branch_via_rest, self._temp_branch
+                )
+                log.info("temp branch %s deleted", self._temp_branch)
+            except Exception as exc:
+                log.warning(
+                    "temp branch %s delete failed (non-fatal): %s",
+                    self._temp_branch, exc,
+                )
+
+    def _delete_branch_via_rest(self, branch_name: str) -> None:
+        """DELETE the throw-away branch via Bitbucket's branch-utils plugin.
+
+        Endpoint: DELETE /rest/branch-utils/1.0/projects/{P}/repos/{R}/branches
+        Body: {"name": "refs/heads/<name>", "dryRun": false}
+        """
+        path = (
+            f"rest/branch-utils/1.0/projects/{self._project}"
+            f"/repos/{self._repo}/branches"
+        )
+        # atlassian-python-api's `delete()` doesn't pass DELETE bodies as
+        # JSON cleanly (no `json=` kwarg, and `data=` flow loses the
+        # Content-Type), so go through the underlying requests session
+        # directly. SSL/cert config still applies because we share the
+        # session.
+        url = f"{self._client.url.rstrip('/')}/{path}"
+        resp = self._client._session.delete(
+            url,
+            json={
+                "name": f"refs/heads/{branch_name}",
+                "dryRun": False,
+            },
+            headers={"X-Atlassian-Token": "no-check"},
+        )
+        if resp.status_code >= 400 and resp.status_code != 404:
+            raise ProviderError(
+                f"delete branch {branch_name} failed: "
+                f"HTTP {resp.status_code} {resp.text[:200]}"
+            )
 
     def _decline_via_rest(self, pr_id: int, version: int) -> None:
         # Go through atlassian-python-api's request layer so verify/cert
@@ -361,28 +413,52 @@ class RealBitbucketFactory(AgentPRViewFactory):
             key = ssl_cfg.get("client_key")
             client._session.cert = (ssl_cfg["client_cert"], key) if key else ssl_cfg["client_cert"]
 
+        loop = asyncio.get_running_loop()
+
+        # Generate a unique throw-away branch name. Lets concurrent
+        # scenarios that share the same scenario source branch coexist —
+        # each scenario opens a PR from its own bench/* branch instead
+        # of fighting over the one (from, to) PR slot.
+        import uuid as _uuid
+        scenario_id = pr_cfg.get("title", "")
+        scen_tag = ""
+        for tag in ("SCEN-",):
+            i = scenario_id.find(tag)
+            if i >= 0:
+                end = scenario_id.find(":", i)
+                scen_tag = scenario_id[i:end if end > 0 else i + 16].strip()
+                break
+        scen_tag = scen_tag.replace(" ", "-")[:24] or "BENCH"
+        temp_branch = f"bench/{scen_tag}/{_uuid.uuid4().hex[:8]}"
+
+        # Pre-clean orphan bench/ branches (and any stale [BENCHMARK] PRs
+        # on the same target) left behind by killed runs. Best-effort —
+        # logged failures don't block the new run.
+        await loop.run_in_executor(
+            None,
+            lambda: cls._cleanup_stale_bench_artefacts(
+                client, project, repo, pr_cfg["to_branch"],
+            ),
+        )
+
+        # Create the throw-away branch server-side from the scenario
+        # source. No git push needed — Bitbucket's branch-utils plugin
+        # creates it from a server-known startPoint.
+        await loop.run_in_executor(
+            None,
+            lambda: cls._create_branch_via_rest(
+                client, project, repo, temp_branch, pr_cfg["from_branch"],
+            ),
+        )
+
         payload = {
             "title": pr_cfg.get("title", "[BENCHMARK]"),
             "description": pr_cfg.get("description", "Auto-created by benchmark"),
             "state": "OPEN",
-            "fromRef": {"id": f"refs/heads/{pr_cfg['from_branch']}"},
+            "fromRef": {"id": f"refs/heads/{temp_branch}"},
             "toRef": {"id": f"refs/heads/{pr_cfg['to_branch']}"},
             "reviewers": [],
         }
-
-        loop = asyncio.get_running_loop()
-
-        # Bitbucket allows only one open PR per (from, to) branch pair. Stale
-        # PRs from prior interrupted runs (process killed, network blip, etc.)
-        # block fresh PR creation. Decline any existing open `[BENCHMARK]` PR
-        # on the same branch pair before creating ours.
-        await loop.run_in_executor(
-            None,
-            lambda: cls._decline_stale_benchmark_prs(
-                client, project, repo,
-                pr_cfg["from_branch"], pr_cfg["to_branch"],
-            ),
-        )
 
         try:
             resp = await loop.run_in_executor(
@@ -390,65 +466,208 @@ class RealBitbucketFactory(AgentPRViewFactory):
                 lambda: client.create_pull_request(project, repo, payload),
             )
         except Exception as exc:
+            # If PR creation failed, the temp branch is now orphaned.
+            # Try to delete it immediately so we don't leave litter.
+            try:
+                await loop.run_in_executor(
+                    None,
+                    lambda: cls._delete_branch_via_rest_static(
+                        client, project, repo, temp_branch,
+                    ),
+                )
+            except Exception:
+                pass
             raise ProviderError(f"Failed to create PR: {exc}") from exc
 
         if not resp or "id" not in resp:
             raise ProviderError(f"Unexpected response when creating PR: {resp!r}")
 
-        return RealBitbucketPRProxy(client, project, repo, resp["id"], agent_username, base_url)
+        return RealBitbucketPRProxy(
+            client, project, repo, resp["id"], agent_username, base_url,
+            temp_branch=temp_branch,
+        )
 
     @staticmethod
-    def _decline_stale_benchmark_prs(client: Bitbucket, project: str, repo: str,
-                                     from_branch: str, to_branch: str) -> None:
-        """Decline any open `[BENCHMARK]` PR on the (from, to) branch pair.
-
-        Best-effort: a network blip or unexpected response shape is logged but
-        not raised — the subsequent create_pull_request call is the real
-        contract, and it will surface "duplicate PR" if cleanup didn't help.
-        """
-        path = f"rest/api/1.0/projects/{project}/repos/{repo}/pull-requests"
-        try:
-            resp = client.get(
-                path,
-                params={
-                    "state": "OPEN",
-                    "at": f"refs/heads/{from_branch}",
-                    "direction": "OUTGOING",
-                    "limit": 50,
-                },
-                advanced_mode=True,
+    def _create_branch_via_rest(client: Bitbucket, project: str, repo: str,
+                                name: str, start_point: str) -> None:
+        path = (
+            f"rest/branch-utils/1.0/projects/{project}"
+            f"/repos/{repo}/branches"
+        )
+        resp = client.post(
+            path,
+            json={
+                "name": name,
+                "startPoint": f"refs/heads/{start_point}",
+            },
+            headers={"X-Atlassian-Token": "no-check"},
+            advanced_mode=True,
+        )
+        if resp.status_code >= 400:
+            raise ProviderError(
+                f"create branch {name} from {start_point} failed: "
+                f"HTTP {resp.status_code} {resp.text[:200]}"
             )
-            if resp.status_code >= 400:
-                log.warning("list open PRs failed: HTTP %d %s",
-                            resp.status_code, resp.text[:200])
-                return
-            data = resp.json() or {}
-        except Exception as exc:
-            log.warning("list open PRs failed: %s", exc)
-            return
 
+    @staticmethod
+    def _delete_branch_via_rest_static(client: Bitbucket, project: str,
+                                       repo: str, name: str) -> None:
+        """Same call as RealBitbucketPRProxy._delete_branch_via_rest but
+        usable from the factory before a proxy exists."""
+        path = (
+            f"rest/branch-utils/1.0/projects/{project}"
+            f"/repos/{repo}/branches"
+        )
+        url = f"{client.url.rstrip('/')}/{path}"
+        resp = client._session.delete(
+            url,
+            json={"name": f"refs/heads/{name}", "dryRun": False},
+            headers={"X-Atlassian-Token": "no-check"},
+        )
+        if resp.status_code >= 400 and resp.status_code != 404:
+            log.warning("delete branch %s: HTTP %d %s",
+                        name, resp.status_code, resp.text[:200])
+
+    @classmethod
+    def _cleanup_stale_bench_artefacts(cls, client: Bitbucket,
+                                       project: str, repo: str,
+                                       to_branch: str) -> None:
+        """Clean up litter from interrupted prior runs:
+        1. Decline any open `[BENCHMARK]` PRs targeting *to_branch*.
+        2. Delete every `bench/*` branch that no longer has an open PR.
+
+        Both passes are best-effort — failures are logged, not raised.
+        Catches scenarios killed by Ctrl+C / SIGKILL / network drop where
+        __aexit__ never ran.
+        """
+        cls._decline_open_bench_prs(client, project, repo, to_branch)
+        cls._delete_orphan_bench_branches(client, project, repo)
+
+    @staticmethod
+    def _decline_open_bench_prs(client: Bitbucket, project: str, repo: str,
+                                to_branch: str) -> None:
+        """Walk all open PRs targeting *to_branch* and decline the
+        ``[BENCHMARK]`` ones. Doesn't touch real users' PRs."""
+        path = f"rest/api/1.0/projects/{project}/repos/{repo}/pull-requests"
         target_ref = f"refs/heads/{to_branch}"
-        for pr in (data.get("values") or []):
-            if (pr.get("toRef") or {}).get("id") != target_ref:
-                continue
-            title = pr.get("title", "") or ""
-            if "[BENCHMARK]" not in title:
-                # Don't touch unrelated open PRs from real users.
-                continue
-            pr_id = pr.get("id")
-            version = pr.get("version", 0)
+        start = 0
+        while True:
             try:
-                dr = client.post(
-                    f"{path}/{pr_id}/decline",
-                    params={"version": version},
-                    headers={"X-Atlassian-Token": "no-check"},
+                resp = client.get(
+                    path,
+                    params={
+                        "state": "OPEN",
+                        "at": target_ref,
+                        "direction": "INCOMING",
+                        "limit": 100,
+                        "start": start,
+                    },
                     advanced_mode=True,
                 )
-                if dr.status_code >= 400:
-                    log.warning("decline stale PR #%s failed: HTTP %d %s",
-                                pr_id, dr.status_code, dr.text[:200])
-                else:
-                    log.info("declined stale BENCHMARK PR #%s on %s -> %s",
-                             pr_id, from_branch, to_branch)
+                if resp.status_code >= 400:
+                    log.warning("list open PRs failed: HTTP %d %s",
+                                resp.status_code, resp.text[:200])
+                    return
+                data = resp.json() or {}
             except Exception as exc:
-                log.warning("decline stale PR #%s raised: %s", pr_id, exc)
+                log.warning("list open PRs failed: %s", exc)
+                return
+
+            for pr in (data.get("values") or []):
+                if (pr.get("toRef") or {}).get("id") != target_ref:
+                    continue
+                title = pr.get("title", "") or ""
+                if "[BENCHMARK]" not in title:
+                    continue
+                pr_id = pr.get("id")
+                version = pr.get("version", 0)
+                try:
+                    dr = client.post(
+                        f"{path}/{pr_id}/decline",
+                        params={"version": version},
+                        headers={"X-Atlassian-Token": "no-check"},
+                        advanced_mode=True,
+                    )
+                    if dr.status_code >= 400:
+                        log.warning("decline stale PR #%s failed: HTTP %d %s",
+                                    pr_id, dr.status_code, dr.text[:200])
+                    else:
+                        log.info("declined stale BENCHMARK PR #%s -> %s",
+                                 pr_id, to_branch)
+                except Exception as exc:
+                    log.warning("decline stale PR #%s raised: %s", pr_id, exc)
+
+            if data.get("isLastPage", True):
+                return
+            start = data.get("nextPageStart", 0) or (start + len(data.get("values") or []))
+
+    @classmethod
+    def _delete_orphan_bench_branches(cls, client: Bitbucket,
+                                      project: str, repo: str) -> None:
+        """Delete every `bench/*` branch that has no open PR pointing at
+        it. The throw-away branches our build() creates only matter while
+        their PR is open; once declined they're litter."""
+        path = f"rest/api/1.0/projects/{project}/repos/{repo}/branches"
+        start = 0
+        bench_branches: list[str] = []
+        while True:
+            try:
+                resp = client.get(
+                    path,
+                    params={
+                        "filterText": "bench/",
+                        "limit": 100,
+                        "start": start,
+                    },
+                    advanced_mode=True,
+                )
+                if resp.status_code >= 400:
+                    log.warning("list bench branches failed: HTTP %d %s",
+                                resp.status_code, resp.text[:200])
+                    return
+                data = resp.json() or {}
+            except Exception as exc:
+                log.warning("list bench branches failed: %s", exc)
+                return
+            for b in (data.get("values") or []):
+                name = (b.get("displayId") or "").strip()
+                if name.startswith("bench/"):
+                    bench_branches.append(name)
+            if data.get("isLastPage", True):
+                break
+            start = data.get("nextPageStart", 0) or (start + len(data.get("values") or []))
+
+        if not bench_branches:
+            return
+
+        # Find which of these branches still have an open PR.
+        open_pr_path = f"rest/api/1.0/projects/{project}/repos/{repo}/pull-requests"
+        live: set[str] = set()
+        for branch in bench_branches:
+            try:
+                resp = client.get(
+                    open_pr_path,
+                    params={
+                        "state": "OPEN",
+                        "at": f"refs/heads/{branch}",
+                        "direction": "OUTGOING",
+                        "limit": 1,
+                    },
+                    advanced_mode=True,
+                )
+                if resp.status_code < 400 and (resp.json() or {}).get("size", 0) > 0:
+                    live.add(branch)
+            except Exception:
+                # If we can't confirm, leave the branch alone — better
+                # litter than wiping a live PR's source.
+                live.add(branch)
+
+        for branch in bench_branches:
+            if branch in live:
+                continue
+            try:
+                cls._delete_branch_via_rest_static(client, project, repo, branch)
+                log.info("deleted orphan bench branch %s", branch)
+            except Exception as exc:
+                log.warning("delete orphan bench branch %s raised: %s",
+                            branch, exc)
