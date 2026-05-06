@@ -319,6 +319,112 @@ python cli.py run --pr-url ... --model gpt-4o --compare deepseek-chat
 
 ---
 
+## 5c. Pre-deploy QC pipeline (planner / scheduler / metrics / dashboard)
+
+**Goal.** Every new feature/mutation branch gets auto-tested on the
+internal LLM infra before merge. No prompt change rolls out without
+≥3 successful runs per (provider × scenario) on qwen3-6 + qwen3-coder.
+Gentle mode keeps the shared corp endpoints from drowning when the
+queue is full.
+
+### Components
+
+1. **Discovery** — poll GitHub for branches matching
+   `feature/*` / `mutation/*` (configurable patterns). Diff against a
+   tracking file (last-QC'd commit per branch); enqueue only NEW.
+   Cron / systemd-timer or long-running watcher.
+
+2. **Planner CLI** (`bench-schedule plan`):
+   ```
+   bench-schedule plan \
+     --branches feature/X,mutation/Y \
+     --providers qwen3-6,qwen3-coder \
+     --attempts 3 \
+     --scenarios all|sentinel|hard \
+     --mode aggressive|gentle \
+     [--exclude-tag cost:expensive]
+   ```
+   Emits a queue of `(branch, mutation_hash, provider, scenario, attempt_n)`
+   tasks. Sentinel = the 3-5 scenarios known to discriminate prompt
+   quality fastest. `hard` = the cost:expensive ones. `all` = full set.
+
+3. **Scheduler** (`bench-schedule run`):
+   - aggressive: asyncio.gather + ThreadPool, limited by `--max-concurrency`.
+   - gentle: token bucket per provider (configurable in YAML —
+     `qwen3-6: 1 req/s, qwen3-coder: 0.5 req/s`). Single-runner-per-bucket.
+   - Per task:
+     - `git fetch origin <branch>` into a worktree.
+     - Run bench scenario, write trace, capture score + warnings + verdict.
+     - Push metrics row into pr-analytics QA table.
+
+4. **Metrics storage** in pr-analytics:
+   New table `agent_qa_runs`:
+   ```
+   id PK, branch, mutation_hash, provider, scenario,
+   attempt_n, score, verdict, duration_seconds,
+   agent_warnings_count, scenario_warnings_count,
+   trace_path, started_at, finished_at, status
+   ```
+   Aggregate view: per (branch, mutation_hash) → pass_rate, median
+   score per (provider, scenario), worst-case run.
+   Decision rule: a mutation is "deploy-ready" when the worst
+   median across required (provider, scenario) pairs is ≥ scenario
+   threshold AND attempts ≥ 3.
+
+5. **Dashboard** — extend pr-analytics web:
+   - `/qa/branches` — branches under QC + their state (queued / running /
+     ready / failed).
+   - `/qa/mutations` — per-hash median scores grouped by provider × scenario,
+     deploy-ready flag.
+   - `/qa/runs` — live + recent runs, status, link to trace.
+   - `/qa/runs/{id}` — drill: live log tail (websocket), trace link,
+     judge response.
+   - `/qa/scheduler` — queue depth, active workers, per-provider rate limit
+     status, mode (aggressive / gentle).
+   - From a run row, a click drills to its judge response and trace.
+
+6. **Selective coverage** — when queue can't keep up:
+   - "Latest N mutations per branch" filter.
+   - "Sentinel scenarios only" mode (3-5 scenarios that historically
+     discriminate prompts fastest — measured by score variance across
+     known good vs known bad prompts).
+   - Skip cost:expensive unless explicitly requested.
+
+7. **Branch detection in planner**: file `qa-state.json` per repo
+   tracks last-QC'd commit per branch. Discovery diffs git log →
+   enqueues. New commit on existing branch supersedes prior runs
+   (older runs of same branch stay in history but don't gate deploy).
+
+### MVP slice (smallest useful)
+
+1. Planner CLI + queue file (JSONL).
+2. Scheduler that consumes the queue serially in gentle mode.
+3. Persist metrics to a new pr-analytics table.
+4. CLI report: `bench-schedule report --mutation <hash>` → markdown
+   table.
+
+That gives the workflow end-to-end. Dashboard, parallel mode,
+discovery, sentinel filtering can come incrementally.
+
+### Where it lives
+
+- Planner + scheduler: `code-review-benchmarks/qa/` (new module),
+  CLI entry `bench-schedule`.
+- Metrics tables + dashboard routes: `pr-analytics/` (existing
+  FastAPI app extended).
+- Tracking files (`qa-state.json` etc.): `code-review-benchmarks/qa/state/`,
+  gitignored.
+
+### Future (user-driven)
+
+Evolution orchestrator on top of QC: watches outcomes, spawns
+mutations along weakest capability axis, cross-breeds dominant
+prompts, gradually rolls out (sample %), tracks merge acceptance &
+feedback to close the fitness loop. Out of scope for now — the QC
+pipeline is the substrate.
+
+---
+
 ## 5b. Jira context — agent reads the ticket and follows links
 
 **Why.** Today the reviewer only sees the PR description. A real
@@ -681,6 +787,7 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 1.2 | Smart pushers | Medium | Medium | Do third |
 | 1.6 | Wall-clock pusher + hierarchy propagation | **High** | Small | **Do first** |
 | 5b  | Jira ticket reading + link traversal | **High** | Medium | **Do first** |
+| 5c  | Pre-deploy QC pipeline (planner/scheduler/metrics/dashboard) | **High** | Large | **Do first** |
 | 1.5 | Historical cost tracking | Medium | Medium | Do third |
 | 2.2 | Live parallel progress | Medium | Medium | Do third |
 | 4.1 | ~~Trace web server Phase 1 (basic server)~~ | ~~Done~~ | | |
