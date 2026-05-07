@@ -92,50 +92,68 @@ class MockEntry:
 class ToolMocks:
     by_tool: dict[str, list[MockEntry]] = field(default_factory=dict)
     source_path: str = ""
-    # Per-tool ordinal counter — index of the NEXT entry to consume.
-    _consumed: dict[str, int] = field(default_factory=dict)
+    # Per-tool set of consumed entry indices. Each entry is consumed
+    # at most once over the whole run.
+    _consumed: dict[str, set] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def has(self, tool_name: str) -> bool:
         return tool_name in self.by_tool
 
     def consume(self, tool_name: str, args: dict) -> MockEntry:
-        """Take the next ordinal entry for this tool.
+        """Take a canned response, marking the chosen entry consumed
+        so it can't be reused. Selection rule (content-aware ordinal):
 
-        Raises MockExhaustedError when the agent has called this tool
-        more times than the fixture lists, or MockArgsMismatchError
-        when the entry has a `when:` guard that doesn't match the
-        actual args (the agent passed something the test author didn't
-        expect for this slot).
+        1. Find the first UNCONSUMED entry whose `when:` matches the
+           actual args. Each entry is consumed at most once, but the
+           order in which the agent makes calls doesn't have to match
+           the order entries are listed.
 
-        Caller must check `has()` first; we don't fall back to real
-        dispatch from here — that decision belongs in the agent so
-        partial mocking can work cleanly.
+        2. If no `when:`-bearing entry matches, take the first
+           UNCONSUMED entry that has no `when:` guard (catch-all,
+           ordinal fallback).
+
+        3. Otherwise: MockExhaustedError (agent made a call this
+           fixture wasn't prepared for, or used up all slots).
+
+        Why content-aware: real reviewers don't always spawn concerns
+        in the order listed in their reflect. Strict ordinal forced
+        the test author to predict the spawn order; content matching
+        decouples that — each `when:` block says "when the agent
+        spawns with focus matching X, return this finding" without
+        caring whether it was the 1st or 3rd spawn of the run.
+
+        Raises MockExhaustedError when no entry is available.
         """
         entries = self.by_tool.get(tool_name)
         if not entries:
-            # has() should have prevented this; defensive.
             raise MockExhaustedError(
                 f"no mocks configured for tool {tool_name!r}"
             )
         with self._lock:
-            idx = self._consumed.get(tool_name, 0)
-            if idx >= len(entries):
-                raise MockExhaustedError(
-                    f"tool_mocks for {tool_name!r}: agent called {idx + 1} time(s) "
-                    f"but fixture only lists {len(entries)} entries"
-                )
-            entry = entries[idx]
-            self._consumed[tool_name] = idx + 1
-        # `when:` is an optional sanity guard. If set, args must match —
-        # otherwise the agent is asking for something the test author
-        # didn't expect for this ordinal slot.
-        if entry.when and not _entry_matches(entry, args):
-            raise MockArgsMismatchError(
-                f"tool_mocks for {tool_name!r} entry #{idx} has when={entry.when!r} "
-                f"but the agent called with args={args!r}"
+            consumed_set: set[int] = self._consumed.setdefault(tool_name, set())  # type: ignore
+            # Pass 1: prefer unconsumed entries with a matching when: guard.
+            for i, e in enumerate(entries):
+                if i in consumed_set:
+                    continue
+                if e.when and _entry_matches(e, args):
+                    consumed_set.add(i)
+                    return e
+            # Pass 2: fall back to the first unconsumed catch-all
+            # (entry without `when:` guard).
+            for i, e in enumerate(entries):
+                if i in consumed_set:
+                    continue
+                if not e.when:
+                    consumed_set.add(i)
+                    return e
+            # Nothing matched and no catch-all left.
+            raise MockExhaustedError(
+                f"tool_mocks for {tool_name!r}: no unconsumed entry matches args="
+                f"{args!r}; consumed {len(consumed_set)}/{len(entries)}; "
+                f"remaining whens: "
+                f"{[entries[i].when for i in range(len(entries)) if i not in consumed_set]}"
             )
-        return entry
 
     @classmethod
     def from_dict(cls, data: dict, source_path: str = "") -> "ToolMocks":
@@ -248,13 +266,12 @@ def render_mock_result(tool_name: str, entry: MockEntry, args: dict) -> Any:
 
 
 class MockExhaustedError(RuntimeError):
-    """The agent called a mocked tool more times than the fixture
-    lists. Either the agent under test is doing more than expected,
-    or the fixture is incomplete — both are meaningful test signals."""
+    """No unconsumed mock entry matches the agent's call (content-aware
+    ordinal selection failed). Either the agent under test is doing
+    more than expected, or the fixture lacks a matching entry — both
+    are meaningful test signals.
+    """
 
 
-class MockArgsMismatchError(RuntimeError):
-    """The fixture entry at the current ordinal slot has a `when:`
-    guard, and the agent passed args that don't satisfy it. The agent
-    asked for something the test author didn't anticipate at that
-    point in the call sequence."""
+# Kept as alias so older tests still import.
+MockArgsMismatchError = MockExhaustedError
