@@ -125,9 +125,14 @@ def _run_with_dispatcher(
 
     # ── Lightweight context (no clone) ────────────────────────────────────
     thread = "(no thread)"
+    bot_user_for_thread = review_cfg.get("bot_user", "")
     if comment_id:
         try:
-            thread = get_comment_thread(pr_url, comment_id)
+            thread = get_comment_thread(
+                pr_url, comment_id,
+                bot_user=bot_user_for_thread,
+                subject_pattern=subject_pattern or "",
+            )
         except Exception as exc:
             thread = f"(failed to fetch thread: {exc})"
 

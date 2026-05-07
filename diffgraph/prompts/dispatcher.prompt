@@ -86,6 +86,15 @@ THREAD is the chain of messages this trigger lives in: the thread
 root, every reply between it and your trigger, and the trigger
 itself. THREAD is your primary context — read it, answer to it.
 
+Each line in THREAD has a header: `--- #<id> by [<name>]` — `<name>`
+is who wrote that comment. Treat each `<name>` as a separate person
+with their own position; do NOT conflate speakers. A header tagged
+`[SELF]` means YOU wrote that comment in an earlier turn — those
+are your own prior positions and commitments in this thread, and
+you should reference them as such if asked ("ранее я сказал…",
+"my earlier comment was…"). The trigger itself is marked
+`← YOUR TRIGGER`.
+
 EXISTING COMMENTS lists the OTHER threads on the same PR as one-line
 summaries (root + topic + reply count). They're there so you don't
 contradict a parallel discussion or repeat a finding already raised.

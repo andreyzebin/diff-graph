@@ -437,12 +437,23 @@ def get_comment_thread(
     token: str | None = None,
     ca_bundle: str | None = None,
     client_cert: str | None = None,
+    bot_user: str = "",
+    subject_pattern: str = "",
 ) -> str:
     """
     Fetch the comment thread from root to the given comment.
 
     Walks the parent chain via Bitbucket API.
     Returns formatted text: one message per line, oldest first.
+
+    When `subject_pattern` (regex with one capture group) and `bot_user`
+    are set, comments whose body starts with `[<bot_user>]` are tagged
+    `[SELF]` in the rendered header so the agent can tell its own prior
+    posts apart from other speakers in the same thread. The captured
+    name is also used as the displayed author (overriding Bitbucket's
+    displayName) so that simulated multi-author threads — where every
+    comment is technically authored by the same Bitbucket account —
+    render with distinct attributions.
     """
     token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
     ca_bundle   = ca_bundle   or os.environ.get("REQUESTS_CA_BUNDLE")
@@ -482,6 +493,7 @@ def get_comment_thread(
         {
             "id": cid,
             "author": by_id[cid].get("author", "unknown"),
+            "author_slug": by_id[cid].get("author_slug", ""),
             "text": by_id[cid].get("text", ""),
         }
         for cid in chain_ids
@@ -489,16 +501,21 @@ def get_comment_thread(
 
     if not flat:
         return "(empty thread)"
+
+    from diffgraph.authors import resolve_author
+
     blocks = []
     for msg in flat:
-        marker = "  ← YOUR TRIGGER" if msg["id"] == comment_id else ""
+        a = resolve_author(msg, bot_user=bot_user, subject_pattern=subject_pattern)
+        self_tag = " [SELF]" if a.is_self else ""
+        trigger_tag = "  ← YOUR TRIGGER" if msg["id"] == comment_id else ""
         # Borders matter: comment bodies often contain markdown / code /
         # backticks, and a flat join makes the LLM blur where one ends
         # and the next begins. The dashed ruler is enough boundary —
         # short on tokens, hard to confuse with content.
         blocks.append(
-            f"--- #{msg['id']} by [{msg['author']}]{marker}\n"
-            f"{msg['text']}"
+            f"--- #{msg['id']} by [{a.display_name}]{self_tag}{trigger_tag}\n"
+            f"{a.body}"
         )
     return "\n".join(blocks) + "\n--- end of thread ---"
 

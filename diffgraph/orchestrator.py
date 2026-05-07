@@ -346,18 +346,6 @@ _MAX_COMMENTS = 20
 import re as _re
 
 
-def _strip_subject_prefix(text: str, pattern: _re.Pattern | None) -> tuple[str, str]:
-    """Return (synthetic_author, remaining_text). Empty author when no match."""
-    if not pattern or not text:
-        return "", text
-    m = pattern.match(text)
-    if not m or not m.groups():
-        return "", text
-    name = (m.group(1) or "").strip()
-    rest = text[m.end():].lstrip()
-    return name, rest
-
-
 def _format_existing_comments(comments: list[dict], bot_user: str = "",
                               subject_pattern: _re.Pattern | None = None,
                               active_thread_root_id: int | None = None) -> str:
@@ -415,29 +403,21 @@ def _format_existing_comments(comments: list[dict], bot_user: str = "",
     if len(root_ids) > _MAX_COMMENTS:
         root_ids = root_ids[-_MAX_COMMENTS:]
 
+    from diffgraph.authors import resolve_author
+
     lines = []
     for rid in root_ids:
         children = roots[rid]
         root = by_id.get(rid) or children[0]
         # All siblings + root carry the same anchor (Bitbucket replies
         # inherit the root's anchor); use root's data.
-        text_raw = str(root.get("text", ""))
-        synth_author, text = _strip_subject_prefix(text_raw, subject_pattern)
-        author = root.get("author", "")
-        slug = root.get("author_slug", "")
-        if synth_author:
-            who = (f"[SELF:{synth_author}]"
-                   if bot_user and synth_author == bot_user
-                   else f"[{synth_author}]")
-        elif bot_user and slug and slug == bot_user:
-            who = f"[SELF:{author}]"
-        else:
-            who = f"[{author}]" if author else ""
+        a = resolve_author(root, bot_user=bot_user, subject_pattern=subject_pattern)
+        who = f"[SELF:{a.display_name}]" if a.is_self else f"[{a.display_name}]"
         anchor = ""
         if root.get("file"):
             anchor = f" {root['file']}:{root.get('line', '')}"
         # Strip newlines so multi-line bodies don't bleed across lines.
-        snippet = " ".join(text.split())[:90]
+        snippet = " ".join(a.body.split())[:90]
         reply_count = sum(1 for c in children if c.get("parent_id"))
         suffix = f" (+{reply_count} replies)" if reply_count else ""
         resolved_tag = " [RESOLVED]" if root.get("resolved") else ""
