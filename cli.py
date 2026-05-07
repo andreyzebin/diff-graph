@@ -15,6 +15,7 @@ os.environ["PYTHONUTF8"] = "1"
 import json
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -107,7 +108,8 @@ def _run_with_dispatcher(
     comment_tag: str = "dg",
     subject_pattern: Optional[str] = None,
     verdict_mode: str = "api",
-    spawn_mocks: Any = None,
+    tool_mocks: Any = None,
+    invocations_out: Optional[str] = None,
 ) -> None:
     """
     Run any agent with lazy repo init.
@@ -287,10 +289,31 @@ def _run_with_dispatcher(
     def _on_event(event: str, **kw):
         event_handler(event, **kw)
 
+    # Optional invocation recorder (Mockito verify side). Captures every
+    # tool invocation — mocked or real — so the bench judge can assert
+    # things like "reviewer spawned investigator at least 2 times with
+    # focus mentioning 'cheapest'".
+    invocations: list[dict] = []
+    invocations_lock = threading.Lock()
+    def _record_invocation(event: str, **kw):
+        if event == "agent_tool_result":
+            with invocations_lock:
+                invocations.append({
+                    "agent": kw.get("agent_name"),
+                    "step": kw.get("step"),
+                    "tool": kw.get("tool"),
+                    "args": kw.get("args"),
+                    "mocked": bool(kw.get("mocked", False)),
+                    "mock_when": kw.get("mock_when"),
+                    "mock_wildcard": kw.get("mock_wildcard"),
+                })
+
     def _trace_writer(event: str, **kw):
         _trace_db.on_event(event, **kw)
         if _trace_fs:
             _trace_fs.on_event(event, **kw)
+        if invocations_out:
+            _record_invocation(event, **kw)
 
     result = run_agent(
         agent_name=agent_name,
@@ -304,7 +327,7 @@ def _run_with_dispatcher(
         tool_choice=llm_cfg.get("tool_choice", ""),
         stream=llm_cfg.get("stream"),
         extra_body=llm_cfg.get("extra_body"),
-        spawn_mocks=spawn_mocks,
+        tool_mocks=tool_mocks,
     )
 
     # ── Post-run: post replies, findings, cleanup ─────────────────────────
@@ -324,6 +347,16 @@ def _run_with_dispatcher(
     )
     _trace_db.close()
     console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")
+    if invocations_out:
+        try:
+            out_path = Path(invocations_out).expanduser()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps({"invocations": invocations},
+                                            ensure_ascii=False, indent=2,
+                                            default=str))
+            console.print(f"[dim]  invocations: {out_path} ({len(invocations)} call(s))[/dim]")
+        except Exception as exc:
+            console.print(f"[red]failed to write --invocations-out {invocations_out}: {exc}[/red]")
     if _trace_fs:
         _trace_fs.finish_run(
             model=effective_model, pr_url=pr_url,
@@ -394,7 +427,8 @@ def run(
     comment_id:    Optional[str] = typer.Option(None,  "--comment-id",         help="Bitbucket comment ID that triggered this invocation. Empty string is accepted (auto-triggered events from the webhook substitute an empty {comment_id} placeholder)."),
     agent:         Optional[str] = typer.Option(None,  "--agent",              help="Run a specific agent by name (dispatcher, reviewer, investigator)"),
     data:          Optional[list[str]] = typer.Option(None, "--data", "-d",    help="Data key=value pairs for the agent (e.g. -d focus='null safety')"),
-    mocks:         Optional[str] = typer.Option(None,  "--mocks",              help="Path to a YAML file of canned subagent responses. When set, spawn_agent calls matching the fixture short-circuit with the canned reply instead of running a real child. Used for isolated unit tests of one agent at a time. See orchestra/spawn_mocks.py for the file format."),
+    mocks:         Optional[str] = typer.Option(None,  "--mocks",              help="Path to a YAML file of canned tool responses (spawn_agent, read_file, …). Tool calls matching the fixture short-circuit with the canned reply. Mockito-style. See orchestra/tool_mocks.py for the format."),
+    invocations_out: Optional[str] = typer.Option(None, "--invocations-out",   help="Write a JSON list of every tool invocation made during the run (tool name, args, mocked, mock_when, step, agent) to this path on exit. Used by the bench judge for Mockito-style verify on agent unit tests."),
 ):
     """
     Run an agent. Default: dispatcher (with --message) or reviewer (without).
@@ -476,14 +510,14 @@ def run(
                 extra_data[k.strip()] = v.strip()
 
     # ── Load mocks fixture if --mocks given ──────────────────────────────
-    spawn_mocks_obj = None
+    tool_mocks_obj = None
     if mocks:
-        from orchestra.spawn_mocks import SpawnMocks
+        from orchestra.tool_mocks import ToolMocks
         try:
-            spawn_mocks_obj = SpawnMocks.from_yaml(mocks)
+            tool_mocks_obj = ToolMocks.from_yaml(mocks)
             console.print(
-                f"[dim]  spawn_mocks: {len(spawn_mocks_obj.by_agent)} agent(s) "
-                f"[{', '.join(spawn_mocks_obj.by_agent)}] from {spawn_mocks_obj.source_path}[/dim]"
+                f"[dim]  tool_mocks: {len(tool_mocks_obj.by_tool)} tool(s) "
+                f"[{', '.join(tool_mocks_obj.by_tool)}] from {tool_mocks_obj.source_path}[/dim]"
             )
         except Exception as exc:
             console.print(f"[red]failed to load --mocks {mocks}: {exc}[/red]")
@@ -526,7 +560,8 @@ def run(
             comment_tag=comment_tag_resolved,
             subject_pattern=subject_pattern,
             verdict_mode=verdict_mode,
-            spawn_mocks=spawn_mocks_obj,
+            tool_mocks=tool_mocks_obj,
+            invocations_out=invocations_out,
         )
         raise typer.Exit(0)
 
