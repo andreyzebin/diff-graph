@@ -1,0 +1,85 @@
+id: SCEN-204b
+name: "Multi-thread comprehension — trigger in thread B (transactions)"
+tags: [interaction, ask, thread, multi-thread, crosstalk]
+
+# Symmetric reproducer to SCEN-204: same three threads, same bland
+# question, but pinged INSIDE thread B (transaction safety) instead
+# of A. The agent must answer about @Transactional / applyBulkDiscount
+# — pulling content from A (cheapest item) or C (Lombok) is crosstalk.
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "feature/ORD-234-buy-3-get-1-free"
+      to_branch: "master"
+      title: "[BENCHMARK] SCEN-204b: Buy-3-get-1-free promotion (ORD-234)"
+      description: |
+        ## ORD-234: Implement buy-3-get-1-free promotions
+
+        **As a** marketing manager
+        **I want to** configure buy-N-get-1-free promotions per product category
+        **So that** we can run campaigns without a deploy
+
+        ### Acceptance criteria
+        - When a customer has 4+ items from a promoted category, the **cheapest**
+          item is free
+        - Discount is shown as a line item labelled with the promotion name
+        - Only one promotion applies per category — no stacking
+        - Promotion respects `startDate` and `endDate`
+
+  setup:
+    seed_comments:
+      # Same three sibling thread roots as SCEN-204.
+
+      # Thread A — pricing logic.
+      - text: "[bot] **Free item selection picks the first item, not the cheapest** — `selectFreeItem` in PricingService returns `group.get(0)`. Per the ticket AC the customer should get the cheapest item free, otherwise we silently overcharge them."
+
+      # Thread B — transaction safety.
+      - text: "[bot] **Missing @Transactional on applyBulkDiscount** — the method writes to `orderItemRepository` then `orderRepository` outside a transaction. Partial failures leave items discounted but order totals stale. Every other multi-write method in the codebase is `@Transactional`."
+
+      # Thread C — code style.
+      - text: "[bot] **Promotion entity uses manual getters/setters instead of Lombok** — every other entity in the codebase uses `@Data @Builder @NoArgsConstructor @AllArgsConstructor`. Inconsistency makes future maintenance harder."
+
+  trigger:
+    # Bait the agent INSIDE thread B (index 1). Same bland question.
+    type: comment
+    in_reply_to: [1]
+    text: "/ask что об этом думаешь?"
+
+expected_output:
+  reply:
+    must_mention:
+      # Topic of thread B — transaction safety / @Transactional / applyBulkDiscount.
+      - ["@Transactional", "transactional", "transaction"]
+      - ["applyBulkDiscount", "atomic", "partial failure", "two writes", "rollback", "consistency"]
+      # Affirmative response to the question.
+      - ["yes", "agree", "right", "correct", "indeed", "important", "real"]
+    must_address: ["yes", "no", "agree", "right", "correct", "important"]
+    forbidden_topics:
+      # Crosstalk into thread A (pricing).
+      - ["cheapest", "selectFreeItem", "get(0)", "free item selection"]
+      # Crosstalk into thread C (Lombok style).
+      - ["Lombok", "@Data", "@Builder", "manual getters"]
+    rationale: |
+      The agent was pinged inside thread B (transaction safety). It
+      must reason about transaction boundaries / @Transactional /
+      applyBulkDiscount. Threads A (cheapest item) and C (Lombok)
+      are background noise — quoting them is the thread-crosstalk
+      bug. Bland trigger ("что об этом думаешь?") forces the agent
+      to follow parent_id, not semantic similarity to the question.
+
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+
+  thresholds:
+    min_score: 0.65
+  acknowledgement_required: false
+
+metadata:
+  difficulty: hard
+  language: any
+  pr_size: small
+  scenario_type: interaction
+  capabilities: [dispatcher, ask, thread-focus, crosstalk-resistance, multi-thread-comprehension]
