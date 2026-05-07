@@ -1,0 +1,100 @@
+id: SCEN-205b
+name: "Author attribution — list comments belonging to SELF"
+tags: [interaction, ask, thread, author-attribution, self-recognition, multi-speaker]
+
+# Symmetric to SCEN-205 (which asks about alice's comments) — this
+# one tests that the agent can pick out its OWN past contributions
+# from a multi-speaker thread, not lumping them with bot's, alice's,
+# or bob's. The thread now contains TWO SELF comments at distinct
+# depths so the test isn't trivial ("everyone in the thread is me").
+#
+# In bench mode SELF is distinguished by the [tuz_spasibo__qodo]
+# prefix (the configured bot_user); in production it would be a
+# separate Bitbucket account. Both modes funnel through the same
+# `resolve_author` abstraction in diff-graph and render identically:
+# `--- #N by [<name>] [SELF]` for own comments.
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "feature/ORD-234-buy-3-get-1-free"
+      to_branch: "master"
+      title: "[BENCHMARK] SCEN-205b: Buy-3-get-1-free (ORD-234) — self attribution"
+      description: |
+        ## ORD-234: Implement buy-3-get-1-free promotions
+
+        **As a** marketing manager
+        **I want to** configure buy-N-get-1-free promotions per product category
+        **So that** we can run campaigns without a deploy
+
+        ### Acceptance criteria
+        - When a customer has 4+ items from a promoted category, the **cheapest**
+          item is free
+        - Discount is shown as a line item labelled with the promotion name
+
+  setup:
+    seed_comments:
+      # Six nested replies, four distinct speakers, with [SELF] (the
+      # agent's bot_user) appearing TWICE at different depths.
+
+      - text: "[bot] **Free item selection picks the first item, not the cheapest** — `selectFreeItem` in PricingService returns `group.get(0)`. Per the ticket AC the customer should get the cheapest item free."
+        replies:
+          - text: "[alice] Стоп. Я как PM возражаю. Для маркетинговых кампаний важнее предсказуемость выбора, а не минимальная цена. Давайте оставим первый элемент."
+            replies:
+              - text: "[tuz_spasibo__qodo] Не согласен с alice — AC прямо говорит «cheapest». Технически правильное решение: сортировать по `unitPrice` по возрастанию и брать первый."
+                replies:
+                  - text: "[alice] Уточню: AC в тикете специально упрощены под первый запуск кампании. Полная логика «cheapest per promotion config» появится во второй итерации."
+                    replies:
+                      - text: "[tuz_spasibo__qodo] Принимаю уточнение alice. Тогда оставляем `get(0)` в этом PR, и я предлагаю сразу завести follow-up тикет ORD-241 на cheapest-логику для второй итерации, чтобы не потерять контекст."
+                        replies:
+                          - text: "[bob] Согласен с follow-up. Завожу ORD-241 как тимлид."
+
+  trigger:
+    # Reply at depth 6 (root → alice → SELF → alice → SELF → bob → trigger).
+    type: comment
+    in_reply_to: [0, 0, 0, 0, 0, 0]
+    text: "/ask а какие в этом треде комментарии твои?"
+
+expected_output:
+  reply:
+    must_mention:
+      # Agent's first own comment — disagreed with alice, cited AC.
+      - ["unitPrice", "ascending", "по возрастанию", "сортир", "sort", "AC", "cheapest", "тикет"]
+      # Agent's second own comment — accepted alice, proposed follow-up ORD-241.
+      - ["follow-up", "ORD-241", "cheapest-логику", "second iteration", "вторая итерация", "не потерять контекст"]
+      # Counts SELF comments as two.
+      - ["два", "две", "2", "two", "оба", "both", "обе"]
+    must_address: ["мои", "my", "self", "твои", "your", "ranee", "ранее", "previously"]
+    forbidden_topics:
+      # Claiming bot's bug report as own.
+      - ["i raised the bug", "я сообщил о баге", "я заметил selectFreeItem", "i noted get(0)"]
+      # Claiming alice's PM stance as own.
+      - ["i argued for predictability", "я как pm", "i as pm", "i wanted first-in-list"]
+      # Claiming bob's verdict as own.
+      - ["я как тимлид", "i as tech lead", "i opened ord-241 myself"]
+    rationale: |
+      Six comments, four speakers; SELF (the agent) authored two
+      non-adjacent replies — disagreeing with alice on technical
+      grounds, then accepting alice's clarification and proposing
+      a follow-up. The trigger asks specifically which comments are
+      the agent's own. A correct answer must enumerate both SELF
+      messages (by id or content) and count them as two, without
+      pulling bot's bug report, alice's PM stance, or bob's
+      tech-lead verdict into the SELF bucket. This is the SELF
+      counterpart to SCEN-205 (which asks about alice).
+
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+
+  thresholds:
+    min_score: 0.65
+  acknowledgement_required: false
+
+metadata:
+  difficulty: hard
+  language: any
+  pr_size: small
+  scenario_type: interaction
+  capabilities: [dispatcher, ask, thread-focus, author-attribution, self-recognition, multi-speaker]
