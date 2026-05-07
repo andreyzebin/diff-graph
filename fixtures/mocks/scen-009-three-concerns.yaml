@@ -76,3 +76,21 @@ spawn_agent:
           suggestion: "Replace with @Data @Builder @NoArgsConstructor @AllArgsConstructor."
       confidence: medium
       learned: "Manual getters/setters on Promotion break the Lombok convention used by every other entity."
+
+  # Padding slots 4-6 — reviewers sometimes form extra concerns
+  # (security, test coverage, ...). Return empty findings so the
+  # reviewer's overall pass through still completes; the judge only
+  # cares about the three real findings above plus whatever the
+  # reviewer surfaces in invocations.json.
+  - return:
+      findings: []
+      confidence: medium
+      learned: "(mocked) no additional findings for this concern."
+  - return:
+      findings: []
+      confidence: medium
+      learned: "(mocked) no additional findings for this concern."
+  - return:
+      findings: []
+      confidence: medium
+      learned: "(mocked) no additional findings for this concern."
