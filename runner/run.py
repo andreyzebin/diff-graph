@@ -48,9 +48,10 @@ def _shell_quote(s: str) -> str:
 
 
 def _build_extra_args(scenario: Scenario, invocations_out: Path | None = None) -> list[str]:
-    """Compose the --mocks / --agent / -d / --invocations-out flags
-    from agent-isolation scenario fields. Returns an empty list when
-    none of them are set (scenario behaves exactly as before)."""
+    """Compose the --mocks / --agent / -d / --invocations-out /
+    --user-message[-from] flags from agent-isolation scenario fields.
+    Returns an empty list when none of them are set (scenario behaves
+    exactly as before)."""
     args: list[str] = []
     if scenario.trigger.agent:
         args.append(f"--agent={_shell_quote(scenario.trigger.agent)}")
@@ -58,6 +59,10 @@ def _build_extra_args(scenario: Scenario, invocations_out: Path | None = None) -
         args.append(f"-d {_shell_quote(f'{k}={v}')}")
     if scenario.setup.mocks_path:
         args.append(f"--mocks={_shell_quote(str(scenario.setup.mocks_path))}")
+    if scenario.trigger.user_message_path:
+        args.append(f"--user-message-from={_shell_quote(str(scenario.trigger.user_message_path))}")
+    elif scenario.trigger.user_message:
+        args.append(f"--user-message={_shell_quote(scenario.trigger.user_message)}")
     if invocations_out is not None:
         args.append(f"--invocations-out={_shell_quote(str(invocations_out))}")
     return args

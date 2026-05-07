@@ -92,6 +92,14 @@ class TriggerSpec:
     # investigator unit test can pass its `focus` from the scenario.
     agent: str = ""
     data: dict = field(default_factory=dict)
+    # Override the agent's default user-message template. The system
+    # prompt (methodology) stays intact; only the user-side framing
+    # of the task changes. Used to test the same agent on different
+    # task framings — e.g. reviewer's consolidation phase by
+    # pre-feeding investigation results.
+    user_message: str = ""              # inline text from yaml
+    user_message_from: str = ""         # relative path; loader resolves
+    user_message_path: Path | None = None  # resolved absolute path
 
 
 @dataclass
@@ -264,12 +272,25 @@ def load_scenario(path: Path) -> Scenario:
             f"scenario {path}: trigger.data must be a mapping (got "
             f"{type(trigger_data_field).__name__})"
         )
+    user_message_inline = str(trig_data.get("user_message", "") or "")
+    user_message_from_rel = str(trig_data.get("user_message_from", "") or "")
+    user_message_path: Path | None = None
+    if user_message_from_rel:
+        candidate = (path.parent / user_message_from_rel).resolve()
+        if not candidate.exists():
+            raise FileNotFoundError(
+                f"scenario {path}: trigger.user_message_from → {candidate} does not exist"
+            )
+        user_message_path = candidate
     trigger = TriggerSpec(
         type=trig_data.get("type", "auto"),
         text=trig_data.get("text", ""),
         in_reply_to=trig_data.get("in_reply_to") or None,
         agent=str(trig_data.get("agent", "") or ""),
         data={str(k): str(v) for k, v in trigger_data_field.items()},
+        user_message=user_message_inline,
+        user_message_from=user_message_from_rel,
+        user_message_path=user_message_path,
     )
 
     return Scenario(

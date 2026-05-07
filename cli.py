@@ -389,7 +389,9 @@ async def _run_async(
             # Mockito-style verify assertions.
             if (s.setup.mocks_path
                     or s.trigger.agent
-                    or s.trigger.data):
+                    or s.trigger.data
+                    or s.trigger.user_message_path
+                    or s.trigger.user_message):
                 invocations_path = attempt_dir / "invocations.json"
 
         bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
