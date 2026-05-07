@@ -785,6 +785,63 @@ explain commands", plain text → "would treat as /ask"). Useful
 for testing dispatcher routing logic without spinning up the
 spawned agents.
 
+#### Open question — single reflect vs full chain vs new "outcome"
+
+The current REV-001 implementation reads ALL reflect calls from
+invocations.json and matches keyword groups against the union of
+title+description across them. That works for concerns-forming
+because each concern is a self-contained line of inquiry.
+
+For richer agents (investigator especially), a single reflect
+entry is a snapshot of an internal step — `learned: "still
+checking X"` only makes sense inside the trajectory of the
+preceding reflects. Reading the LAST reflect alone may miss
+context; reading ALL reflects is verbose and the LLM judge has
+to reason over the full reasoning chain.
+
+Three design choices, decide before scaling 5d.3 to investigator
+and dispatcher:
+
+(a) **Full chain as the test signal** (current REV-001 behaviour).
+   Judge sees every reflect; expected matchers run against the
+   union. Pros: nothing new in the framework, all the agent's
+   thinking is visible. Cons: judge prompt grows linearly with
+   reasoning depth; brittle if the same keyword appears in an
+   intermediate reflect that later got resolved.
+
+(b) **Last reflect is the contract**. Mandate that the agent's
+   last `reflect` before `done()` carries a self-contained
+   summary in `learned` (and maybe other fields). Judge reads
+   only that one. Pros: clear single signal; small judge prompt.
+   Cons: changes the implicit contract of `reflect` (today every
+   call is just a thinking checkpoint, not a "final summary"
+   slot); easy to forget in agent prompts.
+
+(c) **New self-contained `outcome` tool**. A dedicated step at
+   the end of any agent run: `outcome(summary, findings,
+   verdict, evidence)`. Self-contained, explicit, parallel to
+   `done` but for the "what I concluded" channel rather than
+   the "what I published" channel. Judge reads the single
+   `outcome` call. Pros: clean contract; works regardless of
+   how many reflects happened or in what shape; gives tests
+   AND parent agents (in production) a stable handoff surface.
+   Cons: another tool to teach in every agent's @tools list;
+   risk of overlap with `done(findings=...)`.
+
+Lean toward (c) — feels most honest about what we're testing
+("the agent's final conclusion as it would deliver it to a
+human or a parent agent"), and removes the ambiguity in
+`done(findings=...)` between "publish these" and "I think
+these are true". But it's a real contract change, so we ought
+to land INV-002 with (a) first to see how brittle the full-chain
+approach actually is in practice before introducing a new tool.
+
+If we go with (c), `done(findings=...)` keeps its publish-only
+semantics and the parent reads `outcome` for the conclusion
+shape — including in production, where the reviewer reading the
+investigator's `outcome` is more natural than rummaging through
+`done.findings`.
+
 ### 5d.1 Live, progressive run dashboard (per-provider throughput)
 
 When `bench run --mode aggressive` is in flight the user is
