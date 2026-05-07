@@ -86,6 +86,12 @@ class TriggerSpec:
     #                 specific node; trigger becomes a reply to that node.
     #                 e.g. [1, 0, 0] = 2nd root → 1st reply → 1st reply.
     in_reply_to: list[int] | None = None
+    # Agent-isolation knobs. Override which agent the CLI invokes
+    # (default behaviour: dispatcher when text is set, reviewer
+    # otherwise). `data` adds `-d key=value` flags so e.g. an
+    # investigator unit test can pass its `focus` from the scenario.
+    agent: str = ""
+    data: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -103,8 +109,17 @@ class ScenarioSetup:
       • flat list of strings → each becomes a root comment
       • tree of {text, replies: [...]} dicts → arbitrary depth
     Mixing is allowed — a string is treated as a leaf SeedComment.
+
+    `mocks` is a file path relative to the scenario YAML pointing at
+    a tool-mock fixture (orchestra's --mocks format). When set, the
+    bench passes it through to the agent CLI as --mocks <abspath>,
+    short-circuiting spawn_agent / read_file / etc. with canned
+    responses for fast isolated unit tests of one agent at a time.
+    Resolved to an absolute path at load time (see `mocks_path`).
     """
     seed_comments: list[SeedComment] = field(default_factory=list)
+    mocks: str = ""                    # raw value from yaml (relative path)
+    mocks_path: Path | None = None     # resolved absolute path; set on load
 
 
 def _parse_seed_tree(items: list) -> list[SeedComment]:
@@ -225,15 +240,36 @@ def load_scenario(path: Path) -> Scenario:
         )
 
     setup_data = data.get("input", {}).get("setup", {}) or {}
+    mocks_rel = str(setup_data.get("mocks", "") or "")
+    mocks_path: Path | None = None
+    if mocks_rel:
+        # Resolve relative to the scenario file's directory so test
+        # authors don't have to hardcode absolute paths.
+        mp = (path.parent / mocks_rel).resolve()
+        if not mp.exists():
+            raise FileNotFoundError(
+                f"scenario {path}: setup.mocks → {mp} does not exist"
+            )
+        mocks_path = mp
     setup = ScenarioSetup(
         seed_comments=_parse_seed_tree(setup_data.get("seed_comments", []) or []),
+        mocks=mocks_rel,
+        mocks_path=mocks_path,
     )
 
     trig_data = data.get("input", {}).get("trigger", {}) or {}
+    trigger_data_field = trig_data.get("data") or {}
+    if not isinstance(trigger_data_field, dict):
+        raise ValueError(
+            f"scenario {path}: trigger.data must be a mapping (got "
+            f"{type(trigger_data_field).__name__})"
+        )
     trigger = TriggerSpec(
         type=trig_data.get("type", "auto"),
         text=trig_data.get("text", ""),
         in_reply_to=trig_data.get("in_reply_to") or None,
+        agent=str(trig_data.get("agent", "") or ""),
+        data={str(k): str(v) for k, v in trigger_data_field.items()},
     )
 
     return Scenario(

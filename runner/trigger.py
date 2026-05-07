@@ -96,6 +96,7 @@ class CliTrigger(Trigger):
         self._output = output  # "log" | "stream"
 
     async def activate(self, proxy: AgentPRView, env_overrides: dict | None = None,
+                       extra_args: list[str] | None = None,
                        **extra_placeholders) -> None:
         """
         Run the configured shell command. Caller can pass extra placeholder
@@ -135,6 +136,13 @@ class CliTrigger(Trigger):
                 f"CliTrigger: command template references unknown "
                 f"placeholder {exc} (known: {sorted(ctx)})"
             ) from exc
+
+        # Append scenario-level extra args (--mocks, --agent, -d k=v,
+        # --invocations-out). These come from agent-isolation scenarios
+        # that need to reshape the agent CLI without changing the
+        # global config.local.yaml command template.
+        if extra_args:
+            command = command + " " + " ".join(extra_args)
 
         logger.info("CliTrigger running: %s", command)
         print(f"  → {command}", flush=True)

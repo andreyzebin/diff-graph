@@ -372,6 +372,7 @@ async def _run_async(
         attempt_dir: Path | None = None
         agent_dir: Path | None = None
         judge_dir: Path | None = None
+        invocations_path: Path | None = None
         env_overrides: dict[str, str] = {}
         if session_dir is not None:
             sc_parent = session_dir / _safe_seg(prov_label) / _safe_seg(s.id)
@@ -381,6 +382,15 @@ async def _run_async(
             agent_dir.mkdir()
             judge_dir.mkdir()
             env_overrides["DIFFGRAPH_TRACE_PATH"] = str(agent_dir)
+            # When the scenario opts into agent-isolation features
+            # (mocks / standalone agent / extra data), have the agent
+            # write its tool invocations log next to the attempt
+            # artefacts. The judge picks it up after the run for
+            # Mockito-style verify assertions.
+            if (s.setup.mocks_path
+                    or s.trigger.agent
+                    or s.trigger.data):
+                invocations_path = attempt_dir / "invocations.json"
 
         bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
         result = None
@@ -400,6 +410,7 @@ async def _run_async(
                     trigger=trigger,
                     judge=judge,
                     env_overrides=env_overrides,
+                    invocations_out=invocations_path,
                 )
         except Exception as exc:
             from runner.scorer import ScenarioResult

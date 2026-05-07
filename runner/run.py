@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 
 from bitbucket.base import AgentPRView
 from runner.scenario_loader import Scenario
@@ -37,8 +38,34 @@ def _resolve_path(posted_tree: list[dict], path: list[int]) -> int | None:
     return cid
 
 
+def _shell_quote(s: str) -> str:
+    """Single-quote a value for safe substitution into a bash command line."""
+    if not s:
+        return "''"
+    if "'" not in s:
+        return f"'{s}'"
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def _build_extra_args(scenario: Scenario, invocations_out: Path | None = None) -> list[str]:
+    """Compose the --mocks / --agent / -d / --invocations-out flags
+    from agent-isolation scenario fields. Returns an empty list when
+    none of them are set (scenario behaves exactly as before)."""
+    args: list[str] = []
+    if scenario.trigger.agent:
+        args.append(f"--agent={_shell_quote(scenario.trigger.agent)}")
+    for k, v in (scenario.trigger.data or {}).items():
+        args.append(f"-d {_shell_quote(f'{k}={v}')}")
+    if scenario.setup.mocks_path:
+        args.append(f"--mocks={_shell_quote(str(scenario.setup.mocks_path))}")
+    if invocations_out is not None:
+        args.append(f"--invocations-out={_shell_quote(str(invocations_out))}")
+    return args
+
+
 async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Trigger,
-                            env_overrides: dict | None = None) -> list[int]:
+                            env_overrides: dict | None = None,
+                            extra_args: list[str] | None = None) -> list[int]:
     """
     Apply scenario.setup.seed_comments, then fire the trigger.
 
@@ -122,6 +149,7 @@ async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Tri
             await trigger.activate(
                 proxy,
                 env_overrides=env_overrides,
+                extra_args=extra_args,
                 message=scenario.trigger.text,
                 comment_id=str(comment_id),
             )
@@ -135,10 +163,13 @@ async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Tri
 
     # Default path: existing trigger strategies (http / webhook / cli)
     try:
-        await trigger.activate(proxy, env_overrides=env_overrides)
+        await trigger.activate(proxy, env_overrides=env_overrides, extra_args=extra_args)
     except TypeError:
-        # Older Trigger subclass without env_overrides — fall back.
-        await trigger.activate(proxy)
+        # Older Trigger subclass without env_overrides / extra_args.
+        try:
+            await trigger.activate(proxy, env_overrides=env_overrides)
+        except TypeError:
+            await trigger.activate(proxy)
     return posted_ids
 
 
@@ -148,12 +179,18 @@ async def run_scenario(
     trigger: Trigger,
     judge: Judge,
     env_overrides: dict | None = None,
+    invocations_out: Path | None = None,
 ) -> ScenarioResult:
     start = time.monotonic()
 
+    extra_args = _build_extra_args(scenario, invocations_out=invocations_out)
+
     posted_ids: list[int] = []
     try:
-        posted_ids = await _seed_and_trigger(scenario, proxy, trigger, env_overrides=env_overrides)
+        posted_ids = await _seed_and_trigger(
+            scenario, proxy, trigger,
+            env_overrides=env_overrides, extra_args=extra_args,
+        )
     except Exception as e:
         return ScenarioResult(
             scenario_id=scenario.id,
