@@ -217,17 +217,13 @@ class LLMJudge(Judge):
         comments = await self._view.get_comments()
         review_status = await self._view.get_review_status(self._verdict_source)
 
-        # Intended-but-not-published findings — pulled from
-        # invocations.json (which sits next to judge_dir under the
-        # same attempt dir). For agents like investigator that don't
-        # have post_comment in their tools, the only signal is the
-        # args of the final done() call. Reviewer / dispatcher tests
-        # publish via tools and post real PR comments; both sources
-        # feed `required_comments` matching, side_effects only
-        # counts the real PR comments (so a dispatcher with intended
-        # findings but no posted comments still satisfies
-        # inline_comments=0).
+        # Pull intended outputs from invocations.json — see
+        # _load_intended_findings / _load_intended_concerns. Used by
+        # agent-isolation unit tests where the agent doesn't publish
+        # via PR tools (investigator standalone, reviewer
+        # concerns-only, …).
         intended_findings = self._load_intended_findings()
+        intended_concerns = self._load_intended_concerns()
 
         # When the bench posts seed_comments + the trigger comment via the
         # same Bitbucket account as the agent (single-token setup), those
@@ -286,7 +282,8 @@ class LLMJudge(Judge):
         # Default: review scoring against required_comments / forbidden / status
         prompt = _build_prompt(self._template, scenario, comments, review_status,
                                pr_diff=pr_diff, agents_md=agents_md,
-                               intended_findings=intended_findings)
+                               intended_findings=intended_findings,
+                               intended_concerns=intended_concerns)
         self._trace_request(scenario.id, prompt)
         try:
             data = self._llm_client.complete_json(prompt)
@@ -300,16 +297,10 @@ class LLMJudge(Judge):
         return output
 
     # ── trace helpers ────────────────────────────────────────────────
-    def _load_intended_findings(self) -> list[dict]:
-        """Read invocations.json (sibling of judge_dir) and extract the
-        findings the agent passed to its final `done()` call. Empty list
-        when no invocations file or no done call recorded.
-
-        Used so unit tests of agents that don't publish via post_comment
-        (e.g. investigator) can still be scored against
-        required_comments — the judge sees done() args as a virtual
-        comment list parallel to the real PR comments.
-        """
+    def _load_invocations(self) -> list[dict]:
+        """Read invocations.json (sibling of judge_dir). Empty when
+        the bench didn't open one for this attempt (no agent-isolation
+        knobs in the scenario)."""
         if self._judge_dir_path is None:
             return []
         inv_path = self._judge_dir_path.parent / "invocations.json"
@@ -319,8 +310,16 @@ class LLMJudge(Judge):
             data = json.loads(inv_path.read_text(encoding="utf-8"))
         except Exception:
             return []
+        return data.get("invocations") or []
+
+    def _load_intended_findings(self) -> list[dict]:
+        """Findings the agent passed to its final `done()` call. Used
+        when an agent without post_comment (e.g. investigator) is
+        scored — the judge sees done() args as a virtual comment list
+        parallel to the real PR comments.
+        """
         findings: list[dict] = []
-        for inv in data.get("invocations", []):
+        for inv in self._load_invocations():
             if (inv.get("tool") or "") != "done":
                 continue
             args = inv.get("args") or {}
@@ -328,6 +327,43 @@ class LLMJudge(Judge):
                 if isinstance(f, dict):
                     findings.append(f)
         return findings
+
+    def _load_intended_concerns(self) -> list[dict]:
+        """Concerns the reviewer surfaced during the LOOK phase.
+
+        Two sources, merged:
+          1. `reflect(concerns=[{title, description}, ...])` calls —
+             the canonical place reviewers list concerns.
+          2. `spawn_agent(focus=...)` args — when the reviewer
+             actually spawns investigators, the focus string is the
+             concern in another shape.
+
+        Returns a list of {title, description} dicts so the judge can
+        match `concern_focuses` keyword groups against either field.
+        """
+        out: list[dict] = []
+        for inv in self._load_invocations():
+            tool = inv.get("tool") or ""
+            args = inv.get("args") or {}
+            if tool == "reflect":
+                for c in (args.get("concerns") or []):
+                    if isinstance(c, dict):
+                        out.append({
+                            "source": "reflect",
+                            "title": str(c.get("title", "")),
+                            "description": str(c.get("description", "")),
+                        })
+                    elif isinstance(c, str):
+                        out.append({"source": "reflect", "title": c, "description": ""})
+            elif tool == "spawn_agent":
+                focus = str(args.get("focus", ""))
+                if focus:
+                    out.append({
+                        "source": "spawn_agent",
+                        "title": focus[:80],
+                        "description": focus,
+                    })
+        return out
 
     def _judge_dir(self, scenario_id: str) -> Path | None:
         if self._judge_dir_path is None:
@@ -384,6 +420,7 @@ def _build_prompt(
     pr_diff: str = "",
     agents_md: str = "",
     intended_findings: list[dict] | None = None,
+    intended_concerns: list[dict] | None = None,
 ) -> str:
     eo = scenario.expected_output
     required_str = json.dumps([
@@ -403,19 +440,46 @@ def _build_prompt(
         for fc in eo.forbidden_comments
     ], ensure_ascii=False, indent=2)
 
+    concern_focuses_str = json.dumps([
+        {
+            "id": cf.id,
+            "keywords": cf.description_keywords,
+            "rationale": cf.rationale,
+        }
+        for cf in eo.concern_focuses
+    ], ensure_ascii=False, indent=2) if eo.concern_focuses else "[]"
+
     trigger_type = getattr(scenario.trigger, "type", "") or ""
     ack_required = bool(eo.acknowledgement_required) and trigger_type == "comment"
     return template.format(
         agent_comments=_format_comments(comments),
         intended_findings=_format_intended_findings(intended_findings or []),
+        intended_concerns=_format_intended_concerns(intended_concerns or []),
         required_comments=required_str,
         forbidden_comments=forbidden_str,
+        concern_focuses=concern_focuses_str,
         expected_status_change=eo.expected_status_change or "none",
         actual_status_change=review_status.status if review_status else "none",
         pr_diff=_truncate(pr_diff, 30_000) or "(diff unavailable)",
         agents_md=_truncate(agents_md, 10_000) or "(AGENTS.md unavailable)",
         acknowledgement_required="yes" if ack_required else "no",
     )
+
+
+def _format_intended_concerns(concerns: list[dict]) -> str:
+    """Serialise the agent's surfaced concerns (from reflect() args
+    and/or spawn_agent.focus) for the judge. For agents whose only
+    job in this run is concern identification (e.g. reviewer
+    concerns-only mode) this is the test signal."""
+    if not concerns:
+        return "(none — agent did not call reflect(concerns=...) or spawn_agent(focus=...))"
+    out: list[str] = []
+    for i, c in enumerate(concerns, 1):
+        title = (c.get("title") or "").strip()
+        desc = (c.get("description") or "").strip()
+        src = c.get("source", "?")
+        out.append(f"#{i} [{src}] {title}\n  {desc[:600]}")
+    return "\n\n".join(out)
 
 
 def _format_intended_findings(findings: list[dict]) -> str:

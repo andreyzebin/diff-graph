@@ -52,6 +52,18 @@ class ForbiddenComment:
 
 
 @dataclass
+class ExpectedConcernFocus:
+    """Concern the reviewer should have surfaced via reflect() or
+    spawn_agent.focus. Match by keyword groups against the union of
+    titles + descriptions extracted from invocations.json — same
+    AND-of-OR semantics as ExpectedComment.description_keywords.
+    """
+    id: str
+    description_keywords: list[list[str]]
+    rationale: str = ""
+
+
+@dataclass
 class Thresholds:
     min_score: float = 0.70
     min_required_found: int = 1
@@ -158,6 +170,13 @@ class ExpectedOutput:
     # when scenario.trigger.type == "comment" — direct reviewer
     # invocations don't have a comment to ack.
     acknowledgement_required: bool = False
+    # Concerns the reviewer should have surfaced. Used by tests that
+    # short-circuit the pipeline before INVESTIGATE (e.g. REV-001
+    # concerns-only): judge extracts the concerns the reviewer wrote
+    # to reflect() and/or the focuses it passed to spawn_agent from
+    # invocations.json, then matches each concern_focuses keyword
+    # group against the union.
+    concern_focuses: list[ExpectedConcernFocus] = field(default_factory=list)
 
 
 @dataclass
@@ -208,6 +227,15 @@ def load_scenario(path: Path) -> Scenario:
     forbidden = [
         ForbiddenComment(description=fc.get("description", ""))
         for fc in eo.get("forbidden_comments", [])
+    ]
+
+    concern_focuses = [
+        ExpectedConcernFocus(
+            id=cf.get("id", ""),
+            description_keywords=cf.get("description_keywords", []),
+            rationale=cf.get("rationale", ""),
+        )
+        for cf in eo.get("concern_focuses", [])
     ]
 
     thr_data = eo.get("thresholds", {})
@@ -306,6 +334,7 @@ def load_scenario(path: Path) -> Scenario:
             reply=reply,
             side_effects=side_effects,
             acknowledgement_required=bool(eo.get("acknowledgement_required", False)),
+            concern_focuses=concern_focuses,
         ),
         metadata=metadata,
         setup=setup,

@@ -1,0 +1,85 @@
+id: REV-001
+name: "Reviewer unit — concerns identification only"
+tags: [tier:unit, agent:reviewer, isolation, concerns-only]
+
+# Tests reviewer's concern-forming in isolation. The user message
+# overrides the default "Review this PR" with a tight instruction:
+# read the diff, list concerns via reflect(), call done(empty). No
+# spawn, no post, no verdict. This avoids the parallel-tool-call
+# question entirely (the reviewer never reaches INVESTIGATE) and
+# isolates LOOK-phase quality.
+#
+# Verification: judge reads invocations.json, extracts reflect()
+# args.concerns, scores each `concern_focuses` keyword group
+# against the union of concern titles + descriptions. The reviewer's
+# `done(findings=[])` carries no findings — all signal lives in the
+# reflect call.
+#
+# Pairs with REV-002 (consolidation only). Together they cover
+# both halves of the reviewer's job — one without spawn (concerns),
+# one without investigation (consolidation) — without ever needing
+# to coordinate mocked subagents with the reviewer's actual focuses.
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "feature/ORD-234-buy-3-get-1-free"
+      to_branch: "master"
+      title: "[BENCHMARK] REV-001: ORD-234 — buy-3-get-1-free promotion"
+      description: |
+        ## ORD-234: Implement buy-3-get-1-free promotions
+
+        **As a** marketing manager
+        **I want to** configure buy-N-get-1-free promotions per product category
+        **So that** we can run campaigns without a deploy
+
+        ### Acceptance criteria
+        - When a customer has 4+ items from a promoted category, the **cheapest**
+          item is free
+        - Discount is shown as a line item labelled with the promotion name
+        - Only one promotion applies per category — no stacking
+        - Promotion respects `startDate` and `endDate`
+
+  trigger:
+    type: auto
+    agent: reviewer
+    user_message_from: "../../../fixtures/user-messages/concerns-only.md"
+
+expected_output:
+  # No required_comments — the reviewer doesn't post anything in
+  # this mode. Verification happens via concern_focuses below.
+  required_comments: []
+
+  forbidden_comments:
+    - description: "Inline comments — reviewer was told not to post anything; the test only measures concerns."
+
+  # Per-concern keyword groups. Judge matches each group against
+  # the union of reflect() args.concerns titles + descriptions
+  # extracted from invocations.json.
+  concern_focuses:
+    - id: cheapest-item
+      description_keywords: ["cheapest", "selectFreeItem", "free item", "get(0)"]
+      rationale: "Reviewer should flag selectFreeItem returning the first item instead of the cheapest, per AGENTS.md."
+    - id: transactional
+      description_keywords: ["@Transactional", "applyBulkDiscount", "atomic", "transaction"]
+      rationale: "applyBulkDiscount writes to two repositories without a transaction — reviewer should call this out as a concern."
+    - id: lombok-or-style
+      description_keywords: ["Lombok", "@Data", "manual", "consistency", "convention"]
+      rationale: "Promotion entity uses manual getters/setters where the rest of the codebase uses Lombok — style/convention concern."
+
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+
+  thresholds:
+    min_score: 0.65
+    min_required_found: 0       # required_comments is empty
+    max_false_positives: 1
+
+metadata:
+  difficulty: easy
+  language: java
+  pr_size: medium
+  scenario_type: agent_unit
+  capabilities: [reviewer, concern_forming, look_phase]

@@ -14,6 +14,21 @@
 другое — учитывай объединение. `side_effects.inline_comments`
 ВСЕГДА меряет только реально опубликованные комментарии, не intended.
 
+## Концерны, которые агент сформулировал во время LOOK-фазы
+{intended_concerns}
+
+Это всё что reviewer выписал через `reflect(concerns=[...])` плюс
+все `focus` строки которые он передал в `spawn_agent`. Используется
+для тестов где reviewer вызван в режиме "concerns only" (без
+исследования и публикации) — там единственный сигнал это блок выше.
+
+`expected.concern_focuses` — список ожидаемых концернов, каждый с
+keyword-группами (AND-of-OR семантика как у `description_keywords`).
+Сматчи каждую группу против ОБЪЕДИНЕНИЯ всех title+description
+строк в этом блоке. Каждый concern_focus засчитывается как found
+если хотя бы один title/description содержит хотя бы одно слово из
+КАЖДОЙ группы внутри `keywords`.
+
 
 ## Acknowledgement ожидается: {acknowledgement_required}
 Если "yes" — агент был призван через PR-комментарий (например /review),
@@ -81,8 +96,17 @@
 Запрещённые темы:
 {forbidden_comments}
 
+Ожидаемые концерны (concern_focuses) — для тестов LOOK-фазы:
+{concern_focuses}
+
 Ожидаемый статус PR: {expected_status_change}
 Фактический статус PR: {actual_status_change}
+
+Если `concern_focuses` непустой — это primary signal этого теста.
+Каждый concern_focus попадает в `concern_focuses_judgement` (см.
+JSON-схему ниже): match по keyword-группам против блока
+"Концерны, которые агент сформулировал". Если concern_focuses
+пустой — этот блок в JSON-ответе должен быть пустым массивом.
 
 Отвечай строго в JSON по следующей схеме. Без текста вне JSON.
 
@@ -96,14 +120,15 @@
       "location_accurate": true,
       "match_confidence": 0.92,
       "reasoning": "Агент нашёл NPE в строке 47, упомянул Optional"
-    }},
+    }}
+  ],
+  "concern_focuses_judgement": [
     {{
-      "expected_id": "EXP-2",
-      "found": false,
-      "matched_comment_id": null,
-      "location_accurate": false,
-      "match_confidence": 0.0,
-      "reasoning": "Агент не предложил изменить возвращаемый тип на Optional<User>"
+      "expected_id": "cheapest-item",
+      "found": true,
+      "matched_concern_index": 0,
+      "match_confidence": 0.95,
+      "reasoning": "Reviewer wrote concern about selectFreeItem returning get(0) — keywords cheapest/free item matched"
     }}
   ],
   "false_positives": [
