@@ -511,9 +511,17 @@ Scoring rubric (job A):
 - overall_score: weighted average. Subtract heavily for missing must_address (that's the whole point).
 
 Scenario critique (job B) — emit a warning when you see:
-- "leaky-description": the PR description or a seed comment leaks the test intent
-  (e.g. "we are checking that the agent does X"), making the agent's output
-  trivially aligned. A natural PR description never says what's being tested.
+- "leaky-description": the PR description or a seed comment leaks the test
+  intent (e.g. "we are checking that the agent does X"), or — equally bad —
+  leaks the BENCH-FRAMEWORK SCAFFOLDING that this is a test at all. A
+  natural PR description never says what's being tested AND never mentions
+  the test machinery. Trip on phrases like:
+    "isolation unit test", "unit test of", "this is a test",
+    "mocked investigator(s)", "mocked reviewer", "mocked subagent",
+    "see fixtures/", "fixture file", "tool_mocks", "spawn_mocks",
+    "BENCHMARK scenario", "agent-isolation", "reviewer-isolation".
+  ANY of these in `pr_title` / `pr_description` / a seed comment is a
+  leaky-description warning, regardless of whether the agent acted on it.
 - "unfulfillable-expectation": a must_mention row asks for information the agent
   could not have plausibly known from the thread + PR.
 - "contradiction": expectations contradict each other or contradict the trigger
