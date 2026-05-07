@@ -682,6 +682,51 @@ also need exponential-backoff retry on `ssl.SSLError` /
 `diffgraph/bitbucket.py`, env-tunable via
 `BENCH_BB_RETRY_*` and `DIFFGRAPH_BB_RETRY_*`).
 
+### 5d.2 Bench BranchUpdater — second-round PR refresh for SCEN-302
+
+SCEN-302 ("agent reviews fix push after own prior comments") was
+moved out of `drafts/` and lives in `java/` now, but it still
+runs as a single-round review against the buggy `*_step0` branch
+because the bench has no `BranchUpdater`. The scenario's
+`setup.refs_update.target_ref` and `trigger.rounds` fields are
+silently ignored by the loader, so round 2 never fires and the
+forbidden_comments check (don't re-flag the null guard that the
+fix already added) fails by construction.
+
+To make the scenario meaningful:
+1. Paired branches in the orderflow test repo:
+   `hotfix/ORD-287-cancel-npe-step0` (current buggy state) and
+   `hotfix/ORD-287-cancel-npe-step1` (step0 + the null-guard fix
+   commit). Step1 must already exist in the mirror.
+2. `benchmark/runner/branch_update.py` with two strategies:
+   - `fast-forward`: push HEAD of `*_step1` onto the temp source
+     branch via Bitbucket Server's branch-utils plugin.
+   - `force-push`: alternative for when the new commit isn't a
+     fast-forward.
+3. Extend `ScenarioSetup` with `refs_update {after_round, strategy,
+   target_ref}` and `TriggerSpec` with `rounds: int = 1`.
+4. Multi-round runner loop:
+   ```
+   for r in range(rounds):
+     post seed_comments (round 1 only)
+     post trigger_comment(r)
+     run agent
+     capture_round_outputs
+     if r+1 < rounds and refs_update.after_round == r+1:
+         branch_updater.advance(refs_update)
+   ```
+5. Judge sees round-2 comments scored against expected_output,
+   plus a `prior_round_comments` block in the prompt so it can
+   verify the agent actually acknowledged what was already
+   covered.
+6. Per-round subdirectories under `attempt-NN/round-1/`,
+   `round-2/`.
+
+Out of scope until current review-quality issues are debugged
+(SCEN-302's score=0/0.95 split across providers in the smoke
+run is noise — the test isn't actually testing what it claims to
+test until BranchUpdater exists).
+
 ### 5d.1 Live, progressive run dashboard (per-provider throughput)
 
 When `bench run --mode aggressive` is in flight the user is
