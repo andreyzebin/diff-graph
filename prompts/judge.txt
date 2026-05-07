@@ -3,6 +3,18 @@
 ## Что агент написал в PR
 {agent_comments}
 
+## Findings, которые агент передал в done() но не опубликовал отдельно
+{intended_findings}
+
+Если у агента нет тула `post_comment` (например investigator, который
+по дизайну возвращает выводы родителю через done() а не пишет в PR),
+опубликованных комментов не будет, и единственный сигнал — это блок
+выше. При матчинге `required_comments` сравнивай ИХ с
+`intended_findings` (file/line/severity/keywords). Если есть и то и
+другое — учитывай объединение. `side_effects.inline_comments`
+ВСЕГДА меряет только реально опубликованные комментарии, не intended.
+
+
 ## Acknowledgement ожидается: {acknowledgement_required}
 Если "yes" — агент был призван через PR-комментарий (например /review),
 и обычно открывает ответ быстрой репликой вида «Starting review of

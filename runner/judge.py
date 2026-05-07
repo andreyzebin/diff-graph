@@ -217,6 +217,18 @@ class LLMJudge(Judge):
         comments = await self._view.get_comments()
         review_status = await self._view.get_review_status(self._verdict_source)
 
+        # Intended-but-not-published findings — pulled from
+        # invocations.json (which sits next to judge_dir under the
+        # same attempt dir). For agents like investigator that don't
+        # have post_comment in their tools, the only signal is the
+        # args of the final done() call. Reviewer / dispatcher tests
+        # publish via tools and post real PR comments; both sources
+        # feed `required_comments` matching, side_effects only
+        # counts the real PR comments (so a dispatcher with intended
+        # findings but no posted comments still satisfies
+        # inline_comments=0).
+        intended_findings = self._load_intended_findings()
+
         # When the bench posts seed_comments + the trigger comment via the
         # same Bitbucket account as the agent (single-token setup), those
         # ids land in `comments` too. Filter them out so the judge only
@@ -273,7 +285,8 @@ class LLMJudge(Judge):
 
         # Default: review scoring against required_comments / forbidden / status
         prompt = _build_prompt(self._template, scenario, comments, review_status,
-                               pr_diff=pr_diff, agents_md=agents_md)
+                               pr_diff=pr_diff, agents_md=agents_md,
+                               intended_findings=intended_findings)
         self._trace_request(scenario.id, prompt)
         try:
             data = self._llm_client.complete_json(prompt)
@@ -287,6 +300,35 @@ class LLMJudge(Judge):
         return output
 
     # ── trace helpers ────────────────────────────────────────────────
+    def _load_intended_findings(self) -> list[dict]:
+        """Read invocations.json (sibling of judge_dir) and extract the
+        findings the agent passed to its final `done()` call. Empty list
+        when no invocations file or no done call recorded.
+
+        Used so unit tests of agents that don't publish via post_comment
+        (e.g. investigator) can still be scored against
+        required_comments — the judge sees done() args as a virtual
+        comment list parallel to the real PR comments.
+        """
+        if self._judge_dir_path is None:
+            return []
+        inv_path = self._judge_dir_path.parent / "invocations.json"
+        if not inv_path.exists():
+            return []
+        try:
+            data = json.loads(inv_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        findings: list[dict] = []
+        for inv in data.get("invocations", []):
+            if (inv.get("tool") or "") != "done":
+                continue
+            args = inv.get("args") or {}
+            for f in (args.get("findings") or []):
+                if isinstance(f, dict):
+                    findings.append(f)
+        return findings
+
     def _judge_dir(self, scenario_id: str) -> Path | None:
         if self._judge_dir_path is None:
             return None
@@ -341,6 +383,7 @@ def _build_prompt(
     review_status: ReviewStatus | None,
     pr_diff: str = "",
     agents_md: str = "",
+    intended_findings: list[dict] | None = None,
 ) -> str:
     eo = scenario.expected_output
     required_str = json.dumps([
@@ -364,6 +407,7 @@ def _build_prompt(
     ack_required = bool(eo.acknowledgement_required) and trigger_type == "comment"
     return template.format(
         agent_comments=_format_comments(comments),
+        intended_findings=_format_intended_findings(intended_findings or []),
         required_comments=required_str,
         forbidden_comments=forbidden_str,
         expected_status_change=eo.expected_status_change or "none",
@@ -372,6 +416,29 @@ def _build_prompt(
         agents_md=_truncate(agents_md, 10_000) or "(AGENTS.md unavailable)",
         acknowledgement_required="yes" if ack_required else "no",
     )
+
+
+def _format_intended_findings(findings: list[dict]) -> str:
+    """Serialise the agent's done(findings=...) args for the judge.
+    These are findings the agent INTENDED to publish — for agents that
+    don't have post_comment in their tool list (e.g. investigator) this
+    is the only signal."""
+    if not findings:
+        return "(none — agent did not pass a non-empty findings list to done())"
+    out: list[str] = []
+    for i, f in enumerate(findings, 1):
+        sev = f.get("severity", "")
+        title = f.get("title", "")
+        file = f.get("file", "")
+        line = f.get("line", "")
+        explanation = (f.get("explanation") or "").strip()
+        evidence = (f.get("evidence") or "").strip()
+        out.append(
+            f"#{i} [{sev}] {file}:{line} — {title}\n"
+            f"  {explanation[:400]}\n"
+            f"  evidence: {evidence[:200]}"
+        )
+    return "\n\n".join(out)
 
 
 def _truncate(text: str, max_chars: int) -> str:
