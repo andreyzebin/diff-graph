@@ -110,6 +110,7 @@ def _run_with_dispatcher(
     verdict_mode: str = "api",
     tool_mocks: Any = None,
     invocations_out: Optional[str] = None,
+    user_message_override: Optional[str] = None,
 ) -> None:
     """
     Run any agent with lazy repo init.
@@ -328,6 +329,7 @@ def _run_with_dispatcher(
         stream=llm_cfg.get("stream"),
         extra_body=llm_cfg.get("extra_body"),
         tool_mocks=tool_mocks,
+        user_message_override=user_message_override,
     )
 
     # ── Post-run: post replies, findings, cleanup ─────────────────────────
@@ -429,6 +431,8 @@ def run(
     data:          Optional[list[str]] = typer.Option(None, "--data", "-d",    help="Data key=value pairs for the agent (e.g. -d focus='null safety')"),
     mocks:         Optional[str] = typer.Option(None,  "--mocks",              help="Path to a YAML file of canned tool responses (spawn_agent, read_file, …). Tool calls matching the fixture short-circuit with the canned reply. Mockito-style. See orchestra/tool_mocks.py for the format."),
     invocations_out: Optional[str] = typer.Option(None, "--invocations-out",   help="Write a JSON list of every tool invocation made during the run (tool name, args, mocked, mock_when, step, agent) to this path on exit. Used by the bench judge for Mockito-style verify on agent unit tests."),
+    user_message:  Optional[str] = typer.Option(None,  "--user-message",       help="Override the agent's default user-message template. Useful for unit tests where you want to keep the system prompt (methodology) intact but change the task framing — e.g. give the reviewer pre-investigated findings and ask only for consolidation."),
+    user_message_from: Optional[str] = typer.Option(None, "--user-message-from", help="Same as --user-message but reads the override text from a file. Convenient for multi-line message templates."),
 ):
     """
     Run an agent. Default: dispatcher (with --message) or reviewer (without).
@@ -509,6 +513,17 @@ def run(
                 k, v = item.split("=", 1)
                 extra_data[k.strip()] = v.strip()
 
+    # ── Load user-message override if given ──────────────────────────────
+    user_message_override: Optional[str] = None
+    if user_message_from:
+        try:
+            user_message_override = Path(user_message_from).expanduser().read_text(encoding="utf-8")
+        except Exception as exc:
+            console.print(f"[red]failed to read --user-message-from {user_message_from}: {exc}[/red]")
+            raise typer.Exit(2)
+    if user_message is not None:
+        user_message_override = user_message
+
     # ── Load mocks fixture if --mocks given ──────────────────────────────
     tool_mocks_obj = None
     if mocks:
@@ -562,6 +577,7 @@ def run(
             verdict_mode=verdict_mode,
             tool_mocks=tool_mocks_obj,
             invocations_out=invocations_out,
+            user_message_override=user_message_override,
         )
         raise typer.Exit(0)
 

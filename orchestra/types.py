@@ -89,7 +89,17 @@ class LLMParamsConfig:
 @dataclass
 class AgentConfig:
     name: str
-    system_prompt: str = ""  # raw text or file path
+    # Static methodology / tool docs / behavioural rules. NEVER carries
+    # per-call placeholders ({focus}, {message}, {diff_summary}, …) so it
+    # hits the LLM provider's prompt cache verbatim across all calls of
+    # the same agent.
+    system_prompt: str = ""
+    # User-message template. Carries all per-call interpolation —
+    # placeholders here are filled at run time from the agent's data
+    # scope. Empty string means "no default user message"; the
+    # framework falls back to "Begin." (production) or whatever the
+    # caller injected (tests / parent spawn).
+    user_prompt: str = ""
     mode: AgentMode = AgentMode.REACT  # single | react
     sgr_interval: int = 3
     sgr_extensions: Optional[dict[str, Any]] = None  # extra reflect() fields

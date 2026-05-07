@@ -45,7 +45,8 @@ class AgentRegistryEntry:
     llm_params: LLMParamsConfig
     sgr: bool
     sgr_interval: int
-    prompt_template: str  # body with {placeholders}
+    prompt_template: str  # SYSTEM body with {placeholders} — stable across calls
+    user_template: str = ""  # USER message template; empty → caller fills it
     guards: dict[str, str] = field(default_factory=dict)  # {trigger: message}
     source_file: str = ""
     source_hash: str = ""
@@ -71,6 +72,7 @@ class AgentRegistryEntry:
         return AgentConfig(
             name=self.name,
             system_prompt=self.prompt_template,
+            user_prompt=self.user_template,
             mode=self.mode,
             sgr_interval=self.sgr_interval,
             tools=tools,
@@ -256,6 +258,7 @@ def compile_prompt_text(
 _HEADER_RE = re.compile(r"^@(\w+):\s*(.+)$", re.MULTILINE)
 _DATA_LINE_RE = re.compile(r"^\s+(\w+):\s*(\w+)\s*[—–-]\s*(.+)$")
 _SEPARATOR = re.compile(r"^---\s*$", re.MULTILINE)
+_USER_SEPARATOR = re.compile(r"^---\s*user\s*---\s*$", re.MULTILINE | re.IGNORECASE)
 
 
 def _parse_prompt_file(
@@ -274,6 +277,31 @@ def _parse_prompt_file(
         # No separator — try to parse headers from full text
         header_text = text
         body = text
+
+    # Optional second split: a `--- user ---` line inside the body
+    # separates the SYSTEM portion (stable methodology, tool docs,
+    # behavioural rules — cacheable) from a USER message template
+    # (current task / trigger framing — varies per call). Without
+    # this marker the whole body is treated as system, the user
+    # message defaults to "Begin." (existing behaviour).
+    user_template = ""
+    user_parts = _USER_SEPARATOR.split(body, maxsplit=1)
+    if len(user_parts) == 2:
+        body, user_template = user_parts
+
+    # Convention-based external override: if `<name>.system.md` /
+    # `<name>.user.md` exist next to `<name>.prompt`, they REPLACE
+    # whatever the body parsed above. Lets prompt authors keep
+    # methodology, tools and per-call template in separate files
+    # without ceremony — `.prompt` becomes a tiny header file
+    # (@agent, @tools, @data, @budget, @summary).
+    if filepath is not None:
+        sib_system = filepath.with_name(f"{filepath.stem}.system.md")
+        sib_user = filepath.with_name(f"{filepath.stem}.user.md")
+        if sib_system.exists():
+            body = sib_system.read_text(encoding="utf-8")
+        if sib_user.exists():
+            user_template = sib_user.read_text(encoding="utf-8")
 
     # Pass 1: deterministic header extraction
     headers = _extract_headers(header_text)
@@ -317,6 +345,7 @@ def _parse_prompt_file(
         sgr=sgr,
         sgr_interval=sgr_interval,
         prompt_template=body.strip(),
+        user_template=user_template.strip(),
         source_file=str(filepath) if filepath else "",
         source_hash=hashlib.md5(text.encode()).hexdigest()[:8],
     )

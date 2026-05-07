@@ -133,6 +133,7 @@ class Agent:
         agent_configs: Optional[dict[str, AgentConfig]] = None,
         agent_registry: Any = None,  # AgentRegistry from compiler
         tool_mocks: Any = None,      # ToolMocks; intercepts _handle_tool_call generically
+        user_message_override: Optional[str] = None,
     ) -> None:
         self.config = config
         self.registry = tool_registry
@@ -150,6 +151,11 @@ class Agent:
         # Inherited from parent so deep tool calls in spawned children are
         # still intercepted when the fixture covers them.
         self.tool_mocks = tool_mocks if tool_mocks is not None else (parent.tool_mocks if parent else None)
+        # Optional per-run override of the user_prompt template. Used
+        # by unit tests (consolidation-only reviewer call etc.) and
+        # by parent spawns that want to reframe the child's task. None
+        # means "use config.user_prompt".
+        self.user_message_override = user_message_override
         self.data_scope: dict[str, str] = {}  # resolved @data values for inheritance
 
         # SGR
@@ -844,14 +850,31 @@ class Agent:
     # ── Message building ──────────────────────────────────────────────────────
 
     def _build_messages(self) -> list[dict]:
-        prompt_text = load_prompt(self.config.system_prompt)
+        # System: stable methodology, ideally NO per-call placeholders
+        # (so the LLM's prompt cache is reusable across runs). During
+        # migration prompt files may still carry placeholders here —
+        # interpolation runs but should resolve to a stable string.
+        system_text = load_prompt(self.config.system_prompt)
         if self.prompt_vars:
-            prompt_text = interpolate(prompt_text, **self.prompt_vars)
-        messages = [{"role": "system", "content": prompt_text}]
+            system_text = interpolate(system_text, **self.prompt_vars)
+        messages = [{"role": "system", "content": system_text}]
         messages.extend(self.context_messages)
+
+        # User: per-call template. user_message_override (set by a
+        # parent spawn or a unit-test override) wins over the agent's
+        # default user_prompt template.
+        user_text = ""
+        if self.user_message_override is not None:
+            user_text = self.user_message_override
+        elif self.config.user_prompt:
+            user_text = self.config.user_prompt
+            if self.prompt_vars:
+                user_text = interpolate(user_text, **self.prompt_vars)
+
         # Some endpoints reject requests without a user-role message.
         if not any(m.get("role") == "user" for m in messages):
-            messages.append({"role": "user", "content": "Begin."})
+            messages.append({"role": "user",
+                             "content": user_text.strip() or "Begin."})
         return messages
 
     def _build_tool_names(self) -> list[str]:

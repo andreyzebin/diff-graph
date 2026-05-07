@@ -165,6 +165,7 @@ def run_agent(
     stream: Optional[bool] = None,
     extra_body: Optional[dict] = None,
     tool_mocks: Any = None,
+    user_message_override: Optional[str] = None,
 ) -> dict:
     """
     Run any prompt-defined agent by name.
@@ -233,6 +234,7 @@ def run_agent(
         agent_registry=agent_registry,
         agent_configs=agent_registry.get_all_configs(),
         tool_mocks=tool_mocks,
+        user_message_override=user_message_override,
     )
     register_builtins(registry, config, sgr_tracker=sgr_tracker, agent=agent)
     agent.data_scope = data
