@@ -319,7 +319,19 @@ python cli.py run --pr-url ... --model gpt-4o --compare deepseek-chat
 
 ---
 
-## 5c. Pre-deploy QC pipeline (single CLI, gentle/aggressive scheduler, two metric categories)
+## 5c. Pre-deploy QC pipeline — outer scheduler (across generations and mutations)
+
+> Two schedulers in this codebase, intentionally separate:
+> - **5c (this section)** — outer/QC-pipeline scheduler. Plans which
+>   `(branch, sha) × provider × scenario` units to run, queues them
+>   over time, owns the gentle/aggressive policy *across the whole
+>   QC matrix* of generations + mutations.
+> - **[5d](#5d-per-run-scheduler--gentle--aggressive-inside-one-bench-cli-run)** — inner/per-run scheduler. Lives inside one
+>   `bench/cli.py run` invocation, regulates how its own
+>   (provider × scenario × attempt) tasks fan out: gentle = one at
+>   a time (current behaviour), aggressive = parallel via
+>   temp-branch PRs (one throw-away branch per task so the
+>   `[BENCHMARK]` PRs don't collide on (from_branch, to_branch)).
 
 ### Why this exists (background)
 
@@ -608,6 +620,62 @@ Evolution orchestrator on top of QC:
 
 The QC pipeline is the substrate this loop sits on; user is
 implementing the orchestrator personally.
+
+---
+
+## 5d. Per-run scheduler — gentle / aggressive inside one bench CLI run
+
+> Inner scheduler, paired with [5c](#5c-pre-deploy-qc-pipeline--outer-scheduler-across-generations-and-mutations).
+> 5c plans the QC matrix; 5d plans how one matrix cell (one
+> `bench/cli.py run` invocation) farms its own work out.
+
+**Why.** A single `bench run -p <provider> -s <scenarios> -n <repeat>`
+is itself a small matrix: providers × scenarios × attempts. Today it
+runs strictly sequentially, which is fine when the user wants to be
+polite to a shared LLM endpoint, but slow for pre-merge smoke when
+the goal is "burn through the pool as fast as possible before I hit
+merge". Same gentle/aggressive lever as 5c, applied at the level of
+one CLI invocation.
+
+**Modes.**
+- **gentle** (default) — sequential, one task at a time. Current
+  behaviour. Polite to shared LLM endpoints; matches typical
+  developer "iterate locally" usage. No new infra needed.
+- **aggressive** — bounded-parallel via `asyncio.Semaphore`. Each
+  task opens its PR off a unique throw-away branch
+  (`bench/{scenario}/{8-hex-uuid}`) so multiple `[BENCHMARK]` PRs
+  on the same source branch don't fight over the (from_branch,
+  to_branch) uniqueness constraint. Cleanup: `__aexit__` declines
+  the PR and deletes the temp branch; pre-session sweep walks
+  stale `bench/*` branches in case the previous run was killed.
+
+  Reuses the temp-branch infrastructure already on
+  `code-review-benchmarks/feature/parallel-bench-temp-branches`
+  (commit 3c7dd62) — that work isn't merged into master because
+  it predates the gentle/aggressive lever; 5d is what actually
+  motivates merging it.
+
+**CLI surface.**
+```
+bench/cli.py run \
+  -p deepseek -p qwen3 -p qwen3-6 \
+  -t interaction -n 2 \
+  --mode aggressive \
+  --max-concurrency 4
+```
+- `--mode gentle | aggressive` (default `gentle`).
+- `--max-concurrency N` (default 4 in aggressive, ignored in
+  gentle).
+
+**Where:** `benchmark/cli.py` (typer flags + asyncio fan-out),
+`benchmark/bitbucket/real_factory.py` (already has temp-branch
+build/close on the parallel branch).
+
+**Trade-off to keep an eye on.** Aggressive mode amplifies any
+shared-state quirk: Bitbucket SSL EOF blips, LLM endpoint rate
+limits, local CPU when each task spawns its own diff-graph
+subprocess. Hence the `--max-concurrency` cap; default of 4 is
+deliberately conservative.
 
 ---
 
