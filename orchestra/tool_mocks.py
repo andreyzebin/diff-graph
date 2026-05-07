@@ -2,21 +2,27 @@
 
 Every agent step is a sequence of tool calls (`spawn_agent`,
 `read_file`, `search`, `post_comment`, …). For isolated unit-tests
-of one agent at a time we want to short-circuit some of those tool
-calls with canned responses — same idea as Mockito's
-`when().thenReturn(a, b, c)` (sequential answers).
+of one agent at a time we short-circuit those tool calls with canned
+responses — Mockito's `when().thenReturn(a, b, c)` (sequential
+answers).
 
-The most useful case is `spawn_agent`: the reviewer's heaviest cost
-is the investigator chain it spawns. The reviewer typically spawns
-N investigators in one step (one per concern); each gets its own
-canned finding set, in declared order.
+Selection is STRICT ORDINAL: the i-th call to a tool consumes the
+i-th entry, regardless of args. The agent's free-text focus is
+LLM-shaped and varies between runs — pinning canned responses to
+focus keywords makes tests brittle. Argument verification is the
+judge's job, done after the run by reading the invocations.json
+file (see cli.py --invocations-out).
 
-Fixture file shape — ORDINAL: the i-th call to a tool consumes the
-i-th entry. If the agent calls more times than there are entries,
-the test fails loudly (better than silently falling back to a real
-dispatch that would change the test's nature).
+Caveat: with strict ordinal, the reviewer's i-th investigator focus
+might not match the i-th canned finding's content. The reviewer
+might be confused by a finding that doesn't relate to its focus.
+This is a deliberate trade-off — keeps fixtures simple, and the
+reviewer's consolidation logic is what we're testing anyway, not
+its faith in coherent investigator output.
 
-    spawn_agent:                # first three calls, in order
+Fixture file shape:
+
+    spawn_agent:                # consumed in order
       - return:
           findings:
             - severity: BLOCKER
@@ -33,24 +39,8 @@ dispatch that would change the test's nature).
             - severity: MINOR
               title: "Promotion entity uses manual getters"
 
-    read_file:                   # any tool can be mocked
+    read_file:                  # any tool can be mocked
       - return: "# Project rules: free item is cheapest"
-
-Optional `when:` guard
-- Each entry can carry a `when:` map asserting what args the agent
-  passed at this call. If `when:` is set and the actual args don't
-  match → MockArgsMismatchError (the agent didn't ask the right
-  thing for this slot — meaningful test failure).
-- If `when:` is omitted, any args are accepted at that ordinal
-  position (the test only cares that the i-th call returned X).
-
-Match semantics for `when:`
-- Map of arg_name → matcher_value. All listed keys must match (AND);
-  keys not listed are wildcards.
-- For a string matcher: case-insensitive substring of the actual.
-- For a list matcher: any of the keywords as case-insensitive
-  substring of the actual.
-- For any other value: equality.
 
 Behaviour
 - Tool not in the fixture at all → real dispatch (partial mocking
@@ -66,7 +56,7 @@ other tool, the canned `return:` is passed through to
 would have produced.
 
 Thread safety: `ToolMocks` is shared across a parent agent and all
-its mocked children. The ordinal counter is protected by a Lock so
+its mocked children. The consumed-set is protected by a Lock so
 parallel spawn_agent dispatches don't race.
 """
 
@@ -101,29 +91,18 @@ class ToolMocks:
         return tool_name in self.by_tool
 
     def consume(self, tool_name: str, args: dict) -> MockEntry:
-        """Take a canned response, marking the chosen entry consumed
-        so it can't be reused. Selection rule (content-aware ordinal):
+        """Take the next ordinal entry for this tool — i-th call to
+        the tool consumes the i-th entry, regardless of args.
 
-        1. Find the first UNCONSUMED entry whose `when:` matches the
-           actual args. Each entry is consumed at most once, but the
-           order in which the agent makes calls doesn't have to match
-           the order entries are listed.
+        Why strict ordinal (and no arg matching):
+        - The agent's free-text focus is LLM-shaped and varies between
+          runs. Pinning the canned response to a focus substring made
+          tests brittle.
+        - The judge handles focus verification separately by reading
+          the invocations.json file (Mockito-style verify).
 
-        2. If no `when:`-bearing entry matches, take the first
-           UNCONSUMED entry that has no `when:` guard (catch-all,
-           ordinal fallback).
-
-        3. Otherwise: MockExhaustedError (agent made a call this
-           fixture wasn't prepared for, or used up all slots).
-
-        Why content-aware: real reviewers don't always spawn concerns
-        in the order listed in their reflect. Strict ordinal forced
-        the test author to predict the spawn order; content matching
-        decouples that — each `when:` block says "when the agent
-        spawns with focus matching X, return this finding" without
-        caring whether it was the 1st or 3rd spawn of the run.
-
-        Raises MockExhaustedError when no entry is available.
+        Raises MockExhaustedError when the agent makes more calls than
+        the fixture lists.
         """
         entries = self.by_tool.get(tool_name)
         if not entries:
@@ -132,28 +111,14 @@ class ToolMocks:
             )
         with self._lock:
             consumed_set: set[int] = self._consumed.setdefault(tool_name, set())  # type: ignore
-            # Pass 1: prefer unconsumed entries with a matching when: guard.
-            for i, e in enumerate(entries):
-                if i in consumed_set:
-                    continue
-                if e.when and _entry_matches(e, args):
-                    consumed_set.add(i)
-                    return e
-            # Pass 2: fall back to the first unconsumed catch-all
-            # (entry without `when:` guard).
-            for i, e in enumerate(entries):
-                if i in consumed_set:
-                    continue
-                if not e.when:
-                    consumed_set.add(i)
-                    return e
-            # Nothing matched and no catch-all left.
-            raise MockExhaustedError(
-                f"tool_mocks for {tool_name!r}: no unconsumed entry matches args="
-                f"{args!r}; consumed {len(consumed_set)}/{len(entries)}; "
-                f"remaining whens: "
-                f"{[entries[i].when for i in range(len(entries)) if i not in consumed_set]}"
-            )
+            idx = len(consumed_set)
+            if idx >= len(entries):
+                raise MockExhaustedError(
+                    f"tool_mocks for {tool_name!r}: agent called {idx + 1} time(s) "
+                    f"but fixture only lists {len(entries)} entries"
+                )
+            consumed_set.add(idx)
+        return entries[idx]
 
     @classmethod
     def from_dict(cls, data: dict, source_path: str = "") -> "ToolMocks":
@@ -170,24 +135,15 @@ class ToolMocks:
                     raise ValueError(
                         f"mock entry {tool_name}[{i}] must be a mapping"
                     )
-                when_raw = entry.get("when")
-                when: dict[str, Any] = {}
-                if when_raw is None:
-                    pass  # no guard
-                elif when_raw in ("any", "*"):
-                    pass  # treat 'any' / '*' as no guard
-                elif isinstance(when_raw, dict):
-                    when = dict(when_raw)
-                else:
-                    raise ValueError(
-                        f"mock entry {tool_name}[{i}].when must be a dict, "
-                        f"'any', '*', or omitted (got {type(when_raw).__name__})"
-                    )
+                # `when:` accepted at the YAML level for forward
+                # compatibility but no longer affects selection — strict
+                # ordinal only. Judge does focus verification post-run
+                # via invocations.json.
                 if "return" not in entry:
                     raise ValueError(
                         f"mock entry {tool_name}[{i}] missing 'return'"
                     )
-                entries.append(MockEntry(when=when, return_data=entry["return"]))
+                entries.append(MockEntry(when={}, return_data=entry["return"]))
             by_tool[tool_name] = entries
         return cls(by_tool=by_tool, source_path=source_path)
 
