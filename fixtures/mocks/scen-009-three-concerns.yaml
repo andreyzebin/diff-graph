@@ -1,24 +1,22 @@
-# Mocks for SCEN-009 (Buy-3-get-1-free promotion) reviewer unit
-# tests. The reviewer spawns three investigators, one per concern.
-# This fixture lists the canned investigator returns in the order the
-# reviewer emits the spawn calls (typical ordering: pricing logic →
-# transaction safety → code style).
+# Mocks for SCEN-009 (Buy-3-get-1-free) reviewer unit tests.
+# The reviewer spawns three investigators (one per concern); the
+# fixture lists three canned investigator returns. Selection is
+# strict ordinal — i-th spawn_agent call gets the i-th entry,
+# regardless of focus content.
 #
-# Source: distilled from real-mode SCEN-009 trace runs by querying
-# ~/.diffgraph/traces.db for runs where a strong reviewer (score ≥
-# 0.85) sent through; that's the ground-truth focus + finding shape.
+# The reviewer's actual focuses get verified separately by the judge
+# reading invocations.json (Mockito-style verify on tool args, not
+# on the canned routing).
 #
-# When the reviewer calls spawn_agent for the i-th time, the i-th
-# entry below is consumed. `when:` is a soft assertion — if the
-# reviewer's args at that slot don't match, the test fails loudly
-# with MockArgsMismatchError instead of silently mis-attributing.
+# Caveat: the i-th canned finding's content might not relate to the
+# focus the reviewer sent at the i-th call. The reviewer might be
+# briefly confused; that's an accepted side-effect for now (we're
+# testing concern-forming + finding consolidation, not the reviewer's
+# faith in coherent investigator output).
 
 spawn_agent:
-  # Concern 1 — pricing logic / cheapest item
-  - when:
-      agent: investigator
-      focus: ["cheapest", "free item", "selectFreeItem", "get(0)"]
-    return:
+  # Slot 1 — pricing logic / cheapest item
+  - return:
       findings:
         - severity: BLOCKER
           file: src/main/java/com/flowmart/orders/service/PricingService.java
@@ -39,11 +37,8 @@ spawn_agent:
       confidence: high
       learned: "selectFreeItem is wrong — picks first instead of cheapest. AGENTS.md is explicit."
 
-  # Concern 2 — transaction safety on applyBulkDiscount
-  - when:
-      agent: investigator
-      focus: ["transactional", "applyBulkDiscount", "atomic", "transaction"]
-    return:
+  # Slot 2 — transaction safety on applyBulkDiscount
+  - return:
       findings:
         - severity: MAJOR
           file: src/main/java/com/flowmart/orders/service/PricingService.java
@@ -63,11 +58,8 @@ spawn_agent:
       confidence: high
       learned: "applyBulkDiscount writes to two repos without @Transactional — atomicity gap."
 
-  # Concern 3 — code style / Lombok consistency
-  - when:
-      agent: investigator
-      focus: ["Lombok", "@Data", "@Builder", "manual getters", "boilerplate"]
-    return:
+  # Slot 3 — code style / Lombok consistency
+  - return:
       findings:
         - severity: MINOR
           file: src/main/java/com/flowmart/orders/model/Promotion.java

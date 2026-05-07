@@ -8,9 +8,7 @@
 # didn't post the findings as its own.
 
 spawn_agent:
-  - when:
-      agent: reviewer
-    return:
+  - return:
       output: |
         Review complete. 3 findings posted on the PR.
       findings:
