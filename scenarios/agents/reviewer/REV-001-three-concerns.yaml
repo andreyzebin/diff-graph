@@ -1,0 +1,83 @@
+id: REV-001
+name: "Reviewer unit — three concerns on SCEN-009 PR with mocked investigators"
+tags: [tier:unit, agent:reviewer, isolation, mocked-investigators]
+
+# Unit test of the reviewer's behaviour in isolation. The diff is
+# real (orderflow @ feature/ORD-234-buy-3-get-1-free) but the
+# investigator spawns are mocked: the reviewer can't actually
+# investigate, only "form concerns + spawn investigators + consolidate
+# findings". Since the heaviest cost in a full review is the
+# investigator chain, mocking it makes this test ~10× faster than the
+# corresponding integration scenario (java/SCEN-009).
+#
+# What the reviewer must do:
+# 1. Form roughly three distinct concerns (pricing, transactions,
+#    style). Concern count is calibrated to the diff size — see
+#    reviewer.prompt.
+# 2. Spawn one investigator per concern with a focused brief.
+# 3. Consolidate the three mocked findings into post_comment calls
+#    on the right files/lines, preserving severity (BLOCKER, MAJOR,
+#    MINOR — comes back from the mocks unchanged).
+# 4. Call set_review_status appropriately (NEEDS_WORK, since BLOCKER
+#    or MAJOR is standing).
+#
+# What we DON'T test here (those are separate scenarios):
+# - Whether the investigator's investigation is correct (INV-001/2/3).
+# - Whether the dispatcher correctly spawns the reviewer (DISP-001).
+# - Full-stack reviewer + investigator coordination (java/SCEN-009).
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "feature/ORD-234-buy-3-get-1-free"
+      to_branch: "master"
+      title: "[BENCHMARK] REV-001: Buy-3-get-1-free (ORD-234) — reviewer unit"
+      description: |
+        ## ORD-234: Implement buy-3-get-1-free promotions
+
+        Reviewer-isolation unit test. Heavy investigator chain mocked
+        out — see fixtures/mocks/scen-009-three-concerns.yaml.
+
+  setup:
+    # Path resolved relative to this scenario file (loader checks it
+    # exists at parse time). Passed as --mocks <abspath> to the
+    # agent CLI.
+    mocks: "../../../fixtures/mocks/scen-009-three-concerns.yaml"
+
+  trigger:
+    # No trigger comment — direct reviewer invocation.
+    type: auto
+    agent: reviewer
+
+expected_output:
+  required_comments:
+    - id: cheapest-item
+      severity: BLOCKER
+      description_keywords: ["cheapest", "selectFreeItem", "get(0)", "free item"]
+      rationale: "Reviewer must surface the BLOCKER finding from the first mocked investigator (cheapest-item bug)."
+    - id: transactional
+      severity: MAJOR
+      description_keywords: ["@Transactional", "applyBulkDiscount", "atomic"]
+      rationale: "Reviewer must surface the MAJOR finding from the second mocked investigator (transaction safety)."
+    - id: lombok
+      severity: MINOR
+      description_keywords: ["Lombok", "@Data", "@Builder", "manual"]
+      rationale: "Reviewer must surface the MINOR finding from the third mocked investigator (entity style)."
+
+  forbidden_comments:
+    - description: "Comments inventing issues NOT covered by the mocked investigator findings — the reviewer's job is to consolidate, not invent."
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.70
+    min_required_found: 2     # at least 2 of the 3 mocked findings must reach the PR
+    max_false_positives: 1
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: medium
+  scenario_type: agent_unit
+  capabilities: [reviewer, concern_forming, finding_consolidation, severity_calibration]

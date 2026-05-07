@@ -1,0 +1,22 @@
+# Mock for testing the dispatcher's /review path in isolation. The
+# dispatcher should spawn ONE reviewer in response to /review and
+# acknowledge in the trigger thread — without restating the
+# reviewer's findings (the reviewer publishes them itself).
+#
+# The mock returns a token reviewer result; what matters for this
+# test is that the dispatcher made the spawn at all, and that it
+# didn't post the findings as its own.
+
+spawn_agent:
+  - when:
+      agent: reviewer
+    return:
+      output: |
+        Review complete. 3 findings posted on the PR.
+      findings:
+        - severity: BLOCKER
+          file: src/main/java/com/flowmart/orders/service/PricingService.java
+          line: 95
+          title: "(mocked reviewer output)"
+      confidence: high
+      learned: "(mocked) reviewer ran and posted findings on the PR."

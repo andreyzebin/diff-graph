@@ -1,0 +1,86 @@
+# Mocks for SCEN-009 (Buy-3-get-1-free promotion) reviewer unit
+# tests. The reviewer spawns three investigators, one per concern.
+# This fixture lists the canned investigator returns in the order the
+# reviewer emits the spawn calls (typical ordering: pricing logic →
+# transaction safety → code style).
+#
+# Source: distilled from real-mode SCEN-009 trace runs by querying
+# ~/.diffgraph/traces.db for runs where a strong reviewer (score ≥
+# 0.85) sent through; that's the ground-truth focus + finding shape.
+#
+# When the reviewer calls spawn_agent for the i-th time, the i-th
+# entry below is consumed. `when:` is a soft assertion — if the
+# reviewer's args at that slot don't match, the test fails loudly
+# with MockArgsMismatchError instead of silently mis-attributing.
+
+spawn_agent:
+  # Concern 1 — pricing logic / cheapest item
+  - when:
+      agent: investigator
+      focus: ["cheapest", "free item", "selectFreeItem", "get(0)"]
+    return:
+      findings:
+        - severity: BLOCKER
+          file: src/main/java/com/flowmart/orders/service/PricingService.java
+          line: 95
+          title: "selectFreeItem returns get(0) — picks the first item, not the cheapest"
+          explanation: |
+            Per AGENTS.md the buy-N-get-1-free promotion must give
+            the customer the cheapest item free, not the first item
+            in the qualifying group. Current implementation returns
+            `group.get(0)`, silently overcharging customers when
+            their cart contains items at different price points.
+          evidence: |
+            PricingService.java:95: return group.get(0);
+            AGENTS.md: "the free item is always the cheapest eligible
+            item in the qualifying group — not the first, not the
+            most expensive."
+          suggestion: "Sort group by unitPrice ascending and return the first element."
+      confidence: high
+      learned: "selectFreeItem is wrong — picks first instead of cheapest. AGENTS.md is explicit."
+
+  # Concern 2 — transaction safety on applyBulkDiscount
+  - when:
+      agent: investigator
+      focus: ["transactional", "applyBulkDiscount", "atomic", "transaction"]
+    return:
+      findings:
+        - severity: MAJOR
+          file: src/main/java/com/flowmart/orders/service/PricingService.java
+          line: 78
+          title: "applyBulkDiscount is missing @Transactional"
+          explanation: |
+            The method writes to orderItemRepository and then
+            orderRepository without a surrounding transaction.
+            Partial failures leave items discounted but order totals
+            stale. Every other multi-write method in the codebase is
+            @Transactional.
+          evidence: |
+            PricingService.java:78: public void applyBulkDiscount(...)
+            (no @Transactional). OrderService.cancelOrder, .placeOrder
+            and .updateStatus are all @Transactional.
+          suggestion: "Add @Transactional(propagation = Propagation.REQUIRED) to the method."
+      confidence: high
+      learned: "applyBulkDiscount writes to two repos without @Transactional — atomicity gap."
+
+  # Concern 3 — code style / Lombok consistency
+  - when:
+      agent: investigator
+      focus: ["Lombok", "@Data", "@Builder", "manual getters", "boilerplate"]
+    return:
+      findings:
+        - severity: MINOR
+          file: src/main/java/com/flowmart/orders/model/Promotion.java
+          line: 12
+          title: "Promotion entity uses manual getters/setters instead of Lombok"
+          explanation: |
+            Every other entity in com.flowmart.orders.model uses
+            @Data @Builder @NoArgsConstructor @AllArgsConstructor.
+            Promotion is the odd one out — drift makes future
+            maintenance harder and reads as inconsistent.
+          evidence: |
+            Promotion.java:12-46: hand-rolled getName/setName/getValue/setValue.
+            Order.java, OrderItem.java, Customer.java all use Lombok.
+          suggestion: "Replace with @Data @Builder @NoArgsConstructor @AllArgsConstructor."
+      confidence: medium
+      learned: "Manual getters/setters on Promotion break the Lombok convention used by every other entity."

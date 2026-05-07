@@ -1,0 +1,61 @@
+id: INV-001
+name: "Investigator unit — cheapest item bug in selectFreeItem"
+tags: [tier:unit, agent:investigator, isolation, single-concern]
+
+# Unit test of the investigator agent in isolation. We give it ONE
+# concrete focus and a real diff; it has to read the right files,
+# check AGENTS.md, and produce a finding with the correct severity.
+#
+# No mocks needed — investigator doesn't spawn anything itself, so
+# its tool surface (read_file, search, read_outline, reflect, done)
+# already runs on the real (small) diff cheaply.
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "feature/ORD-234-buy-3-get-1-free"
+      to_branch: "master"
+      title: "[BENCHMARK] INV-001: Buy-3-get-1-free (ORD-234) — investigator unit"
+      description: |
+        ## ORD-234
+        Investigator-isolation unit test on a single concern.
+
+  trigger:
+    # Run the investigator as the root agent. `focus` is the concern
+    # the (absent) reviewer would have handed down — it gets injected
+    # into the investigator's prompt via -d focus=...
+    type: auto
+    agent: investigator
+    data:
+      focus: |
+        PRICING LOGIC: Investigate selectFreeItem in PricingService.
+        The buy-3-get-1-free promotion is supposed to give the
+        customer the cheapest item free per the project AC. Verify
+        the implementation matches the spec — especially what item
+        the method actually returns from the qualifying group.
+        Cite AGENTS.md when bearing on the finding.
+
+expected_output:
+  required_comments:
+    - id: cheapest-item
+      severity: BLOCKER
+      description_keywords: ["cheapest", "selectFreeItem", "get(0)", "free item", "AGENTS.md"]
+      rationale: "Investigator must produce a BLOCKER/MAJOR finding citing the AGENTS.md rule and the actual code line."
+
+  forbidden_comments:
+    - description: "Findings outside the focus (transaction safety, Lombok style, etc.) — the investigator must stay scoped."
+
+  expected_status_change: null     # investigator doesn't set status
+
+  thresholds:
+    min_score: 0.70
+    min_required_found: 1
+    max_false_positives: 1
+
+metadata:
+  difficulty: easy
+  language: java
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [investigator, focused_investigation, agents_md_citation]
