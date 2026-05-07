@@ -372,16 +372,19 @@ def _run_with_dispatcher(
     if findings:
         _print_findings(findings)
 
+    # Agents publish on the fly via post_comment / set_review_status /
+    # react_to_comment tools. The runner no longer bulk-publishes
+    # findings from done() — that path was deprecated and removed
+    # ("agents only post via tools"). Replies + review status still
+    # go through _publish_to_pr because some flows queue them in
+    # review_ctx for end-of-run delivery.
     meta = _early_meta
     author_prefix = ctx._author_prefix
-    # Findings published immediately via post_findings tool — don't double-post
-    # via the bulk path.
-    bulk_findings = () if review_ctx.posted_comments else (findings if ctx._initialized else ())
     _publish_to_pr(
         pr_url,
-        findings=bulk_findings,
+        findings=(),
         replies=review_ctx.comment_replies,
-        diff_result=ctx.diff_result if ctx._initialized else None,
+        diff_result=None,
         meta=meta,
         author_prefix=author_prefix,
         review_status=review_ctx.review_status or "",
@@ -539,9 +542,15 @@ def run(
             raise typer.Exit(2)
 
     # ── Resolve which agent to run ────────────────────────────────────────
+    # Priority: --agent flag → dispatcher when --message is set →
+    # reviewer when pr_url is set (the default review path) → None
+    # (legacy local-repo flow).
     agent_name = agent
     if not agent_name:
-        agent_name = "dispatcher" if message is not None else None
+        if message is not None:
+            agent_name = "dispatcher"
+        elif pr_url:
+            agent_name = "reviewer"
 
     # ── Agent mode: run any agent with lazy clone ─────────────────────────
     if agent_name and pr_url:
@@ -730,14 +739,13 @@ def run(
         run_id=_trace_db.run_id,
         prefix=comment_tag_resolved,
     )
-    # If the reviewer published findings mid-run via post_findings, skip the
-    # bulk publish below — otherwise comments would double up on the PR.
-    bulk_findings = () if getattr(review_ctx, "posted_comments", []) else findings
+    # Agents publish via post_comment on the fly; runner-side bulk
+    # findings publish was deprecated and removed.
     _publish_to_pr(
         pr_url,
-        findings=bulk_findings,
+        findings=(),
         replies=review_ctx.comment_replies,
-        diff_result=diff_result,
+        diff_result=None,
         meta=meta,
         review_status=review_ctx.review_status or "",
         review_status_reason=review_ctx.review_status_reason or "",
@@ -1172,9 +1180,10 @@ def _finding_to_comment(finding):
 def _publish_to_pr(
     pr_url: str,
     *,
-    findings: list = (),
+    findings: list = (),     # deprecated: agents publish via post_comment;
+                              # kept for call-site compat, ignored.
     replies: list = (),
-    diff_result=None,
+    diff_result=None,         # unused (kept for call-site compat)
     meta=None,
     author_prefix: str = "",
     review_status: str = "",
@@ -1182,46 +1191,19 @@ def _publish_to_pr(
     bot_user: str = "",
     verdict_mode: str = "api",
 ) -> None:
-    """
-    Single entry-point for posting all DiffGraph output to a PR.
+    """End-of-run helper: queued replies + review-status verdict.
 
-    Builds the body decorator from `meta` once and applies it uniformly to
-    findings (via post_review_comments) and to reply text. Both flows
-    (dispatcher and direct review) call this helper, so the tagging decision
-    lives in exactly one place.
+    Findings, inline comments and reactions all flow through the
+    agents' tools (post_comment, react_to_comment) on the fly —
+    runner-side bulk publish was deprecated. This helper now only
+    drains comment_replies (queued by some flows) and applies the
+    final review_status if set.
     """
     if not pr_url:
         return
 
     decorate = meta.decorate if meta else None
-    from diffgraph.bitbucket import (
-        post_review_comments, reply_to_pr_comment,
-    )
-
-    if findings:
-        comments_to_post = [_finding_to_comment(f) for f in findings]
-        # Stamp the bot's synthetic-author tag on each finding body, same
-        # rationale as replies: when the same comment is read back next
-        # round it must match subject_pattern and label as [SELF]. Empty
-        # in production (only set when --subject-pattern is configured).
-        if author_prefix:
-            for c in comments_to_post:
-                if not c.comment.lstrip().startswith(author_prefix):
-                    c.comment = f"{author_prefix} {c.comment}"
-        changed_lines = None
-        if diff_result is not None:
-            changed_lines = {
-                path: set(fd.after_changed_lines)
-                for path, fd in diff_result.files.items()
-            }
-        console.print(f"\n[bold]Posting[/bold]  {len(comments_to_post)} findings to PR...\n")
-        posted = post_review_comments(
-            pr_url, comments_to_post,
-            on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
-            changed_lines=changed_lines,
-            decorate=decorate,
-        )
-        console.print(f"\n[green]Posted {posted}/{len(comments_to_post)} comments[/green]")
+    from diffgraph.bitbucket import reply_to_pr_comment
 
     for reply in replies:
         body = reply["text"]
