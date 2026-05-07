@@ -32,12 +32,20 @@ input:
     pull_request:
       from_branch: "feature/ORD-234-buy-3-get-1-free"
       to_branch: "master"
-      title: "[BENCHMARK] REV-001: Buy-3-get-1-free (ORD-234) — reviewer unit"
+      title: "[BENCHMARK] REV-001: ORD-234 — buy-3-get-1-free promotion"
       description: |
         ## ORD-234: Implement buy-3-get-1-free promotions
 
-        Reviewer-isolation unit test. Heavy investigator chain mocked
-        out — see fixtures/mocks/scen-009-three-concerns.yaml.
+        **As a** marketing manager
+        **I want to** configure buy-N-get-1-free promotions per product category
+        **So that** we can run campaigns without a deploy
+
+        ### Acceptance criteria
+        - When a customer has 4+ items from a promoted category, the **cheapest**
+          item is free
+        - Discount is shown as a line item labelled with the promotion name
+        - Only one promotion applies per category — no stacking
+        - Promotion respects `startDate` and `endDate`
 
   setup:
     # Path resolved relative to this scenario file (loader checks it
