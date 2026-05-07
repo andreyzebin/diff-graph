@@ -727,6 +727,64 @@ Out of scope until current review-quality issues are debugged
 run is noise — the test isn't actually testing what it claims to
 test until BranchUpdater exists).
 
+### 5d.3 Reflect-based agent isolation as a general unit-test pattern
+
+The reviewer's REV-001-concerns test landed on a clean general
+pattern that generalises to any agent with `reflect` in @tools:
+
+1. **Custom user message** ("--user-message-from") tells the agent
+   to do its analysis phase only — write findings/concerns/
+   conclusions into `reflect(...)` and immediately call `done()`
+   with empty output. Explicit "do NOT spawn/post/set_status" rules.
+2. **No mocks needed** — agent never calls action tools, so there's
+   nothing to mock. (A defensive empty-spawn mock can absorb a
+   stray spawn if the agent ignores the instruction; not required.)
+3. **Judge reads invocations.json** for `reflect(...)` args, treats
+   them as the test signal. Pairs with the existing reading of
+   `done(findings)` and `spawn_agent.focus`.
+4. **Expected output** is a list of keyword groups (existing
+   `concern_focuses`/`description_keywords` infra), AND-of-OR match
+   against title + description fields of each reflect entry.
+
+Coverage matrix today:
+
+| Agent        | Has reflect? | Status |
+|--------------|--------------|--------|
+| reviewer     | yes          | REV-001-concerns ✅ landed |
+| investigator | yes          | INV-002 (todo) — same shape: focus + AGENTS.md citations + questions_remaining via `reflect(learned, questions_remaining)` |
+| dispatcher   | no           | Add `reflect` to dispatcher's @tools if we want symmetric isolation, OR skip — dispatcher is a router with fewer "thinking" phases. Decide later. |
+
+Why this matters:
+- Decouples LLM-provider quirks (parallel tool calls, tool-parser
+  divergence) from unit-test stability — agent never reaches the
+  parallel-spawn step.
+- Decouples mock-fixture maintenance from test correctness — there
+  IS no fixture to keep coherent with the agent's actual focuses
+  ("mocked investigator returns finding for concern A even when
+  reviewer asked about concern B" is structurally impossible).
+- Cheapest LLM-cost shape for unit tests: read diff (1-3 LLM
+  calls) + reflect (1) + done (1). ~5 calls vs 20-50 for full
+  pipeline.
+- Lets us interrogate richer cognitive signal: reflect carries
+  `learned` (facts), `questions_remaining` (gaps), `confidence`
+  — testable separately. E.g. an investigator unit test can
+  assert "agent identified the right gap" by matching against
+  `questions_remaining`, not just `learned`.
+
+**Concrete next step:** INV-002-investigation-only as a mirror of
+REV-001-concerns. Same custom-user-message pattern, focus is
+`PRICING LOGIC: selectFreeItem returns get(0)`, expected
+`concern_focuses` checks that the investigator's reflect
+`learned` includes "cheapest" / "AGENTS.md" / "first item" and
+that `questions_remaining` is empty (or has the right gaps).
+
+**Stretch:** if dispatcher gets reflect, write DISP-002 measuring
+how the dispatcher classifies trigger messages without acting
+on them ("/review → would spawn reviewer", "/help → would
+explain commands", plain text → "would treat as /ask"). Useful
+for testing dispatcher routing logic without spinning up the
+spawned agents.
+
 ### 5d.1 Live, progressive run dashboard (per-provider throughput)
 
 When `bench run --mode aggressive` is in flight the user is
