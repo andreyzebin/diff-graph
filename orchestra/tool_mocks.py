@@ -3,69 +3,78 @@
 Every agent step is a sequence of tool calls (`spawn_agent`,
 `read_file`, `search`, `post_comment`, …). For isolated unit-tests
 of one agent at a time we want to short-circuit some of those tool
-calls with canned responses — same idea as Mockito's `when().thenReturn()`.
+calls with canned responses — same idea as Mockito's
+`when().thenReturn(a, b, c)` (sequential answers).
 
 The most useful case is `spawn_agent`: the reviewer's heaviest cost
-is the investigator chain it spawns. Replace that with a canned
-finding set and the reviewer test runs in seconds.
+is the investigator chain it spawns. The reviewer typically spawns
+N investigators in one step (one per concern); each gets its own
+canned finding set, in declared order.
 
-Fixture file shape (one entry per tool, multiple matcher → return
-pairs per tool):
+Fixture file shape — ORDINAL: the i-th call to a tool consumes the
+i-th entry. If the agent calls more times than there are entries,
+the test fails loudly (better than silently falling back to a real
+dispatch that would change the test's nature).
 
-    spawn_agent:
-      - when:
-          agent: investigator
-          focus: ["cheapest", "free item"]    # any-of substring match
-        return:
+    spawn_agent:                # first three calls, in order
+      - return:
           findings:
             - severity: BLOCKER
               file: src/.../PricingService.java
               line: 95
               title: "selectFreeItem returns get(0)"
-              explanation: "Per AGENTS.md the free item is the cheapest"
-          confidence: high                    # → SGR summary
-      - when:
-          agent: investigator
-          focus: ["transactional", "applyBulkDiscount"]
-        return:
-          findings: [...]
-      - when: any                             # catch-all (optional)
-        return:
-          findings: []
+          confidence: high
+      - return:
+          findings:
+            - severity: MAJOR
+              title: "Missing @Transactional on applyBulkDiscount"
+      - return:
+          findings:
+            - severity: MINOR
+              title: "Promotion entity uses manual getters"
 
-    read_file:                                # any tool can be mocked
-      - when:
-          path: "AGENTS.md"
-        return:
-          "# Project rules ..."
+    read_file:                   # any tool can be mocked
+      - return: "# Project rules: free item is cheapest"
 
-Match semantics
-- `when` is a mapping of arg_name → matcher_value. All listed keys
-  must match (AND); keys not listed are wildcards.
+Optional `when:` guard
+- Each entry can carry a `when:` map asserting what args the agent
+  passed at this call. If `when:` is set and the actual args don't
+  match → MockArgsMismatchError (the agent didn't ask the right
+  thing for this slot — meaningful test failure).
+- If `when:` is omitted, any args are accepted at that ordinal
+  position (the test only cares that the i-th call returned X).
+
+Match semantics for `when:`
+- Map of arg_name → matcher_value. All listed keys must match (AND);
+  keys not listed are wildcards.
 - For a string matcher: case-insensitive substring of the actual.
 - For a list matcher: any of the keywords as case-insensitive
   substring of the actual.
 - For any other value: equality.
-- `when: any` or `when: "*"` (or empty `when: {}`) → match anything.
-- First matching entry wins.
 
 Behaviour
-- Tool not in the fixture at all → real dispatch (partial mocking).
-- Tool in the fixture but no entry matched → MissingMockMatchError
-  (fixture hole — surface immediately, don't silently slow the test).
+- Tool not in the fixture at all → real dispatch (partial mocking
+  is supported by design).
+- Tool in the fixture but ordinal exhausted → MockExhaustedError
+  (the agent made more calls to this tool than the fixture lists).
 
-For `spawn_agent` specifically, the canned `return` is wrapped into
+For `spawn_agent` specifically, the canned `return:` is wrapped into
 the JSON envelope the parent agent expects from a real spawn (status
 / output / sgr_summary / steps / tokens / mocked=true). For any
-other tool, the canned `return` is passed through to
+other tool, the canned `return:` is passed through to
 `ToolRegistry.format_result` unchanged — same shape the real tool
 would have produced.
+
+Thread safety: `ToolMocks` is shared across a parent agent and all
+its mocked children. The ordinal counter is protected by a Lock so
+parallel spawn_agent dispatches don't race.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -75,31 +84,58 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class MockEntry:
-    when: dict[str, Any]              # {arg_name: matcher}; empty = match all
+    when: dict[str, Any]              # optional guard; empty = no guard
     return_data: Any
-    is_wildcard: bool = False         # `when: any` / `when: "*"` / `when: {}`
 
 
 @dataclass
 class ToolMocks:
     by_tool: dict[str, list[MockEntry]] = field(default_factory=dict)
     source_path: str = ""
+    # Per-tool ordinal counter — index of the NEXT entry to consume.
+    _consumed: dict[str, int] = field(default_factory=dict)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def has(self, tool_name: str) -> bool:
         return tool_name in self.by_tool
 
-    def find(self, tool_name: str, args: dict) -> MockEntry | None:
-        """First entry whose `when:` matches the given args. None means
-        the tool isn't configured here at all (caller falls through to
-        real dispatch). To distinguish from "configured but no match"
-        — see `has()` first."""
+    def consume(self, tool_name: str, args: dict) -> MockEntry:
+        """Take the next ordinal entry for this tool.
+
+        Raises MockExhaustedError when the agent has called this tool
+        more times than the fixture lists, or MockArgsMismatchError
+        when the entry has a `when:` guard that doesn't match the
+        actual args (the agent passed something the test author didn't
+        expect for this slot).
+
+        Caller must check `has()` first; we don't fall back to real
+        dispatch from here — that decision belongs in the agent so
+        partial mocking can work cleanly.
+        """
         entries = self.by_tool.get(tool_name)
         if not entries:
-            return None
-        for e in entries:
-            if e.is_wildcard or _entry_matches(e, args):
-                return e
-        return None
+            # has() should have prevented this; defensive.
+            raise MockExhaustedError(
+                f"no mocks configured for tool {tool_name!r}"
+            )
+        with self._lock:
+            idx = self._consumed.get(tool_name, 0)
+            if idx >= len(entries):
+                raise MockExhaustedError(
+                    f"tool_mocks for {tool_name!r}: agent called {idx + 1} time(s) "
+                    f"but fixture only lists {len(entries)} entries"
+                )
+            entry = entries[idx]
+            self._consumed[tool_name] = idx + 1
+        # `when:` is an optional sanity guard. If set, args must match —
+        # otherwise the agent is asking for something the test author
+        # didn't expect for this ordinal slot.
+        if entry.when and not _entry_matches(entry, args):
+            raise MockArgsMismatchError(
+                f"tool_mocks for {tool_name!r} entry #{idx} has when={entry.when!r} "
+                f"but the agent called with args={args!r}"
+            )
+        return entry
 
     @classmethod
     def from_dict(cls, data: dict, source_path: str = "") -> "ToolMocks":
@@ -116,27 +152,24 @@ class ToolMocks:
                     raise ValueError(
                         f"mock entry {tool_name}[{i}] must be a mapping"
                     )
-                when_raw = entry.get("when", {})
-                ret = entry.get("return")
-                is_wild = False
+                when_raw = entry.get("when")
                 when: dict[str, Any] = {}
-                if when_raw in ("any", "*"):
-                    is_wild = True
+                if when_raw is None:
+                    pass  # no guard
+                elif when_raw in ("any", "*"):
+                    pass  # treat 'any' / '*' as no guard
                 elif isinstance(when_raw, dict):
-                    if not when_raw:
-                        is_wild = True
-                    else:
-                        when = dict(when_raw)
+                    when = dict(when_raw)
                 else:
                     raise ValueError(
                         f"mock entry {tool_name}[{i}].when must be a dict, "
-                        f"'any', or '*' (got {type(when_raw).__name__})"
+                        f"'any', '*', or omitted (got {type(when_raw).__name__})"
                     )
                 if "return" not in entry:
                     raise ValueError(
                         f"mock entry {tool_name}[{i}] missing 'return'"
                     )
-                entries.append(MockEntry(when=when, return_data=ret, is_wildcard=is_wild))
+                entries.append(MockEntry(when=when, return_data=entry["return"]))
             by_tool[tool_name] = entries
         return cls(by_tool=by_tool, source_path=source_path)
 
@@ -214,8 +247,14 @@ def render_mock_result(tool_name: str, entry: MockEntry, args: dict) -> Any:
     }, ensure_ascii=False, indent=2, default=str)
 
 
-class MissingMockMatchError(RuntimeError):
-    """Raised when a tool has a mocks block configured but no entry
-    matched the actual args. Indicates a fixture hole — surface
-    immediately, don't silently fall through to real dispatch (would
-    silently slow / change the test's nature)."""
+class MockExhaustedError(RuntimeError):
+    """The agent called a mocked tool more times than the fixture
+    lists. Either the agent under test is doing more than expected,
+    or the fixture is incomplete — both are meaningful test signals."""
+
+
+class MockArgsMismatchError(RuntimeError):
+    """The fixture entry at the current ordinal slot has a `when:`
+    guard, and the agent passed args that don't satisfy it. The agent
+    asked for something the test author didn't anticipate at that
+    point in the call sequence."""

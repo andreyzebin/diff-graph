@@ -637,25 +637,20 @@ class Agent:
         except json.JSONDecodeError:
             args = {}
 
-        # ── Mock interception (Mockito-style) ─────────────────────────────
+        # ── Mock interception (Mockito-style, ordinal) ────────────────────
         if self.tool_mocks is not None and self.tool_mocks.has(name):
-            from .tool_mocks import render_mock_result, MissingMockMatchError
-            entry = self.tool_mocks.find(name, args)
-            if entry is None:
-                raise MissingMockMatchError(
-                    f"tool_mocks for '{name}' has no entry matching args="
-                    f"{args!r}; configured matchers: "
-                    f"{[e.when for e in self.tool_mocks.by_tool.get(name, [])]}"
-                )
+            from .tool_mocks import render_mock_result
+            # consume() is thread-safe; raises MockExhaustedError /
+            # MockArgsMismatchError if the agent's behaviour diverged
+            # from what the fixture expects at this ordinal slot.
+            entry = self.tool_mocks.consume(name, args)
             result = render_mock_result(name, entry, args)
-            # Trace event so the invocation log + judge can see it was
-            # synthetic (and which matcher fired).
             self.event_bus.emit(
                 EventType.AGENT_TOOL_RESULT,
                 agent_id=self.agent_id, agent_name=self.config.name,
                 step=step, tool=name, args=args,
                 result=str(result)[:1000], mocked=True,
-                mock_when=entry.when, mock_wildcard=entry.is_wildcard,
+                mock_when=entry.when,
             )
             return self.registry.format_result(name, result)
 
