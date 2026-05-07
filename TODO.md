@@ -661,11 +661,12 @@ bench/cli.py run \
   -p deepseek -p qwen3 -p qwen3-6 \
   -t interaction -n 2 \
   --mode aggressive \
-  --max-concurrency 4
+  --max-per-provider 2
 ```
 - `--mode gentle | aggressive` (default `gentle`).
-- `--max-concurrency N` (default 4 in aggressive, ignored in
-  gentle).
+- `--max-per-provider N` (default 2 in aggressive, ignored in
+  gentle). The bottleneck is the LLM endpoint, not the bench, so
+  the budget is per-model — total in-flight ≤ N × providers.
 
 **Where:** `benchmark/cli.py` (typer flags + asyncio fan-out),
 `benchmark/bitbucket/real_factory.py` (already has temp-branch
@@ -674,8 +675,65 @@ build/close on the parallel branch).
 **Trade-off to keep an eye on.** Aggressive mode amplifies any
 shared-state quirk: Bitbucket SSL EOF blips, LLM endpoint rate
 limits, local CPU when each task spawns its own diff-graph
-subprocess. Hence the `--max-concurrency` cap; default of 4 is
-deliberately conservative.
+subprocess. Hence the per-provider cap; default of 2 is
+deliberately conservative. For the corp Bitbucket Server we
+also need exponential-backoff retry on `ssl.SSLError` /
+`ConnectionError` (already added to both `bench` and
+`diffgraph/bitbucket.py`, env-tunable via
+`BENCH_BB_RETRY_*` and `DIFFGRAPH_BB_RETRY_*`).
+
+### 5d.1 Live, progressive run dashboard (per-provider throughput)
+
+When `bench run --mode aggressive` is in flight the user is
+flying blind: verdict lines only print after `asyncio.gather`
+completes (the cycle was rewritten so that aggregation is
+deterministic regardless of completion order, but that traded
+away the per-task progress feed gentle mode used to give). For
+a 50+ task run that's 15–30 minutes of silence. Need a small
+live dashboard that updates as tasks finish and surfaces per-model
+throughput in real time.
+
+**Layout** (refreshed every ~2s while the run is active):
+
+```
+Aggressive run · max-per-provider=2 · 38/54 done · ETA 4m
+─────────────────────────────────────────────────────────────
+provider       in_tok/s  out_tok/s  cache%   p50_lat  in-flight
+deepseek            220        6.8   77.6%      2.8s     2/2  ▓▓
+qwen3-coder         107        3.9   23.8%      5.3s     1/2  ▓
+qwen3-6 (g1nft)     736       28.6    0.0%      1.1s     2/2  ▓▓
+─────────────────────────────────────────────────────────────
+recent verdicts (last 6):
+✅ qwen3-6      SCEN-204     score=0.97   18s
+✅ deepseek     SCEN-205b    score=1.00   24s
+⚠️  qwen3       SCEN-009     score=0.62   145s
+…
+```
+
+**Computed from** the per-LLM-call usage already in the trace
+DB (`agent_llm_response.usage`): pair `agent_llm_request` ↔
+`agent_llm_response` by `(run_id, agent_id, step)`, derive
+duration; `prompt_tokens` is the *full* input (cached + paid)
+on purpose — a model with prefix caching SHOULD look faster
+because that's the user-perceived throughput. `cached_tokens /
+prompt_tokens` shows how much of that speed is cache.
+
+**What it answers:**
+- Is one provider stalling while others race? (in-flight column).
+- Why is one provider behind on score — slow LLM, or actually
+  worse answers? (latency vs verdict feed side by side).
+- Is the cache really helping me, or am I paying full input
+  tokens? (cache% column).
+
+**Cheap path:** a `rich.live.Live` table updated from a
+background asyncio task; throughput sampled from the trace DB
+in 5–10s windows so noise smooths out. Keep it inline in
+`bench/cli.py run`; no separate command. Optional flag
+`--no-dashboard` for log-friendly CI runs.
+
+**Stretch:** export the same metrics as JSON for a future
+external dashboard; tag each window with the prompt hash so
+generation-over-generation throughput trends are queryable.
 
 ---
 
