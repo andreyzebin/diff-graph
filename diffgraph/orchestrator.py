@@ -178,7 +178,7 @@ def run_agent(
     _emit = on_event or (lambda *_, **__: None)
 
     prompt_source = prompt_resource or _PROMPT_DIR
-    agent_registry = compile_prompts(prompt_source, pattern="*.prompt")
+    agent_registry = compile_prompts(prompt_source)
 
     config = agent_registry.get_config(agent_name)
     if not config:

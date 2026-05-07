@@ -153,7 +153,7 @@ def _run_with_dispatcher(
     from pathlib import Path as _Path
     prompt_source = prompts or str(_Path(__file__).parent / "diffgraph" / "prompts")
     try:
-        pr = compile_prompts(prompt_source, pattern="*.prompt")
+        pr = compile_prompts(prompt_source)
         generation = str(prompt_source).rsplit("/", 1)[-1] if "/" in str(prompt_source) else str(prompt_source)
         mutation = pr.source_hash[:7] if pr.source_hash else "unknown"
     except Exception:
