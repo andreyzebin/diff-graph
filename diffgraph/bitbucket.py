@@ -13,14 +13,88 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
+import ssl
 import tempfile
+import time
 from typing import Callable
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 import json
 import logging
 
 log = logging.getLogger(__name__)
+
+
+# ── Centralised retry on transient Bitbucket errors ───────────────────────────
+#
+# Corp Bitbucket Server under load occasionally drops a request mid-handshake
+# (`SSL: UNEXPECTED_EOF_WHILE_READING`, `Connection reset`, `socket.timeout`).
+# Every call into the API goes through `_with_retry()` so a single blip
+# doesn't kill a review or comment-post. HTTPError (real 4xx/5xx with a body
+# that came back from the server) is NOT retried — that's a logic error, not
+# a transport blip.
+#
+# Tunables, picked up from env so the agent and the bench can be tightened
+# without code changes:
+#   DIFFGRAPH_BB_RETRY_ATTEMPTS=N      total tries (default 5)
+#   DIFFGRAPH_BB_RETRY_BASE_DELAY=SEC  first-retry sleep (default 1.0)
+#   DIFFGRAPH_BB_RETRY_MAX_DELAY=SEC   cap per-retry sleep (default 30)
+# Backoff is exponential: delay_i = min(base * 2**i, max).
+
+_TRANSIENT_TYPES: tuple = (
+    ssl.SSLError,
+    socket.timeout,
+    ConnectionError,           # covers ConnectionResetError / ConnectionRefusedError
+    TimeoutError,
+)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    if isinstance(exc, HTTPError):
+        # Real HTTP response (4xx/5xx) — don't retry by default.
+        return False
+    if isinstance(exc, URLError):
+        # URLError wraps the underlying transport error in `.reason`.
+        return isinstance(exc.reason, _TRANSIENT_TYPES)
+    return isinstance(exc, _TRANSIENT_TYPES)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _with_retry(fn):
+    """Run fn() with exponential-backoff retry on transient transport errors."""
+    attempts = _env_int("DIFFGRAPH_BB_RETRY_ATTEMPTS", 5)
+    base = _env_float("DIFFGRAPH_BB_RETRY_BASE_DELAY", 1.0)
+    cap = _env_float("DIFFGRAPH_BB_RETRY_MAX_DELAY", 30.0)
+    last: BaseException | None = None
+    for i in range(max(1, attempts)):
+        try:
+            return fn()
+        except Exception as exc:
+            if not _is_transient(exc):
+                raise
+            last = exc
+            wait = min(base * (2 ** i), cap)
+            log.warning("transient bitbucket error (try %d/%d, wait %.1fs): %s",
+                        i + 1, attempts, wait, exc)
+            if i + 1 < attempts:
+                time.sleep(wait)
+    assert last is not None
+    raise last
 
 
 # ── URL parsing ───────────────────────────────────────────────────────────────
@@ -58,17 +132,17 @@ def parse_pr_url(pr_url: str) -> tuple[str, str, str, int]:
 # ── API ───────────────────────────────────────────────────────────────────────
 
 def _api_get(url: str, token: str, ca_bundle: str | None, client_cert: str | None) -> dict:
-    import ssl
-    from urllib.error import HTTPError
-    req = Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
-    ctx = ssl.create_default_context(cafile=ca_bundle)
-    if client_cert:
-        ctx.load_cert_chain(client_cert)
-    try:
-        with urlopen(req, context=ctx, timeout=30) as resp:
-            return json.loads(resp.read())
-    except HTTPError as e:
-        raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+    def _do() -> dict:
+        req = Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+        ctx = ssl.create_default_context(cafile=ca_bundle)
+        if client_cert:
+            ctx.load_cert_chain(client_cert)
+        try:
+            with urlopen(req, context=ctx, timeout=30) as resp:
+                return json.loads(resp.read())
+        except HTTPError as e:
+            raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+    return _with_retry(_do)
 
 
 def _read_http_error(e) -> str:
@@ -673,26 +747,26 @@ def post_pr_comment(
 
 
 def _api_put(url: str, token: str, ca_bundle: str | None, client_cert: str | None, payload: dict) -> dict:
-    import ssl
-    from urllib.error import HTTPError
-    data = json.dumps(payload).encode()
-    req = Request(
-        url, data=data,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="PUT",
-    )
-    ctx = ssl.create_default_context(cafile=ca_bundle)
-    if client_cert:
-        ctx.load_cert_chain(client_cert)
-    try:
-        with urlopen(req, context=ctx, timeout=30) as resp:
-            return json.loads(resp.read())
-    except HTTPError as e:
-        raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+    def _do() -> dict:
+        data = json.dumps(payload).encode()
+        req = Request(
+            url, data=data,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="PUT",
+        )
+        ctx = ssl.create_default_context(cafile=ca_bundle)
+        if client_cert:
+            ctx.load_cert_chain(client_cert)
+        try:
+            with urlopen(req, context=ctx, timeout=30) as resp:
+                return json.loads(resp.read())
+        except HTTPError as e:
+            raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+    return _with_retry(_do)
 
 
 def _build_comment_body(c) -> str:
@@ -703,24 +777,23 @@ def _build_comment_body(c) -> str:
 
 
 def _api_post(url: str, token: str, ca_bundle: str | None, client_cert: str | None, payload: dict) -> dict:
-    import ssl
-    from urllib.error import HTTPError
-    from urllib.request import Request, urlopen
-    data = json.dumps(payload).encode()
-    req = Request(
-        url, data=data,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
-    ctx = ssl.create_default_context(cafile=ca_bundle)
-    if client_cert:
-        ctx.load_cert_chain(client_cert)
-    try:
-        with urlopen(req, context=ctx, timeout=30) as resp:
-            return json.loads(resp.read())
-    except HTTPError as e:
-        raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+    def _do() -> dict:
+        data = json.dumps(payload).encode()
+        req = Request(
+            url, data=data,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        ctx = ssl.create_default_context(cafile=ca_bundle)
+        if client_cert:
+            ctx.load_cert_chain(client_cert)
+        try:
+            with urlopen(req, context=ctx, timeout=30) as resp:
+                return json.loads(resp.read())
+        except HTTPError as e:
+            raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+    return _with_retry(_do)
