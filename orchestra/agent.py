@@ -25,7 +25,7 @@ from .events import EventBus, EventType
 from .sgr import SGRTracker, SGREntry
 from .condensation import get_condenser, should_condense
 from .streaming import stream_llm
-from .prompts import load_prompt, interpolate
+from .prompts import load_prompt, interpolate, load_internal
 from .tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -879,10 +879,13 @@ class Agent:
             if self.prompt_vars:
                 user_text = interpolate(user_text, **self.prompt_vars)
 
-        # Some endpoints reject requests without a user-role message.
+        # Some endpoints reject requests without a user-role message;
+        # this is a defensive fallback that never fires for our agents
+        # (all of them have a user.md). Kept inline because there's
+        # nothing to externalise — by definition the LLM never reads
+        # it during real runs.
         if not any(m.get("role") == "user" for m in messages):
-            messages.append({"role": "user",
-                             "content": user_text.strip() or "Begin."})
+            messages.append({"role": "user", "content": user_text.strip() or "Begin."})
         return messages
 
     def _build_tool_names(self) -> list[str]:
@@ -965,7 +968,7 @@ class Agent:
     def _force_done(self, messages: list[dict], tools_schema: list[dict]) -> Any:
         messages.append({
             "role": "user",
-            "content": "Step limit reached. Call done() now with all findings you have so far.",
+            "content": load_internal("pushers/step_limit"),
         })
         done_tools = [t for t in tools_schema if t["function"]["name"] == "done"]
         if not done_tools:
