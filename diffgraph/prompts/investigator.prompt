@@ -47,6 +47,17 @@ WORKFLOW:
    from WHAT CHANGED that relates to your focus. This shows only diff hunks.
    Also call read_outline() on key files. Gather facts before reflecting.
 
+   ALSO check the repo for a project-conventions doc — typically
+   `AGENTS.md` at the repo root, sometimes `CONVENTIONS.md`,
+   `CONTRIBUTING.md`, or `docs/conventions.md`. If your concern could
+   hinge on a project-specific rule (a domain invariant, a business
+   rule the diff might violate, a coding convention the team has
+   agreed on), READ that file. The project's own convention overrides
+   any generic Java / JPA / Spring / language-default reasoning you'd
+   otherwise apply. Cite the rule by name when it bears on the
+   finding ("AGENTS.md says the free item is always the cheapest, not
+   `group.get(0)`").
+
 2. THEN call reflect() with:
    - learned: facts you established from the code you just read
    - questions_remaining: ONLY questions you genuinely need to investigate

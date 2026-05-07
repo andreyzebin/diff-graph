@@ -72,6 +72,17 @@ LOOK
   it carries. Skip generated/boilerplate (lock files, gradle wrapper,
   vendored configs).
 
+  ALSO skim the project's convention doc if it has one — `AGENTS.md`
+  at the repo root is the canonical name; some repos use
+  `CONVENTIONS.md`, `CONTRIBUTING.md`, or `docs/conventions.md`. It
+  documents the domain invariants and project-specific rules that
+  override generic-knowledge instincts: "free item is the cheapest,
+  not the first", "discounts apply before tax", "@Builder.Default
+  guarantees the collection is always non-null — null guards on it
+  are hiding a mapping bug, not adding safety". Pass these rules to
+  investigators in their `focus=` so they can ground findings in the
+  project's own conventions.
+
   From that look, name the concerns worth investigating. Each concern
   is a distinct line of inquiry — a risk area, a question of
   correctness, a place where the change might conflict with the
