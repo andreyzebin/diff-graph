@@ -467,6 +467,26 @@ async def _run_async(
                 "path": str(attempt_dir.relative_to(session_dir)),
             })
 
+        # Progressive verdict line — print as soon as each attempt
+        # finishes (not after the whole asyncio.gather completes).
+        # Final per-provider summary still prints at the end in
+        # deterministic (provider × scenario) order; this is the
+        # in-flight feed only.
+        if result.verdict == "pass":
+            icon = "[green]✅[/green]"
+        elif result.verdict == "error":
+            icon = "[red]❌[/red]"
+        else:
+            icon = "[yellow]⚠️ [/yellow]"
+        attempt_tag = ""
+        if max(1, repeat) > 1:
+            attempt_tag = f" #{attempt_idx + 1}/{max(1, repeat)}"
+        console.print(
+            f"{icon} [magenta]{prov_label:14}[/magenta] {s.id:12} "
+            f"{s.name[:36]:36} score=[bold]{result.score:.2f}[/bold]  "
+            f"{result.duration_seconds:.1f}s{attempt_tag}"
+        )
+
         return prov_label, s.id, attempt_idx, (result, attempt_dir, agent_dir)
 
     # Build all units (provider × scenario × attempt) and run them
