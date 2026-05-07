@@ -105,8 +105,16 @@ def resolve_agent_data(config: AgentConfig, data: dict, registry: ToolRegistry) 
             log.warning("from: tool '%s' failed for field '%s': %s", from_tool, field_name, e)
             resolved[field_name] = "(not available)"
 
-    if resolved and "{" in config.system_prompt:
-        config.system_prompt = interpolate(config.system_prompt, **resolved)
+    if resolved:
+        # Interpolate BOTH system and user templates. After the
+        # system/user split most per-call placeholders ({diff_summary},
+        # {focus}, {message}, …) live in user_prompt now; system_prompt
+        # is largely placeholder-free but the same data can be quoted
+        # in either.
+        if "{" in config.system_prompt:
+            config.system_prompt = interpolate(config.system_prompt, **resolved)
+        if config.user_prompt and "{" in config.user_prompt:
+            config.user_prompt = interpolate(config.user_prompt, **resolved)
 
     return resolved
 
