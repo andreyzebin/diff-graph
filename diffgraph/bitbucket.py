@@ -335,19 +335,33 @@ def get_pr_comments(
         for activity in data.get("values", []):
             if activity.get("action") != "COMMENTED":
                 continue
-            comment_obj = activity.get("comment", {})
+            root = activity.get("comment", {})
             anchor = activity.get("commentAnchor") or {}
-            author_obj = comment_obj.get("author", {})
-            comments.append({
-                "id":       comment_obj.get("id"),
-                "file":     anchor.get("path", ""),
-                "line":     anchor.get("line", 0),
-                "text":     comment_obj.get("text", ""),
-                "author":   author_obj.get("displayName", ""),
-                "author_slug": author_obj.get("slug", author_obj.get("name", "")),
-                "resolved": comment_obj.get("state", "") == "RESOLVED",
-                "anchored": bool(anchor.get("path")),
-            })
+            # Walk the nested replies tree (Bitbucket nests replies inside
+            # `comment.comments[]`, not as separate activities) and emit
+            # one record per comment with parent_id set. Lets the agent
+            # see the message graph instead of a flat list.
+            stack: list[tuple[dict, int | None, int]] = [(root, None, 0)]
+            while stack:
+                node, parent_id, depth = stack.pop()
+                author_obj = node.get("author", {})
+                comments.append({
+                    "id":          node.get("id"),
+                    "parent_id":   parent_id,
+                    "depth":       depth,
+                    "file":        anchor.get("path", ""),
+                    "line":        anchor.get("line", 0),
+                    "text":        node.get("text", ""),
+                    "author":      author_obj.get("displayName", ""),
+                    "author_slug": author_obj.get("slug", author_obj.get("name", "")),
+                    "resolved":    node.get("state", "") == "RESOLVED",
+                    "anchored":    bool(anchor.get("path")),
+                })
+                # Reverse so that when popped from stack, replies are seen
+                # in chronological order. Bitbucket returns replies in
+                # creation order under `.comments[]`.
+                for child in reversed(node.get("comments") or []):
+                    stack.append((child, node.get("id"), depth + 1))
         if data.get("isLastPage", True):
             break
         start = data.get("nextPageStart", start + 100)
@@ -475,11 +489,20 @@ def get_comment_thread(
 
     _walk(root)
 
-    lines = []
+    if not flat:
+        return "(empty thread)"
+    blocks = []
     for msg in flat:
-        marker = " ← (this message)" if msg["id"] == comment_id else ""
-        lines.append(f"[{msg['author']}] (#{msg['id']}): {msg['text']}{marker}")
-    return "\n\n".join(lines) if lines else "(empty thread)"
+        marker = "  ← YOUR TRIGGER" if msg["id"] == comment_id else ""
+        # Borders matter: comment bodies often contain markdown / code /
+        # backticks, and a flat join makes the LLM blur where one ends
+        # and the next begins. The dashed ruler is enough boundary —
+        # short on tokens, hard to confuse with content.
+        blocks.append(
+            f"--- #{msg['id']} by [{msg['author']}]{marker}\n"
+            f"{msg['text']}"
+        )
+    return "\n".join(blocks) + "\n--- end of thread ---"
 
 
 def set_review_status(

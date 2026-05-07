@@ -359,10 +359,25 @@ def _strip_subject_prefix(text: str, pattern: _re.Pattern | None) -> tuple[str, 
 
 
 def _format_existing_comments(comments: list[dict], bot_user: str = "",
-                              subject_pattern: _re.Pattern | None = None) -> str:
-    """Format comments for prompt injection. Keeps unresolved + last N resolved.
+                              subject_pattern: _re.Pattern | None = None,
+                              active_thread_root_id: int | None = None) -> str:
+    """Format other PR threads as compact one-line summaries.
 
-    If `subject_pattern` matches a comment's text, the captured group is
+    The dispatcher already gets the active thread (the chain it's
+    answering inside) rendered fully under THREAD. This function is for
+    the *other* threads on the PR — the agent needs to know they exist
+    and their topic, but the actual reply content of those siblings is
+    noise in the prompt and a known cause of thread crosstalk (the LLM
+    drifts into a sibling's topic when a question is ambiguous).
+
+    Render rule:
+    - Group comments by thread root (chain via parent_id).
+    - One line per root: `#root_id [author] file:line — first 90 chars (+N replies)`.
+    - Replies are NOT rendered individually; only counted.
+    - The active thread (if `active_thread_root_id` is given) is
+      omitted entirely from this section — it lives under THREAD.
+
+    If `subject_pattern` matches the root's text, the captured group is
     treated as the author for [SELF]/[HUMAN] labelling — overriding the
     Bitbucket author slug. Used by the bench harness to simulate a
     multi-author thread under a single account.
@@ -370,39 +385,67 @@ def _format_existing_comments(comments: list[dict], bot_user: str = "",
     if not comments:
         return "(none)"
 
-    # Always limit: keep unresolved + most recent resolved
-    unresolved = [c for c in comments if not c.get("resolved")]
-    resolved = [c for c in comments if c.get("resolved")]
-    remaining = max(0, _MAX_COMMENTS - len(unresolved))
-    filtered = unresolved + resolved[-remaining:] if remaining else unresolved
-    if len(filtered) > _MAX_COMMENTS:
-        filtered = filtered[-_MAX_COMMENTS:]
+    # Build root → list-of-children map by walking parent_id chain.
+    by_id: dict[int, dict] = {c["id"]: c for c in comments if c.get("id") is not None}
+    def _root_of(c: dict) -> int:
+        cur = c
+        seen: set[int] = set()
+        while cur.get("parent_id") and cur["parent_id"] in by_id:
+            cid = cur["id"]
+            if cid in seen:
+                break
+            seen.add(cid)
+            cur = by_id[cur["parent_id"]]
+        return cur.get("id")
+    roots: dict[int, list[dict]] = {}
+    for c in comments:
+        root_id = _root_of(c)
+        if root_id is None:
+            continue
+        roots.setdefault(root_id, []).append(c)
+
+    # Drop the active thread — it's rendered fully elsewhere.
+    if active_thread_root_id is not None:
+        roots.pop(active_thread_root_id, None)
+
+    # Cap how many root threads we render. With ≥_MAX_COMMENTS roots we
+    # show only the most recent (by root id, an OK proxy for chronology
+    # on Bitbucket Server).
+    root_ids = sorted(roots.keys())
+    if len(root_ids) > _MAX_COMMENTS:
+        root_ids = root_ids[-_MAX_COMMENTS:]
 
     lines = []
-    for c in filtered:
-        resolved = " [RESOLVED]" if c.get("resolved") else ""
-        author = c.get("author", "")
-        slug = c.get("author_slug", "")
-        text_raw = str(c.get("text", ""))
+    for rid in root_ids:
+        children = roots[rid]
+        root = by_id.get(rid) or children[0]
+        # All siblings + root carry the same anchor (Bitbucket replies
+        # inherit the root's anchor); use root's data.
+        text_raw = str(root.get("text", ""))
         synth_author, text = _strip_subject_prefix(text_raw, subject_pattern)
+        author = root.get("author", "")
+        slug = root.get("author_slug", "")
         if synth_author:
-            # Synthetic author wins over Bitbucket slug for labelling.
-            if bot_user and synth_author == bot_user:
-                who = f"[SELF:{synth_author}]"
-            else:
-                who = f"[{synth_author}]"
+            who = (f"[SELF:{synth_author}]"
+                   if bot_user and synth_author == bot_user
+                   else f"[{synth_author}]")
         elif bot_user and slug and slug == bot_user:
             who = f"[SELF:{author}]"
         else:
             who = f"[{author}]" if author else ""
-        lines.append(
-            f"  #{c['id']} {who} {c.get('file', '')}:{c.get('line', '')} — "
-            f"{text[:100]}{resolved}"
-        )
+        anchor = ""
+        if root.get("file"):
+            anchor = f" {root['file']}:{root.get('line', '')}"
+        # Strip newlines so multi-line bodies don't bleed across lines.
+        snippet = " ".join(text.split())[:90]
+        reply_count = sum(1 for c in children if c.get("parent_id"))
+        suffix = f" (+{reply_count} replies)" if reply_count else ""
+        resolved_tag = " [RESOLVED]" if root.get("resolved") else ""
+        lines.append(f"  #{rid} {who}{anchor} — {snippet}{suffix}{resolved_tag}")
 
-    total = len(comments)
-    shown = len(filtered)
+    total_threads = len(roots) + (1 if active_thread_root_id is not None else 0)
     header = ""
-    if shown < total:
-        header = f"  ({shown} of {total} shown, {total - shown} older resolved omitted)\n"
-    return header + "\n".join(lines)
+    if len(root_ids) < len(roots):
+        header = (f"  ({len(root_ids)} of {len(roots)} other threads shown; "
+                  f"{total_threads} total on the PR)\n")
+    return (header + "\n".join(lines)) if lines else "(none)"

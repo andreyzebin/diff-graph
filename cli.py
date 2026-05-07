@@ -167,8 +167,25 @@ def _run_with_dispatcher(
             pat = _re.compile(subject_pattern)
         except _re.error as exc:
             console.print(f"[yellow]invalid --subject-pattern, ignored: {exc}[/yellow]")
+    # Find which thread root the trigger comment belongs to so the
+    # "other threads" rendering can omit it (it's already shown in
+    # full under THREAD).
+    active_root_id: int | None = None
+    if comment_id:
+        by_id = {c["id"]: c for c in existing_comments if c.get("id") is not None}
+        cur = by_id.get(comment_id)
+        seen: set[int] = set()
+        while cur and cur.get("parent_id") and cur["parent_id"] in by_id:
+            cid = cur["id"]
+            if cid in seen:
+                break
+            seen.add(cid)
+            cur = by_id[cur["parent_id"]]
+        if cur:
+            active_root_id = cur.get("id")
     existing_comments_str = _format_existing_comments(
         existing_comments, bot_user=bot_user, subject_pattern=pat,
+        active_thread_root_id=active_root_id,
     )
 
     # ── Lazy ctx: clone happens on first domain tool call ─────────────────
