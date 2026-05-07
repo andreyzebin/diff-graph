@@ -451,43 +451,41 @@ def get_comment_thread(
     if not token:
         return "(no token — cannot fetch thread)"
 
-    server_url, project, repo, pr_id = parse_pr_url(pr_url)
-    base = (
-        f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
-        f"/pull-requests/{pr_id}/comments"
-    )
-
-    # Walk parent chain to find root
-    root_id = comment_id
-    for _ in range(20):
-        endpoint = f"{base}/{root_id}"
-        try:
-            comment = _api_get(endpoint, token, ca_bundle, client_cert)
-        except Exception:
-            break
-        parent = comment.get("parent")
-        if not parent or not parent.get("id"):
-            break
-        root_id = parent["id"]
-
-    # Fetch root — Bitbucket nests the full thread under "comments"
+    # Bitbucket Server quirk: GET /comments/{id} returns `parent = None`
+    # for replies — the parent→child link only exists in the parent's
+    # `.comments[]` array. Walking up via `.parent` never finds the root
+    # for any reply, so the THREAD rendered to the agent collapses to
+    # just the trigger comment. Fix: build the parent_id map by walking
+    # the activities feed top-down (already done in get_pr_comments),
+    # then walk up via that map.
     try:
-        root = _api_get(f"{base}/{root_id}", token, ca_bundle, client_cert)
+        all_comments = get_pr_comments(pr_url, token, ca_bundle, client_cert)
     except Exception:
-        return "(failed to fetch root comment)"
+        return "(failed to fetch PR comments)"
 
-    # Flatten nested comment tree
-    flat: list[dict] = []
+    by_id = {c["id"]: c for c in all_comments if c.get("id") is not None}
+    if comment_id not in by_id:
+        return f"(comment #{comment_id} not found on PR)"
 
-    def _walk(node: dict) -> None:
-        author = node.get("author", {}).get("displayName", "unknown")
-        text = node.get("text", "")
-        nid = node.get("id", 0)
-        flat.append({"author": author, "text": text, "id": nid})
-        for child in node.get("comments", []):
-            _walk(child)
+    chain_ids: list[int] = []
+    cur_id: int | None = comment_id
+    seen: set[int] = set()
+    while cur_id is not None:
+        if cur_id in seen:
+            break
+        seen.add(cur_id)
+        chain_ids.append(cur_id)
+        cur_id = by_id.get(cur_id, {}).get("parent_id")
 
-    _walk(root)
+    chain_ids.reverse()  # root → ... → trigger
+    flat = [
+        {
+            "id": cid,
+            "author": by_id[cid].get("author", "unknown"),
+            "text": by_id[cid].get("text", ""),
+        }
+        for cid in chain_ids
+    ]
 
     if not flat:
         return "(empty thread)"
