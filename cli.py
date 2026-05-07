@@ -159,14 +159,14 @@ def run(
     all_providers: bool = typer.Option(False, "--all-providers", help="Run scenarios against every provider listed in agent.providers (config.local.yaml)."),
     repeat: int = typer.Option(1, "--repeat", "-n", help="Run each scenario N times and aggregate (median score, union of warnings). Useful for variance-prone agents/judges."),
     mode: str = typer.Option("gentle", "--mode", help="Run mode: 'gentle' (sequential, polite to shared LLM endpoints — default) or 'aggressive' (bounded-parallel via temp-branch PRs, fast pre-merge smoke)."),
-    max_concurrency: int = typer.Option(4, "--max-concurrency", help="Aggressive mode: max concurrent (provider, scenario, attempt) tasks. Ignored in gentle mode. Default 4."),
+    max_per_provider: int = typer.Option(2, "--max-per-provider", help="Aggressive mode: max concurrent tasks PER PROVIDER. The bottleneck is the LLM endpoint, not the bench, so the budget is per-model — total in-flight = N × providers. Default 2."),
 ):
     """Run benchmark scenarios."""
     if mode not in ("gentle", "aggressive"):
         console.print(f"[red]invalid --mode {mode!r}; use gentle or aggressive[/red]")
         raise typer.Exit(2)
     asyncio.run(_run_async(scenario, tag or [], dry_run, compare_with, agent_url, prompts, no_verify_ssl,
-                           list(provider or []), all_providers, repeat, mode, max_concurrency))
+                           list(provider or []), all_providers, repeat, mode, max_per_provider))
 
 
 _PROVIDER_FLAG_RE = __import__("re").compile(r"\s*--provider[= ]\{provider\}")
@@ -234,7 +234,7 @@ async def _run_async(
     all_providers: bool = False,
     repeat: int = 1,
     mode: str = "gentle",
-    max_concurrency: int = 4,
+    max_per_provider: int = 2,
 ):
     from bitbucket import build_proxy
     from runner.scenario_loader import load_scenarios
@@ -361,7 +361,7 @@ async def _run_async(
         prov_triggers[prov_label] = (prov, _make_trigger(run_agent_cfg, bitbucket_connection))
 
     if mode == "aggressive":
-        console.print(f"\n[bold]Running {len(scenarios) * max(1, repeat) * len(providers)} task(s) — aggressive (max-concurrency={max_concurrency}) ─[/bold]\n")
+        console.print(f"\n[bold]Running {len(scenarios) * max(1, repeat) * len(providers)} task(s) — aggressive (max-per-provider={max_per_provider}; total in-flight ≤ {max_per_provider * len(providers)}) ─[/bold]\n")
     else:
         console.print(f"\n[bold]Running {len(scenarios)} scenario(s) × {len(providers)} provider(s) × {max(1, repeat)} attempt(s) — gentle (sequential) ─[/bold]\n")
 
@@ -466,10 +466,19 @@ async def _run_async(
             for attempt_idx in range(max(1, repeat)):
                 units.append((prov_label, prov, trigger, s, attempt_idx))
 
-    if mode == "aggressive" and max_concurrency > 1 and len(units) > 1:
-        sem = asyncio.Semaphore(max_concurrency)
+    if mode == "aggressive" and max_per_provider > 0 and len(units) > 1:
+        # Per-provider semaphores: the LLM endpoint is the real
+        # bottleneck, so each provider gets its own concurrency budget
+        # and they run side-by-side. Total in-flight is at most
+        # max_per_provider × len(providers); within one provider we
+        # never exceed max_per_provider.
+        sems: dict[str, asyncio.Semaphore] = {
+            label: asyncio.Semaphore(max_per_provider)
+            for label in prov_triggers
+        }
         async def _bound(u):
-            async with sem:
+            prov_label = u[0]
+            async with sems[prov_label]:
                 return await _run_one_attempt(*u)
         unit_results = await asyncio.gather(*(_bound(u) for u in units))
     else:

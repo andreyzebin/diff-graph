@@ -432,6 +432,15 @@ class RealBitbucketFactory(AgentPRViewFactory):
         description:   str  (optional)
     """
 
+    # Pre-session cleanup runs at most once per CLI process. Multiple
+    # build_proxy calls (gentle mode = sequential, aggressive mode =
+    # parallel) must NOT each decline every open [BENCHMARK] PR — in
+    # aggressive mode that would tear down a sibling slot's PR mid-run
+    # ("only one PR open" anomaly). Set on the first build(); cleared
+    # when the process exits.
+    _cleanup_done: bool = False
+    _cleanup_lock: asyncio.Lock | None = None
+
     @classmethod
     async def build(cls, cfg: dict) -> AgentPRView:
         conn = cfg["connection"]
@@ -474,13 +483,22 @@ class RealBitbucketFactory(AgentPRViewFactory):
 
         # Pre-clean orphan bench/ branches (and any stale [BENCHMARK] PRs
         # on the same target) left behind by killed runs. Best-effort —
-        # logged failures don't block the new run.
-        await loop.run_in_executor(
-            None,
-            lambda: cls._cleanup_stale_bench_artefacts(
-                client, project, repo, pr_cfg["to_branch"],
-            ),
-        )
+        # logged failures don't block the new run. Runs at most once
+        # per CLI process; subsequent build() calls (gentle mode loop
+        # or aggressive mode fan-out) skip it because in-flight
+        # [BENCHMARK] PRs from sibling slots are NOT stale and must
+        # not be declined.
+        if cls._cleanup_lock is None:
+            cls._cleanup_lock = asyncio.Lock()
+        async with cls._cleanup_lock:
+            if not cls._cleanup_done:
+                await loop.run_in_executor(
+                    None,
+                    lambda: cls._cleanup_stale_bench_artefacts(
+                        client, project, repo, pr_cfg["to_branch"],
+                    ),
+                )
+                cls._cleanup_done = True
 
         # Create the throw-away branch server-side from the scenario
         # source. No git push needed — Bitbucket's branch-utils plugin
