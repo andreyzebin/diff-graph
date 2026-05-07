@@ -37,7 +37,8 @@ def _resolve_path(posted_tree: list[dict], path: list[int]) -> int | None:
     return cid
 
 
-async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Trigger) -> list[int]:
+async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Trigger,
+                            env_overrides: dict | None = None) -> list[int]:
     """
     Apply scenario.setup.seed_comments, then fire the trigger.
 
@@ -120,6 +121,7 @@ async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Tri
         try:
             await trigger.activate(
                 proxy,
+                env_overrides=env_overrides,
                 message=scenario.trigger.text,
                 comment_id=str(comment_id),
             )
@@ -132,7 +134,11 @@ async def _seed_and_trigger(scenario: Scenario, proxy: AgentPRView, trigger: Tri
         return posted_ids
 
     # Default path: existing trigger strategies (http / webhook / cli)
-    await trigger.activate(proxy)
+    try:
+        await trigger.activate(proxy, env_overrides=env_overrides)
+    except TypeError:
+        # Older Trigger subclass without env_overrides — fall back.
+        await trigger.activate(proxy)
     return posted_ids
 
 
@@ -141,12 +147,13 @@ async def run_scenario(
     proxy: AgentPRView,
     trigger: Trigger,
     judge: Judge,
+    env_overrides: dict | None = None,
 ) -> ScenarioResult:
     start = time.monotonic()
 
     posted_ids: list[int] = []
     try:
-        posted_ids = await _seed_and_trigger(scenario, proxy, trigger)
+        posted_ids = await _seed_and_trigger(scenario, proxy, trigger, env_overrides=env_overrides)
     except Exception as e:
         return ScenarioResult(
             scenario_id=scenario.id,

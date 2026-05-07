@@ -158,10 +158,15 @@ def run(
     provider: Optional[list[str]] = typer.Option(None, "--provider", "-p", help="LLM provider profile to pass to the agent CLI (repeatable). Without it, the agent uses its own config."),
     all_providers: bool = typer.Option(False, "--all-providers", help="Run scenarios against every provider listed in agent.providers (config.local.yaml)."),
     repeat: int = typer.Option(1, "--repeat", "-n", help="Run each scenario N times and aggregate (median score, union of warnings). Useful for variance-prone agents/judges."),
+    mode: str = typer.Option("gentle", "--mode", help="Run mode: 'gentle' (sequential, polite to shared LLM endpoints — default) or 'aggressive' (bounded-parallel via temp-branch PRs, fast pre-merge smoke)."),
+    max_concurrency: int = typer.Option(4, "--max-concurrency", help="Aggressive mode: max concurrent (provider, scenario, attempt) tasks. Ignored in gentle mode. Default 4."),
 ):
     """Run benchmark scenarios."""
+    if mode not in ("gentle", "aggressive"):
+        console.print(f"[red]invalid --mode {mode!r}; use gentle or aggressive[/red]")
+        raise typer.Exit(2)
     asyncio.run(_run_async(scenario, tag or [], dry_run, compare_with, agent_url, prompts, no_verify_ssl,
-                           list(provider or []), all_providers, repeat))
+                           list(provider or []), all_providers, repeat, mode, max_concurrency))
 
 
 _PROVIDER_FLAG_RE = __import__("re").compile(r"\s*--provider[= ]\{provider\}")
@@ -228,6 +233,8 @@ async def _run_async(
     providers: list[str] | None = None,
     all_providers: bool = False,
     repeat: int = 1,
+    mode: str = "gentle",
+    max_concurrency: int = 4,
 ):
     from bitbucket import build_proxy
     from runner.scenario_loader import load_scenarios
@@ -336,160 +343,163 @@ async def _run_async(
     results: list = []              # flat list across all providers (for store.save_run)
     summary_rows: list[dict] = []
 
+    # Build per-provider trigger objects up front (provider gets baked
+    # into the command template at this stage). Reused across all
+    # (scenario × attempt) tasks for that provider.
+    prov_triggers: dict[str, tuple] = {}
     for prov in providers:
         prov_label = prov or "(default)"
         run_agent_cfg = dict(agent_cfg)
         if run_agent_cfg.get("trigger") == "cli":
             run_agent_cfg["command"] = _inject_provider(run_agent_cfg.get("command", ""), prov)
-            # Same {provider} substitution for the second template used by
-            # interaction scenarios — otherwise --provider= ends up empty.
             if run_agent_cfg.get("interaction_command"):
                 run_agent_cfg["interaction_command"] = _inject_provider(
                     run_agent_cfg["interaction_command"], prov,
                 )
-
         console.print(f"\n[bold magenta]── provider: {prov_label} ─────────────────────────────────────[/bold magenta]")
         _print_trigger_summary(run_agent_cfg, console)
-        console.print(f"\n[bold]Running {len(scenarios)} scenario(s)...[/bold]\n")
+        prov_triggers[prov_label] = (prov, _make_trigger(run_agent_cfg, bitbucket_connection))
 
-        trigger = _make_trigger(run_agent_cfg, bitbucket_connection)
-        prov_results: list = []
+    if mode == "aggressive":
+        console.print(f"\n[bold]Running {len(scenarios) * max(1, repeat) * len(providers)} task(s) — aggressive (max-concurrency={max_concurrency}) ─[/bold]\n")
+    else:
+        console.print(f"\n[bold]Running {len(scenarios)} scenario(s) × {len(providers)} provider(s) × {max(1, repeat)} attempt(s) — gentle (sequential) ─[/bold]\n")
 
+    # Per-attempt unit: returns (result, attempt_dir, agent_dir).
+    # Self-contained — no shared os.environ mutation, so safe to run
+    # in parallel under asyncio.Semaphore.
+    async def _run_one_attempt(prov_label, prov, trigger, s, attempt_idx):
+        attempt_dir: Path | None = None
+        agent_dir: Path | None = None
+        judge_dir: Path | None = None
+        env_overrides: dict[str, str] = {}
+        if session_dir is not None:
+            sc_parent = session_dir / _safe_seg(prov_label) / _safe_seg(s.id)
+            attempt_dir = _next_attempt_dir(sc_parent)
+            agent_dir = attempt_dir / "agent"
+            judge_dir = attempt_dir / "judge"
+            agent_dir.mkdir()
+            judge_dir.mkdir()
+            env_overrides["DIFFGRAPH_TRACE_PATH"] = str(agent_dir)
+
+        bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
+        result = None
+        proxy = None
+        try:
+            proxy = await build_proxy(bb_cfg)
+            async with proxy:
+                judge = LLMJudge(
+                    llm_client, proxy,
+                    judge_dir=judge_dir,
+                    model=judge_cfg.get("model", ""),
+                    verdict_source=judge_cfg.get("verdict_source", "api"),
+                )
+                result = await run_scenario(
+                    scenario=s,
+                    proxy=proxy,
+                    trigger=trigger,
+                    judge=judge,
+                    env_overrides=env_overrides,
+                )
+        except Exception as exc:
+            from runner.scorer import ScenarioResult
+            err_msg = f"{type(exc).__name__}: {exc}"
+            console.print(f"   [red dim]{prov_label}/{s.id} attempt {attempt_idx + 1} failed: {err_msg}[/red dim]")
+            result = ScenarioResult(
+                scenario_id=s.id,
+                scenario_name=s.name,
+                verdict="error",
+                score=0.0,
+                required_found=0,
+                required_total=len(s.expected_output.required_comments),
+                false_positives=0,
+                location_accuracy=0.0,
+                status_change_verdict="n/a",
+                inline_ratio=0.0,
+                total_comments=0,
+                duration_seconds=0.0,
+                judge_summary=err_msg,
+                error=err_msg,
+                pr_url=getattr(proxy, "pr_url", None) if proxy else None,
+            )
+
+        _generation = ""
+        _mutation = ""
+        if agent_dir is not None and (agent_dir / "run.json").exists():
+            try:
+                _agent_run = json.loads((agent_dir / "run.json").read_text())
+                _generation = _agent_run.get("prompt_source", "") or ""
+                if _generation and "/" in _generation:
+                    _generation = _generation.rsplit("/", 1)[-1]
+                _mutation = _agent_run.get("prompt_hash", "") or ""
+            except Exception:
+                pass
+        if attempt_dir is not None:
+            (attempt_dir / "result.json").write_text(json.dumps({
+                "scenario": s.id,
+                "provider": prov_label,
+                "attempt": attempt_dir.name,
+                "verdict": result.verdict,
+                "score": result.score,
+                "comments": result.total_comments,
+                "duration_seconds": result.duration_seconds,
+                "error": result.error,
+                "generation": _generation,
+                "mutation": _mutation,
+            }, ensure_ascii=False, indent=2))
+            summary_rows.append({
+                "provider": prov_label, "scenario": s.id,
+                "attempt": attempt_dir.name, "score": result.score,
+                "verdict": result.verdict, "comments": result.total_comments,
+                "duration_seconds": result.duration_seconds,
+                "generation": _generation, "mutation": _mutation,
+                "path": str(attempt_dir.relative_to(session_dir)),
+            })
+
+        return prov_label, s.id, attempt_idx, (result, attempt_dir, agent_dir)
+
+    # Build all units (provider × scenario × attempt) and run them
+    # under the chosen mode.
+    units = []
+    for prov_label, (prov, trigger) in prov_triggers.items():
         for s in scenarios:
-            # Per (provider, scenario) the bench may run N attempts (--repeat).
-            # Per-attempt directories live under the scenario; the aggregated
-            # result is what gets pushed into prov_results / results.
-            attempt_results: list = []
-            last_attempt_dir: Path | None = None
-            last_agent_dir: Path | None = None
-
             for attempt_idx in range(max(1, repeat)):
-                attempt_dir: Path | None = None
-                agent_dir: Path | None = None
-                judge_dir: Path | None = None
-                saved_path = os.environ.get("DIFFGRAPH_TRACE_PATH")
-                if session_dir is not None:
-                    sc_parent = session_dir / _safe_seg(prov_label) / _safe_seg(s.id)
-                    attempt_dir = _next_attempt_dir(sc_parent)
-                    agent_dir = attempt_dir / "agent"
-                    judge_dir = attempt_dir / "judge"
-                    agent_dir.mkdir()
-                    judge_dir.mkdir()
-                    os.environ["DIFFGRAPH_TRACE_PATH"] = str(agent_dir)
-                last_attempt_dir = attempt_dir
-                last_agent_dir = agent_dir
+                units.append((prov_label, prov, trigger, s, attempt_idx))
 
-                bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
-                # Wrap the whole iteration so a failure in build_proxy / agent /
-                # judge / decline does NOT abort the matrix — record an "error"
-                # result and move on to the next provider/scenario.
-                result = None
-                proxy = None
-                try:
-                    proxy = await build_proxy(bb_cfg)
-                    try:
-                        async with proxy:
-                            judge = LLMJudge(
-                                llm_client, proxy,
-                                judge_dir=judge_dir,
-                                model=judge_cfg.get("model", ""),
-                                verdict_source=judge_cfg.get("verdict_source", "api"),
-                            )
-                            result = await run_scenario(
-                                scenario=s,
-                                proxy=proxy,
-                                trigger=trigger,
-                                judge=judge,
-                            )
-                    finally:
-                        if saved_path is None:
-                            os.environ.pop("DIFFGRAPH_TRACE_PATH", None)
-                        else:
-                            os.environ["DIFFGRAPH_TRACE_PATH"] = saved_path
-                except Exception as exc:
-                    from runner.scorer import ScenarioResult
-                    err_msg = f"{type(exc).__name__}: {exc}"
-                    console.print(f"   [red dim]iteration failed: {err_msg}[/red dim]")
-                    result = ScenarioResult(
-                        scenario_id=s.id,
-                        scenario_name=s.name,
-                        verdict="error",
-                        score=0.0,
-                        required_found=0,
-                        required_total=len(s.expected_output.required_comments),
-                        false_positives=0,
-                        location_accuracy=0.0,
-                        status_change_verdict="n/a",
-                        inline_ratio=0.0,
-                        total_comments=0,
-                        duration_seconds=0.0,
-                        judge_summary=err_msg,
-                        error=err_msg,
-                        pr_url=getattr(proxy, "pr_url", None) if proxy else None,
-                    )
+    if mode == "aggressive" and max_concurrency > 1 and len(units) > 1:
+        sem = asyncio.Semaphore(max_concurrency)
+        async def _bound(u):
+            async with sem:
+                return await _run_one_attempt(*u)
+        unit_results = await asyncio.gather(*(_bound(u) for u in units))
+    else:
+        unit_results = []
+        for u in units:
+            unit_results.append(await _run_one_attempt(*u))
 
-                # Persist per-attempt result.json + summary row immediately
-                # so the per-attempt artefacts are complete even when the
-                # process is killed mid-aggregation.
-                _generation = ""
-                _mutation = ""
-                if agent_dir is not None and (agent_dir / "run.json").exists():
-                    try:
-                        _agent_run = json.loads((agent_dir / "run.json").read_text())
-                        _generation = _agent_run.get("prompt_source", "") or ""
-                        if _generation and "/" in _generation:
-                            _generation = _generation.rsplit("/", 1)[-1]
-                        _mutation = _agent_run.get("prompt_hash", "") or ""
-                    except Exception:
-                        pass
-                if attempt_dir is not None:
-                    (attempt_dir / "result.json").write_text(json.dumps({
-                        "scenario": s.id,
-                        "provider": prov_label,
-                        "attempt": attempt_dir.name,
-                        "verdict": result.verdict,
-                        "score": result.score,
-                        "comments": result.total_comments,
-                        "duration_seconds": result.duration_seconds,
-                        "error": result.error,
-                        "generation": _generation,
-                        "mutation": _mutation,
-                    }, ensure_ascii=False, indent=2))
-                    summary_rows.append({
-                        "provider": prov_label, "scenario": s.id,
-                        "attempt": attempt_dir.name, "score": result.score,
-                        "verdict": result.verdict, "comments": result.total_comments,
-                        "duration_seconds": result.duration_seconds,
-                        "generation": _generation, "mutation": _mutation,
-                        "path": str(attempt_dir.relative_to(session_dir)),
-                    })
+    # Group by (prov_label, scenario_id) for per-pair aggregation.
+    by_pair: dict[tuple, list] = {}
+    for prov_label, scen_id, _attempt_idx, attempt_data in unit_results:
+        by_pair.setdefault((prov_label, scen_id), []).append(attempt_data)
 
-                attempt_results.append((result, attempt_dir, agent_dir))
-
-            # Aggregate across attempts when --repeat > 1; otherwise the
-            # single attempt result IS the final.
-            from runner.scorer import aggregate_results
-            attempt_only_results = [r for r, _, _ in attempt_results]
-            result = aggregate_results(attempt_only_results)
-
-            # Pick "last" trace dirs for downstream metadata (prompt hash etc).
-            attempt_dir = last_attempt_dir
-            agent_dir = last_agent_dir
+    # Iterate in the original (provider × scenario) order so the
+    # printed summary stays deterministic regardless of how aggressive
+    # mode interleaved the actual execution.
+    from runner.scorer import aggregate_results
+    for prov in providers:
+        prov_label = prov or "(default)"
+        prov_results: list = []
+        for s in scenarios:
+            attempts = by_pair.get((prov_label, s.id), [])
+            attempt_only = [r for r, _, _ in attempts]
+            if not attempt_only:
+                continue
+            result = aggregate_results(attempt_only)
+            attempt_dir = attempts[-1][1]
+            agent_dir = attempts[-1][2]
 
             prov_results.append(result)
             results.append(result)
-
-            generation = ""
-            mutation = ""
-            if agent_dir is not None and (agent_dir / "run.json").exists():
-                try:
-                    agent_run = json.loads((agent_dir / "run.json").read_text())
-                    generation = agent_run.get("prompt_source", "") or ""
-                    if generation and "/" in generation:
-                        generation = generation.rsplit("/", 1)[-1]
-                    mutation = agent_run.get("prompt_hash", "") or ""
-                except Exception:
-                    pass
 
             if result.verdict == "pass":
                 icon = "[green]✅[/green]"
@@ -508,7 +518,7 @@ async def _run_async(
                     f"({result.score_min:.2f}..{result.score_max:.2f})[/dim]"
                 )
             console.print(
-                f"{icon} {s.id:12} {s.name[:38]:38} "
+                f"{icon} [magenta]{prov_label:14}[/magenta] {s.id:12} {s.name[:38]:38} "
                 f"score={score_disp}  "
                 f"comments={result.total_comments}  "
                 f"{result.duration_seconds:.1f}s"

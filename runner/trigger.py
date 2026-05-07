@@ -95,11 +95,18 @@ class CliTrigger(Trigger):
         self._cwd = os.path.expanduser(cwd) if cwd else None
         self._output = output  # "log" | "stream"
 
-    async def activate(self, proxy: AgentPRView, **extra_placeholders) -> None:
+    async def activate(self, proxy: AgentPRView, env_overrides: dict | None = None,
+                       **extra_placeholders) -> None:
         """
         Run the configured shell command. Caller can pass extra placeholder
         values to substitute (e.g. {message}, {comment_id} for interaction
         scenarios that drive the dispatcher path of cli.py).
+
+        `env_overrides` is merged into the subprocess env at spawn time so
+        per-run overrides (DIFFGRAPH_TRACE_PATH etc.) don't have to mutate
+        the global os.environ — required for parallel attempts in
+        aggressive mode where two coroutines would otherwise race on the
+        global env between set→spawn.
 
         When `message` is provided in extra_placeholders AND
         interaction_command_template is configured, that template is
@@ -132,12 +139,17 @@ class CliTrigger(Trigger):
         logger.info("CliTrigger running: %s", command)
         print(f"  → {command}", flush=True)
 
+        sub_env = None
+        if env_overrides:
+            sub_env = {**os.environ, **{k: str(v) for k, v in env_overrides.items()}}
+
         proc = await asyncio.create_subprocess_shell(
             command,
             executable="/bin/bash",
             cwd=self._cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=sub_env,
         )
 
         stderr_lines: list[str] = []

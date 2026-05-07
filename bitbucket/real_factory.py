@@ -18,30 +18,71 @@ from .base import (
 
 # Transient network/HTTP errors that should be retried — corp Bitbucket
 # instances over VPN occasionally drop a single request and a tight retry
-# brings the next one back. We deliberately don't retry HTTP 4xx/5xx that
-# come back as a real Response, only network-layer failures.
+# brings the next one back. SSLError is included because Bitbucket Server
+# under load returns `SSL: UNEXPECTED_EOF_WHILE_READING` mid-handshake,
+# which `requests` surfaces as SSLError, not ConnectionError. We
+# deliberately don't retry HTTP 4xx/5xx that come back as a real
+# Response, only network-layer failures.
 _TRANSIENT = (
     _re.ConnectTimeout,
     _re.ReadTimeout,
     _re.ConnectionError,
+    _re.SSLError,
 )
 
 
-def _retry(fn, *, attempts: int = 3, delay: float = 2.0):
-    """Call fn() with up to *attempts* tries, sleeping *delay* between them.
+# Tunable defaults for `_retry`. Picked up from environment so callers
+# don't have to thread the values through every call site:
+#   BENCH_BB_RETRY_ATTEMPTS=N       — total tries (default 5)
+#   BENCH_BB_RETRY_BASE_DELAY=SEC   — first-retry sleep (default 1.0s)
+#   BENCH_BB_RETRY_MAX_DELAY=SEC    — cap per-retry sleep (default 30s)
+# Backoff is exponential: delay_i = min(base * 2**i, max). Aggressive
+# bench runs against an overloaded Bitbucket Server need this; gentle
+# runs almost never trip it but the same defaults are safe.
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
 
-    Re-raises the last exception if every attempt fails.
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+_DEFAULT_ATTEMPTS = _env_int("BENCH_BB_RETRY_ATTEMPTS", 5)
+_DEFAULT_BASE_DELAY = _env_float("BENCH_BB_RETRY_BASE_DELAY", 1.0)
+_DEFAULT_MAX_DELAY = _env_float("BENCH_BB_RETRY_MAX_DELAY", 30.0)
+
+
+def _retry(fn, *, attempts: int | None = None, delay: float | None = None,
+           max_delay: float | None = None):
+    """Call fn() with exponential backoff on transient errors.
+
+    `attempts`     — total number of tries (default from BENCH_BB_RETRY_ATTEMPTS).
+    `delay`        — sleep before the first retry (default from BENCH_BB_RETRY_BASE_DELAY).
+    `max_delay`    — cap on per-retry sleep (default from BENCH_BB_RETRY_MAX_DELAY).
+
+    Sleep i = min(delay * 2**i, max_delay). Re-raises the last exception
+    if every attempt fails.
     """
+    a = attempts if attempts is not None else _DEFAULT_ATTEMPTS
+    base = delay if delay is not None else _DEFAULT_BASE_DELAY
+    cap = max_delay if max_delay is not None else _DEFAULT_MAX_DELAY
     last: Exception | None = None
-    for i in range(attempts):
+    for i in range(a):
         try:
             return fn()
         except _TRANSIENT as exc:
             last = exc
-            log.warning("transient bitbucket error (try %d/%d): %s",
-                        i + 1, attempts, exc)
-            if i + 1 < attempts:
-                time.sleep(delay)
+            wait = min(base * (2 ** i), cap)
+            log.warning("transient bitbucket error (try %d/%d, wait %.1fs): %s",
+                        i + 1, a, wait, exc)
+            if i + 1 < a:
+                time.sleep(wait)
     assert last is not None
     raise last
 
@@ -443,12 +484,14 @@ class RealBitbucketFactory(AgentPRViewFactory):
 
         # Create the throw-away branch server-side from the scenario
         # source. No git push needed — Bitbucket's branch-utils plugin
-        # creates it from a server-known startPoint.
+        # creates it from a server-known startPoint. Wrapped in _retry
+        # so a single SSL EOF / connection-reset doesn't kill the
+        # scenario when the server is under load.
         await loop.run_in_executor(
             None,
-            lambda: cls._create_branch_via_rest(
+            lambda: _retry(lambda: cls._create_branch_via_rest(
                 client, project, repo, temp_branch, pr_cfg["from_branch"],
-            ),
+            )),
         )
 
         payload = {
@@ -463,7 +506,7 @@ class RealBitbucketFactory(AgentPRViewFactory):
         try:
             resp = await loop.run_in_executor(
                 None,
-                lambda: client.create_pull_request(project, repo, payload),
+                lambda: _retry(lambda: client.create_pull_request(project, repo, payload)),
             )
         except Exception as exc:
             # If PR creation failed, the temp branch is now orphaned.
@@ -553,7 +596,7 @@ class RealBitbucketFactory(AgentPRViewFactory):
         start = 0
         while True:
             try:
-                resp = client.get(
+                resp = _retry(lambda: client.get(
                     path,
                     params={
                         "state": "OPEN",
@@ -563,7 +606,7 @@ class RealBitbucketFactory(AgentPRViewFactory):
                         "start": start,
                     },
                     advanced_mode=True,
-                )
+                ))
                 if resp.status_code >= 400:
                     log.warning("list open PRs failed: HTTP %d %s",
                                 resp.status_code, resp.text[:200])
@@ -612,7 +655,7 @@ class RealBitbucketFactory(AgentPRViewFactory):
         bench_branches: list[str] = []
         while True:
             try:
-                resp = client.get(
+                resp = _retry(lambda: client.get(
                     path,
                     params={
                         "filterText": "bench/",
@@ -620,7 +663,7 @@ class RealBitbucketFactory(AgentPRViewFactory):
                         "start": start,
                     },
                     advanced_mode=True,
-                )
+                ))
                 if resp.status_code >= 400:
                     log.warning("list bench branches failed: HTTP %d %s",
                                 resp.status_code, resp.text[:200])
