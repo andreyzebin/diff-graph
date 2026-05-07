@@ -132,6 +132,7 @@ class Agent:
         prompt_vars: Optional[dict[str, str]] = None,
         agent_configs: Optional[dict[str, AgentConfig]] = None,
         agent_registry: Any = None,  # AgentRegistry from compiler
+        spawn_mocks: Any = None,     # SpawnMocks; intercepts _meta_spawn_agent
     ) -> None:
         self.config = config
         self.registry = tool_registry
@@ -146,6 +147,9 @@ class Agent:
         self.prompt_vars = prompt_vars or {}
         self.agent_configs = agent_configs or {}
         self.agent_registry = agent_registry  # compiled prompt registry
+        # Inherited from parent so deep agents are still mocked when the
+        # mock fixture covers them (and only them).
+        self.spawn_mocks = spawn_mocks if spawn_mocks is not None else (parent.spawn_mocks if parent else None)
         self.data_scope: dict[str, str] = {}  # resolved @data values for inheritance
 
         # SGR
@@ -695,8 +699,42 @@ class Agent:
         return resolved
 
     def _meta_spawn_agent(self, args: dict) -> str:
-        """spawn_agent: create and run a child agent with data injection."""
+        """spawn_agent: create and run a child agent with data injection.
+
+        If `self.spawn_mocks` is configured AND covers `agent_name`,
+        the call is short-circuited with a canned response (see
+        orchestra.spawn_mocks). No child agent is created and no
+        downstream LLM calls fire — that's the whole point of the
+        mock substrate (cheap, isolated unit tests of one agent at
+        a time).
+        """
         agent_name = args.get("agent", "")
+        focus_arg = args.get("focus", "")
+
+        # ── Mock short-circuit ────────────────────────────────────────────
+        # Partial mocking is allowed: a fixture can mock just `investigator`
+        # while leaving `reviewer` real. Falling through to real spawn here
+        # only when the agent name is NOT in the fixture at all. If it IS
+        # in the fixture but no entry matched, that's a fixture hole — we
+        # raise so the test author sees the missing case instead of
+        # silently spending real LLM budget.
+        if self.spawn_mocks is not None and self.spawn_mocks.has(agent_name):
+            from .spawn_mocks import render_mock_response, MissingMockMatchError
+            entry = self.spawn_mocks.find(agent_name, focus_arg)
+            if entry is None:
+                raise MissingMockMatchError(
+                    f"spawn_mocks for '{agent_name}' has no entry matching "
+                    f"focus={focus_arg!r}; configured keywords: "
+                    f"{[e.keywords for e in self.spawn_mocks.by_agent.get(agent_name, [])]}"
+                )
+            self.event_bus.emit(
+                EventType.AGENT_SPAWNED,
+                parent_id=self.agent_id, child_id="mock",
+                agent_name=agent_name, focus=focus_arg,
+                data_keys=[], mocked=True, mock_keywords=entry.keywords,
+            )
+            return render_mock_response(entry, agent_name, focus_arg)
+
         agent_config = self._resolve_agent_config(agent_name)
         if not agent_config:
             return json.dumps({"error": f"unknown agent: {agent_name}"})
@@ -708,7 +746,6 @@ class Agent:
         resolved_data = dict(self.data_scope)
         if data:
             resolved_data.update(self._resolve_data_inheritance(data))
-        focus_arg = args.get("focus", "")
         if focus_arg and "focus" not in resolved_data:
             resolved_data["focus"] = focus_arg
 

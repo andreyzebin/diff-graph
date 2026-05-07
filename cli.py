@@ -16,7 +16,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich import box as rich_box
@@ -107,6 +107,7 @@ def _run_with_dispatcher(
     comment_tag: str = "dg",
     subject_pattern: Optional[str] = None,
     verdict_mode: str = "api",
+    spawn_mocks: Any = None,
 ) -> None:
     """
     Run any agent with lazy repo init.
@@ -303,6 +304,7 @@ def _run_with_dispatcher(
         tool_choice=llm_cfg.get("tool_choice", ""),
         stream=llm_cfg.get("stream"),
         extra_body=llm_cfg.get("extra_body"),
+        spawn_mocks=spawn_mocks,
     )
 
     # ── Post-run: post replies, findings, cleanup ─────────────────────────
@@ -392,6 +394,7 @@ def run(
     comment_id:    Optional[str] = typer.Option(None,  "--comment-id",         help="Bitbucket comment ID that triggered this invocation. Empty string is accepted (auto-triggered events from the webhook substitute an empty {comment_id} placeholder)."),
     agent:         Optional[str] = typer.Option(None,  "--agent",              help="Run a specific agent by name (dispatcher, reviewer, investigator)"),
     data:          Optional[list[str]] = typer.Option(None, "--data", "-d",    help="Data key=value pairs for the agent (e.g. -d focus='null safety')"),
+    mocks:         Optional[str] = typer.Option(None,  "--mocks",              help="Path to a YAML file of canned subagent responses. When set, spawn_agent calls matching the fixture short-circuit with the canned reply instead of running a real child. Used for isolated unit tests of one agent at a time. See orchestra/spawn_mocks.py for the file format."),
 ):
     """
     Run an agent. Default: dispatcher (with --message) or reviewer (without).
@@ -472,6 +475,20 @@ def run(
                 k, v = item.split("=", 1)
                 extra_data[k.strip()] = v.strip()
 
+    # ── Load mocks fixture if --mocks given ──────────────────────────────
+    spawn_mocks_obj = None
+    if mocks:
+        from orchestra.spawn_mocks import SpawnMocks
+        try:
+            spawn_mocks_obj = SpawnMocks.from_yaml(mocks)
+            console.print(
+                f"[dim]  spawn_mocks: {len(spawn_mocks_obj.by_agent)} agent(s) "
+                f"[{', '.join(spawn_mocks_obj.by_agent)}] from {spawn_mocks_obj.source_path}[/dim]"
+            )
+        except Exception as exc:
+            console.print(f"[red]failed to load --mocks {mocks}: {exc}[/red]")
+            raise typer.Exit(2)
+
     # ── Resolve which agent to run ────────────────────────────────────────
     agent_name = agent
     if not agent_name:
@@ -509,6 +526,7 @@ def run(
             comment_tag=comment_tag_resolved,
             subject_pattern=subject_pattern,
             verdict_mode=verdict_mode,
+            spawn_mocks=spawn_mocks_obj,
         )
         raise typer.Exit(0)
 

@@ -11,7 +11,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from orchestra import (
     Agent,
@@ -164,6 +164,7 @@ def run_agent(
     tool_choice: str = "",
     stream: Optional[bool] = None,
     extra_body: Optional[dict] = None,
+    spawn_mocks: Any = None,
 ) -> dict:
     """
     Run any prompt-defined agent by name.
@@ -231,6 +232,7 @@ def run_agent(
         event_bus=event_bus,
         agent_registry=agent_registry,
         agent_configs=agent_registry.get_all_configs(),
+        spawn_mocks=spawn_mocks,
     )
     register_builtins(registry, config, sgr_tracker=sgr_tracker, agent=agent)
     agent.data_scope = data
