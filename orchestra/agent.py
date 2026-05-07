@@ -399,8 +399,15 @@ class Agent:
                 for tc in msg.tool_calls:
                     tool_names.append(tc.function.name)
                     _called_tools.add(tc.function.name)
-                    if tc.function.name not in ("done", "reflect", "spawn_agent"):
-                        dispatch_tcs.append(tc)
+                    if tc.function.name in ("done", "reflect", "spawn_agent"):
+                        continue
+                    # Mocked tools take the sequential _handle_tool_call
+                    # path so their real handler never runs (would waste
+                    # work and could have side effects the test doesn't
+                    # want).
+                    if self.tool_mocks is not None and self.tool_mocks.has(tc.function.name):
+                        continue
+                    dispatch_tcs.append(tc)
 
             # Emit AGENT_STEP for every LLM round — even text-only (WAL: before dispatch)
             text_preview = ""
