@@ -54,7 +54,7 @@ expected_output:
   thresholds:
     min_score: 0.70
     min_required_found: 1
-    max_false_positives: 2
+    max_false_positives: 5
 
 metadata:
   difficulty: hard

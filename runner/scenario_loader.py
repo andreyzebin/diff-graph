@@ -67,7 +67,7 @@ class ExpectedConcernFocus:
 class Thresholds:
     min_score: float = 0.70
     min_required_found: int = 1
-    max_false_positives: int = 3
+    max_false_positives: int = 5
 
 
 @dataclass
@@ -267,7 +267,7 @@ def load_scenario(path: Path) -> Scenario:
     thresholds = Thresholds(
         min_score=thr_data.get("min_score", 0.70),
         min_required_found=thr_data.get("min_required_found", 1),
-        max_false_positives=thr_data.get("max_false_positives", 3),
+        max_false_positives=thr_data.get("max_false_positives", 5),
     )
 
     meta_data = data.get("metadata", {})

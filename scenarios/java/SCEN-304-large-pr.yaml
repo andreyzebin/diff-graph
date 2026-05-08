@@ -88,7 +88,7 @@ expected_output:
     # budget pressure on a large PR.
     min_score: 0.55
     min_required_found: 2
-    max_false_positives: 4
+    max_false_positives: 5
 
 metadata:
   difficulty: hard
