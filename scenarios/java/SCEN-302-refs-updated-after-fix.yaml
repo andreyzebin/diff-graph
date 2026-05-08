@@ -2,9 +2,13 @@ id: SCEN-302
 name: "Two-round review: agent reviews fix push after own prior comments"
 tags: [java, incremental, two-round, refs-update, severity:major, cost:expensive]
 
-# DRAFT — requires bench-side BranchUpdater (see TODO marker at the end of
-# this file). Without that capability, this scenario is loaded but skipped.
-# See SCEN-300/301 for the cheaper seed_comments-only equivalents.
+# Two-round incremental review. Until the bench-side BranchUpdater
+# (see TODO marker at the end of this file) is implemented, only round
+# 1 actually fires — `setup.refs_update` and `trigger.rounds` are
+# silently ignored by the current loader, so the agent reviews step0
+# (the buggy commit) and the round-2 forbidden_comments check
+# legitimately fails. Companion to the cheaper SCEN-300/301 which
+# fake the prior round via seed_comments.
 
 input:
   bitbucket:
