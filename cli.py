@@ -297,17 +297,32 @@ def _run_with_dispatcher(
     invocations: list[dict] = []
     invocations_lock = threading.Lock()
     def _record_invocation(event: str, **kw):
-        if event == "agent_tool_result":
+        # AGENT_TOOL_REQUEST fires for every tool call (mocked or
+        # real). AGENT_TOOL_RESULT fires ONLY for mocked calls (it
+        # carries mock_when / mocked=True). Use REQUEST as the
+        # primary source so unmocked agents (investigator, reviewer
+        # without mocks) still produce a complete invocations.json.
+        if event == "agent_tool_request":
             with invocations_lock:
                 invocations.append({
                     "agent": kw.get("agent_name"),
                     "step": kw.get("step"),
                     "tool": kw.get("tool"),
                     "args": kw.get("args"),
-                    "mocked": bool(kw.get("mocked", False)),
-                    "mock_when": kw.get("mock_when"),
-                    "mock_wildcard": kw.get("mock_wildcard"),
+                    "mocked": False,
                 })
+        elif event == "agent_tool_result":
+            # Mocked-only follow-up: enrich the last matching record
+            # with mock metadata. The REQUEST already wrote the
+            # entry; here we just flip mocked=True and add mock_when.
+            with invocations_lock:
+                for inv in reversed(invocations):
+                    if (inv["agent"] == kw.get("agent_name")
+                            and inv["step"] == kw.get("step")
+                            and inv["tool"] == kw.get("tool")):
+                        inv["mocked"] = bool(kw.get("mocked", False))
+                        inv["mock_when"] = kw.get("mock_when")
+                        break
 
     def _trace_writer(event: str, **kw):
         _trace_db.on_event(event, **kw)
