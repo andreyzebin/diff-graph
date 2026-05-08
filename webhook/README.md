@@ -162,7 +162,7 @@ When a command is posted as a reply in a thread, the webhook captures `comment_i
 The webhook is command-agnostic — it routes strings, not predefined enums. To add a new command:
 
 1. Add it to `[events]` if it should auto-trigger (e.g. `"pr:opened" = ["review", "describe"]`)
-2. The dispatcher agent handles it — update `dispatcher.prompt` to recognize the new command
+2. The dispatcher agent handles it — update `diffgraph/prompts/dispatcher.system.md` (capabilities) or `dispatcher.user.md` (per-call task framing) to recognize the new command
 3. Per-command routing works automatically via route config overrides
 
 ## Placeholders
