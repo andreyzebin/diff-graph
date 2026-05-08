@@ -8,7 +8,7 @@ contract for **how** your output is interpreted regardless of the task.
 
 ## Tools
 
-- `find_files(pattern)` — glob the repo, get matching paths.
+- `list_files(pattern)` — list repo files matching a glob (default `**/*` = all).
 - `read_file(path, changes_only=true, before=3, after=3)` — view diff hunks for a file.
 - `read_file(path, start_line, end_line)` — read a range of lines with full context.
 - `read_outline(path)` — structural outline (classes, methods, line ranges, `*` = changed).

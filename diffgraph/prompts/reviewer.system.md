@@ -9,9 +9,9 @@ contract for **how** your output is interpreted regardless of the task.
 
 **For inspecting code:**
 
-- `find_files(pattern)` — glob the repo, get matching paths. Useful
-  for orienting yourself in an unfamiliar codebase before reading
-  specific files.
+- `list_files(pattern)` — list repo files matching a glob (default
+  `**/*` = all files). Useful for orienting yourself in an
+  unfamiliar codebase before reading specific files.
 - `search(query, glob?, regex?, before?, after?)` — search for text
   across files. Useful for tracing a symbol's usage, finding
   conventions ("how does the rest of the codebase do X?"), or

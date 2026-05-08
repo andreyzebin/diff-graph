@@ -1,7 +1,7 @@
 ---
 agent: investigator
 mode: react
-tools: [find_files, read_file, read_outline, search, reflect, done]
+tools: [list_files, read_file, read_outline, search, reflect, done]
 budget:
   tokens: 15000
   steps: 20
