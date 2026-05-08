@@ -323,6 +323,12 @@ def post_review_comments(
         body = _build_comment_body(c)
         if decorate:
             body = decorate(body)
+        # Same rationale as post_pr_comment: prepend the [SEVERITY]
+        # tag to the visible body so the level survives Bitbucket
+        # Server installs that don't render the native severity field.
+        sev_upper = (c.severity or "").strip().upper()
+        if sev_upper in ("BLOCKER", "MAJOR", "MINOR", "COMMENT") and not body.lstrip().startswith(f"[{sev_upper}]"):
+            body = f"[{sev_upper}] {body}"
         anchor = _make_anchor(c.file, c.line, changed_lines)
         payload: dict = {"text": body, "severity": _SEV.get(c.severity, "NORMAL")}
         if anchor:
@@ -724,7 +730,20 @@ def post_pr_comment(
         f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
         f"/pull-requests/{pr_id}/comments"
     )
-    body: dict = {"text": text}
+    # Prepend severity tag to the visible text body. Bitbucket Server's
+    # native `severity` field on inline comments (BLOCKER/NORMAL) is
+    # not rendered by every UI version — installs that only show the
+    # body would lose the severity signal entirely. The `[BLOCKER]`
+    # prefix is always visible regardless of API support, and
+    # installs that DO render the native field still see the
+    # icon + the explicit prefix (no harm, no double information loss).
+    body_text = text
+    sev = (severity or "").strip().upper()
+    if sev in ("BLOCKER", "MAJOR", "MINOR", "COMMENT") and file and line:
+        if not body_text.lstrip().startswith(f"[{sev}]"):
+            body_text = f"[{sev}] {body_text}"
+
+    body: dict = {"text": body_text}
     if parent_id:
         body["parent"] = {"id": int(parent_id)}
     if file and line:
@@ -734,7 +753,6 @@ def post_pr_comment(
             "lineType": (line_type or "ADDED").upper(),
             "fileType": "TO",
         }
-        sev = (severity or "").strip().upper()
         if sev in ("BLOCKER", "MAJOR"):
             body["severity"] = "BLOCKER"
         elif sev in ("MINOR", "COMMENT"):

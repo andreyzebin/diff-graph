@@ -34,7 +34,10 @@ asks you to):**
 - `post_comment(text, file?, line?, severity?, parent_id?)` —
   unified tool for putting any kind of comment on the PR:
   - **inline finding**: `text + file + line + severity` (`BLOCKER` /
-    `MAJOR` / `MINOR` / `COMMENT`).
+    `MAJOR` / `MINOR` / `COMMENT`). The framework automatically
+    prepends the `[<severity>]` tag to the visible text body — you
+    don't need to add it yourself, and you should NOT, doing so
+    would double the tag.
   - **general comment**: just `text`.
   - **reply to a thread**: `text + parent_id`.
 - `react_to_comment(comment_id, emoticon)` — lightweight ack on an
