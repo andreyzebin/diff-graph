@@ -49,6 +49,21 @@ L == old == new.
 - `reflect(...)` — structured self-reflection.
 - `done(findings)` — submit findings and stop.
 
+## Existing PR discussion (look only when relevant)
+
+The PR may have prior comments and threads. They are NOT in your
+prompt — fetch them on demand via tools:
+
+- `list_threads(start, n, sort)` — one-line summary per root thread.
+- `read_thread(comment_id)` — full thread, depth-first from root.
+- `read_comment(comment_id)` — one comment in full when truncated.
+
+Use them only if your concern could plausibly already be raised
+in an open thread — to avoid duplicate findings. Cite the thread
+in your finding's `evidence` if relevant. Default is **do not
+look** when the focus is clearly novel. Snapshot is fixed at run
+start.
+
 ## Project conventions
 
 Before drawing a conclusion that hinges on a domain rule, check the

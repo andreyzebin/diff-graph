@@ -6,10 +6,6 @@
 
 {focus}
 
-# Existing review comments
-
-{existing_comments}
-
 # Commits *(oldest → newest)*
 
 {commits}
@@ -39,8 +35,12 @@ Workflow:
    - Move answered questions to `resolved_questions` with the answer.
    - Keep `questions_remaining` for things you still need to check.
 
-5. **Note** which existing comments relate to your concern and don't
-   re-report issues already covered by open ones.
+5. **Optional dedup against existing PR discussion** — if your
+   focus could plausibly be already raised, call `list_threads()`
+   once and `read_thread(<id>)` on anything that looks related.
+   Don't re-report issues already covered by an open thread; cite
+   the thread in your finding's `evidence` if relevant. Skip this
+   step entirely when the focus is clearly novel.
 
 6. Call `done(findings)` when all questions are answered or budget
    is running low.

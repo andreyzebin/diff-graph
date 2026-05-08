@@ -88,6 +88,23 @@ asks you to):**
 - `done(findings)` — submit consolidated findings (or empty list if
   the user message asked you to stop earlier).
 
+## Existing PR discussion (look only when relevant)
+
+The PR may have prior comments and threads. They are NOT in your
+prompt — fetch them on demand via tools:
+
+- `list_threads(start, n, sort)` — one-line summary per root thread.
+- `read_thread(comment_id)` — full thread, depth-first from root.
+- `read_comment(comment_id)` — one comment in full when truncated.
+
+Use these to dedup findings (don't re-raise something already in
+an open thread) and to handle reply opportunities (`react_to_comment`
++ `post_comment(parent_id=...)`). Default is **do not look** —
+checking existing threads is only worthwhile if your finding plausibly
+overlaps with prior discussion. The snapshot is fixed at run start,
+so your own `post_comment` outputs during this run are not visible
+through these tools.
+
 ## Project conventions
 
 Before judging anything that hinges on a domain rule, check the
