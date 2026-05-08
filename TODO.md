@@ -785,6 +785,55 @@ explain commands", plain text → "would treat as /ask"). Useful
 for testing dispatcher routing logic without spinning up the
 spawned agents.
 
+#### Specialised subagents as extension points
+
+Subagents are first-class extension points. The reviewer's system
+prompt frames `spawn_agent` as a capability ("delegate depth to
+investigators when the user message asks for it"); it doesn't
+hardcode that there's one general investigator. orchestra's
+`AgentRegistry` already lets us add specialised investigators by
+dropping new `.md` files into `diffgraph/prompts/`:
+
+```
+diffgraph/prompts/
+  reviewer.md
+  investigator.md                    — general (what we have today)
+  security-investigator.md           — authz, IDOR, SQL injection, secrets
+  performance-investigator.md        — N+1, indexes, connection pooling
+  agents-md-investigator.md          — narrow project-conventions audit
+  testing-investigator.md            — test coverage, mocks, flakiness
+  threading-investigator.md          — race conditions, atomicity, locks
+```
+
+Reviewer's system gets one extra paragraph:
+
+> "When you have a concern, call `list_agents()` first to see who
+> can investigate it best. Pick the most specialised investigator
+> whose summary matches the concern's nature; fall back to the
+> generic `investigator` if none fits."
+
+Zero changes to the reviewer between adding specialists — true
+Open/Closed. Each new investigator is self-contained: own system
+(specific methodology), own user template (concern + diff), own
+budget tuned to its scope.
+
+User-message can also be used as an **ad-hoc constraint**:
+"for this run, only `security-investigator` is allowed". Useful
+for thematic audits — "run a security-only sweep of all open
+PRs", "weekly performance audit", etc.
+
+Path: ship REV-001 / INV-001 stable on the general investigator
+first, then a specialist (`agents-md-investigator` is the
+narrowest and most testable starter — its job is just "does the
+diff respect AGENTS.md rules", which we already test for in the
+existing benchmark scenarios). Adding it should improve scores
+on SCEN-009 / SCEN-010 / SCEN-305 because the reviewer can
+explicitly delegate convention-checking to a focused agent
+instead of relying on the general investigator to remember.
+
+`list_agents()` is already implemented — works with both real and
+mocked spawns (the mock matches by `agent` name in args).
+
 #### Open question — single reflect vs full chain vs new "outcome"
 
 The current REV-001 implementation reads ALL reflect calls from
