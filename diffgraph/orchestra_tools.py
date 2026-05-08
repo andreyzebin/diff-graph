@@ -93,12 +93,16 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
 
     @registry.register(
         name="list_files",
-        description="List files matching a glob pattern. Returns relative paths. Pass `pattern='**/*'` (the default) for everything.",
+        description=(
+            "List paths in the diff view (default `ref=base..source`) — "
+            "every file visible from the source side, whether added, "
+            "modified, or unchanged. Returns up to 50 relative paths."
+        ),
         parameters={
             "type": "object",
             "properties": {
-                "pattern": {"type": "string"},
-                "ref": {"type": "string", "description": 'Diff view: "base..source" (default), "<sha>..<sha>", or "source" for plain.'},
+                "pattern": {"type": "string", "description": "Glob, e.g. '**/*.java'. Default '**/*' = everything."},
+                "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
             },
             "required": ["pattern"],
         },
@@ -116,17 +120,24 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
 
     @registry.register(
         name="read_file",
-        description="Read file with diff markers (+/-). Use changes_only=true to see just the changed hunks.",
+        description=(
+            "Read a file from the diff view as unified diff: every line "
+            "carries a `+`/`-`/` ` marker plus its old (base) and new "
+            "(source) line numbers. Without a range, returns the full "
+            "file annotated. With `changes_only=true`, returns only the "
+            "changed hunks ±`before`/`after` context lines. With "
+            "`ref=\"source\"`, returns plain file content without markers."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
-                "start_line": {"type": "integer", "description": "1-indexed inclusive (L position)."},
-                "end_line": {"type": "integer", "description": "1-indexed inclusive."},
-                "changes_only": {"type": "boolean", "description": "Show only changed lines with context."},
-                "before": {"type": "integer", "description": "Context lines before changes (default 3)."},
-                "after": {"type": "integer", "description": "Context lines after changes (default 3)."},
-                "ref": {"type": "string", "description": 'Diff view: "base..source" (default), "<sha>..<sha>", or "source" for plain.'},
+                "start_line": {"type": "integer", "description": "L position (1-indexed, inclusive). L = position in the unified-diff view, as shown by read_outline."},
+                "end_line": {"type": "integer", "description": "L position (1-indexed, inclusive)."},
+                "changes_only": {"type": "boolean", "description": "Collapse output to changed lines with ±context."},
+                "before": {"type": "integer", "description": "Context lines before each hunk when changes_only=true (default 3)."},
+                "after": {"type": "integer", "description": "Context lines after each hunk when changes_only=true (default 3)."},
+                "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
             },
             "required": ["path"],
         },
@@ -153,12 +164,19 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
 
     @registry.register(
         name="read_outline",
-        description="Structural outline — classes, methods, line ranges. Changed symbols marked with *.",
+        description=(
+            "Structural outline (classes, methods, fields) of a file in "
+            "the diff view. Each symbol shows L range (use for read_file "
+            "ranges) and old/new ranges (for reference). Changed symbols "
+            "are marked `*`; for changed methods the outline shows "
+            "separate `Lold:..` and `Lnew:..` so you can read the old or "
+            "new version individually."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
-                "ref": {"type": "string", "description": 'Diff view: "base..source" (default), "<sha>..<sha>", or "source" for plain.'},
+                "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
             },
             "required": ["path"],
         },
@@ -176,16 +194,21 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
 
     @registry.register(
         name="search",
-        description="Search for a string or regex across repo files. Finds both old (deleted) and new (added) code.",
+        description=(
+            "Search a string or regex across files in the diff view. Each "
+            "hit is returned with its `+`/`-`/` ` marker and L/old/new "
+            "coordinates — you see added, deleted, and unchanged "
+            "occurrences in one query. Results are grouped by file."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
-                "glob": {"type": "string", "description": "File filter, e.g. '**/*.java'."},
-                "regex": {"type": "boolean"},
-                "before": {"type": "integer", "description": "Context lines before each match."},
-                "after": {"type": "integer", "description": "Context lines after each match."},
-                "ref": {"type": "string", "description": 'Diff view: "base..source" (default), "<sha>..<sha>", or "source" for plain.'},
+                "glob": {"type": "string", "description": "File filter, e.g. '**/*.java'. Default '**/*'."},
+                "regex": {"type": "boolean", "description": "Treat query as regex."},
+                "before": {"type": "integer", "description": "Context lines before each match (default 0)."},
+                "after": {"type": "integer", "description": "Context lines after each match (default 0)."},
+                "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
             },
             "required": ["query"],
         },
@@ -209,29 +232,6 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         for r in filtered:
             lines.append(f"{r.file}:{r.line}: {r.text}")
         return "\n".join(lines)
-
-    @registry.register(
-        name="get_diff",
-        description="Get the full diff or the diff section for a specific file (legacy — prefer read_file with changes_only=true).",
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Optional: filter to one file."},
-            },
-            "required": [],
-        },
-    )
-    def get_diff_tool(path: str = None) -> str:
-        _ensure()
-        if path:
-            fd = ctx.diff_result.files.get(path)
-            if fd is None:
-                return f"No diff section found for {path}"
-            return _extract_file_diff(path, ctx.diff_text)
-        text = ctx.diff_text
-        if len(text) > 8000:
-            text = text[:8000] + "\n... (truncated, use path= to get a specific file)"
-        return text
 
     @registry.register(
         name="post_comment",
@@ -385,20 +385,3 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         ctx.review_context.review_status = normalised
         ctx.review_context.review_status_reason = reason or ""
         return {"status": "queued", "review_status": normalised}
-
-
-
-def _extract_file_diff(path: str, diff_text: str) -> str:
-    out: list[str] = []
-    in_file = False
-    for line in diff_text.splitlines():
-        if line.startswith("diff --git") and f" b/{path}" in line:
-            in_file = True
-        elif line.startswith("diff --git") and in_file:
-            break
-        if in_file:
-            out.append(line)
-    result = "\n".join(out)
-    if len(result) > 6000:
-        result = result[:6000] + "\n... (truncated)"
-    return result or f"No diff section found for {path}"

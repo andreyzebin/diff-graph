@@ -53,7 +53,7 @@ old new
      56 |+                 releaseInventory(item);
 ```
 
-**Changed file — `changes_only=True` (replaces get_diff):**
+**Changed file — `changes_only=True` (just the hunks):**
 ```
 # src/main/java/.../OrderService.java  changes only (old=base, new=source)
 old new

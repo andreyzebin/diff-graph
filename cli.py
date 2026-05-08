@@ -1392,9 +1392,6 @@ def _make_event_handler(model: str):
             if text_short:
                 s += f" {text_short}"
             return s
-        elif tool == "get_diff":
-            path = args.get("path", "")
-            return path if path else "(full)"
         else:
             parts = []
             for k, v in list(args.items())[:2]:

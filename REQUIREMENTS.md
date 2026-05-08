@@ -205,7 +205,7 @@ Each question gets a stable ID (Q1, Q2...). PUT semantics: same ID across reflec
 - `questions_remaining`: only things you genuinely need to investigate. Don't list questions you can already answer — put those in `learned`.
 - `resolved_questions`: from PREVIOUS reflect only. Don't open and resolve in the same reflect.
 - Don't reflect twice in a row without tool calls between them.
-- Investigate first (get_diff, read_outline), then reflect with what you learned.
+- Investigate first (read_file, read_outline), then reflect with what you learned.
 
 ### Accountability
 

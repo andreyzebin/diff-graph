@@ -1228,8 +1228,8 @@ Make `ref` visible in tool schemas so agents can use it directly.
   ```
 - When `diff_mode: unified`, agent sees diff markers by default without setting ref
 - Agent can still override ref per-call (e.g. `ref="a1b..e4f"` for commit-by-commit)
-- Remove `get_diff` tool from agent prompts (replaced by `read_file` with ref range)
-- Update prompt instructions: explain ref, vL vs RC, when to use each
+- ~~Remove `get_diff` tool from agent prompts (replaced by `read_file` with ref range)~~ — done; tool unregistered, references purged
+- ~~Update prompt instructions: explain ref, vL vs RC, when to use each~~ — done; reviewer/investigator system prompts now have a "Diff view" section with ref/L/old/new
 
 **Where:** `diffgraph/orchestra_tools.py`, `config.yaml`, prompts.
 **Effort:** Medium.

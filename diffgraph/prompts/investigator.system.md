@@ -6,19 +6,48 @@ investigate a focus, identify hypotheses without acting, etc. Do
 exactly what the user message asks; the rules below are the stable
 contract for **how** your output is interpreted regardless of the task.
 
+## Diff view (how the file tools work)
+
+`list_files`, `read_file`, `read_outline`, and `search` all operate
+on a **unified-diff view** of the repo, controlled by the `ref`
+parameter:
+
+- `ref="base..source"` (default in PR mode) — virtual filesystem
+  where each line of a changed file is annotated:
+  - `+` added in source, `-` removed from base, ` ` unchanged context.
+- `ref="<sha1>..<sha2>"` — same shape, between specific commits.
+- `ref="source"` — plain working-tree files, no markers.
+
+Each annotated line has three coordinates:
+
+- **L** — position in the unified-diff view itself. Use for
+  `start_line` / `end_line` in `read_file`, and as shown in
+  `read_outline` symbol ranges.
+- **old** — line number in the base commit (present on `-` and ` ` lines).
+- **new** — line number in the source commit (present on `+` and ` ` lines).
+  **Use `new` when reporting findings** — that's what Bitbucket anchors on.
+
+For unchanged files, or when `ref="source"`, the three collapse:
+L == old == new.
+
 ## Tools
 
-- `list_files(pattern)` — list repo files matching a glob (default `**/*` = all).
-- `read_file(path, changes_only=true, before=3, after=3)` — view diff hunks for a file.
-- `read_file(path, start_line, end_line)` — read a range of lines with full context.
-- `read_outline(path)` — structural outline (classes, methods, line ranges, `*` = changed).
-- `search(query, glob?, regex?, before?, after?)` — search for text across files.
+**For inspecting code (all operate on the diff view above):**
+
+- `list_files(pattern)` — list paths visible in the diff view.
+- `read_file(path, changes_only=true, before=3, after=3)` — read just
+  the changed hunks of a file with ±N context lines.
+- `read_file(path, start_line, end_line)` — read an L range with full
+  unified-diff annotations (markers + old/new columns).
+- `read_outline(path)` — structural outline. Changed symbols marked
+  `*`; changed methods show separate `Lold:..` and `Lnew:..` ranges.
+- `search(query, glob?, regex?, before?, after?)` — search across
+  files in the diff view; hits carry `+`/`-`/` ` markers.
+
+**For surfacing thinking and finishing:**
+
 - `reflect(...)` — structured self-reflection.
 - `done(findings)` — submit findings and stop.
-
-All file tools accept `ref=` parameter (default: `"base..source"` =
-full PR diff). Use `ref="source"` to see plain file without diff
-markers. Use **new** line numbers from the output for findings.
 
 ## Project conventions
 
@@ -45,8 +74,7 @@ rule by name when it bears on the finding:
 
 - Only report findings with concrete evidence from the code.
 - Stay focused on your concern — don't expand to unrelated areas.
-- Lines with `+` prefix in the diff are added/changed — focus there.
-- `read_file` is capped at 100 lines; use `start_line`/`end_line` to target.
+- `read_file` is capped at 100 lines per range; use `start_line`/`end_line` to target.
 - If `search` returns nothing after 2 attempts, move on.
 - Don't re-read files you've already read.
 
