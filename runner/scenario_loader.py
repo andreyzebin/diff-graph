@@ -177,6 +177,17 @@ class ExpectedOutput:
     # invocations.json, then matches each concern_focuses keyword
     # group against the union.
     concern_focuses: list[ExpectedConcernFocus] = field(default_factory=list)
+    # Channels the judge should match `required_comments` against:
+    #   "pr_comments"        — real comments posted via post_comment
+    #                          (default when assert_via is empty)
+    #   "intended_findings"  — done(findings=[...]) args from
+    #                          invocations.json
+    #   "intended_concerns"  — reflect(concerns=[...]) +
+    #                          spawn_agent(focus=...) from invocations.json
+    # The judge takes the UNION of enabled channels. Lets a scenario
+    # explicitly say "investigator standalone — match against done(),
+    # not the PR" or "reviewer concerns-only — match against reflect()".
+    assert_via: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -237,6 +248,20 @@ def load_scenario(path: Path) -> Scenario:
         )
         for cf in eo.get("concern_focuses", [])
     ]
+
+    raw_assert_via = eo.get("assert_via") or []
+    if isinstance(raw_assert_via, str):
+        raw_assert_via = [raw_assert_via]
+    valid_channels = {"pr_comments", "intended_findings", "intended_concerns"}
+    assert_via: list[str] = []
+    for ch in raw_assert_via:
+        ch = str(ch).strip()
+        if ch not in valid_channels:
+            raise ValueError(
+                f"scenario {path}: expected_output.assert_via has unknown "
+                f"channel {ch!r}; allowed: {sorted(valid_channels)}"
+            )
+        assert_via.append(ch)
 
     thr_data = eo.get("thresholds", {})
     thresholds = Thresholds(
@@ -335,6 +360,7 @@ def load_scenario(path: Path) -> Scenario:
             side_effects=side_effects,
             acknowledgement_required=bool(eo.get("acknowledgement_required", False)),
             concern_focuses=concern_focuses,
+            assert_via=assert_via,
         ),
         metadata=metadata,
         setup=setup,

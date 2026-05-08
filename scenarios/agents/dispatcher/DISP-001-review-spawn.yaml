@@ -45,6 +45,9 @@ input:
     text: "/review"
 
 expected_output:
+  # Dispatcher's signal is the ack reply (real PR comment via
+  # post_comment with parent_id). Default channel is pr_comments.
+  assert_via: [pr_comments]
   required_comments: []          # dispatcher itself doesn't post findings
   forbidden_comments:
     - description: "Inline finding comments posted by the dispatcher — those are the reviewer's job. The dispatcher should only post a brief ack reply."

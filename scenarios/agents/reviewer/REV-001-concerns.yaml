@@ -47,6 +47,10 @@ input:
     user_message_from: "../../../fixtures/user-messages/concerns-only.md"
 
 expected_output:
+  # Concerns-only mode: reviewer doesn't post or even necessarily
+  # call done() with findings. The signal is reflect(concerns=...)
+  # — match concern_focuses against intended_concerns only.
+  assert_via: [intended_concerns]
   # No required_comments — the reviewer doesn't post anything in
   # this mode. Verification happens via concern_focuses below.
   required_comments: []

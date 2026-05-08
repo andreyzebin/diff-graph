@@ -449,6 +449,9 @@ def _build_prompt(
         for cf in eo.concern_focuses
     ], ensure_ascii=False, indent=2) if eo.concern_focuses else "[]"
 
+    assert_via = list(eo.assert_via) if eo.assert_via else ["pr_comments"]
+    assert_via_str = ", ".join(assert_via)
+
     trigger_type = getattr(scenario.trigger, "type", "") or ""
     ack_required = bool(eo.acknowledgement_required) and trigger_type == "comment"
     return template.format(
@@ -458,6 +461,7 @@ def _build_prompt(
         required_comments=required_str,
         forbidden_comments=forbidden_str,
         concern_focuses=concern_focuses_str,
+        assert_via=assert_via_str,
         expected_status_change=eo.expected_status_change or "none",
         actual_status_change=review_status.status if review_status else "none",
         pr_diff=_truncate(pr_diff, 30_000) or "(diff unavailable)",

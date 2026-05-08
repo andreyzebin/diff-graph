@@ -48,6 +48,9 @@ input:
     user_message_from: "../../../fixtures/user-messages/scen-009-prefilled-findings.md"
 
 expected_output:
+  # Consolidation mode: reviewer publishes via post_comment — match
+  # against real PR comments.
+  assert_via: [pr_comments]
   required_comments:
     - id: cheapest-item
       severity: BLOCKER

@@ -46,6 +46,11 @@ input:
         the method actually returns from the qualifying group.
 
 expected_output:
+  # Investigator returns findings via done() — it has no post_comment
+  # tool. Match required_comments against intended_findings (the
+  # done args from invocations.json), not the PR comments which
+  # will be empty by design.
+  assert_via: [intended_findings]
   required_comments:
     - id: cheapest-item
       severity: BLOCKER
