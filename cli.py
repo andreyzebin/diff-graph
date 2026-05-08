@@ -196,6 +196,32 @@ def _safe_seg(s: str) -> str:
     return _re.sub(r"[^A-Za-z0-9_.-]+", "_", s).strip("_") or "unnamed"
 
 
+# Channels whose verdict depends on the agent's tool-call log
+# (invocations.json). For these, the bench MUST capture invocations
+# during the run — without them the judge has no input and silently
+# scores 0.
+_INVOCATION_DEPENDENT_CHANNELS = frozenset({"intended_concerns", "intended_findings"})
+
+
+def _scenario_needs_invocations(s) -> bool:
+    """True when the bench must write invocations.json for the attempt.
+
+    Two reasons:
+      1. agent-isolation knobs in setup/trigger (mocks, custom agent,
+         user-message override) — the original case.
+      2. assert_via includes intended_concerns / intended_findings —
+         the judge will read invocations.json to extract reflect /
+         done(findings) data.
+    """
+    if (s.setup.mocks_path
+            or s.trigger.agent
+            or s.trigger.data
+            or s.trigger.user_message_path
+            or s.trigger.user_message):
+        return True
+    return any(c in _INVOCATION_DEPENDENT_CHANNELS for c in s.expected_output.assert_via)
+
+
 def _git_sha(path: Path) -> str:
     """Best-effort git rev-parse HEAD. Empty string on failure."""
     import subprocess
@@ -301,6 +327,19 @@ async def _run_async(
     #       judge/      <- judge writes request/response/error here
     #       result.json <- final score & verdict for this attempt
     bench_root = os.environ.get("BENCHMARK_TRACE_DIR")
+    # Auto-promote a temp BENCHMARK_TRACE_DIR when the run will need
+    # invocations.json (intended_* channels or agent-isolation knobs)
+    # but the user didn't set one. Without this, the judge silently
+    # gets an empty invocations log and scores those attempts at 0.
+    if not bench_root and any(_scenario_needs_invocations(s) for s in scenarios):
+        import tempfile as _tempfile
+        bench_root = _tempfile.mkdtemp(prefix="bench-traces-")
+        console.print(
+            f"[yellow]BENCHMARK_TRACE_DIR not set; using temp: {bench_root}[/yellow]\n"
+            f"[dim](required because some scenarios assert via intended_findings / "
+            f"intended_concerns or agent-isolation knobs — set BENCHMARK_TRACE_DIR "
+            f"to keep traces.)[/dim]"
+        )
     session_dir: Path | None = None
     if bench_root:
         label = os.environ.get("BENCH_LABEL", "")
@@ -382,16 +421,11 @@ async def _run_async(
             agent_dir.mkdir()
             judge_dir.mkdir()
             env_overrides["DIFFGRAPH_TRACE_PATH"] = str(agent_dir)
-            # When the scenario opts into agent-isolation features
-            # (mocks / standalone agent / extra data), have the agent
-            # write its tool invocations log next to the attempt
-            # artefacts. The judge picks it up after the run for
-            # Mockito-style verify assertions.
-            if (s.setup.mocks_path
-                    or s.trigger.agent
-                    or s.trigger.data
-                    or s.trigger.user_message_path
-                    or s.trigger.user_message):
+            # When the scenario opts into agent-isolation features or
+            # asserts via intended_concerns / intended_findings, have
+            # the agent write its tool invocations log next to the
+            # attempt artefacts so the judge can pick it up.
+            if _scenario_needs_invocations(s):
                 invocations_path = attempt_dir / "invocations.json"
 
         bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
