@@ -355,26 +355,29 @@ class LLMJudge(Judge):
             tool = inv.get("tool") or ""
             args = inv.get("args") or {}
             if tool == "reflect":
-                raw_concerns = args.get("concerns") or []
-                # Some providers (qwen3-coder observed) pass complex
-                # tool args as a JSON-encoded string instead of the
-                # native list. Decode if needed.
-                if isinstance(raw_concerns, str):
-                    try:
-                        raw_concerns = json.loads(raw_concerns)
-                    except (json.JSONDecodeError, ValueError):
-                        raw_concerns = []
-                if not isinstance(raw_concerns, list):
-                    raw_concerns = []
-                for c in raw_concerns:
-                    if isinstance(c, dict):
+                # The reflect schema's `questions_remaining` is the
+                # canonical place for "things the agent wants to
+                # investigate" — i.e. concerns. Each item is
+                # {id, text}; text carries the concern as a question.
+                raw = args.get("questions_remaining") or []
+                if not isinstance(raw, list):
+                    raw = []
+                for q in raw:
+                    if isinstance(q, dict):
+                        text = str(q.get("text", "")).strip()
+                        if not text:
+                            continue
                         out.append({
-                            "source": "reflect",
-                            "title": str(c.get("title", "")),
-                            "description": str(c.get("description", "")),
+                            "source": "reflect.questions_remaining",
+                            "title": text[:80],
+                            "description": text,
                         })
-                    elif isinstance(c, str) and c.strip():
-                        out.append({"source": "reflect", "title": c, "description": ""})
+                    elif isinstance(q, str) and q.strip():
+                        out.append({
+                            "source": "reflect.questions_remaining",
+                            "title": q[:80],
+                            "description": q,
+                        })
             elif tool == "spawn_agent":
                 focus = str(args.get("focus", ""))
                 if focus:
