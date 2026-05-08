@@ -1,10 +1,16 @@
-COMMENT_ID: {comment_id}
-PR: {pr_title} — {pr_description}
+# Trigger
 
-THREAD:
+- `COMMENT_ID`: `{comment_id}`
+- `PR`: **{pr_title}** — {pr_description}
+
+## Thread
+
 {comment_thread}
 
-MESSAGE: {message}
+## Message
 
-EXISTING COMMENTS:
+{message}
+
+## Existing comments
+
 {existing_comments}
