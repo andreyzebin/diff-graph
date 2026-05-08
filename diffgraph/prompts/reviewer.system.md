@@ -9,6 +9,13 @@ contract for **how** your output is interpreted regardless of the task.
 
 **For inspecting code:**
 
+- `find_files(pattern)` — glob the repo, get matching paths. Useful
+  for orienting yourself in an unfamiliar codebase before reading
+  specific files.
+- `search(query, glob?, regex?, before?, after?)` — search for text
+  across files. Useful for tracing a symbol's usage, finding
+  conventions ("how does the rest of the codebase do X?"), or
+  verifying a claim against the wider repo.
 - `read_file(path, changes_only=true, before=3, after=3)` — view diff hunks for a file.
 - `read_file(path, start_line, end_line)` — read a range of lines with full context.
 - `read_outline(path)` — structural outline with changed symbols marked `*`.
