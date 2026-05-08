@@ -1,6 +1,6 @@
 id: SCEN-203
 name: "/ask inside a deep thread — focus on the thread, ignore parallel noise"
-tags: [interaction, ask, thread, deep]
+tags: [interaction, ask, thread, deep, tier:integration]
 
 input:
   bitbucket:

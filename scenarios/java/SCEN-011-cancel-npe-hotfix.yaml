@@ -1,6 +1,6 @@
 id: SCEN-011
 name: "Hotfix cancel NPE — null guard hides root cause"
-tags: [java, correctness, failure-handling, severity:major]
+tags: [java, correctness, failure-handling, severity:major, tier:integration]
 
 input:
   bitbucket:

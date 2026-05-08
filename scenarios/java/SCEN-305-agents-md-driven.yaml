@@ -1,6 +1,6 @@
 id: SCEN-305
 name: "AGENTS.md-driven decision — agent must cite the project rule"
-tags: [java, agents-md, conventions, severity:major]
+tags: [java, agents-md, conventions, severity:major, tier:integration]
 
 # Companion to SCEN-011 (same branch, same NPE fix). Where SCEN-011
 # checks that the agent objects to the @OneToMany null guard at all,

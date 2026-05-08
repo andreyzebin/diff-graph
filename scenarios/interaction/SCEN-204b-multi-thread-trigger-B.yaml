@@ -1,6 +1,6 @@
 id: SCEN-204b
 name: "Multi-thread comprehension — trigger in thread B (transactions)"
-tags: [interaction, ask, thread, multi-thread, crosstalk]
+tags: [interaction, ask, thread, multi-thread, crosstalk, tier:integration]
 
 # Symmetric reproducer to SCEN-204: same three threads, same bland
 # question, but pinged INSIDE thread B (transaction safety) instead

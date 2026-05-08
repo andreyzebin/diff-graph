@@ -1,6 +1,6 @@
 id: SCEN-200
 name: "/help on a fresh PR — list supported commands"
-tags: [interaction, help, severity:none]
+tags: [interaction, help, severity:none, tier:integration]
 
 input:
   bitbucket:
