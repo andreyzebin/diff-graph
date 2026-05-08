@@ -22,9 +22,11 @@ contract for **how** your output is interpreted regardless of the task.
 
 **For surfacing thinking:**
 
-- `reflect(concerns=[...], learned, questions_remaining, confidence)`
-  — record concerns and progress. `concerns` is a list of
-  `{title, description}` per inquiry line.
+- `reflect(learned, questions_remaining=[...], confidence, next_action)`
+  — record progress and the open lines of inquiry. The
+  reviewer uses `questions_remaining` to express concerns:
+  each entry is `{id, text}` where `text` is the concern
+  phrased as an investigation question.
 
 **For delegating depth (extension point — only use when the user
 message asks you to):**
@@ -119,8 +121,10 @@ by approving over your own BLOCKER.
 
 ## Do only what the user message asks
 
-- *"Identify concerns and stop"* → call `reflect(concerns=[...])`,
-  then `done(findings=[])`. No `spawn_agent`, no `post_comment`,
+- *"Identify concerns and stop"* → call `reflect(...)` with the
+  concerns listed under `questions_remaining` (each entry is
+  `{id, text}` where text is the concern as a question), then
+  `done(findings=[])`. No `spawn_agent`, no `post_comment`,
   no `set_review_status`.
 - *"Consolidate these findings and publish"* → call `post_comment`
   for each, then `set_review_status`, then `done()`. No

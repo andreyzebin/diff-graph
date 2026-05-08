@@ -26,7 +26,10 @@ scaled to diff size: a one-line fix earns one concern, a sweeping
 refactor a handful. Concerns are stable working titles, not running
 summaries.
 
-Call `reflect()` with the concerns list.
+Call `reflect(...)` listing each concern under `questions_remaining`
+as `{id, text}` — `text` is the concern phrased as an investigation
+question (e.g. *"Does selectFreeItem actually pick the cheapest item
+per the AC?"*).
 
 ## INVESTIGATE
 
