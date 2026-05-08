@@ -21,15 +21,32 @@ Multi-agent PR code reviewer powered by the **Orchestra** framework. All agents 
 - [Docker](docker/README.md)
 - [Webhook router & health checks](webhook/README.md)
 
+### Three commands, three roles
+
+The dispatcher supports exactly three commands. Each has a distinct
+intent and is shaped by the active thread when invoked from a comment.
+
+| Command   | Role                | Thread-aware behaviour                                                                                                                        |
+|-----------|---------------------|------------------------------------------------------------------------------------------------------------------------------------------------|
+| `/ask`    | **discussion**      | Answer questions, talk through code and diff, scoped to the active thread's topic. Sibling threads are background, not the subject of the reply. Plain text without a slash falls into this mode. |
+| `/help`   | **interface help**  | Explain how to work with the agent — what commands exist, how to summon it, and which command best fits the user's current situation given the active thread. Not a static command list. |
+| `/review` | **deep analysis**   | Full code-review pipeline. When invoked from a thread, focuses on that thread's topic but also reads sibling threads + author attribution to strengthen findings (cite prior debate, avoid re-raising resolved points, respect prior speakers). |
+
+All three see the same thread graph: the active thread rendered fully
+with `[SELF]` markers on the agent's own past replies and `[<name>]`
+attribution per speaker; sibling threads as one-line summaries. None
+of them conflate authors — each speaker is a separate subjective
+position.
+
 ```
 PR comment / event
       |
       v
 +--- dispatcher (react) ----------------+
+|  /ask    → discussion (thread-scoped) |
+|  /help   → interface help             |
 |  /review → spawn reviewer             |
-|  /help   → reply directly             |
-|  /ask hi → answer, suggest commands   |
-|  plain   → answer from PR context     |
+|  plain   → treated as /ask            |
 +----------------------------------------+
       |  spawn_agent("reviewer")
       |  (lazy clone on first tool call)
@@ -327,9 +344,9 @@ python cli.py run --pr-url ... --prompts bitbucket://server/PROJECT/prompts-repo
 
 All agents are homogeneous — same `Agent` class, same `.prompt` format, same tool dispatch. Hierarchy and behavior controlled entirely by prompts.
 
-**Dispatcher** — entry point for user interactions. Handles `/help`, questions, and planned commands directly. Only spawns reviewer on explicit `/review` command or auto-trigger. Uses `@guards` to ensure replies are delivered via tools.
+**Dispatcher** — entry point for user interactions. Three commands with distinct roles: `/ask` (or plain text) is *discussion* — answers questions scoped to the active thread; `/help` is *interface help* — explains the commands and recommends the right one for the user's current thread state; `/review` is *deep analysis* — spawns the reviewer. The dispatcher only spawns the reviewer on the literal `/review` command or auto-trigger; questions about review do not. Uses `@guards` to ensure replies are delivered via tools.
 
-**Reviewer** — conducts the code review. Three phases: analyze (read diff, form concerns), investigate (spawn investigators), judge (consolidate findings). Owns PR comment interaction.
+**Reviewer** — conducts the code review. Three phases: analyze (read diff, form concerns), investigate (spawn investigators), judge (consolidate findings). Owns PR comment interaction. When triggered inside a thread, the reviewer focuses its analysis on the thread's topic but also reads sibling threads with author attribution intact, so findings can cite prior debate, avoid duplicating already-resolved points, and respect what each speaker (including the agent's own `[SELF]` past comments) has previously argued.
 
 **Investigator** — focused agent with SGR. Gets a concern as focus, investigates with repo tools (read_file, search, read_outline). Returns findings with evidence.
 

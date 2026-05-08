@@ -319,7 +319,19 @@ python cli.py run --pr-url ... --model gpt-4o --compare deepseek-chat
 
 ---
 
-## 5c. Pre-deploy QC pipeline (single CLI, gentle/aggressive scheduler, two metric categories)
+## 5c. Pre-deploy QC pipeline — outer scheduler (across generations and mutations)
+
+> Two schedulers in this codebase, intentionally separate:
+> - **5c (this section)** — outer/QC-pipeline scheduler. Plans which
+>   `(branch, sha) × provider × scenario` units to run, queues them
+>   over time, owns the gentle/aggressive policy *across the whole
+>   QC matrix* of generations + mutations.
+> - **[5d](#5d-per-run-scheduler--gentle--aggressive-inside-one-bench-cli-run)** — inner/per-run scheduler. Lives inside one
+>   `bench/cli.py run` invocation, regulates how its own
+>   (provider × scenario × attempt) tasks fan out: gentle = one at
+>   a time (current behaviour), aggressive = parallel via
+>   temp-branch PRs (one throw-away branch per task so the
+>   `[BENCHMARK]` PRs don't collide on (from_branch, to_branch)).
 
 ### Why this exists (background)
 
@@ -608,6 +620,329 @@ Evolution orchestrator on top of QC:
 
 The QC pipeline is the substrate this loop sits on; user is
 implementing the orchestrator personally.
+
+---
+
+## 5d. Per-run scheduler — gentle / aggressive inside one bench CLI run
+
+> Inner scheduler, paired with [5c](#5c-pre-deploy-qc-pipeline--outer-scheduler-across-generations-and-mutations).
+> 5c plans the QC matrix; 5d plans how one matrix cell (one
+> `bench/cli.py run` invocation) farms its own work out.
+
+**Why.** A single `bench run -p <provider> -s <scenarios> -n <repeat>`
+is itself a small matrix: providers × scenarios × attempts. Today it
+runs strictly sequentially, which is fine when the user wants to be
+polite to a shared LLM endpoint, but slow for pre-merge smoke when
+the goal is "burn through the pool as fast as possible before I hit
+merge". Same gentle/aggressive lever as 5c, applied at the level of
+one CLI invocation.
+
+**Modes.**
+- **gentle** (default) — sequential, one task at a time. Current
+  behaviour. Polite to shared LLM endpoints; matches typical
+  developer "iterate locally" usage. No new infra needed.
+- **aggressive** — bounded-parallel via `asyncio.Semaphore`. Each
+  task opens its PR off a unique throw-away branch
+  (`bench/{scenario}/{8-hex-uuid}`) so multiple `[BENCHMARK]` PRs
+  on the same source branch don't fight over the (from_branch,
+  to_branch) uniqueness constraint. Cleanup: `__aexit__` declines
+  the PR and deletes the temp branch; pre-session sweep walks
+  stale `bench/*` branches in case the previous run was killed.
+
+  Reuses the temp-branch infrastructure already on
+  `code-review-benchmarks/feature/parallel-bench-temp-branches`
+  (commit 3c7dd62) — that work isn't merged into master because
+  it predates the gentle/aggressive lever; 5d is what actually
+  motivates merging it.
+
+**CLI surface.**
+```
+bench/cli.py run \
+  -p deepseek -p qwen3 -p qwen3-6 \
+  -t interaction -n 2 \
+  --mode aggressive \
+  --max-per-provider 2
+```
+- `--mode gentle | aggressive` (default `gentle`).
+- `--max-per-provider N` (default 2 in aggressive, ignored in
+  gentle). The bottleneck is the LLM endpoint, not the bench, so
+  the budget is per-model — total in-flight ≤ N × providers.
+
+**Where:** `benchmark/cli.py` (typer flags + asyncio fan-out),
+`benchmark/bitbucket/real_factory.py` (already has temp-branch
+build/close on the parallel branch).
+
+**Trade-off to keep an eye on.** Aggressive mode amplifies any
+shared-state quirk: Bitbucket SSL EOF blips, LLM endpoint rate
+limits, local CPU when each task spawns its own diff-graph
+subprocess. Hence the per-provider cap; default of 2 is
+deliberately conservative. For the corp Bitbucket Server we
+also need exponential-backoff retry on `ssl.SSLError` /
+`ConnectionError` (already added to both `bench` and
+`diffgraph/bitbucket.py`, env-tunable via
+`BENCH_BB_RETRY_*` and `DIFFGRAPH_BB_RETRY_*`).
+
+### 5d.2 Bench BranchUpdater — second-round PR refresh for SCEN-302
+
+SCEN-302 ("agent reviews fix push after own prior comments") was
+moved out of `drafts/` and lives in `java/` now, but it still
+runs as a single-round review against the buggy `*_step0` branch
+because the bench has no `BranchUpdater`. The scenario's
+`setup.refs_update.target_ref` and `trigger.rounds` fields are
+silently ignored by the loader, so round 2 never fires and the
+forbidden_comments check (don't re-flag the null guard that the
+fix already added) fails by construction.
+
+To make the scenario meaningful:
+1. Paired branches in the orderflow test repo:
+   `hotfix/ORD-287-cancel-npe-step0` (current buggy state) and
+   `hotfix/ORD-287-cancel-npe-step1` (step0 + the null-guard fix
+   commit). Step1 must already exist in the mirror.
+2. `benchmark/runner/branch_update.py` with two strategies:
+   - `fast-forward`: push HEAD of `*_step1` onto the temp source
+     branch via Bitbucket Server's branch-utils plugin.
+   - `force-push`: alternative for when the new commit isn't a
+     fast-forward.
+3. Extend `ScenarioSetup` with `refs_update {after_round, strategy,
+   target_ref}` and `TriggerSpec` with `rounds: int = 1`.
+4. Multi-round runner loop:
+   ```
+   for r in range(rounds):
+     post seed_comments (round 1 only)
+     post trigger_comment(r)
+     run agent
+     capture_round_outputs
+     if r+1 < rounds and refs_update.after_round == r+1:
+         branch_updater.advance(refs_update)
+   ```
+5. Judge sees round-2 comments scored against expected_output,
+   plus a `prior_round_comments` block in the prompt so it can
+   verify the agent actually acknowledged what was already
+   covered.
+6. Per-round subdirectories under `attempt-NN/round-1/`,
+   `round-2/`.
+
+Out of scope until current review-quality issues are debugged
+(SCEN-302's score=0/0.95 split across providers in the smoke
+run is noise — the test isn't actually testing what it claims to
+test until BranchUpdater exists).
+
+### 5d.3 Reflect-based agent isolation as a general unit-test pattern
+
+The reviewer's REV-001-concerns test landed on a clean general
+pattern that generalises to any agent with `reflect` in @tools:
+
+1. **Custom user message** ("--user-message-from") tells the agent
+   to do its analysis phase only — write findings/concerns/
+   conclusions into `reflect(...)` and immediately call `done()`
+   with empty output. Explicit "do NOT spawn/post/set_status" rules.
+2. **No mocks needed** — agent never calls action tools, so there's
+   nothing to mock. (A defensive empty-spawn mock can absorb a
+   stray spawn if the agent ignores the instruction; not required.)
+3. **Judge reads invocations.json** for `reflect(...)` args, treats
+   them as the test signal. Pairs with the existing reading of
+   `done(findings)` and `spawn_agent.focus`.
+4. **Expected output** is a list of keyword groups (existing
+   `concern_focuses`/`description_keywords` infra), AND-of-OR match
+   against title + description fields of each reflect entry.
+
+Coverage matrix today:
+
+| Agent        | Has reflect? | Status |
+|--------------|--------------|--------|
+| reviewer     | yes          | REV-001-concerns ✅ landed |
+| investigator | yes          | INV-002 (todo) — same shape: focus + AGENTS.md citations + questions_remaining via `reflect(learned, questions_remaining)` |
+| dispatcher   | no           | Add `reflect` to dispatcher's @tools if we want symmetric isolation, OR skip — dispatcher is a router with fewer "thinking" phases. Decide later. |
+
+Why this matters:
+- Decouples LLM-provider quirks (parallel tool calls, tool-parser
+  divergence) from unit-test stability — agent never reaches the
+  parallel-spawn step.
+- Decouples mock-fixture maintenance from test correctness — there
+  IS no fixture to keep coherent with the agent's actual focuses
+  ("mocked investigator returns finding for concern A even when
+  reviewer asked about concern B" is structurally impossible).
+- Cheapest LLM-cost shape for unit tests: read diff (1-3 LLM
+  calls) + reflect (1) + done (1). ~5 calls vs 20-50 for full
+  pipeline.
+- Lets us interrogate richer cognitive signal: reflect carries
+  `learned` (facts), `questions_remaining` (gaps), `confidence`
+  — testable separately. E.g. an investigator unit test can
+  assert "agent identified the right gap" by matching against
+  `questions_remaining`, not just `learned`.
+
+**Concrete next step:** INV-002-investigation-only as a mirror of
+REV-001-concerns. Same custom-user-message pattern, focus is
+`PRICING LOGIC: selectFreeItem returns get(0)`, expected
+`concern_focuses` checks that the investigator's reflect
+`learned` includes "cheapest" / "AGENTS.md" / "first item" and
+that `questions_remaining` is empty (or has the right gaps).
+
+**Stretch:** if dispatcher gets reflect, write DISP-002 measuring
+how the dispatcher classifies trigger messages without acting
+on them ("/review → would spawn reviewer", "/help → would
+explain commands", plain text → "would treat as /ask"). Useful
+for testing dispatcher routing logic without spinning up the
+spawned agents.
+
+#### Specialised subagents as extension points
+
+Subagents are first-class extension points. The reviewer's system
+prompt frames `spawn_agent` as a capability ("delegate depth to
+investigators when the user message asks for it"); it doesn't
+hardcode that there's one general investigator. orchestra's
+`AgentRegistry` already lets us add specialised investigators by
+dropping new `.md` files into `diffgraph/prompts/`:
+
+```
+diffgraph/prompts/
+  reviewer.md
+  investigator.md                    — general (what we have today)
+  security-investigator.md           — authz, IDOR, SQL injection, secrets
+  performance-investigator.md        — N+1, indexes, connection pooling
+  agents-md-investigator.md          — narrow project-conventions audit
+  testing-investigator.md            — test coverage, mocks, flakiness
+  threading-investigator.md          — race conditions, atomicity, locks
+```
+
+Reviewer's system gets one extra paragraph:
+
+> "When you have a concern, call `list_agents()` first to see who
+> can investigate it best. Pick the most specialised investigator
+> whose summary matches the concern's nature; fall back to the
+> generic `investigator` if none fits."
+
+Zero changes to the reviewer between adding specialists — true
+Open/Closed. Each new investigator is self-contained: own system
+(specific methodology), own user template (concern + diff), own
+budget tuned to its scope.
+
+User-message can also be used as an **ad-hoc constraint**:
+"for this run, only `security-investigator` is allowed". Useful
+for thematic audits — "run a security-only sweep of all open
+PRs", "weekly performance audit", etc.
+
+Path: ship REV-001 / INV-001 stable on the general investigator
+first, then a specialist (`agents-md-investigator` is the
+narrowest and most testable starter — its job is just "does the
+diff respect AGENTS.md rules", which we already test for in the
+existing benchmark scenarios). Adding it should improve scores
+on SCEN-009 / SCEN-010 / SCEN-305 because the reviewer can
+explicitly delegate convention-checking to a focused agent
+instead of relying on the general investigator to remember.
+
+`list_agents()` is already implemented — works with both real and
+mocked spawns (the mock matches by `agent` name in args).
+
+#### Open question — single reflect vs full chain vs new "outcome"
+
+The current REV-001 implementation reads ALL reflect calls from
+invocations.json and matches keyword groups against the union of
+title+description across them. That works for concerns-forming
+because each concern is a self-contained line of inquiry.
+
+For richer agents (investigator especially), a single reflect
+entry is a snapshot of an internal step — `learned: "still
+checking X"` only makes sense inside the trajectory of the
+preceding reflects. Reading the LAST reflect alone may miss
+context; reading ALL reflects is verbose and the LLM judge has
+to reason over the full reasoning chain.
+
+Three design choices, decide before scaling 5d.3 to investigator
+and dispatcher:
+
+(a) **Full chain as the test signal** (current REV-001 behaviour).
+   Judge sees every reflect; expected matchers run against the
+   union. Pros: nothing new in the framework, all the agent's
+   thinking is visible. Cons: judge prompt grows linearly with
+   reasoning depth; brittle if the same keyword appears in an
+   intermediate reflect that later got resolved.
+
+(b) **Last reflect is the contract**. Mandate that the agent's
+   last `reflect` before `done()` carries a self-contained
+   summary in `learned` (and maybe other fields). Judge reads
+   only that one. Pros: clear single signal; small judge prompt.
+   Cons: changes the implicit contract of `reflect` (today every
+   call is just a thinking checkpoint, not a "final summary"
+   slot); easy to forget in agent prompts.
+
+(c) **New self-contained `outcome` tool**. A dedicated step at
+   the end of any agent run: `outcome(summary, findings,
+   verdict, evidence)`. Self-contained, explicit, parallel to
+   `done` but for the "what I concluded" channel rather than
+   the "what I published" channel. Judge reads the single
+   `outcome` call. Pros: clean contract; works regardless of
+   how many reflects happened or in what shape; gives tests
+   AND parent agents (in production) a stable handoff surface.
+   Cons: another tool to teach in every agent's @tools list;
+   risk of overlap with `done(findings=...)`.
+
+Lean toward (c) — feels most honest about what we're testing
+("the agent's final conclusion as it would deliver it to a
+human or a parent agent"), and removes the ambiguity in
+`done(findings=...)` between "publish these" and "I think
+these are true". But it's a real contract change, so we ought
+to land INV-002 with (a) first to see how brittle the full-chain
+approach actually is in practice before introducing a new tool.
+
+If we go with (c), `done(findings=...)` keeps its publish-only
+semantics and the parent reads `outcome` for the conclusion
+shape — including in production, where the reviewer reading the
+investigator's `outcome` is more natural than rummaging through
+`done.findings`.
+
+### 5d.1 Live, progressive run dashboard (per-provider throughput)
+
+When `bench run --mode aggressive` is in flight the user is
+flying blind: verdict lines only print after `asyncio.gather`
+completes (the cycle was rewritten so that aggregation is
+deterministic regardless of completion order, but that traded
+away the per-task progress feed gentle mode used to give). For
+a 50+ task run that's 15–30 minutes of silence. Need a small
+live dashboard that updates as tasks finish and surfaces per-model
+throughput in real time.
+
+**Layout** (refreshed every ~2s while the run is active):
+
+```
+Aggressive run · max-per-provider=2 · 38/54 done · ETA 4m
+─────────────────────────────────────────────────────────────
+provider       in_tok/s  out_tok/s  cache%   p50_lat  in-flight
+deepseek            220        6.8   77.6%      2.8s     2/2  ▓▓
+qwen3-coder         107        3.9   23.8%      5.3s     1/2  ▓
+qwen3-6 (g1nft)     736       28.6    0.0%      1.1s     2/2  ▓▓
+─────────────────────────────────────────────────────────────
+recent verdicts (last 6):
+✅ qwen3-6      SCEN-204     score=0.97   18s
+✅ deepseek     SCEN-205b    score=1.00   24s
+⚠️  qwen3       SCEN-009     score=0.62   145s
+…
+```
+
+**Computed from** the per-LLM-call usage already in the trace
+DB (`agent_llm_response.usage`): pair `agent_llm_request` ↔
+`agent_llm_response` by `(run_id, agent_id, step)`, derive
+duration; `prompt_tokens` is the *full* input (cached + paid)
+on purpose — a model with prefix caching SHOULD look faster
+because that's the user-perceived throughput. `cached_tokens /
+prompt_tokens` shows how much of that speed is cache.
+
+**What it answers:**
+- Is one provider stalling while others race? (in-flight column).
+- Why is one provider behind on score — slow LLM, or actually
+  worse answers? (latency vs verdict feed side by side).
+- Is the cache really helping me, or am I paying full input
+  tokens? (cache% column).
+
+**Cheap path:** a `rich.live.Live` table updated from a
+background asyncio task; throughput sampled from the trace DB
+in 5–10s windows so noise smooths out. Keep it inline in
+`bench/cli.py run`; no separate command. Optional flag
+`--no-dashboard` for log-friendly CI runs.
+
+**Stretch:** export the same metrics as JSON for a future
+external dashboard; tag each window with the prompt hash so
+generation-over-generation throughput trends are queryable.
 
 ---
 

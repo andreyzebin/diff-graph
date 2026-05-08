@@ -15,8 +15,9 @@ os.environ["PYTHONUTF8"] = "1"
 import json
 import re
 import sys
+import threading
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich import box as rich_box
@@ -107,6 +108,9 @@ def _run_with_dispatcher(
     comment_tag: str = "dg",
     subject_pattern: Optional[str] = None,
     verdict_mode: str = "api",
+    tool_mocks: Any = None,
+    invocations_out: Optional[str] = None,
+    user_message_override: Optional[str] = None,
 ) -> None:
     """
     Run any agent with lazy repo init.
@@ -125,9 +129,14 @@ def _run_with_dispatcher(
 
     # ── Lightweight context (no clone) ────────────────────────────────────
     thread = "(no thread)"
+    bot_user_for_thread = review_cfg.get("bot_user", "")
     if comment_id:
         try:
-            thread = get_comment_thread(pr_url, comment_id)
+            thread = get_comment_thread(
+                pr_url, comment_id,
+                bot_user=bot_user_for_thread,
+                subject_pattern=subject_pattern or "",
+            )
         except Exception as exc:
             thread = f"(failed to fetch thread: {exc})"
 
@@ -144,7 +153,7 @@ def _run_with_dispatcher(
     from pathlib import Path as _Path
     prompt_source = prompts or str(_Path(__file__).parent / "diffgraph" / "prompts")
     try:
-        pr = compile_prompts(prompt_source, pattern="*.prompt")
+        pr = compile_prompts(prompt_source)
         generation = str(prompt_source).rsplit("/", 1)[-1] if "/" in str(prompt_source) else str(prompt_source)
         mutation = pr.source_hash[:7] if pr.source_hash else "unknown"
     except Exception:
@@ -167,8 +176,25 @@ def _run_with_dispatcher(
             pat = _re.compile(subject_pattern)
         except _re.error as exc:
             console.print(f"[yellow]invalid --subject-pattern, ignored: {exc}[/yellow]")
+    # Find which thread root the trigger comment belongs to so the
+    # "other threads" rendering can omit it (it's already shown in
+    # full under THREAD).
+    active_root_id: int | None = None
+    if comment_id:
+        by_id = {c["id"]: c for c in existing_comments if c.get("id") is not None}
+        cur = by_id.get(comment_id)
+        seen: set[int] = set()
+        while cur and cur.get("parent_id") and cur["parent_id"] in by_id:
+            cid = cur["id"]
+            if cid in seen:
+                break
+            seen.add(cid)
+            cur = by_id[cur["parent_id"]]
+        if cur:
+            active_root_id = cur.get("id")
     existing_comments_str = _format_existing_comments(
         existing_comments, bot_user=bot_user, subject_pattern=pat,
+        active_thread_root_id=active_root_id,
     )
 
     # ── Lazy ctx: clone happens on first domain tool call ─────────────────
@@ -264,10 +290,46 @@ def _run_with_dispatcher(
     def _on_event(event: str, **kw):
         event_handler(event, **kw)
 
+    # Optional invocation recorder (Mockito verify side). Captures every
+    # tool invocation — mocked or real — so the bench judge can assert
+    # things like "reviewer spawned investigator at least 2 times with
+    # focus mentioning 'cheapest'".
+    invocations: list[dict] = []
+    invocations_lock = threading.Lock()
+    def _record_invocation(event: str, **kw):
+        # AGENT_TOOL_REQUEST fires for every tool call (mocked or
+        # real). AGENT_TOOL_RESULT fires ONLY for mocked calls (it
+        # carries mock_when / mocked=True). Use REQUEST as the
+        # primary source so unmocked agents (investigator, reviewer
+        # without mocks) still produce a complete invocations.json.
+        if event == "agent_tool_request":
+            with invocations_lock:
+                invocations.append({
+                    "agent": kw.get("agent_name"),
+                    "step": kw.get("step"),
+                    "tool": kw.get("tool"),
+                    "args": kw.get("args"),
+                    "mocked": False,
+                })
+        elif event == "agent_tool_result":
+            # Mocked-only follow-up: enrich the last matching record
+            # with mock metadata. The REQUEST already wrote the
+            # entry; here we just flip mocked=True and add mock_when.
+            with invocations_lock:
+                for inv in reversed(invocations):
+                    if (inv["agent"] == kw.get("agent_name")
+                            and inv["step"] == kw.get("step")
+                            and inv["tool"] == kw.get("tool")):
+                        inv["mocked"] = bool(kw.get("mocked", False))
+                        inv["mock_when"] = kw.get("mock_when")
+                        break
+
     def _trace_writer(event: str, **kw):
         _trace_db.on_event(event, **kw)
         if _trace_fs:
             _trace_fs.on_event(event, **kw)
+        if invocations_out:
+            _record_invocation(event, **kw)
 
     result = run_agent(
         agent_name=agent_name,
@@ -281,6 +343,8 @@ def _run_with_dispatcher(
         tool_choice=llm_cfg.get("tool_choice", ""),
         stream=llm_cfg.get("stream"),
         extra_body=llm_cfg.get("extra_body"),
+        tool_mocks=tool_mocks,
+        user_message_override=user_message_override,
     )
 
     # ── Post-run: post replies, findings, cleanup ─────────────────────────
@@ -300,6 +364,16 @@ def _run_with_dispatcher(
     )
     _trace_db.close()
     console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")
+    if invocations_out:
+        try:
+            out_path = Path(invocations_out).expanduser()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps({"invocations": invocations},
+                                            ensure_ascii=False, indent=2,
+                                            default=str))
+            console.print(f"[dim]  invocations: {out_path} ({len(invocations)} call(s))[/dim]")
+        except Exception as exc:
+            console.print(f"[red]failed to write --invocations-out {invocations_out}: {exc}[/red]")
     if _trace_fs:
         _trace_fs.finish_run(
             model=effective_model, pr_url=pr_url,
@@ -313,16 +387,19 @@ def _run_with_dispatcher(
     if findings:
         _print_findings(findings)
 
+    # Agents publish on the fly via post_comment / set_review_status /
+    # react_to_comment tools. The runner no longer bulk-publishes
+    # findings from done() — that path was deprecated and removed
+    # ("agents only post via tools"). Replies + review status still
+    # go through _publish_to_pr because some flows queue them in
+    # review_ctx for end-of-run delivery.
     meta = _early_meta
     author_prefix = ctx._author_prefix
-    # Findings published immediately via post_findings tool — don't double-post
-    # via the bulk path.
-    bulk_findings = () if review_ctx.posted_comments else (findings if ctx._initialized else ())
     _publish_to_pr(
         pr_url,
-        findings=bulk_findings,
+        findings=(),
         replies=review_ctx.comment_replies,
-        diff_result=ctx.diff_result if ctx._initialized else None,
+        diff_result=None,
         meta=meta,
         author_prefix=author_prefix,
         review_status=review_ctx.review_status or "",
@@ -370,6 +447,10 @@ def run(
     comment_id:    Optional[str] = typer.Option(None,  "--comment-id",         help="Bitbucket comment ID that triggered this invocation. Empty string is accepted (auto-triggered events from the webhook substitute an empty {comment_id} placeholder)."),
     agent:         Optional[str] = typer.Option(None,  "--agent",              help="Run a specific agent by name (dispatcher, reviewer, investigator)"),
     data:          Optional[list[str]] = typer.Option(None, "--data", "-d",    help="Data key=value pairs for the agent (e.g. -d focus='null safety')"),
+    mocks:         Optional[str] = typer.Option(None,  "--mocks",              help="Path to a YAML file of canned tool responses (spawn_agent, read_file, …). Tool calls matching the fixture short-circuit with the canned reply. Mockito-style. See orchestra/tool_mocks.py for the format."),
+    invocations_out: Optional[str] = typer.Option(None, "--invocations-out",   help="Write a JSON list of every tool invocation made during the run (tool name, args, mocked, mock_when, step, agent) to this path on exit. Used by the bench judge for Mockito-style verify on agent unit tests."),
+    user_message:  Optional[str] = typer.Option(None,  "--user-message",       help="Override the agent's default user-message template. Useful for unit tests where you want to keep the system prompt (methodology) intact but change the task framing — e.g. give the reviewer pre-investigated findings and ask only for consolidation."),
+    user_message_from: Optional[str] = typer.Option(None, "--user-message-from", help="Same as --user-message but reads the override text from a file. Convenient for multi-line message templates."),
 ):
     """
     Run an agent. Default: dispatcher (with --message) or reviewer (without).
@@ -450,10 +531,41 @@ def run(
                 k, v = item.split("=", 1)
                 extra_data[k.strip()] = v.strip()
 
+    # ── Load user-message override if given ──────────────────────────────
+    user_message_override: Optional[str] = None
+    if user_message_from:
+        try:
+            user_message_override = Path(user_message_from).expanduser().read_text(encoding="utf-8")
+        except Exception as exc:
+            console.print(f"[red]failed to read --user-message-from {user_message_from}: {exc}[/red]")
+            raise typer.Exit(2)
+    if user_message is not None:
+        user_message_override = user_message
+
+    # ── Load mocks fixture if --mocks given ──────────────────────────────
+    tool_mocks_obj = None
+    if mocks:
+        from orchestra.tool_mocks import ToolMocks
+        try:
+            tool_mocks_obj = ToolMocks.from_yaml(mocks)
+            console.print(
+                f"[dim]  tool_mocks: {len(tool_mocks_obj.by_tool)} tool(s) "
+                f"[{', '.join(tool_mocks_obj.by_tool)}] from {tool_mocks_obj.source_path}[/dim]"
+            )
+        except Exception as exc:
+            console.print(f"[red]failed to load --mocks {mocks}: {exc}[/red]")
+            raise typer.Exit(2)
+
     # ── Resolve which agent to run ────────────────────────────────────────
+    # Priority: --agent flag → dispatcher when --message is set →
+    # reviewer when pr_url is set (the default review path) → None
+    # (legacy local-repo flow).
     agent_name = agent
     if not agent_name:
-        agent_name = "dispatcher" if message is not None else None
+        if message is not None:
+            agent_name = "dispatcher"
+        elif pr_url:
+            agent_name = "reviewer"
 
     # ── Agent mode: run any agent with lazy clone ─────────────────────────
     if agent_name and pr_url:
@@ -487,6 +599,9 @@ def run(
             comment_tag=comment_tag_resolved,
             subject_pattern=subject_pattern,
             verdict_mode=verdict_mode,
+            tool_mocks=tool_mocks_obj,
+            invocations_out=invocations_out,
+            user_message_override=user_message_override,
         )
         raise typer.Exit(0)
 
@@ -639,14 +754,13 @@ def run(
         run_id=_trace_db.run_id,
         prefix=comment_tag_resolved,
     )
-    # If the reviewer published findings mid-run via post_findings, skip the
-    # bulk publish below — otherwise comments would double up on the PR.
-    bulk_findings = () if getattr(review_ctx, "posted_comments", []) else findings
+    # Agents publish via post_comment on the fly; runner-side bulk
+    # findings publish was deprecated and removed.
     _publish_to_pr(
         pr_url,
-        findings=bulk_findings,
+        findings=(),
         replies=review_ctx.comment_replies,
-        diff_result=diff_result,
+        diff_result=None,
         meta=meta,
         review_status=review_ctx.review_status or "",
         review_status_reason=review_ctx.review_status_reason or "",
@@ -1081,9 +1195,10 @@ def _finding_to_comment(finding):
 def _publish_to_pr(
     pr_url: str,
     *,
-    findings: list = (),
+    findings: list = (),     # deprecated: agents publish via post_comment;
+                              # kept for call-site compat, ignored.
     replies: list = (),
-    diff_result=None,
+    diff_result=None,         # unused (kept for call-site compat)
     meta=None,
     author_prefix: str = "",
     review_status: str = "",
@@ -1091,46 +1206,19 @@ def _publish_to_pr(
     bot_user: str = "",
     verdict_mode: str = "api",
 ) -> None:
-    """
-    Single entry-point for posting all DiffGraph output to a PR.
+    """End-of-run helper: queued replies + review-status verdict.
 
-    Builds the body decorator from `meta` once and applies it uniformly to
-    findings (via post_review_comments) and to reply text. Both flows
-    (dispatcher and direct review) call this helper, so the tagging decision
-    lives in exactly one place.
+    Findings, inline comments and reactions all flow through the
+    agents' tools (post_comment, react_to_comment) on the fly —
+    runner-side bulk publish was deprecated. This helper now only
+    drains comment_replies (queued by some flows) and applies the
+    final review_status if set.
     """
     if not pr_url:
         return
 
     decorate = meta.decorate if meta else None
-    from diffgraph.bitbucket import (
-        post_review_comments, reply_to_pr_comment,
-    )
-
-    if findings:
-        comments_to_post = [_finding_to_comment(f) for f in findings]
-        # Stamp the bot's synthetic-author tag on each finding body, same
-        # rationale as replies: when the same comment is read back next
-        # round it must match subject_pattern and label as [SELF]. Empty
-        # in production (only set when --subject-pattern is configured).
-        if author_prefix:
-            for c in comments_to_post:
-                if not c.comment.lstrip().startswith(author_prefix):
-                    c.comment = f"{author_prefix} {c.comment}"
-        changed_lines = None
-        if diff_result is not None:
-            changed_lines = {
-                path: set(fd.after_changed_lines)
-                for path, fd in diff_result.files.items()
-            }
-        console.print(f"\n[bold]Posting[/bold]  {len(comments_to_post)} findings to PR...\n")
-        posted = post_review_comments(
-            pr_url, comments_to_post,
-            on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
-            changed_lines=changed_lines,
-            decorate=decorate,
-        )
-        console.print(f"\n[green]Posted {posted}/{len(comments_to_post)} comments[/green]")
+    from diffgraph.bitbucket import reply_to_pr_comment
 
     for reply in replies:
         body = reply["text"]

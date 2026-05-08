@@ -13,14 +13,88 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
+import ssl
 import tempfile
+import time
 from typing import Callable
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 import json
 import logging
 
 log = logging.getLogger(__name__)
+
+
+# ── Centralised retry on transient Bitbucket errors ───────────────────────────
+#
+# Corp Bitbucket Server under load occasionally drops a request mid-handshake
+# (`SSL: UNEXPECTED_EOF_WHILE_READING`, `Connection reset`, `socket.timeout`).
+# Every call into the API goes through `_with_retry()` so a single blip
+# doesn't kill a review or comment-post. HTTPError (real 4xx/5xx with a body
+# that came back from the server) is NOT retried — that's a logic error, not
+# a transport blip.
+#
+# Tunables, picked up from env so the agent and the bench can be tightened
+# without code changes:
+#   DIFFGRAPH_BB_RETRY_ATTEMPTS=N      total tries (default 5)
+#   DIFFGRAPH_BB_RETRY_BASE_DELAY=SEC  first-retry sleep (default 1.0)
+#   DIFFGRAPH_BB_RETRY_MAX_DELAY=SEC   cap per-retry sleep (default 30)
+# Backoff is exponential: delay_i = min(base * 2**i, max).
+
+_TRANSIENT_TYPES: tuple = (
+    ssl.SSLError,
+    socket.timeout,
+    ConnectionError,           # covers ConnectionResetError / ConnectionRefusedError
+    TimeoutError,
+)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    if isinstance(exc, HTTPError):
+        # Real HTTP response (4xx/5xx) — don't retry by default.
+        return False
+    if isinstance(exc, URLError):
+        # URLError wraps the underlying transport error in `.reason`.
+        return isinstance(exc.reason, _TRANSIENT_TYPES)
+    return isinstance(exc, _TRANSIENT_TYPES)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _with_retry(fn):
+    """Run fn() with exponential-backoff retry on transient transport errors."""
+    attempts = _env_int("DIFFGRAPH_BB_RETRY_ATTEMPTS", 5)
+    base = _env_float("DIFFGRAPH_BB_RETRY_BASE_DELAY", 1.0)
+    cap = _env_float("DIFFGRAPH_BB_RETRY_MAX_DELAY", 30.0)
+    last: BaseException | None = None
+    for i in range(max(1, attempts)):
+        try:
+            return fn()
+        except Exception as exc:
+            if not _is_transient(exc):
+                raise
+            last = exc
+            wait = min(base * (2 ** i), cap)
+            log.warning("transient bitbucket error (try %d/%d, wait %.1fs): %s",
+                        i + 1, attempts, wait, exc)
+            if i + 1 < attempts:
+                time.sleep(wait)
+    assert last is not None
+    raise last
 
 
 # ── URL parsing ───────────────────────────────────────────────────────────────
@@ -58,17 +132,17 @@ def parse_pr_url(pr_url: str) -> tuple[str, str, str, int]:
 # ── API ───────────────────────────────────────────────────────────────────────
 
 def _api_get(url: str, token: str, ca_bundle: str | None, client_cert: str | None) -> dict:
-    import ssl
-    from urllib.error import HTTPError
-    req = Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
-    ctx = ssl.create_default_context(cafile=ca_bundle)
-    if client_cert:
-        ctx.load_cert_chain(client_cert)
-    try:
-        with urlopen(req, context=ctx, timeout=30) as resp:
-            return json.loads(resp.read())
-    except HTTPError as e:
-        raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+    def _do() -> dict:
+        req = Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+        ctx = ssl.create_default_context(cafile=ca_bundle)
+        if client_cert:
+            ctx.load_cert_chain(client_cert)
+        try:
+            with urlopen(req, context=ctx, timeout=30) as resp:
+                return json.loads(resp.read())
+        except HTTPError as e:
+            raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+    return _with_retry(_do)
 
 
 def _read_http_error(e) -> str:
@@ -249,6 +323,12 @@ def post_review_comments(
         body = _build_comment_body(c)
         if decorate:
             body = decorate(body)
+        # Same rationale as post_pr_comment: prepend the [SEVERITY]
+        # tag to the visible body so the level survives Bitbucket
+        # Server installs that don't render the native severity field.
+        sev_upper = (c.severity or "").strip().upper()
+        if sev_upper in ("BLOCKER", "MAJOR", "MINOR", "COMMENT") and not body.lstrip().startswith(f"[{sev_upper}]"):
+            body = f"[{sev_upper}] {body}"
         anchor = _make_anchor(c.file, c.line, changed_lines)
         payload: dict = {"text": body, "severity": _SEV.get(c.severity, "NORMAL")}
         if anchor:
@@ -335,19 +415,33 @@ def get_pr_comments(
         for activity in data.get("values", []):
             if activity.get("action") != "COMMENTED":
                 continue
-            comment_obj = activity.get("comment", {})
+            root = activity.get("comment", {})
             anchor = activity.get("commentAnchor") or {}
-            author_obj = comment_obj.get("author", {})
-            comments.append({
-                "id":       comment_obj.get("id"),
-                "file":     anchor.get("path", ""),
-                "line":     anchor.get("line", 0),
-                "text":     comment_obj.get("text", ""),
-                "author":   author_obj.get("displayName", ""),
-                "author_slug": author_obj.get("slug", author_obj.get("name", "")),
-                "resolved": comment_obj.get("state", "") == "RESOLVED",
-                "anchored": bool(anchor.get("path")),
-            })
+            # Walk the nested replies tree (Bitbucket nests replies inside
+            # `comment.comments[]`, not as separate activities) and emit
+            # one record per comment with parent_id set. Lets the agent
+            # see the message graph instead of a flat list.
+            stack: list[tuple[dict, int | None, int]] = [(root, None, 0)]
+            while stack:
+                node, parent_id, depth = stack.pop()
+                author_obj = node.get("author", {})
+                comments.append({
+                    "id":          node.get("id"),
+                    "parent_id":   parent_id,
+                    "depth":       depth,
+                    "file":        anchor.get("path", ""),
+                    "line":        anchor.get("line", 0),
+                    "text":        node.get("text", ""),
+                    "author":      author_obj.get("displayName", ""),
+                    "author_slug": author_obj.get("slug", author_obj.get("name", "")),
+                    "resolved":    node.get("state", "") == "RESOLVED",
+                    "anchored":    bool(anchor.get("path")),
+                })
+                # Reverse so that when popped from stack, replies are seen
+                # in chronological order. Bitbucket returns replies in
+                # creation order under `.comments[]`.
+                for child in reversed(node.get("comments") or []):
+                    stack.append((child, node.get("id"), depth + 1))
         if data.get("isLastPage", True):
             break
         start = data.get("nextPageStart", start + 100)
@@ -423,12 +517,23 @@ def get_comment_thread(
     token: str | None = None,
     ca_bundle: str | None = None,
     client_cert: str | None = None,
+    bot_user: str = "",
+    subject_pattern: str = "",
 ) -> str:
     """
     Fetch the comment thread from root to the given comment.
 
     Walks the parent chain via Bitbucket API.
     Returns formatted text: one message per line, oldest first.
+
+    When `subject_pattern` (regex with one capture group) and `bot_user`
+    are set, comments whose body starts with `[<bot_user>]` are tagged
+    `[SELF]` in the rendered header so the agent can tell its own prior
+    posts apart from other speakers in the same thread. The captured
+    name is also used as the displayed author (overriding Bitbucket's
+    displayName) so that simulated multi-author threads — where every
+    comment is technically authored by the same Bitbucket account —
+    render with distinct attributions.
     """
     token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
     ca_bundle   = ca_bundle   or os.environ.get("REQUESTS_CA_BUNDLE")
@@ -437,49 +542,62 @@ def get_comment_thread(
     if not token:
         return "(no token — cannot fetch thread)"
 
-    server_url, project, repo, pr_id = parse_pr_url(pr_url)
-    base = (
-        f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
-        f"/pull-requests/{pr_id}/comments"
-    )
-
-    # Walk parent chain to find root
-    root_id = comment_id
-    for _ in range(20):
-        endpoint = f"{base}/{root_id}"
-        try:
-            comment = _api_get(endpoint, token, ca_bundle, client_cert)
-        except Exception:
-            break
-        parent = comment.get("parent")
-        if not parent or not parent.get("id"):
-            break
-        root_id = parent["id"]
-
-    # Fetch root — Bitbucket nests the full thread under "comments"
+    # Bitbucket Server quirk: GET /comments/{id} returns `parent = None`
+    # for replies — the parent→child link only exists in the parent's
+    # `.comments[]` array. Walking up via `.parent` never finds the root
+    # for any reply, so the THREAD rendered to the agent collapses to
+    # just the trigger comment. Fix: build the parent_id map by walking
+    # the activities feed top-down (already done in get_pr_comments),
+    # then walk up via that map.
     try:
-        root = _api_get(f"{base}/{root_id}", token, ca_bundle, client_cert)
+        all_comments = get_pr_comments(pr_url, token, ca_bundle, client_cert)
     except Exception:
-        return "(failed to fetch root comment)"
+        return "(failed to fetch PR comments)"
 
-    # Flatten nested comment tree
-    flat: list[dict] = []
+    by_id = {c["id"]: c for c in all_comments if c.get("id") is not None}
+    if comment_id not in by_id:
+        return f"(comment #{comment_id} not found on PR)"
 
-    def _walk(node: dict) -> None:
-        author = node.get("author", {}).get("displayName", "unknown")
-        text = node.get("text", "")
-        nid = node.get("id", 0)
-        flat.append({"author": author, "text": text, "id": nid})
-        for child in node.get("comments", []):
-            _walk(child)
+    chain_ids: list[int] = []
+    cur_id: int | None = comment_id
+    seen: set[int] = set()
+    while cur_id is not None:
+        if cur_id in seen:
+            break
+        seen.add(cur_id)
+        chain_ids.append(cur_id)
+        cur_id = by_id.get(cur_id, {}).get("parent_id")
 
-    _walk(root)
+    chain_ids.reverse()  # root → ... → trigger
+    flat = [
+        {
+            "id": cid,
+            "author": by_id[cid].get("author", "unknown"),
+            "author_slug": by_id[cid].get("author_slug", ""),
+            "text": by_id[cid].get("text", ""),
+        }
+        for cid in chain_ids
+    ]
 
-    lines = []
+    if not flat:
+        return "(empty thread)"
+
+    from diffgraph.authors import resolve_author
+
+    blocks = []
     for msg in flat:
-        marker = " ← (this message)" if msg["id"] == comment_id else ""
-        lines.append(f"[{msg['author']}] (#{msg['id']}): {msg['text']}{marker}")
-    return "\n\n".join(lines) if lines else "(empty thread)"
+        a = resolve_author(msg, bot_user=bot_user, subject_pattern=subject_pattern)
+        self_tag = " [SELF]" if a.is_self else ""
+        trigger_tag = "  ← YOUR TRIGGER" if msg["id"] == comment_id else ""
+        # Borders matter: comment bodies often contain markdown / code /
+        # backticks, and a flat join makes the LLM blur where one ends
+        # and the next begins. The dashed ruler is enough boundary —
+        # short on tokens, hard to confuse with content.
+        blocks.append(
+            f"--- #{msg['id']} by [{a.display_name}]{self_tag}{trigger_tag}\n"
+            f"{a.body}"
+        )
+    return "\n".join(blocks) + "\n--- end of thread ---"
 
 
 def set_review_status(
@@ -612,7 +730,20 @@ def post_pr_comment(
         f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
         f"/pull-requests/{pr_id}/comments"
     )
-    body: dict = {"text": text}
+    # Prepend severity tag to the visible text body. Bitbucket Server's
+    # native `severity` field on inline comments (BLOCKER/NORMAL) is
+    # not rendered by every UI version — installs that only show the
+    # body would lose the severity signal entirely. The `[BLOCKER]`
+    # prefix is always visible regardless of API support, and
+    # installs that DO render the native field still see the
+    # icon + the explicit prefix (no harm, no double information loss).
+    body_text = text
+    sev = (severity or "").strip().upper()
+    if sev in ("BLOCKER", "MAJOR", "MINOR", "COMMENT") and file and line:
+        if not body_text.lstrip().startswith(f"[{sev}]"):
+            body_text = f"[{sev}] {body_text}"
+
+    body: dict = {"text": body_text}
     if parent_id:
         body["parent"] = {"id": int(parent_id)}
     if file and line:
@@ -622,7 +753,6 @@ def post_pr_comment(
             "lineType": (line_type or "ADDED").upper(),
             "fileType": "TO",
         }
-        sev = (severity or "").strip().upper()
         if sev in ("BLOCKER", "MAJOR"):
             body["severity"] = "BLOCKER"
         elif sev in ("MINOR", "COMMENT"):
@@ -635,26 +765,26 @@ def post_pr_comment(
 
 
 def _api_put(url: str, token: str, ca_bundle: str | None, client_cert: str | None, payload: dict) -> dict:
-    import ssl
-    from urllib.error import HTTPError
-    data = json.dumps(payload).encode()
-    req = Request(
-        url, data=data,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="PUT",
-    )
-    ctx = ssl.create_default_context(cafile=ca_bundle)
-    if client_cert:
-        ctx.load_cert_chain(client_cert)
-    try:
-        with urlopen(req, context=ctx, timeout=30) as resp:
-            return json.loads(resp.read())
-    except HTTPError as e:
-        raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+    def _do() -> dict:
+        data = json.dumps(payload).encode()
+        req = Request(
+            url, data=data,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="PUT",
+        )
+        ctx = ssl.create_default_context(cafile=ca_bundle)
+        if client_cert:
+            ctx.load_cert_chain(client_cert)
+        try:
+            with urlopen(req, context=ctx, timeout=30) as resp:
+                return json.loads(resp.read())
+        except HTTPError as e:
+            raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+    return _with_retry(_do)
 
 
 def _build_comment_body(c) -> str:
@@ -665,24 +795,23 @@ def _build_comment_body(c) -> str:
 
 
 def _api_post(url: str, token: str, ca_bundle: str | None, client_cert: str | None, payload: dict) -> dict:
-    import ssl
-    from urllib.error import HTTPError
-    from urllib.request import Request, urlopen
-    data = json.dumps(payload).encode()
-    req = Request(
-        url, data=data,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
-    ctx = ssl.create_default_context(cafile=ca_bundle)
-    if client_cert:
-        ctx.load_cert_chain(client_cert)
-    try:
-        with urlopen(req, context=ctx, timeout=30) as resp:
-            return json.loads(resp.read())
-    except HTTPError as e:
-        raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+    def _do() -> dict:
+        data = json.dumps(payload).encode()
+        req = Request(
+            url, data=data,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        ctx = ssl.create_default_context(cafile=ca_bundle)
+        if client_cert:
+            ctx.load_cert_chain(client_cert)
+        try:
+            with urlopen(req, context=ctx, timeout=30) as resp:
+                return json.loads(resp.read())
+        except HTTPError as e:
+            raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
+    return _with_retry(_do)

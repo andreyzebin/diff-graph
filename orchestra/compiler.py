@@ -45,7 +45,8 @@ class AgentRegistryEntry:
     llm_params: LLMParamsConfig
     sgr: bool
     sgr_interval: int
-    prompt_template: str  # body with {placeholders}
+    prompt_template: str  # SYSTEM body with {placeholders} — stable across calls
+    user_template: str = ""  # USER message template; empty → caller fills it
     guards: dict[str, str] = field(default_factory=dict)  # {trigger: message}
     source_file: str = ""
     source_hash: str = ""
@@ -71,6 +72,7 @@ class AgentRegistryEntry:
         return AgentConfig(
             name=self.name,
             system_prompt=self.prompt_template,
+            user_prompt=self.user_template,
             mode=self.mode,
             sgr_interval=self.sgr_interval,
             tools=tools,
@@ -123,7 +125,7 @@ _CACHE: dict[str, AgentRegistry] = {}
 
 def compile_prompts(
     prompt_dir: str | Path,
-    pattern: str = "*.prompt",
+    pattern: str = "*.md",
     llm: Any = None,
     model: str = "",
     use_cache: bool = True,
@@ -162,6 +164,11 @@ def compile_prompts(
     log.info("compiling %d prompt files from %s", len(files), prompt_path)
 
     for filepath in files:
+        # Skip sibling files: <name>.system.md / <name>.user.md hold
+        # body fragments referenced by <name>.md, not standalone agents.
+        stem = filepath.stem
+        if stem.endswith(".system") or stem.endswith(".user"):
+            continue
         try:
             text = filepath.read_text(encoding="utf-8")
             entry = _parse_prompt_file(text, filepath, llm, model)
@@ -169,7 +176,7 @@ def compile_prompts(
                 registry.entries[entry.name] = entry
                 _log_compiled(entry)
             else:
-                log.warning("  skipped %s — no @agent header found", filepath.name)
+                log.warning("  skipped %s — missing YAML frontmatter or @agent", filepath.name)
         except Exception as e:
             log.warning("  failed to compile %s: %s", filepath.name, e)
 
@@ -254,8 +261,8 @@ def compile_prompt_text(
 # ── Prompt file parsing ───────────────────────────────────────────────────────
 
 _HEADER_RE = re.compile(r"^@(\w+):\s*(.+)$", re.MULTILINE)
-_DATA_LINE_RE = re.compile(r"^\s+(\w+):\s*(\w+)\s*[—–-]\s*(.+)$")
 _SEPARATOR = re.compile(r"^---\s*$", re.MULTILINE)
+_USER_SEPARATOR = re.compile(r"^---\s*user\s*---\s*$", re.MULTILINE | re.IGNORECASE)
 
 
 def _parse_prompt_file(
@@ -264,19 +271,59 @@ def _parse_prompt_file(
     llm: Any = None,
     model: str = "",
 ) -> Optional[AgentRegistryEntry]:
-    """Parse a prompt file: extract @headers + body."""
+    """Parse an agent prompt file. Format: YAML frontmatter + body.
 
-    # Split header and body on ---
-    parts = _SEPARATOR.split(text, maxsplit=1)
-    if len(parts) == 2:
-        header_text, body = parts
-    else:
-        # No separator — try to parse headers from full text
-        header_text = text
-        body = text
+    File starts with `---\\n`, a YAML metadata block, then a closing
+    `---\\n`, then the system message body. Standard frontmatter
+    pattern used by Jekyll, Hugo, Obsidian, MDX.
 
-    # Pass 1: deterministic header extraction
-    headers = _extract_headers(header_text)
+    The body is the system prompt. The user-message template either
+    follows the body after a `--- user ---` separator, or lives in a
+    sibling file `<name>.user.md`. The system body itself can also be
+    extracted to a sibling `<name>.system.md`.
+    """
+    import yaml as _yaml
+
+    parts = _SEPARATOR.split(text.lstrip(), maxsplit=1)
+    if len(parts) != 2 or parts[0].strip() != "":
+        return None  # missing opening `---`
+    after_first = parts[1]
+    closing = _SEPARATOR.split(after_first, maxsplit=1)
+    if len(closing) != 2:
+        return None  # missing closing `---`
+    yaml_block, body = closing
+    try:
+        yaml_headers = _yaml.safe_load(yaml_block) or {}
+    except Exception:
+        return None
+    if not isinstance(yaml_headers, dict):
+        return None
+
+    # Optional second split: a `--- user ---` line inside the body
+    # separates the SYSTEM portion (stable methodology, tool docs,
+    # behavioural rules — cacheable) from a USER message template
+    # (current task / trigger framing — varies per call). Without
+    # this marker the whole body is treated as system, the user
+    # message defaults to "Begin." (existing behaviour).
+    user_template = ""
+    user_parts = _USER_SEPARATOR.split(body, maxsplit=1)
+    if len(user_parts) == 2:
+        body, user_template = user_parts
+
+    # Convention-based external override: if `<name>.system.md` /
+    # `<name>.user.md` exist next to the file, they REPLACE whatever
+    # the body parsed above. Lets prompt authors keep methodology and
+    # per-call template in their own files without ceremony — the
+    # main file becomes a tiny YAML-frontmatter metadata block.
+    if filepath is not None:
+        sib_system = filepath.with_name(f"{filepath.stem}.system.md")
+        sib_user = filepath.with_name(f"{filepath.stem}.user.md")
+        if sib_system.exists():
+            body = sib_system.read_text(encoding="utf-8")
+        if sib_user.exists():
+            user_template = sib_user.read_text(encoding="utf-8")
+
+    headers, input_schema, guards = _from_yaml_headers(yaml_headers)
 
     if not headers.get("agent"):
         if filepath:
@@ -296,8 +343,6 @@ def _parse_prompt_file(
     mode = AgentMode(headers.get("mode", "react"))
     capabilities = _parse_list(headers.get("capabilities", ""))
     tools = _parse_list(headers.get("tools", ""))
-    input_schema = _parse_data_section(header_text)
-    guards = _parse_guards_section(header_text)
     budget = _parse_budget_header(headers.get("budget", ""))
     llm_params = _parse_llm_header(headers.get("llm", ""))
     sgr = "sgr" in capabilities
@@ -317,101 +362,93 @@ def _parse_prompt_file(
         sgr=sgr,
         sgr_interval=sgr_interval,
         prompt_template=body.strip(),
+        user_template=user_template.strip(),
         source_file=str(filepath) if filepath else "",
         source_hash=hashlib.md5(text.encode()).hexdigest()[:8],
     )
 
 
-def _extract_headers(text: str) -> dict[str, str]:
-    """Extract @key: value pairs from header section."""
-    headers: dict[str, str] = {}
-    current_key: Optional[str] = None
-    current_value: list[str] = []
+def _from_yaml_headers(y: dict) -> tuple[dict[str, str], dict[str, dict[str, str]], dict[str, str]]:
+    """Convert YAML-frontmatter dict into the (headers, input_schema, guards)
+    triple the rest of the parser expects.
 
-    for line in text.splitlines():
-        match = re.match(r"^@(\w+):\s*(.*)", line)
-        if match:
-            # Save previous
-            if current_key:
-                headers[current_key] = "\n".join(current_value).strip()
-            current_key = match.group(1)
-            current_value = [match.group(2)]
-        elif current_key and (line.startswith("  ") or line.startswith("\t")):
-            # Continuation line
-            current_value.append(line)
-        else:
-            # End of headers
-            if current_key:
-                headers[current_key] = "\n".join(current_value).strip()
-                current_key = None
-                current_value = []
-
-    if current_key:
-        headers[current_key] = "\n".join(current_value).strip()
-
-    return headers
-
-
-_FROM_RE = re.compile(r"from:(\w+)\.(\w+)")
-
-
-def _parse_data_section(header_text: str) -> dict[str, dict[str, str]]:
+    The legacy @header parser produces flat string values; YAML can
+    carry richer structures. We adapt:
+      - tools: list → comma-joined string for `_parse_list`
+      - capabilities: list → comma-joined
+      - budget: dict {tokens, steps, wall} → header string
+        "Ntokens, Msteps[, Ws]"
+      - llm: dict {temperature, top_p, …} → header string
+        "key=value, key=value"
+      - data: dict {field: {type, description, from}} → input_schema
+      - guards: dict {trigger: message} → guards
+      - summary: string (multi-line OK)
     """
-    Parse @data section into input schema.
+    h: dict[str, str] = {}
 
-    Supports from:tool.field syntax in descriptions:
-      diff_summary: string -- from:pr_context.diff_summary
-    """
-    schema: dict[str, dict[str, str]] = {}
-    in_data = False
+    if "agent" in y:    h["agent"] = str(y["agent"])
+    if "mode" in y:     h["mode"] = str(y["mode"])
+    if "summary" in y:  h["summary"] = str(y["summary"]).strip()
+    if "sgr_interval" in y: h["sgr_interval"] = str(y["sgr_interval"])
 
-    for line in header_text.splitlines():
-        if line.strip().startswith("@data:"):
-            in_data = True
-            continue
-        if in_data:
-            if line.startswith("@") or (line.strip() and not line.startswith(" ") and not line.startswith("\t")):
-                break
-            match = _DATA_LINE_RE.match(line)
-            if match:
-                field_name = match.group(1)
-                field_type = match.group(2)
-                field_desc = match.group(3).strip().strip('"\'')
-                entry: dict[str, str] = {"type": field_type, "description": field_desc}
-                # Parse from:tool.field
-                from_match = _FROM_RE.search(field_desc)
-                if from_match:
-                    entry["from_tool"] = from_match.group(1)
-                    entry["from_field"] = from_match.group(2)
-                schema[field_name] = entry
+    raw_tools = y.get("tools") or []
+    if isinstance(raw_tools, list):
+        h["tools"] = ", ".join(str(t).strip() for t in raw_tools)
+    else:
+        h["tools"] = str(raw_tools)
 
-    return schema
+    raw_caps = y.get("capabilities") or []
+    if isinstance(raw_caps, list):
+        h["capabilities"] = ", ".join(str(c).strip() for c in raw_caps)
+    else:
+        h["capabilities"] = str(raw_caps)
 
+    # budget: either inline string ("50000 tokens, 50 steps") or dict
+    bud = y.get("budget")
+    if isinstance(bud, str):
+        h["budget"] = bud
+    elif isinstance(bud, dict):
+        parts: list[str] = []
+        if "tokens" in bud:
+            parts.append(f"{int(bud['tokens'])} tokens")
+        if "steps" in bud:
+            parts.append(f"{int(bud['steps'])} steps")
+        if "wall" in bud:
+            parts.append(f"{bud['wall']}")
+        h["budget"] = ", ".join(parts)
 
-_GUARD_LINE_RE = re.compile(r'^\s+([\w:]+):\s*"(.+)"$')
+    # llm: dict {temperature, top_p, ...} → key=value pairs
+    lm = y.get("llm")
+    if isinstance(lm, str):
+        h["llm"] = lm
+    elif isinstance(lm, dict):
+        h["llm"] = ", ".join(f"{k}={v}" for k, v in lm.items())
 
+    # data: dict {field: {type, description, from}}
+    # `from` is "tool.field" — split into from_tool / from_field for
+    # the data-provider resolver in orchestra/agent.py.
+    input_schema: dict[str, dict[str, str]] = {}
+    for field_name, spec in (y.get("data") or {}).items():
+        if isinstance(spec, dict):
+            entry: dict[str, str] = {}
+            for k in ("type", "description"):
+                if k in spec:
+                    entry[k] = str(spec[k])
+            from_v = spec.get("from")
+            if from_v and isinstance(from_v, str) and "." in from_v:
+                tool, _, field_id = from_v.partition(".")
+                entry["from_tool"] = tool
+                entry["from_field"] = field_id
+            input_schema[str(field_name)] = entry
+        elif isinstance(spec, str):
+            input_schema[str(field_name)] = {"type": spec}
 
-def _parse_guards_section(header_text: str) -> dict[str, str]:
-    """
-    Parse @guards section.
-
-    Formats:
-      trigger: "message"
-      require_tool:tool_name: "message"
-    """
+    # guards: dict {trigger: message}
     guards: dict[str, str] = {}
-    in_guards = False
-    for line in header_text.splitlines():
-        if line.strip().startswith("@guards:"):
-            in_guards = True
-            continue
-        if in_guards:
-            if line.startswith("@") or (line.strip() and not line.startswith(" ") and not line.startswith("\t")):
-                break
-            match = _GUARD_LINE_RE.match(line)
-            if match:
-                guards[match.group(1)] = match.group(2)
-    return guards
+    for trigger, msg in (y.get("guards") or {}).items():
+        guards[str(trigger)] = str(msg)
+
+    return h, input_schema, guards
 
 
 def _parse_list(value: str) -> list[str]:
@@ -446,13 +483,14 @@ def _parse_budget_header(value: str) -> BudgetConfig:
                 val = float(num.group(1))
                 wall_time = val * 60 if part.endswith("m") else val
 
+    from .prompts import load_internal
     return BudgetConfig(
         max_tokens=tokens,
         max_steps=steps,
         max_wall_time=wall_time,
         pushers=[
             PusherConfig(at=0.75, type=PusherType.NUDGE,
-                         message="75% budget used. Wrap up current investigation and call done()."),
+                         message=load_internal("pushers/nudge")),
             PusherConfig(at=1.0, type=PusherType.FORCE_DONE),
         ],
     )

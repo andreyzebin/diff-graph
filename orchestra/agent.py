@@ -25,7 +25,7 @@ from .events import EventBus, EventType
 from .sgr import SGRTracker, SGREntry
 from .condensation import get_condenser, should_condense
 from .streaming import stream_llm
-from .prompts import load_prompt, interpolate
+from .prompts import load_prompt, interpolate, load_internal
 from .tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -105,8 +105,16 @@ def resolve_agent_data(config: AgentConfig, data: dict, registry: ToolRegistry) 
             log.warning("from: tool '%s' failed for field '%s': %s", from_tool, field_name, e)
             resolved[field_name] = "(not available)"
 
-    if resolved and "{" in config.system_prompt:
-        config.system_prompt = interpolate(config.system_prompt, **resolved)
+    if resolved:
+        # Interpolate BOTH system and user templates. After the
+        # system/user split most per-call placeholders ({diff_summary},
+        # {focus}, {message}, …) live in user_prompt now; system_prompt
+        # is largely placeholder-free but the same data can be quoted
+        # in either.
+        if "{" in config.system_prompt:
+            config.system_prompt = interpolate(config.system_prompt, **resolved)
+        if config.user_prompt and "{" in config.user_prompt:
+            config.user_prompt = interpolate(config.user_prompt, **resolved)
 
     return resolved
 
@@ -132,6 +140,8 @@ class Agent:
         prompt_vars: Optional[dict[str, str]] = None,
         agent_configs: Optional[dict[str, AgentConfig]] = None,
         agent_registry: Any = None,  # AgentRegistry from compiler
+        tool_mocks: Any = None,      # ToolMocks; intercepts _handle_tool_call generically
+        user_message_override: Optional[str] = None,
     ) -> None:
         self.config = config
         self.registry = tool_registry
@@ -146,6 +156,14 @@ class Agent:
         self.prompt_vars = prompt_vars or {}
         self.agent_configs = agent_configs or {}
         self.agent_registry = agent_registry  # compiled prompt registry
+        # Inherited from parent so deep tool calls in spawned children are
+        # still intercepted when the fixture covers them.
+        self.tool_mocks = tool_mocks if tool_mocks is not None else (parent.tool_mocks if parent else None)
+        # Optional per-run override of the user_prompt template. Used
+        # by unit tests (consolidation-only reviewer call etc.) and
+        # by parent spawns that want to reframe the child's task. None
+        # means "use config.user_prompt".
+        self.user_message_override = user_message_override
         self.data_scope: dict[str, str] = {}  # resolved @data values for inheritance
 
         # SGR
@@ -395,8 +413,15 @@ class Agent:
                 for tc in msg.tool_calls:
                     tool_names.append(tc.function.name)
                     _called_tools.add(tc.function.name)
-                    if tc.function.name not in ("done", "reflect", "spawn_agent"):
-                        dispatch_tcs.append(tc)
+                    if tc.function.name in ("done", "reflect", "spawn_agent"):
+                        continue
+                    # Mocked tools take the sequential _handle_tool_call
+                    # path so their real handler never runs (would waste
+                    # work and could have side effects the test doesn't
+                    # want).
+                    if self.tool_mocks is not None and self.tool_mocks.has(tc.function.name):
+                        continue
+                    dispatch_tcs.append(tc)
 
             # Emit AGENT_STEP for every LLM round — even text-only (WAL: before dispatch)
             text_preview = ""
@@ -618,12 +643,37 @@ class Agent:
     # ── Tool call handling ────────────────────────────────────────────────────
 
     def _handle_tool_call(self, tc, dispatch_results: dict, step: int) -> str:
-        """Route all tool calls through registry.dispatch() — validation + handler."""
+        """Route all tool calls through registry.dispatch() — validation + handler.
+
+        Mock interception lives here so it covers ANY tool, not just
+        `spawn_agent`. A configured tool with a matching `when:` returns
+        the canned response synchronously; no real handler runs.
+        Configured tool but no matching entry → MissingMockMatchError
+        (test author left a fixture hole — surface immediately).
+        Tool not in the fixture → real dispatch (partial mocking).
+        """
         name = tc.function.name
         try:
             args = json.loads(tc.function.arguments or "{}")
         except json.JSONDecodeError:
             args = {}
+
+        # ── Mock interception (Mockito-style, ordinal) ────────────────────
+        if self.tool_mocks is not None and self.tool_mocks.has(name):
+            from .tool_mocks import render_mock_result
+            # consume() is thread-safe; raises MockExhaustedError /
+            # MockArgsMismatchError if the agent's behaviour diverged
+            # from what the fixture expects at this ordinal slot.
+            entry = self.tool_mocks.consume(name, args)
+            result = render_mock_result(name, entry, args)
+            self.event_bus.emit(
+                EventType.AGENT_TOOL_RESULT,
+                agent_id=self.agent_id, agent_name=self.config.name,
+                step=step, tool=name, args=args,
+                result=str(result)[:1000], mocked=True,
+                mock_when=entry.when,
+            )
+            return self.registry.format_result(name, result)
 
         # Pre-dispatched domain tools (ran in parallel earlier)
         if tc.id in dispatch_results:
@@ -695,8 +745,15 @@ class Agent:
         return resolved
 
     def _meta_spawn_agent(self, args: dict) -> str:
-        """spawn_agent: create and run a child agent with data injection."""
+        """spawn_agent: create and run a child agent with data injection.
+
+        Mock interception happens earlier (in `_handle_tool_call`) since
+        spawn_agent is a normal tool from the registry's perspective.
+        By the time this method runs the call is real.
+        """
         agent_name = args.get("agent", "")
+        focus_arg = args.get("focus", "")
+
         agent_config = self._resolve_agent_config(agent_name)
         if not agent_config:
             return json.dumps({"error": f"unknown agent: {agent_name}"})
@@ -708,7 +765,6 @@ class Agent:
         resolved_data = dict(self.data_scope)
         if data:
             resolved_data.update(self._resolve_data_inheritance(data))
-        focus_arg = args.get("focus", "")
         if focus_arg and "focus" not in resolved_data:
             resolved_data["focus"] = focus_arg
 
@@ -802,14 +858,34 @@ class Agent:
     # ── Message building ──────────────────────────────────────────────────────
 
     def _build_messages(self) -> list[dict]:
-        prompt_text = load_prompt(self.config.system_prompt)
+        # System: stable methodology, ideally NO per-call placeholders
+        # (so the LLM's prompt cache is reusable across runs). During
+        # migration prompt files may still carry placeholders here —
+        # interpolation runs but should resolve to a stable string.
+        system_text = load_prompt(self.config.system_prompt)
         if self.prompt_vars:
-            prompt_text = interpolate(prompt_text, **self.prompt_vars)
-        messages = [{"role": "system", "content": prompt_text}]
+            system_text = interpolate(system_text, **self.prompt_vars)
+        messages = [{"role": "system", "content": system_text}]
         messages.extend(self.context_messages)
-        # Some endpoints reject requests without a user-role message.
+
+        # User: per-call template. user_message_override (set by a
+        # parent spawn or a unit-test override) wins over the agent's
+        # default user_prompt template.
+        user_text = ""
+        if self.user_message_override is not None:
+            user_text = self.user_message_override
+        elif self.config.user_prompt:
+            user_text = self.config.user_prompt
+            if self.prompt_vars:
+                user_text = interpolate(user_text, **self.prompt_vars)
+
+        # Some endpoints reject requests without a user-role message;
+        # this is a defensive fallback that never fires for our agents
+        # (all of them have a user.md). Kept inline because there's
+        # nothing to externalise — by definition the LLM never reads
+        # it during real runs.
         if not any(m.get("role") == "user" for m in messages):
-            messages.append({"role": "user", "content": "Begin."})
+            messages.append({"role": "user", "content": user_text.strip() or "Begin."})
         return messages
 
     def _build_tool_names(self) -> list[str]:
@@ -892,7 +968,7 @@ class Agent:
     def _force_done(self, messages: list[dict], tools_schema: list[dict]) -> Any:
         messages.append({
             "role": "user",
-            "content": "Step limit reached. Call done() now with all findings you have so far.",
+            "content": load_internal("pushers/step_limit"),
         })
         done_tools = [t for t in tools_schema if t["function"]["name"] == "done"]
         if not done_tools:

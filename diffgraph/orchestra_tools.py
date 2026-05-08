@@ -59,7 +59,7 @@ def _get_vfs(ctx: "_Ctx", ref: str) -> str | None:
 
 def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     """Register all diffgraph domain tools. Tools call ctx.ensure_repo() lazily."""
-    from .tools import list_files, read_file, search_text
+    from .tools import list_files as _list_files_impl, read_file, search_text
     from .outline import get_outline
 
     def _ensure():
@@ -92,8 +92,8 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         return "base..source" if (ctx.base_ref and ctx.source_ref) else "source"
 
     @registry.register(
-        name="find_files",
-        description="List files matching a glob pattern. Returns relative paths.",
+        name="list_files",
+        description="List files matching a glob pattern. Returns relative paths. Pass `pattern='**/*'` (the default) for everything.",
         parameters={
             "type": "object",
             "properties": {
@@ -103,7 +103,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "required": ["pattern"],
         },
     )
-    def find_files(pattern: str = "**/*", ref: str = "") -> list[str]:
+    def list_files(pattern: str = "**/*", ref: str = "") -> list[str]:
         _ensure()
         ref = ref or _default_ref()
         vfs_dir = _get_vfs(ctx, ref)
@@ -111,7 +111,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             from diffsearch.tools import list_files_vfs
             files = list_files_vfs(vfs_dir, pattern)
         else:
-            files = list_files(pattern, ctx.repo_path)
+            files = _list_files_impl(pattern, ctx.repo_path)
         return [f for f in files if not _skip_dir(f)][:50]
 
     @registry.register(
