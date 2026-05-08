@@ -323,7 +323,16 @@ class LLMJudge(Judge):
             if (inv.get("tool") or "") != "done":
                 continue
             args = inv.get("args") or {}
-            for f in (args.get("findings") or []):
+            raw = args.get("findings") or []
+            # Same JSON-string-vs-array quirk as reflect.concerns.
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    raw = []
+            if not isinstance(raw, list):
+                raw = []
+            for f in raw:
                 if isinstance(f, dict):
                     findings.append(f)
         return findings
@@ -346,14 +355,25 @@ class LLMJudge(Judge):
             tool = inv.get("tool") or ""
             args = inv.get("args") or {}
             if tool == "reflect":
-                for c in (args.get("concerns") or []):
+                raw_concerns = args.get("concerns") or []
+                # Some providers (qwen3-coder observed) pass complex
+                # tool args as a JSON-encoded string instead of the
+                # native list. Decode if needed.
+                if isinstance(raw_concerns, str):
+                    try:
+                        raw_concerns = json.loads(raw_concerns)
+                    except (json.JSONDecodeError, ValueError):
+                        raw_concerns = []
+                if not isinstance(raw_concerns, list):
+                    raw_concerns = []
+                for c in raw_concerns:
                     if isinstance(c, dict):
                         out.append({
                             "source": "reflect",
                             "title": str(c.get("title", "")),
                             "description": str(c.get("description", "")),
                         })
-                    elif isinstance(c, str):
+                    elif isinstance(c, str) and c.strip():
                         out.append({"source": "reflect", "title": c, "description": ""})
             elif tool == "spawn_agent":
                 focus = str(args.get("focus", ""))
