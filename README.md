@@ -1,6 +1,6 @@
 # DiffGraph
 
-Multi-agent PR code reviewer powered by the **Orchestra** framework. All agents defined by `.prompt` files — hierarchy, behavior, and data flow controlled entirely by prompts.
+Multi-agent PR code reviewer powered by the **Orchestra** framework. All agents defined by Markdown files with YAML frontmatter (`<name>.md` + sibling `<name>.system.md` / `<name>.user.md`) — hierarchy, behavior, and data flow controlled entirely by prompts.
 
 ## Contents
 
@@ -342,7 +342,14 @@ python cli.py run --pr-url ... --prompts bitbucket://server/PROJECT/prompts-repo
 
 ### Agents
 
-All agents are homogeneous — same `Agent` class, same `.prompt` format, same tool dispatch. Hierarchy and behavior controlled entirely by prompts.
+All agents are homogeneous — same `Agent` class, same Markdown+YAML-frontmatter format, same tool dispatch. Hierarchy and behavior controlled entirely by prompts.
+
+Each agent is described by three sibling files:
+- `<name>.md` — YAML frontmatter (metadata: `agent`, `tools`, `budget`, `data`, `summary`)
+- `<name>.system.md` — stable methodology, tool docs, severity rules, finding shape (no per-call placeholders → cacheable)
+- `<name>.user.md` — per-call task template with `{placeholder}` interpolation (the "what to do this run")
+
+System and user templates follow SOLID separation: system declares **capabilities** (closed for modification), user dictates **the task** (open for extension via different user-message variants — see agent-isolation tests below).
 
 **Dispatcher** — entry point for user interactions. Three commands with distinct roles: `/ask` (or plain text) is *discussion* — answers questions scoped to the active thread; `/help` is *interface help* — explains the commands and recommends the right one for the user's current thread state; `/review` is *deep analysis* — spawns the reviewer. The dispatcher only spawns the reviewer on the literal `/review` command or auto-trigger; questions about review do not. Uses `@guards` to ensure replies are delivered via tools.
 
@@ -410,7 +417,9 @@ Every react agent tracks reasoning via `reflect()`: `learned`, `questions_remain
 
 ## Orchestra Framework
 
-Prompt-defined agent framework (~3,700 LOC). Agents defined by `.prompt` files with `@` headers. No topologies, no pipelines — agents create structure at runtime via tool calls.
+Prompt-defined agent framework. Agents defined by Markdown files with YAML frontmatter (`<name>.md`) plus sibling `<name>.system.md` / `<name>.user.md` body files. No topologies, no pipelines — agents create structure at runtime via tool calls.
+
+**Agent isolation for testing.** `--mocks <fixture.yaml>` short-circuits any `spawn_agent` / `read_file` / etc. tool call with a canned response (Mockito-style). `--user-message-from <file>` overrides the agent's default user template, so the same reviewer can be tested against different task framings (concerns-only, consolidation-only, full pipeline) without changing the system prompt. `--invocations-out <path>` captures every tool call to a JSON file for the test judge to verify against. See `orchestra/tool_mocks.py` for the fixture format.
 
 ### Prompt file format
 
@@ -457,7 +466,7 @@ All tools — domain and builtin — go through `registry.dispatch()`. Schema va
 ```
 orchestra/                   Prompt-defined agent framework
 +-- agent.py                 Agent + resolve_agent_data()
-+-- compiler.py              .prompt → agent registry (regex + LLM fallback)
++-- compiler.py              .md (YAML frontmatter) → agent registry
 +-- tools/
     +-- registry.py          dispatch, validation, cache, hidden
     +-- builtin.py           Meta-tools with real agent handlers
@@ -484,9 +493,15 @@ diffgraph/                   Code review domain
     +-- bitbucket_pr.py      Bitbucket REST API
     +-- git_repo.py          Git clone/fetch/diff (header | ssh)
 +-- prompts/
-    +-- dispatcher.prompt    Route commands, handle /help, spawn reviewer
-    +-- reviewer.prompt      Three-phase review (analyze → investigate → judge)
-    +-- investigator.prompt  Focused investigation with SGR
+    +-- dispatcher.md          YAML frontmatter (metadata)
+    +-- dispatcher.system.md   Routing rules + thread/SELF awareness
+    +-- dispatcher.user.md     Per-call template ({comment_thread}, {message}, …)
+    +-- reviewer.md            YAML frontmatter
+    +-- reviewer.system.md     Tools as capabilities + severity + AGENTS.md rule
+    +-- reviewer.user.md       Default task: end-to-end review
+    +-- investigator.md        YAML frontmatter
+    +-- investigator.system.md Tools + reflect rules + finding shape
+    +-- investigator.user.md   Default task: investigate one focused concern
 
 diffsearch/                  Virtual unified diff filesystem
 webhook/                     Bitbucket webhook router with A/B routing
