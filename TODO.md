@@ -1713,3 +1713,282 @@ Phase 3 (polish): ✅ Done
   8.1b tracing run tagging                    ✅
   8.3d benchmarks per-capability regression   ✅
 ```
+
+
+## 9. Workspace as files — cross-source context for agents
+
+**Core idea.** Today the agent only sees the PR repo. We want it to
+also see related git repos (DB migrations, k8s manifests, IaC,
+architecture-as-code) AND non-repo sources (Jira, Confluence,
+Teable architecture, past code reviews, prod incident postmortems).
+Instead of inventing tools per source — i.e. a generic raw-HTTP
+tool, or 14 narrow per-source tools — we **materialise everything
+that is fundamentally a document into the same workspace**, mounted
+as plain files alongside the PR repo. The agent uses the existing
+`list_files` / `read_file` / `search` / `read_outline` to inspect
+all of it. **Cross-source `search()` is the killer feature** — one
+grep finds a string in Java code, in DDL, in a Jira description,
+and in an ADR all at once.
+
+The boundary: things that are inherently **documents** (issues,
+manifests, postmortems, ADRs, past reviews) → dumped as files.
+Things that are inherently **queries** (live time-series metrics,
+active alerts) → keep behind a small API tool. Rule of thumb:
+"is this source a set of documents, or a stream of measurements?"
+
+The agent gets **zero new tools** for the document half. The number
+of tools stays where it is.
+
+### 9.1 Workspace layout
+
+```
+workspace/
+├── orderflow/                     ← PR repo (base..source diff view)
+├── orderflow-migrations/          ← sibling repo, plain (ref=source, no markers)
+├── orderflow-k8s/                 ← sibling repo, plain
+├── jira/
+│   ├── ORD-234.md                 ← issue dump as markdown
+│   ├── ORD-291.md
+│   ├── EPIC-100.md
+│   └── BUG-512.md
+├── architecture/
+│   ├── orderflow-c4-context.md    ← Confluence page dump
+│   ├── orderflow-c4-container.md
+│   └── ADR-0023-promotions.md
+├── teable/
+│   └── service-catalog.md
+└── reviews/
+    └── PR-742.md                  ← past review dump (findings + verdict + linked tickets)
+```
+
+Path prefix tells the agent which kind of source it's looking at;
+DiffSearch VFS already supports plain mounts (ref=source, no
+markers) for siblings — only the primary repo is in unified-diff
+mode.
+
+### 9.2 AGENTS.md as the workspace manifest
+
+`AGENTS.md` already lives in the PR repo and is the canonical
+"things the agent should know about this project" doc. We extend
+it with declarative `## Related <source>` sections that name what
+to mount and give a free-text trigger hint the LLM uses to decide
+when to actually look:
+
+```markdown
+## Related repositories
+
+Cross-repo dependencies — clone these into the workspace as
+siblings:
+
+- **migrations** — `ssh://git@bitbucket-ci/SBLOOM/orderflow-migrations`
+  Check when this PR touches JPA entities, `@Column` annotations,
+  repository methods, or anything that implies a schema shape.
+
+- **k8s** — `ssh://git@bitbucket-ci/SBLOOM/orderflow-k8s`
+  Deployment specs. Check when env vars, config keys, service URLs
+  change.
+
+## Related Jira
+
+- **ORD project** — `https://jira/.../ORD`
+  Auto-fetch tickets referenced from the PR description, plus their
+  parent epics, plus any linked `BUG-*` tickets so prod-incident
+  history is visible.
+
+## Related architecture
+
+- **C4** — `https://confluence/.../ARCH/Orderflow` (depth=2)
+  Fetch when this PR adds/removes a service boundary or changes a
+  contract between services.
+
+## Related past reviews
+
+- Auto-fetch reviews from last 6 months for files this PR touches.
+  Use to detect "this BLOCKER was raised before — has it
+  regressed?" and to learn the project's historical concerns.
+```
+
+Decentralised: each repo owns its own AGENTS.md. PR on
+orderflow-migrations has its own AGENTS.md where orderflow is
+listed as a sibling. Symmetry by design.
+
+Markdown structure is **fixed enough to parse** (regex for header
++ bullets), **free enough for LLM to read directly**. Each bullet:
+`- **<name>** — \`<url>\`` followed by free-text trigger hint.
+
+### 9.3 Document/query boundary per source
+
+| Source | Nature | Approach |
+|---|---|---|
+| code, DB migrations, k8s, IaC | git repos | shallow clone → mount sibling at `ref=source` |
+| Jira issues / Confluence / Teable / ADRs | documents | fetch → render to `.md` with YAML frontmatter |
+| past code reviews | structured records (we have SQLite DB) | render to `reviews/PR-N.md` |
+| prod incident postmortems | documents (after-the-fact) | fetch → `.md`, just like Jira |
+| live prod metrics (Grafana, Prometheus) | time-series queries | API tool `metrics_query(service, metric, since)` |
+| live alerts / on-call status | live state | API tool `incidents_active(...)` |
+
+For the document half: zero new tools. For the query half: one or
+two narrow tools, scope deferred until the document approach
+proves out.
+
+### 9.4 Selectivity — what NOT to dump
+
+You can clone a whole git repo cheaply. You **cannot** dump a
+whole Jira project (could be 100k tickets). Each non-repo source
+needs a selector that produces a small relevant set:
+
+- **Jira:** parse PR description for keys (`ORD-234`, `BUG-512`),
+  fetch those + their `linked` and `parent` (1 hop). Add `recent`
+  filter from AGENTS.md (`recent=90d`) for always-relevant tickets
+  (e.g. open epics this team is tracking).
+- **Confluence:** AGENTS.md lists a root page + depth (`depth=2`).
+  Fetch that page tree.
+- **Teable:** AGENTS.md lists table id + filter; dump matching rows
+  as one markdown table per query.
+- **Past reviews:** filter by file paths the PR touches (last 6
+  months by default). We already have these in our SQLite trace DB.
+- **Postmortems:** linked from `linked: [BUG-*]` of fetched Jira
+  tickets — recursive depth=1.
+
+All selectors merge their key sets, dedupe, batch-fetch, render to
+files.
+
+### 9.5 Markdown rendering format
+
+Frontmatter for structured metadata (frontend grep / agent
+filter), body for prose (semantic search):
+
+```markdown
+---
+key: ORD-234
+type: Story
+status: In Progress
+epic: ORD-100
+linked: [BUG-512, BUG-489, ORD-180]
+created: 2026-04-12
+updated: 2026-05-08
+labels: [pricing, promotions]
+---
+# ORD-234: Implement buy-3-get-1-free promotions
+
+## Description
+…
+
+## Acceptance criteria
+…
+
+## Recent activity
+- 2026-05-08 [Andrey] commented: "the cheapest-item logic in
+  PricingService needs review per AGENTS.md rule"
+- 2026-05-05 [Bob] linked BUG-489: "earlier prod issue, similar
+  shape"
+```
+
+Same shape for Confluence, ADRs, postmortems, past reviews —
+metadata up top, prose below. `linked: [...]` lists are how the
+agent walks the cross-source graph: read `BUG-512.md`, see it
+references `ORD-234`, open that, etc. — same UX as
+`read_thread(parent_id)`.
+
+### 9.6 Closes-the-loop value
+
+Two things this directly enables:
+
+- **"What past bugs hit this code?"** — `search("PricingService")`
+  finds Java + Jira `BUG-*.md` simultaneously. Reviewer sees "this
+  exact class had a prod NPE 3 months ago" without any new
+  primitive. Frontmatter `linked: [postmortem-X]` continues the
+  trail.
+- **"What was raised in prior reviews of this file?"** —
+  `reviews/PR-N.md` files in workspace. Reviewer's LOOK phase can
+  optionally `list_files("reviews/")` and notice "BLOCKER about
+  cheapest-item was already raised once and resolved — has the
+  current diff regressed it?" Critical for projects with high
+  iteration speed.
+
+Both are the user's stated goals ("на что обращать внимание + какие
+проблемы бывают на проде") with **zero new tools** — pure
+materialisation + grep.
+
+### 9.7 Implementation phasing
+
+Big move, ship in slices. Each phase delivers value
+independently — don't wait for the full vision to land.
+
+**Phase 9-A: sibling repos (migrations + k8s).**
+~150-200 LOC + 1-2 DiffSearch tests + a fixture toy migrations
+repo for the bench. Smallest, highest-value first slice. Reviewer
+immediately sees DDL alongside JPA changes.
+- AGENTS.md `## Related repositories` parser.
+- Parallel shallow-clone after primary clone (lazy_init pipeline).
+- DiffSearch VFS extended to mount siblings as plain.
+- One bench scenario: PR on orderflow changes a `@Column`
+  mapping, sibling migrations repo has the matching `ALTER TABLE`
+  — reviewer should cross-reference.
+
+**Phase 9-B: past reviews materializer.**
+We already have all this data in `~/.diffgraph/traces.db`. Render
+on workspace setup. ~100 LOC.
+- `reviews/PR-N.md` with frontmatter `findings:`, `verdict:`,
+  `prompt_generation:`, `linked_jira:`.
+- Filter to files touched by current PR.
+- Reviewer's LOOK phase gets a hint to glance at `reviews/`.
+
+**Phase 9-C: Jira materializer.**
+Highest-value external integration but needs Jira API client +
+auth. Selector: PR description scan + 1-hop linked + parent epic.
+~300 LOC including the Jira client.
+- `## Related Jira` AGENTS.md section.
+- Markdown frontmatter format from §9.5.
+- One bench scenario: PR description references `ORD-234`, the
+  fetched ticket links `BUG-512`, reviewer cites both in evidence.
+
+**Phase 9-D: Confluence/Teable materializers.**
+Same shape, different fetcher. ~200 LOC each. Add only when
+Phase 9-C is paying off and a real use-case appears.
+
+**Phase 9-E: live API tools (metrics + active incidents).**
+The query half. Probably `metrics_query(service, metric, since)`
+and `incidents_active(service)`. Defer until 9-A to 9-D are
+exercised — by then we'll know what queries the agent actually
+wants vs. what we imagined.
+
+### 9.8 Open design questions
+
+- **Lazy vs. eager mount.** Sibling repos are cheap (shallow
+  clone) — eager. Jira/Confluence — also eager since selector
+  produces a bounded set. Per-fetch lazy could come later if
+  workspace gets too big.
+- **Snapshot semantics across sources.** Materialise once at run
+  start, freeze. Same as our `comment_tools` `max_id` snapshot.
+  Updates mid-run not visible to current agent.
+- **Auth.** Each source has its own creds (Bitbucket SSH key, Jira
+  token, Confluence token). Plumb as env / per-source config block.
+  Don't mix into AGENTS.md (that's per-project domain knowledge,
+  not per-deployment ops).
+- **PR description Jira-key extraction.** Need a regex that
+  captures `[A-Z]+-\d+` patterns; deal with false positives
+  (`HTTP-404`, `JIRA-XXXX` placeholders) via a project-prefix
+  whitelist driven by AGENTS.md.
+- **Render-to-markdown fidelity.** Confluence has tables, macros,
+  inline images. Probably render to plain markdown with a
+  `[image: …]` placeholder, ignore macros. Lossy but readable;
+  always preserve a `source_url:` in frontmatter for the human if
+  more depth is needed.
+- **What if AGENTS.md is missing.** No related sources, current
+  behaviour. No regression — opt-in by design.
+- **What if a source is unreachable.** Graceful skip + warning
+  recorded in trace; do not fail the run. One broken Confluence
+  shouldn't take down a code review.
+- **Symmetry.** A PR on orderflow-migrations has its OWN
+  AGENTS.md where orderflow is listed as the sibling. The
+  workspace builder follows the same recipe; it doesn't hard-code
+  "primary = orderflow".
+
+**Where:** new module `diffgraph/workspace/` — submodules per
+materialiser (`repos.py`, `jira.py`, `past_reviews.py`,
+`confluence.py`, …) + `manifest.py` for the AGENTS.md parser.
+`diffgraph/orchestrator.py` calls a single
+`build_workspace(pr_meta) → workspace_dir` after primary clone.
+**Effort:** Phase 9-A small (1 day), 9-B small (½ day), 9-C
+medium (2-3 days), 9-D each medium, 9-E small per tool.
