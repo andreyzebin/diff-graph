@@ -1,7 +1,7 @@
 ---
 agent: dispatcher
 mode: react
-tools: [post_comment, react_to_comment, spawn_agent, done]
+tools: [list_threads, read_thread, read_comment, post_comment, react_to_comment, spawn_agent, done]
 budget:
   tokens: 30000
   steps: 10
@@ -31,9 +31,6 @@ data:
   mutation:
     type: string
     description: "prompt content hash (short)"
-  existing_comments:
-    type: string
-    from: pr_context.existing_comments
 summary: >
   Entry point for all user interactions. Three supported commands:
   /review (spawns reviewer), /ask (answers from PR context), /help.

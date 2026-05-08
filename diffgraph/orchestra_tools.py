@@ -61,10 +61,33 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     """Register all diffgraph domain tools. Tools call ctx.ensure_repo() lazily."""
     from .tools import list_files as _list_files_impl, read_file, search_text
     from .outline import get_outline
+    from .comment_tools import (
+        list_threads as _list_threads_impl,
+        read_thread as _read_thread_impl,
+        read_comment as _read_comment_impl,
+        snapshot_max_id as _snapshot_max_id,
+    )
 
     def _ensure():
         """Trigger lazy clone if needed."""
         ctx.ensure_repo()
+
+    def _comment_snapshot() -> int:
+        """Cache the run-start max_comment_id on ctx the first time
+        a comment tool is called. After that the value is fixed —
+        any post_comment we make during the run gets a higher id and
+        becomes invisible to these tools (consistent snapshot)."""
+        v = getattr(ctx, "_comment_snapshot_max_id", None)
+        if v is None:
+            v = _snapshot_max_id(ctx.existing_comments or [])
+            ctx._comment_snapshot_max_id = v
+        return v
+
+    def _bot_user() -> str:
+        return getattr(ctx, "_bot_user", "") or ""
+
+    def _subject_pattern():
+        return getattr(ctx, "_subject_pattern", None)
 
     # ── Data provider: pr_context (cached, hidden) ────────────────────────
 
@@ -232,6 +255,97 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         for r in filtered:
             lines.append(f"{r.file}:{r.line}: {r.text}")
         return "\n".join(lines)
+
+    # ── Comment-graph navigation (replaces baked EXISTING COMMENTS) ──────
+
+    @registry.register(
+        name="list_threads",
+        description=(
+            "List the PR's root comment threads — orientation across the "
+            "discussion. Each row is one line with id, author, reply count, "
+            "and the first line of the root body. Snapshot at run start: "
+            "comments posted by the agent itself during the run are not "
+            "shown here. Use `read_thread(id)` to drill into a specific one."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "start": {"type": "integer", "description": "Pagination offset (default 0)."},
+                "n": {"type": "integer", "description": "Page size (default 30)."},
+                "sort": {
+                    "type": "string",
+                    "enum": ["newest", "most_active", "oldest"],
+                    "description": "Order. 'newest' (default) = recent root first; 'most_active' = most replies; 'oldest' = chronological.",
+                },
+            },
+            "required": [],
+        },
+    )
+    def list_threads_tool(start: int = 0, n: int = 30, sort: str = "newest") -> str:
+        return _list_threads_impl(
+            ctx.existing_comments or [],
+            snapshot_max_id_value=_comment_snapshot(),
+            bot_user=_bot_user(),
+            subject_pattern=_subject_pattern(),
+            start=start,
+            n=n,
+            sort=sort,
+        )
+
+    @registry.register(
+        name="read_thread",
+        description=(
+            "Render the FULL thread containing the given comment, depth-first "
+            "from the root. Pass any comment id — root, leaf, or middle of the "
+            "tree; the tool finds the root and walks the subtree. Each comment "
+            "appears as a header block (`=== #id by author · reply to #X · …`) "
+            "followed by its verbatim body (markdown / code blocks preserved). "
+            "Long bodies and deep trees are truncated with explicit hints to "
+            "call `read_comment(id)` or `read_thread(<sub_id>)` to expand."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "comment_id": {"type": "integer", "description": "Any comment id in the thread of interest."},
+            },
+            "required": ["comment_id"],
+        },
+    )
+    def read_thread_tool(comment_id: int = 0) -> str:
+        if not comment_id:
+            return "(comment_id is required)"
+        return _read_thread_impl(
+            ctx.existing_comments or [],
+            comment_id=comment_id,
+            snapshot_max_id_value=_comment_snapshot(),
+            bot_user=_bot_user(),
+            subject_pattern=_subject_pattern(),
+        )
+
+    @registry.register(
+        name="read_comment",
+        description=(
+            "Render ONE specific comment in full, no caps. Use when "
+            "`read_thread` truncated a body and you need the rest."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "comment_id": {"type": "integer"},
+            },
+            "required": ["comment_id"],
+        },
+    )
+    def read_comment_tool(comment_id: int = 0) -> str:
+        if not comment_id:
+            return "(comment_id is required)"
+        return _read_comment_impl(
+            ctx.existing_comments or [],
+            comment_id=comment_id,
+            snapshot_max_id_value=_comment_snapshot(),
+            bot_user=_bot_user(),
+            subject_pattern=_subject_pattern(),
+        )
 
     @registry.register(
         name="post_comment",

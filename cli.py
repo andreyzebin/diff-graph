@@ -223,6 +223,7 @@ def _run_with_dispatcher(
 
     ctx._init_fn = _lazy_init
     ctx._bot_user = bot_user
+    ctx._subject_pattern = pat
 
     # ── Tool registry with all domain tools ───────────────────────────────
     tool_registry = ToolRegistry()
