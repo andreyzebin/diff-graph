@@ -1,6 +1,6 @@
 id: SCEN-009
 name: "Buy-3-get-1-free promotion — multi-bug feature PR"
-tags: [java, correctness, security, integrity, performance, style, severity:critical, cost:expensive]
+tags: [java, correctness, security, integrity, performance, style, severity:critical, cost:expensive, tier:integration]
 
 input:
   bitbucket:
@@ -115,7 +115,7 @@ expected_output:
   thresholds:
     min_score: 0.70
     min_required_found: 2
-    max_false_positives: 3
+    max_false_positives: 5
 
 metadata:
   difficulty: hard

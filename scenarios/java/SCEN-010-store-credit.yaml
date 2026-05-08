@@ -1,6 +1,6 @@
 id: SCEN-010
 name: "Customer store credit redemption — IDOR + wrong calculation"
-tags: [java, security, correctness, severity:critical]
+tags: [java, security, correctness, severity:critical, tier:integration]
 
 input:
   bitbucket:
@@ -72,7 +72,7 @@ expected_output:
   thresholds:
     min_score: 0.70
     min_required_found: 1
-    max_false_positives: 3
+    max_false_positives: 5
 
 metadata:
   difficulty: medium

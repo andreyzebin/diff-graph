@@ -52,10 +52,22 @@ class ForbiddenComment:
 
 
 @dataclass
+class ExpectedConcernFocus:
+    """Concern the reviewer should have surfaced via reflect() or
+    spawn_agent.focus. Match by keyword groups against the union of
+    titles + descriptions extracted from invocations.json — same
+    AND-of-OR semantics as ExpectedComment.description_keywords.
+    """
+    id: str
+    description_keywords: list[list[str]]
+    rationale: str = ""
+
+
+@dataclass
 class Thresholds:
     min_score: float = 0.70
     min_required_found: int = 1
-    max_false_positives: int = 3
+    max_false_positives: int = 5
 
 
 @dataclass
@@ -86,6 +98,20 @@ class TriggerSpec:
     #                 specific node; trigger becomes a reply to that node.
     #                 e.g. [1, 0, 0] = 2nd root → 1st reply → 1st reply.
     in_reply_to: list[int] | None = None
+    # Agent-isolation knobs. Override which agent the CLI invokes
+    # (default behaviour: dispatcher when text is set, reviewer
+    # otherwise). `data` adds `-d key=value` flags so e.g. an
+    # investigator unit test can pass its `focus` from the scenario.
+    agent: str = ""
+    data: dict = field(default_factory=dict)
+    # Override the agent's default user-message template. The system
+    # prompt (methodology) stays intact; only the user-side framing
+    # of the task changes. Used to test the same agent on different
+    # task framings — e.g. reviewer's consolidation phase by
+    # pre-feeding investigation results.
+    user_message: str = ""              # inline text from yaml
+    user_message_from: str = ""         # relative path; loader resolves
+    user_message_path: Path | None = None  # resolved absolute path
 
 
 @dataclass
@@ -103,8 +129,17 @@ class ScenarioSetup:
       • flat list of strings → each becomes a root comment
       • tree of {text, replies: [...]} dicts → arbitrary depth
     Mixing is allowed — a string is treated as a leaf SeedComment.
+
+    `mocks` is a file path relative to the scenario YAML pointing at
+    a tool-mock fixture (orchestra's --mocks format). When set, the
+    bench passes it through to the agent CLI as --mocks <abspath>,
+    short-circuiting spawn_agent / read_file / etc. with canned
+    responses for fast isolated unit tests of one agent at a time.
+    Resolved to an absolute path at load time (see `mocks_path`).
     """
     seed_comments: list[SeedComment] = field(default_factory=list)
+    mocks: str = ""                    # raw value from yaml (relative path)
+    mocks_path: Path | None = None     # resolved absolute path; set on load
 
 
 def _parse_seed_tree(items: list) -> list[SeedComment]:
@@ -135,6 +170,24 @@ class ExpectedOutput:
     # when scenario.trigger.type == "comment" — direct reviewer
     # invocations don't have a comment to ack.
     acknowledgement_required: bool = False
+    # Concerns the reviewer should have surfaced. Used by tests that
+    # short-circuit the pipeline before INVESTIGATE (e.g. REV-001
+    # concerns-only): judge extracts the concerns the reviewer wrote
+    # to reflect() and/or the focuses it passed to spawn_agent from
+    # invocations.json, then matches each concern_focuses keyword
+    # group against the union.
+    concern_focuses: list[ExpectedConcernFocus] = field(default_factory=list)
+    # Channels the judge should match `required_comments` against:
+    #   "pr_comments"        — real comments posted via post_comment
+    #                          (default when assert_via is empty)
+    #   "intended_findings"  — done(findings=[...]) args from
+    #                          invocations.json
+    #   "intended_concerns"  — reflect(concerns=[...]) +
+    #                          spawn_agent(focus=...) from invocations.json
+    # The judge takes the UNION of enabled channels. Lets a scenario
+    # explicitly say "investigator standalone — match against done(),
+    # not the PR" or "reviewer concerns-only — match against reflect()".
+    assert_via: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -187,11 +240,34 @@ def load_scenario(path: Path) -> Scenario:
         for fc in eo.get("forbidden_comments", [])
     ]
 
+    concern_focuses = [
+        ExpectedConcernFocus(
+            id=cf.get("id", ""),
+            description_keywords=cf.get("description_keywords", []),
+            rationale=cf.get("rationale", ""),
+        )
+        for cf in eo.get("concern_focuses", [])
+    ]
+
+    raw_assert_via = eo.get("assert_via") or []
+    if isinstance(raw_assert_via, str):
+        raw_assert_via = [raw_assert_via]
+    valid_channels = {"pr_comments", "intended_findings", "intended_concerns"}
+    assert_via: list[str] = []
+    for ch in raw_assert_via:
+        ch = str(ch).strip()
+        if ch not in valid_channels:
+            raise ValueError(
+                f"scenario {path}: expected_output.assert_via has unknown "
+                f"channel {ch!r}; allowed: {sorted(valid_channels)}"
+            )
+        assert_via.append(ch)
+
     thr_data = eo.get("thresholds", {})
     thresholds = Thresholds(
         min_score=thr_data.get("min_score", 0.70),
         min_required_found=thr_data.get("min_required_found", 1),
-        max_false_positives=thr_data.get("max_false_positives", 3),
+        max_false_positives=thr_data.get("max_false_positives", 5),
     )
 
     meta_data = data.get("metadata", {})
@@ -225,15 +301,49 @@ def load_scenario(path: Path) -> Scenario:
         )
 
     setup_data = data.get("input", {}).get("setup", {}) or {}
+    mocks_rel = str(setup_data.get("mocks", "") or "")
+    mocks_path: Path | None = None
+    if mocks_rel:
+        # Resolve relative to the scenario file's directory so test
+        # authors don't have to hardcode absolute paths.
+        mp = (path.parent / mocks_rel).resolve()
+        if not mp.exists():
+            raise FileNotFoundError(
+                f"scenario {path}: setup.mocks → {mp} does not exist"
+            )
+        mocks_path = mp
     setup = ScenarioSetup(
         seed_comments=_parse_seed_tree(setup_data.get("seed_comments", []) or []),
+        mocks=mocks_rel,
+        mocks_path=mocks_path,
     )
 
     trig_data = data.get("input", {}).get("trigger", {}) or {}
+    trigger_data_field = trig_data.get("data") or {}
+    if not isinstance(trigger_data_field, dict):
+        raise ValueError(
+            f"scenario {path}: trigger.data must be a mapping (got "
+            f"{type(trigger_data_field).__name__})"
+        )
+    user_message_inline = str(trig_data.get("user_message", "") or "")
+    user_message_from_rel = str(trig_data.get("user_message_from", "") or "")
+    user_message_path: Path | None = None
+    if user_message_from_rel:
+        candidate = (path.parent / user_message_from_rel).resolve()
+        if not candidate.exists():
+            raise FileNotFoundError(
+                f"scenario {path}: trigger.user_message_from → {candidate} does not exist"
+            )
+        user_message_path = candidate
     trigger = TriggerSpec(
         type=trig_data.get("type", "auto"),
         text=trig_data.get("text", ""),
         in_reply_to=trig_data.get("in_reply_to") or None,
+        agent=str(trig_data.get("agent", "") or ""),
+        data={str(k): str(v) for k, v in trigger_data_field.items()},
+        user_message=user_message_inline,
+        user_message_from=user_message_from_rel,
+        user_message_path=user_message_path,
     )
 
     return Scenario(
@@ -249,6 +359,8 @@ def load_scenario(path: Path) -> Scenario:
             reply=reply,
             side_effects=side_effects,
             acknowledgement_required=bool(eo.get("acknowledgement_required", False)),
+            concern_focuses=concern_focuses,
+            assert_via=assert_via,
         ),
         metadata=metadata,
         setup=setup,

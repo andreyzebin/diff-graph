@@ -1,6 +1,6 @@
 id: SCEN-204
 name: "Multi-thread comprehension — answer the thread you were pinged in, not a sibling"
-tags: [interaction, ask, thread, multi-thread, crosstalk]
+tags: [interaction, ask, thread, multi-thread, crosstalk, tier:integration]
 
 # Reproducer for the thread-crosstalk bug observed in production:
 # the agent posts its reply in the right thread (correct parent_id)

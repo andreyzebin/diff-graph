@@ -1,6 +1,6 @@
 id: SCEN-202
 name: "Unknown /command — agent must say 'not supported' and list options"
-tags: [interaction, help, unknown-command]
+tags: [interaction, help, unknown-command, tier:integration]
 
 input:
   bitbucket:

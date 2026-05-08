@@ -217,6 +217,14 @@ class LLMJudge(Judge):
         comments = await self._view.get_comments()
         review_status = await self._view.get_review_status(self._verdict_source)
 
+        # Pull intended outputs from invocations.json — see
+        # _load_intended_findings / _load_intended_concerns. Used by
+        # agent-isolation unit tests where the agent doesn't publish
+        # via PR tools (investigator standalone, reviewer
+        # concerns-only, …).
+        intended_findings = self._load_intended_findings()
+        intended_concerns = self._load_intended_concerns()
+
         # When the bench posts seed_comments + the trigger comment via the
         # same Bitbucket account as the agent (single-token setup), those
         # ids land in `comments` too. Filter them out so the judge only
@@ -273,7 +281,9 @@ class LLMJudge(Judge):
 
         # Default: review scoring against required_comments / forbidden / status
         prompt = _build_prompt(self._template, scenario, comments, review_status,
-                               pr_diff=pr_diff, agents_md=agents_md)
+                               pr_diff=pr_diff, agents_md=agents_md,
+                               intended_findings=intended_findings,
+                               intended_concerns=intended_concerns)
         self._trace_request(scenario.id, prompt)
         try:
             data = self._llm_client.complete_json(prompt)
@@ -287,6 +297,97 @@ class LLMJudge(Judge):
         return output
 
     # ── trace helpers ────────────────────────────────────────────────
+    def _load_invocations(self) -> list[dict]:
+        """Read invocations.json (sibling of judge_dir). Empty when
+        the bench didn't open one for this attempt (no agent-isolation
+        knobs in the scenario)."""
+        if self._judge_dir_path is None:
+            return []
+        inv_path = self._judge_dir_path.parent / "invocations.json"
+        if not inv_path.exists():
+            return []
+        try:
+            data = json.loads(inv_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        return data.get("invocations") or []
+
+    def _load_intended_findings(self) -> list[dict]:
+        """Findings the agent passed to its final `done()` call. Used
+        when an agent without post_comment (e.g. investigator) is
+        scored — the judge sees done() args as a virtual comment list
+        parallel to the real PR comments.
+        """
+        findings: list[dict] = []
+        for inv in self._load_invocations():
+            if (inv.get("tool") or "") != "done":
+                continue
+            args = inv.get("args") or {}
+            raw = args.get("findings") or []
+            # Same JSON-string-vs-array quirk as reflect.concerns.
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    raw = []
+            if not isinstance(raw, list):
+                raw = []
+            for f in raw:
+                if isinstance(f, dict):
+                    findings.append(f)
+        return findings
+
+    def _load_intended_concerns(self) -> list[dict]:
+        """Concerns the reviewer surfaced during the LOOK phase.
+
+        Two sources, merged:
+          1. `reflect(concerns=[{title, description}, ...])` calls —
+             the canonical place reviewers list concerns.
+          2. `spawn_agent(focus=...)` args — when the reviewer
+             actually spawns investigators, the focus string is the
+             concern in another shape.
+
+        Returns a list of {title, description} dicts so the judge can
+        match `concern_focuses` keyword groups against either field.
+        """
+        out: list[dict] = []
+        for inv in self._load_invocations():
+            tool = inv.get("tool") or ""
+            args = inv.get("args") or {}
+            if tool == "reflect":
+                # The reflect schema's `questions_remaining` is the
+                # canonical place for "things the agent wants to
+                # investigate" — i.e. concerns. Each item is
+                # {id, text}; text carries the concern as a question.
+                raw = args.get("questions_remaining") or []
+                if not isinstance(raw, list):
+                    raw = []
+                for q in raw:
+                    if isinstance(q, dict):
+                        text = str(q.get("text", "")).strip()
+                        if not text:
+                            continue
+                        out.append({
+                            "source": "reflect.questions_remaining",
+                            "title": text[:80],
+                            "description": text,
+                        })
+                    elif isinstance(q, str) and q.strip():
+                        out.append({
+                            "source": "reflect.questions_remaining",
+                            "title": q[:80],
+                            "description": q,
+                        })
+            elif tool == "spawn_agent":
+                focus = str(args.get("focus", ""))
+                if focus:
+                    out.append({
+                        "source": "spawn_agent",
+                        "title": focus[:80],
+                        "description": focus,
+                    })
+        return out
+
     def _judge_dir(self, scenario_id: str) -> Path | None:
         if self._judge_dir_path is None:
             return None
@@ -341,6 +442,8 @@ def _build_prompt(
     review_status: ReviewStatus | None,
     pr_diff: str = "",
     agents_md: str = "",
+    intended_findings: list[dict] | None = None,
+    intended_concerns: list[dict] | None = None,
 ) -> str:
     eo = scenario.expected_output
     required_str = json.dumps([
@@ -360,18 +463,73 @@ def _build_prompt(
         for fc in eo.forbidden_comments
     ], ensure_ascii=False, indent=2)
 
+    concern_focuses_str = json.dumps([
+        {
+            "id": cf.id,
+            "keywords": cf.description_keywords,
+            "rationale": cf.rationale,
+        }
+        for cf in eo.concern_focuses
+    ], ensure_ascii=False, indent=2) if eo.concern_focuses else "[]"
+
+    assert_via = list(eo.assert_via) if eo.assert_via else ["pr_comments"]
+    assert_via_str = ", ".join(assert_via)
+
     trigger_type = getattr(scenario.trigger, "type", "") or ""
     ack_required = bool(eo.acknowledgement_required) and trigger_type == "comment"
     return template.format(
         agent_comments=_format_comments(comments),
+        intended_findings=_format_intended_findings(intended_findings or []),
+        intended_concerns=_format_intended_concerns(intended_concerns or []),
         required_comments=required_str,
         forbidden_comments=forbidden_str,
+        concern_focuses=concern_focuses_str,
+        assert_via=assert_via_str,
         expected_status_change=eo.expected_status_change or "none",
         actual_status_change=review_status.status if review_status else "none",
         pr_diff=_truncate(pr_diff, 30_000) or "(diff unavailable)",
         agents_md=_truncate(agents_md, 10_000) or "(AGENTS.md unavailable)",
         acknowledgement_required="yes" if ack_required else "no",
     )
+
+
+def _format_intended_concerns(concerns: list[dict]) -> str:
+    """Serialise the agent's surfaced concerns (from reflect() args
+    and/or spawn_agent.focus) for the judge. For agents whose only
+    job in this run is concern identification (e.g. reviewer
+    concerns-only mode) this is the test signal."""
+    if not concerns:
+        return "(none — agent did not call reflect(concerns=...) or spawn_agent(focus=...))"
+    out: list[str] = []
+    for i, c in enumerate(concerns, 1):
+        title = (c.get("title") or "").strip()
+        desc = (c.get("description") or "").strip()
+        src = c.get("source", "?")
+        out.append(f"#{i} [{src}] {title}\n  {desc[:600]}")
+    return "\n\n".join(out)
+
+
+def _format_intended_findings(findings: list[dict]) -> str:
+    """Serialise the agent's done(findings=...) args for the judge.
+    These are findings the agent INTENDED to publish — for agents that
+    don't have post_comment in their tool list (e.g. investigator) this
+    is the only signal."""
+    if not findings:
+        return "(none — agent did not pass a non-empty findings list to done())"
+    out: list[str] = []
+    for i, f in enumerate(findings, 1):
+        sev = f.get("severity", "")
+        title = f.get("title", "")
+        file = f.get("file", "")
+        line = f.get("line", "")
+        explanation = (f.get("explanation") or "").strip()
+        evidence = (f.get("evidence") or "").strip()
+        out.append(
+            f"#{i} [{sev}] {file}:{line} — {title}\n"
+            f"  {explanation[:400]}\n"
+            f"  evidence: {evidence[:200]}"
+        )
+    return "\n\n".join(out)
 
 
 def _truncate(text: str, max_chars: int) -> str:
@@ -511,9 +669,17 @@ Scoring rubric (job A):
 - overall_score: weighted average. Subtract heavily for missing must_address (that's the whole point).
 
 Scenario critique (job B) — emit a warning when you see:
-- "leaky-description": the PR description or a seed comment leaks the test intent
-  (e.g. "we are checking that the agent does X"), making the agent's output
-  trivially aligned. A natural PR description never says what's being tested.
+- "leaky-description": the PR description or a seed comment leaks the test
+  intent (e.g. "we are checking that the agent does X"), or — equally bad —
+  leaks the BENCH-FRAMEWORK SCAFFOLDING that this is a test at all. A
+  natural PR description never says what's being tested AND never mentions
+  the test machinery. Trip on phrases like:
+    "isolation unit test", "unit test of", "this is a test",
+    "mocked investigator(s)", "mocked reviewer", "mocked subagent",
+    "see fixtures/", "fixture file", "tool_mocks", "spawn_mocks",
+    "BENCHMARK scenario", "agent-isolation", "reviewer-isolation".
+  ANY of these in `pr_title` / `pr_description` / a seed comment is a
+  leaky-description warning, regardless of whether the agent acted on it.
 - "unfulfillable-expectation": a must_mention row asks for information the agent
   could not have plausibly known from the thread + PR.
 - "contradiction": expectations contradict each other or contradict the trigger

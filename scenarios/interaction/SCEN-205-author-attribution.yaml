@@ -1,6 +1,6 @@
 id: SCEN-205
 name: "Author attribution — list comments belonging to a specific speaker"
-tags: [interaction, ask, thread, author-attribution, multi-speaker]
+tags: [interaction, ask, thread, author-attribution, multi-speaker, tier:integration]
 
 # Tests that the agent treats each speaker in a thread as a separate
 # person and can pick out every comment by ONE named speaker — not

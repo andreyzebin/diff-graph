@@ -1,6 +1,6 @@
 id: SCEN-201
 name: "/ask reads parallel root comments (no thread depth)"
-tags: [interaction, ask, root-comments]
+tags: [interaction, ask, root-comments, tier:integration]
 
 input:
   bitbucket:

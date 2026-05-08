@@ -1,6 +1,6 @@
 id: SCEN-205b
 name: "Author attribution — list comments belonging to SELF"
-tags: [interaction, ask, thread, author-attribution, self-recognition, multi-speaker]
+tags: [interaction, ask, thread, author-attribution, self-recognition, multi-speaker, tier:integration]
 
 # Symmetric to SCEN-205 (which asks about alice's comments) — this
 # one tests that the agent can pick out its OWN past contributions

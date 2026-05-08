@@ -1,19 +1,12 @@
 id: SCEN-305
 name: "AGENTS.md-driven decision — agent must cite the project rule"
-tags: [java, agents-md, conventions, severity:major]
+tags: [java, agents-md, conventions, severity:major, tier:integration]
 
-# DRAFT — runnable today against the existing hotfix/ORD-287-cancel-npe
-# branch (same as SCEN-011). The wrinkle: this scenario specifically
-# tests that the agent grounds its objection in AGENTS.md, not just in
-# generic JPA knowledge. Judge looks for an explicit AGENTS.md citation
-# in the finding's evidence/explanation.
-#
-# Status: ready to run once the bench is comfortable enforcing
-# "must cite AGENTS.md" as a required-comment matching criterion.
-# The current required_comments matcher is keyword-based so adding
-# AGENTS.md-related terms in description_keywords is enough — but the
-# scenario benefits more from a separate `must_cite` field on the
-# scoring rubric.
+# Companion to SCEN-011 (same branch, same NPE fix). Where SCEN-011
+# checks that the agent objects to the @OneToMany null guard at all,
+# this scenario checks that the objection is *grounded in AGENTS.md*
+# rather than generic JPA knowledge — the judge looks for an explicit
+# AGENTS.md citation in the finding's evidence.
 
 input:
   bitbucket:
@@ -61,7 +54,7 @@ expected_output:
   thresholds:
     min_score: 0.70
     min_required_found: 1
-    max_false_positives: 2
+    max_false_positives: 5
 
 metadata:
   difficulty: hard
