@@ -7,10 +7,9 @@ EXISTING REVIEW COMMENTS:
 COMMITS (oldest → newest):
 {commits}
 
-Review this PR end-to-end. A review unfolds in three movements:
-looking at the change, asking focused questions about it, and coming
-to a verdict. They run in sequence — once you're judging, you're
-past investigating.
+Task this run: review this PR end-to-end.
+
+Work in three phases, in order:
 
 LOOK
   Read the changed files. Skim outlines for the shape. Notice what
@@ -18,18 +17,18 @@ LOOK
   it carries. Skip generated/boilerplate (lock files, gradle wrapper,
   vendored configs).
 
-  From that look, name the concerns worth investigating. Each concern
-  is a distinct line of inquiry — a risk area, a question of
-  correctness, a place where the change might conflict with the
-  codebase's conventions. Scale to the diff: a one-line fix earns one
-  concern, a sweeping refactor a handful. Concerns are stable working
-  titles, not running summaries; once written, leave them as is.
+  Name the concerns worth investigating — distinct lines of inquiry,
+  scaled to diff size: a one-line fix earns one concern, a sweeping
+  refactor a handful. Concerns are stable working titles, not running
+  summaries.
 
-  Then call reflect() with the concerns you'll investigate.
+  Call reflect() with the concerns list.
 
 INVESTIGATE
-  Spawn one investigator per concern. With multiple concerns, emit
-  all spawn_agent calls in the same step — they run in parallel.
+  You have investigators at your disposal. Spawn one per concern via
+  `spawn_agent(agent="investigator", focus="...")` — the focus
+  string is your concern phrased as an investigation brief. Multiple
+  spawn_agent calls in the same step run in parallel.
 
     spawn_agent(agent="investigator",
       focus="BUSINESS LOGIC: Investigate the null check for
@@ -38,31 +37,23 @@ INVESTIGATE
         with other methods, and what happens when inventory release
         is skipped.")
 
-  Investigators come back with their own findings and evidence.
-  Investigation is one round — once results land, you move on.
+  Investigators return findings with evidence. Investigation is one
+  round — once results land, you're done investigating.
 
 JUDGE
-  Reflect on what came back. For each concern, write the answer the
-  evidence gives: "MAJOR: null check hides a data-integrity issue —
-  items are guaranteed non-null per @Builder.Default; the guard
-  silences a mapping bug." No new concerns at this stage; answer
-  from the evidence you have.
+  For each concern, write the answer the evidence gives. No new
+  concerns at this stage; answer from what came back.
 
-  Handle existing PR threads. Where the diff already addresses a
-  comment, react thumbs_up; where the fix is incomplete, post_comment
-  with parent_id. Don't restate that conversation in your findings.
+  Handle existing PR threads. Where the diff already addresses an
+  open comment, react thumbs_up; where the fix is incomplete,
+  post_comment with parent_id. Don't restate that conversation.
 
-  Consolidate investigators' findings into one review. Each was
-  already filtered for evidence — your role is to weave the sets
-  together, not to re-judge them. Two findings describe the same
-  defect when they point at the same place in the code and the same
-  problem; merge those, keeping the clearer evidence and the higher
-  severity. Different defects in the same area stay separate.
+  Consolidate the investigators' findings — merge duplicates by
+  same-place-same-problem, keep the higher severity. Different
+  defects in the same area stay separate.
 
-  Publish each consolidated finding through post_comment(text, file,
-  line, severity). Listing them all in a single step is fine — the
-  framework dispatches parallel tool calls. A finding written but
-  not posted is a finding the team never sees; done() alone doesn't
-  publish.
+  Publish each consolidated finding via post_comment(file, line,
+  severity, text). Listing them all in a single step is fine —
+  parallel dispatch.
 
-  Set the review status. Call done(findings).
+  Call set_review_status with your verdict, then done(findings).
