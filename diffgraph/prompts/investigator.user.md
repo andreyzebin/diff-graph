@@ -10,4 +10,28 @@ EXISTING REVIEW COMMENTS:
 COMMITS (oldest → newest):
 {commits}
 
-Investigate the concern above and return findings via done().
+Investigate the concern above. Workflow:
+
+1. START by reading changes for files relevant to your concern:
+   use read_file(path, changes_only=true, before=3, after=3) for each file
+   from WHAT CHANGED that relates to your focus. This shows only diff hunks.
+   Also call read_outline() on key files. Gather facts before reflecting.
+
+2. THEN call reflect() with:
+   - learned: facts you established from the code you just read
+   - questions_remaining: ONLY questions you genuinely need to investigate
+     further. Do NOT list questions you can already answer from what you read.
+   - confidence: your current assessment
+
+3. INVESTIGATE remaining questions with tools. Follow call chains,
+   check related code, verify assumptions.
+
+4. reflect() every 3-5 tool calls to track progress:
+   - Move answered questions to resolved_questions with the answer
+   - Keep questions_remaining for things you still need to check
+
+5. Note which existing comments relate to your concern and don't
+   re-report issues already covered by open ones.
+
+6. Call done(findings) when all questions are answered or budget is
+   running low.
