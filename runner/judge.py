@@ -194,6 +194,7 @@ class LLMJudge(Judge):
 
     def __init__(self, llm_client: LLMClient, view: AgentPRView,
                  judge_dir: str | Path | None = None,
+                 agent_dir: str | Path | None = None,
                  model: str = "",
                  verdict_source: str = "api",
                  scenario_id: str = "",
@@ -219,6 +220,12 @@ class LLMJudge(Judge):
         self._scenario_id = scenario_id or ""
         self._scenario_tags = list(scenario_tags or [])
         self._linked_run_id = linked_run_id or ""
+        # The agent subprocess writes runs/agent/run.json with its
+        # own SQLite run_id. Read it lazily on first trace request —
+        # by then the subprocess has finished, so run.json is on disk.
+        # Used to populate `linked_run_id` on the judge row + back-fill
+        # the agent row's linked_run_id after judge writer starts.
+        self._agent_dir_path = Path(agent_dir).expanduser() if agent_dir else None
         # Channel through which the agent surfaces its APPROVED/NEEDS_WORK
         # verdict — the agent's output interface contract. "api" reads
         # Bitbucket's participants endpoint (production); "comment" scans
@@ -418,9 +425,26 @@ class LLMJudge(Judge):
         return out
 
     def _ensure_writer(self):
-        """Lazy-init the unified writer on the first request."""
+        """Lazy-init the unified writer on the first request.
+
+        Reads the agent subprocess's run_id from runs/agent/run.json
+        right before first use — by then the subprocess has finished
+        and that file is on disk. Pairs the judge row to the agent
+        run via linked_run_id (agent row → judge_run_id back-fill is
+        done in _finish_trace).
+        """
         if self._trace_writer is not None:
             return self._trace_writer
+        # Late-bind linked_run_id from the agent's run.json if available
+        # and not already set explicitly by the caller.
+        if not self._linked_run_id and self._agent_dir_path is not None:
+            agent_run_json = self._agent_dir_path / "run.json"
+            if agent_run_json.exists():
+                try:
+                    data = json.loads(agent_run_json.read_text(encoding="utf-8"))
+                    self._linked_run_id = (data.get("run_id") or "").strip()
+                except Exception:
+                    pass
         from .trace_writer import JudgeTraceWriter
         self._trace_writer = JudgeTraceWriter(
             run_dir=self._judge_dir_path,
@@ -470,11 +494,48 @@ class LLMJudge(Judge):
         self._trace_status = "error"
 
     def _finish_trace(self):
-        """Called by run_scenario after evaluate() returns (or raises)."""
+        """Called by run_scenario after evaluate() returns (or raises).
+
+        Side effect: back-fills the agent run row's linked_run_id with
+        the judge's run_id, completing the bidirectional link.
+        """
         if self._trace_writer is None:
             return
         status = getattr(self, "_trace_status", "completed")
         self._trace_writer.finish(status=status)
+        # Back-fill agent row → judge run_id, so /api/search/runs/{agent_id}
+        # surfaces the judge counterpart and vice versa.
+        if self._linked_run_id and self._trace_writer.run_id:
+            self._backfill_agent_linked(
+                agent_run_id=self._linked_run_id,
+                judge_run_id=self._trace_writer.run_id,
+            )
+
+    @staticmethod
+    def _backfill_agent_linked(agent_run_id: str, judge_run_id: str) -> None:
+        """Update the agent row's linked_run_id column.
+
+        Best-effort. Trace must never crash the bench, so we swallow
+        any DB error.
+        """
+        try:
+            import sqlite3
+            from pathlib import Path
+            db_path = Path.home() / ".diffgraph" / "traces.db"
+            if not db_path.exists():
+                return
+            conn = sqlite3.connect(str(db_path))
+            try:
+                conn.execute(
+                    "UPDATE runs SET linked_run_id=? "
+                    "WHERE id=? AND (linked_run_id IS NULL OR linked_run_id='')",
+                    (judge_run_id, agent_run_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
 
 
 # ── Pure helpers ───────────────────────────────────────────────────

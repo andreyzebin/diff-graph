@@ -453,6 +453,7 @@ async def _run_async(
                 judge = LLMJudge(
                     llm_client, proxy,
                     judge_dir=judge_dir,
+                    agent_dir=agent_dir,
                     model=judge_cfg.get("model", ""),
                     verdict_source=judge_cfg.get("verdict_source", "api"),
                     scenario_id=s.id,
