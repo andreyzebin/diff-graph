@@ -321,9 +321,11 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('scoringView', () => ({
     picked: [],                          // selected mutation hashes (max 4)
     scenario: '',                        // single-scenario filter
+    branch: '',                          // git branch (= "mutation" after rename)
     rows: [],                            // per_run_scores rows
     availableMutations: [],
     availableScenarios: [],
+    availableBranches: [],
     status: '',
     async init() {
       // Populate dropdowns: mutations from aggregate; scenarios from
@@ -333,13 +335,16 @@ document.addEventListener('alpine:init', () => {
       this.availableMutations = muts.map(m => m.mutation).filter(Boolean);
       const dims = (await (await fetch(`${base}/api/search/dimensions`)).json()).data || {};
       this.availableScenarios = (dims.scenario_id || []).filter(Boolean).sort();
-      // Pre-pick from URL ?mutation=... if present.
+      this.availableBranches = (dims.branch || []).filter(Boolean).sort();
+      // Pre-pick from URL ?mutation=... | ?branch=... if present.
       const sp = new URLSearchParams(window.location.search);
       const initMuts = sp.getAll('mutation').flatMap(s => s.split(',')).filter(Boolean);
       for (const m of initMuts.slice(0, 4)) this.picked.push(m);
       const initScen = sp.get('scenario');
       if (initScen) this.scenario = initScen;
-      if (this.picked.length) await this.reload();
+      const initBranch = sp.get('branch');
+      if (initBranch) this.branch = initBranch;
+      if (this.picked.length || this.branch) await this.reload();
     },
     addMutation(m) {
       if (!m || this.picked.includes(m) || this.picked.length >= 4) return;
@@ -356,15 +361,25 @@ document.addEventListener('alpine:init', () => {
       const qs = new URLSearchParams();
       for (const m of this.picked) qs.append('mutation', m);
       if (this.scenario) qs.set('scenario', this.scenario);
+      if (this.branch)   qs.set('branch', this.branch);
       const url = window.location.pathname + (qs.toString() ? '?' + qs.toString() : '');
       window.history.replaceState({}, '', url);
     },
     async reload() {
       this.pushUrl();
-      if (this.picked.length === 0) { this.rows = []; return; }
+      if (this.picked.length === 0 && !this.branch) { this.rows = []; return; }
       this.status = 'loading…';
       const base = window.QA_BASE_PATH || '';
       const all = [];
+      // Branch mode: one fetch covering every commit on this branch.
+      if (this.branch) {
+        const qs = new URLSearchParams({branch: this.branch, limit: '5000'});
+        if (this.scenario) qs.set('scenario', this.scenario);
+        const r = await (await fetch(`${base}/api/search/per_run_scores?${qs}`)).json();
+        for (const row of (r.data || [])) all.push(row);
+      }
+      // Specific mutation mode (also works alongside branch — set
+      // intersection follows from the SQL filter ANDing all params).
       for (const m of this.picked) {
         const qs = new URLSearchParams({mutation: m, limit: '1000'});
         if (this.scenario) qs.set('scenario', this.scenario);
@@ -433,6 +448,45 @@ document.addEventListener('alpine:init', () => {
           },
         };
         vegaEmbed('#chart-timeline', spec, {actions: false});
+      }
+
+      // (d) Trend along a branch — one line per scenario, x = chronology
+      // of commits on the branch, y = mean(score) per commit. Shows
+      // whether the branch's quality is drifting / improving / flat.
+      if (this.branch && this.picked.length === 0) {
+        const spec = {
+          ...dark,
+          width: 'container', height: 320,
+          data: {values: data},
+          mark: {type: 'line', point: {filled: true, size: 80}, interpolate: 'monotone'},
+          transform: [
+            {
+              aggregate: [
+                {op: 'mean',  field: 'score', as: 'mean_score'},
+                {op: 'count', field: 'score', as: 'n'},
+                {op: 'min',   field: 'ts',    as: 'first_ts'},
+              ],
+              groupby: ['mutation_short', 'scenario'],
+            },
+          ],
+          encoding: {
+            x: {field: 'first_ts', type: 'temporal',
+                title: `commits on ${this.branch} (chronological)`},
+            y: {field: 'mean_score', type: 'quantitative',
+                title: 'mean overall_score', scale: {domain: [0, 1]}},
+            color: {field: 'scenario', type: 'nominal',
+                    title: 'scenario',
+                    scale: {scheme: 'category10'}},
+            tooltip: [
+              {field: 'mutation_short', type: 'nominal', title: 'commit'},
+              {field: 'scenario', type: 'nominal'},
+              {field: 'mean_score', type: 'quantitative', format: '.3f'},
+              {field: 'n', type: 'quantitative', title: 'samples'},
+              {field: 'first_ts', type: 'temporal'},
+            ],
+          },
+        };
+        vegaEmbed('#chart-trend', spec, {actions: false});
       }
 
       // (c) Cross-mutation comparison — mean ± 95% CI per (scenario, mutation).

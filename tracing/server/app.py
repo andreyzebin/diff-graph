@@ -354,15 +354,20 @@ async def api_mutation_scoring(mutation: str):
 async def api_per_run_scores(
     mutation: Optional[str] = None,
     scenario: Optional[str] = None,
+    generation: Optional[str] = None,
+    branch: Optional[str] = None,
     limit: int = 1000,
 ):
     """Flat per-run judge scores for charting (box / violin / timeline).
     Each row is one (agent ↔ judge) pair with overall_score, hard /
     soft / methodology axes, fp_count, warnings_count, found_rate.
-    Either filter narrows to a slice; both narrows to one cell.
+    Filters narrow incrementally: pass `branch` (= long-lived git
+    branch tracked in qa_tasks; will be renamed to "mutation" after
+    schema rename) to watch every commit on it.
     """
     rows = _store().per_run_scores(
         mutation=mutation, scenario=scenario,
+        generation=generation, branch=branch,
         limit=max(1, min(5000, int(limit))),
     )
     return JSONResponse({"data": rows,

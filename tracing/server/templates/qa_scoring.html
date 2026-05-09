@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=4b253f77"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=888d7b8a"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -54,7 +54,17 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
   <!-- Controls -->
   <div class="section">
     <div class="controls">
-      <label>mutation
+      <label title="long-lived idea / hypothesis (will be renamed to 'mutation' after the schema rename)">
+        branch
+        <select x-model="branch" @change="reload()">
+          <option value="">none</option>
+          <template x-for="b in availableBranches">
+            <option :value="b" x-text="b"></option>
+          </template>
+        </select>
+      </label>
+      <label title="commit on the branch (will be renamed to 'generation' after schema rename)">
+        commit
         <select @change="addMutation($event.target.value); $event.target.value=''">
           <option value="">+ pick (up to 4)</option>
           <template x-for="m in availableMutations">
@@ -78,18 +88,31 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
       <span class="muted" x-text="status"></span>
     </div>
     <div class="legend-note">
-      Pick 1 mutation to see distribution; pick 2-4 to compare side by side.
-      Drop scenario filter to see all; pick one for a per-attempt timeline.
+      Pick a <b>branch</b> to watch its quality trend across all its
+      commits. Pick specific <b>commits</b> (1-4) to see distribution
+      and side-by-side comparison. Mix both to slice further.
     </div>
   </div>
 
-  <template x-if="picked.length === 0">
-    <div class="empty">pick at least one mutation above</div>
+  <template x-if="picked.length === 0 && !branch">
+    <div class="empty">pick a branch or one or more commits above</div>
   </template>
 
-  <template x-if="picked.length > 0 && rows.length === 0 && status === 'no data'">
+  <template x-if="(picked.length > 0 || branch) && rows.length === 0 && status === 'no data'">
     <div class="empty">no judge runs yet for this selection — fire a plan from /qa/mutations and wait</div>
   </template>
+
+  <!-- (d) Trend along a branch — only when branch is picked alone. -->
+  <div class="section" x-show="branch && picked.length === 0 && rows.length > 0">
+    <h2>trend on <span x-text="branch"></span> · mean score per commit</h2>
+    <div id="chart-trend" class="chart-frame"></div>
+    <div class="legend-note">
+      Each line is one scenario; each dot is one commit on this branch.
+      Sloping down = quality drift (look for what changed). Flat = the
+      branch holds its score across iterations. Wide jumps with few
+      commits = high variance — needs more repeats to be sure.
+    </div>
+  </div>
 
   <!-- (a) Box plot per scenario -->
   <div class="section" x-show="rows.length > 0 && !scenario">
