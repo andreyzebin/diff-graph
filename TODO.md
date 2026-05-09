@@ -1272,35 +1272,90 @@ was always going to be a stop-gap. The original §5c MVP order
 11. Webhook auto-discover (5e.8.D).
 12. (Future) §5c.609 evolution loop on top.
 
-### 5e.10a Two trace storages — SQLite + filesystem tree
+### 5e.10a Two trace storages — SQLite + filesystem tree, unified for agents AND judges
 
-We have (and want to keep) **two trace storages with different
-purposes** — both written by the same agent, neither subsumes the
-other:
+Both LLM-driven workloads in our pipeline — **agents** (dispatcher /
+reviewer / investigator) and **judges** (bench scoring + future
+evaluators / debuggers) — write to the **same dual-storage scheme**.
+A "run" is any sequence of LLM calls; the storage layer doesn't
+care whether the LLM was driving an agentic ReAct loop or a
+single-shot judge verdict. Today the two are split (agent → SQLite +
+fs tree; judge → fs tree only), which means dashboards / live UI
+can't see judge calls, and joins like "show me runs where the agent
+said APPROVED but the judge said NEEDS_WORK" require ad-hoc fs
+scraping. Unify.
+
+**Storage role split:**
 
 1. **SQLite** `~/.diffgraph/traces.db`
    - Schema: `runs` + `events`. Append-only event log per run.
+   - **Unify:** add a `kind` column to `runs` —
+     `kind IN ('agent', 'judge', 'evaluator')`. `agent_step`,
+     `agent_tool_request`, `agent_tool_response`, `agent_reflect`,
+     `agent_done` events keep their names; add parallel
+     `judge_request`, `judge_response`, `judge_verdict` events
+     for judge runs. Same `run_id` namespace, same `events`
+     table — just a different `kind` filter when querying.
+   - A bench attempt then has TWO `runs` rows: one
+     `kind='agent'` (the diff-graph subprocess) and one
+     `kind='judge'` (the LLMJudge call). Linked via
+     `qa_tasks.agent_run_id` + `qa_tasks.judge_run_id`.
    - Purpose: **fast queries**. List recent runs, sort by tags,
      join with `qa_runs`, count tool calls per type, detect
      stuck steps via timestamp gaps, render the live progress
-     feed.
+     feed. Same queries work for both agent and judge runs;
+     dashboards can mix them ("show me judge calls > 30s on
+     deepseek over the last week").
    - Always written.
-   - Indexed by `run_id`, `started_at`, `pr_url`, `prompt_hash`.
+   - Indexed by `run_id`, `started_at`, `pr_url`, `prompt_hash`,
+     `kind`.
 
 2. **Filesystem tree** under `BENCHMARK_TRACE_DIR` /
    `DIFFGRAPH_TRACE_PATH`
-   - Layout (today): `agent/agents/<sub_agent>/step-NN-request.json`,
-     `step-NN-response.json`, `step-NN-tool-MM-request.json`,
-     `step-NN-tool-MM-response.json`, `events.jsonl`,
-     `meta.json`, plus per-attempt `invocations.json`,
-     `judge/{request,response}.json`, `result.json`.
+   - **Unify the layout.** Today it's asymmetric — agent runs
+     live under `agent/agents/<sub_agent>/step-NN-…json` while
+     judge runs are special-cased as a flat `judge/request.json`
+     + `judge/response.json` pair. We want **homogeneous** layout
+     so the same tooling (read_file walks, tree views, agentic
+     deep-dive) works for both:
+
+     ```
+     <attempt-dir>/
+     ├── runs/
+     │   ├── agent-<run_id>/
+     │   │   ├── meta.json
+     │   │   ├── events.jsonl
+     │   │   └── agents/<sub_agent>/
+     │   │       ├── step-00-request.json
+     │   │       ├── step-00-response.json
+     │   │       ├── step-00-tool-01-request.json
+     │   │       ├── step-00-tool-01-response.json
+     │   │       └── …
+     │   └── judge-<run_id>/
+     │       ├── meta.json
+     │       ├── events.jsonl
+     │       └── agents/judge-0/
+     │           ├── step-00-request.json     # single-shot: just one step
+     │           └── step-00-response.json
+     ├── invocations.json                     # bench-side, agent's tool log
+     └── result.json                          # final verdict + score
+     ```
+
+     Same scaffolding for both. Single-shot judges still get the
+     full request/response/meta/events.jsonl stack — just with
+     one step. Multi-shot judges (when we have evaluators that
+     reflect / call tools) slot in unchanged. Future
+     `kind='evaluator'` runs (debugger sub-agent that reads
+     traces, see §9.7) reuse the same shape.
+
    - Purpose: **full-fidelity inspection**. Open one specific
      LLM request as JSON (whole system prompt + messages + tools
      schema) when debugging a drift; let an agent (or human) do
      `read_file` over the tree to deep-dive a specific run. The
      tree is structured for easy agentic walking: paths are
      predictable, files are small enough to read directly,
-     hierarchy mirrors the agent's call graph.
+     hierarchy mirrors the call graph regardless of agent vs
+     judge.
    - Written only when env / flag enables it.
 
 The two are **complementary**, not redundant:
@@ -1317,25 +1372,32 @@ The two are **complementary**, not redundant:
 **Quality-api integration:**
 
 - Server **always** reads SQLite for indices, lists, dashboards,
-  live WS streams.
-- Server **records the filesystem path** alongside the run
-  (`qa_tasks.fs_trace_path` / `qa_runs.fs_trace_path` columns) so
-  every run page has a "↗ Filesystem trace" link with the
-  absolute path the human (or another agent) can `cd` into and
-  `ls` directly.
-- The web UI offers two views per run:
-  - **Indexed view** (`/traces/{run_id}`) — current fast browser,
-    SQLite-backed.
+  live WS streams. Same code path for `kind='agent'` and
+  `kind='judge'` rows — they're just runs.
+- Server **records the filesystem path** alongside each run
+  (`qa_tasks.agent_fs_trace_path` + `qa_tasks.judge_fs_trace_path`)
+  so every run page has "↗ Filesystem trace" links — both for
+  the agent and for its scoring judge — with absolute paths the
+  human (or another agent) can `cd` into and `ls` directly.
+- The web UI offers two views per run, identically for agent and
+  judge:
+  - **Indexed view** (`/traces/{run_id}`) — fast browser,
+    SQLite-backed. Header shows `kind` + cross-link to its
+    counterpart (agent run → judge run that scored it; judge run
+    → agent run it scored).
   - **Tree view** (`/traces/{run_id}/files`) — file-explorer over
     the filesystem trace tree, server reads files on demand and
     renders raw JSON / pretty diff. Useful when the indexed view
     truncated something.
 - Agentic deep-dive workflow: a meta-agent (debugger / evaluator)
-  gets the absolute path, opens it via standard `read_file`/
-  `list_files` tools — same shape as our DiffSearch sibling
-  mounts in §9. The tree literally fits the workspace-as-files
-  model. Could even be auto-mounted under
-  `workspace/traces/<run_id>/` for a debugging sub-agent.
+  gets the absolute path of either an agent run OR a judge run
+  via the same `read_file`/`list_files` tools — same scaffolding
+  in both, no special-casing. Same shape as our DiffSearch
+  sibling mounts in §9; could be auto-mounted under
+  `workspace/traces/<run_id>/` for a debugging sub-agent. The
+  evaluator can then ask "did the agent's reflect at step 14
+  match what the judge actually scored?" by reading both trees
+  side-by-side.
 
 **Retention.**
 - SQLite: long retention (we want trends across mutations);
@@ -1354,15 +1416,40 @@ SQLite is the source of truth, fs trace is best-effort. Already
 the case in `cli.py`'s trace writer; document it explicitly so
 nobody changes it.
 
-**Schema column to add to `qa_tasks`/`qa_runs`:**
+**Schema columns to add to `qa_tasks` / `qa_runs`:**
 ```
-fs_trace_path  TEXT  -- absolute path to the run's tree, or NULL if disabled
+agent_run_id          TEXT   -- FK to traces.runs (kind='agent')
+agent_fs_trace_path   TEXT   -- abs path to runs/agent-<id>/ tree, or NULL
+judge_run_id          TEXT   -- FK to traces.runs (kind='judge')
+judge_fs_trace_path   TEXT   -- abs path to runs/judge-<id>/ tree, or NULL
 ```
 
-When the server returns a task / run JSON, it includes this path
-so the CLI can `bench-schedule logs <task-id> --files` open the
-tree directly without going through the API. Useful when the
-WebSocket isn't enough or the run is already finished.
+Both agent and judge get equal first-class treatment. When the
+server returns a task / run JSON, it includes both paths so:
+- `bench-schedule logs <task-id> --files` opens the agent tree.
+- `bench-schedule logs <task-id> --files --judge` opens the judge
+  tree.
+- Web UI's run page links both.
+- A debugging sub-agent receives both as workspace mounts.
+
+**Migration of the writer side:**
+- Diff-graph CLI: already writes both SQLite and the agent
+  filesystem tree. No change.
+- Bench `LLMJudge`: today writes only `judge/request.json` +
+  `judge/response.json` flat. Migrate to:
+  1. Open a `runs.runs` row with `kind='judge'`, get a
+     `run_id`.
+  2. Write events (`judge_request`, `judge_response`,
+     `judge_verdict`) to `events`.
+  3. Mirror to `runs/judge-<run_id>/agents/judge-0/step-00-…`
+     using the same writer the agent already uses (refactor
+     the writer to be kind-agnostic — same code, different
+     `runs/<kind>-<id>/` parent).
+  4. Drop the old flat `judge/{request,response}.json` files
+     once readers (judge result parser, dashboards) are
+     migrated.
+- New `kind='evaluator'` slots in by reusing the same writer,
+  no new code needed.
 
 ### 5e.10 Where it lives
 
