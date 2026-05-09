@@ -24,7 +24,7 @@ document.addEventListener('alpine:init', () => {
     
         totalRuns: '…', agentRuns: '…', judgeRuns: '…',
         mutations: '…', scenarios: '…',
-        byProvider: [], byScenario: [], genes: [],
+        byProvider: [], byScenario: [],
         async load() {
           const get = async (path) => (await (await fetch(`${window.QA_BASE_PATH || ''}${path}`)).json()).data;
     
@@ -39,7 +39,6 @@ document.addEventListener('alpine:init', () => {
     
           this.byProvider = await get('/api/search/aggregates/by_provider');
           this.byScenario = await get('/api/search/aggregates/by_scenario');
-          this.genes = await get('/api/search/genes');
     
           // unique mutations / scenarios — count distinct keys via tables loaded
           this.scenarios = this.byScenario.length;
@@ -56,13 +55,13 @@ document.addEventListener('alpine:init', () => {
     
         dims: { kind: [], agent_name: [], model: [], scenario_id: [],
                 generation: [], project: [], status: [],
-                scenario_tags: [], genes: [] },
+                scenario_tags: [] },
         // Inline initialiser — calling this.defaultFilters() in the
         // object literal would fail (this is undefined at that point).
         filters: {
           kind: '', agent: '', model: '', scenario: '',
           generation: '', mutation: '', project: '', status: '',
-          gene_arr: [], without_gene_arr: [], scenario_tag_arr: [],
+          scenario_tag_arr: [],
           file: '', jira: '', duration_gt_ms: null,
           limit: 50, offset: 0, sort: 'started_at', order: 'desc',
         },
@@ -90,7 +89,7 @@ document.addEventListener('alpine:init', () => {
           return {
             kind: '', agent: '', model: '', scenario: '',
             generation: '', mutation: '', project: '', status: '',
-            gene_arr: [], without_gene_arr: [], scenario_tag_arr: [],
+            scenario_tag_arr: [],
             file: '', jira: '', duration_gt_ms: null,
             limit: 50, offset: 0, sort: 'started_at', order: 'desc',
           };
@@ -111,8 +110,8 @@ document.addEventListener('alpine:init', () => {
               this.filters[key] = (key === 'duration_gt_ms') ? parseInt(v, 10) : v;
             }
           }
-          // Multi-value: API uses comma-CSV `gene=a,b`; UI keeps array.
-          // ALSO accept `?gene=a&gene=b` repeats for nice URL semantics.
+          // Multi-value: API uses comma-CSV `scenario_tag=a,b`; UI keeps array.
+          // ALSO accept `?scenario_tag=a&scenario_tag=b` repeats for nice URL semantics.
           const collect = (param) => {
             const all = sp.getAll(param);
             const out = [];
@@ -121,8 +120,6 @@ document.addEventListener('alpine:init', () => {
             }
             return out;
           };
-          this.filters.gene_arr = collect('gene');
-          this.filters.without_gene_arr = collect('without_gene');
           this.filters.scenario_tag_arr = collect('scenario_tag');
           // limit/offset come from URL too if present.
           const lim = sp.get('limit'); if (lim) this.filters.limit = parseInt(lim, 10);
@@ -140,8 +137,6 @@ document.addEventListener('alpine:init', () => {
             if (v) qs.set(k, v);
           }
           if (f.duration_gt_ms) qs.set('duration_gt_ms', String(f.duration_gt_ms));
-          if (f.gene_arr.length)    qs.set('gene', f.gene_arr.join(','));
-          if (f.without_gene_arr.length) qs.set('without_gene', f.without_gene_arr.join(','));
           if (f.scenario_tag_arr.length) qs.set('scenario_tag', f.scenario_tag_arr.join(','));
           if (f.limit !== 50)  qs.set('limit', String(f.limit));
           if (f.offset !== 0)  qs.set('offset', String(f.offset));
@@ -167,8 +162,6 @@ document.addEventListener('alpine:init', () => {
             if (v) qs.append(k, v);
           }
           if (f.duration_gt_ms) qs.append('duration_gt_ms', String(f.duration_gt_ms));
-          if (f.gene_arr.length) qs.append('gene', f.gene_arr.join(','));
-          if (f.without_gene_arr.length) qs.append('without_gene', f.without_gene_arr.join(','));
           if (f.scenario_tag_arr.length) qs.append('scenario_tag', f.scenario_tag_arr.join(','));
           qs.append('limit', String(f.limit));
           qs.append('offset', String(f.offset));
@@ -192,12 +185,31 @@ document.addEventListener('alpine:init', () => {
   }))
 
   Alpine.data('plansView', () => ({
-    
+
         plans: [],
+        page: 1,
+        pageSize: 50,
+        total: 0,
         async load() {
-          const r = await fetch(`${window.QA_BASE_PATH || ''}/api/qa/plans?limit=50`);
+          const offset = (this.page - 1) * this.pageSize;
+          const r = await fetch(`${window.QA_BASE_PATH || ''}/api/qa/plans` +
+                                `?limit=${this.pageSize}&offset=${offset}`);
           const j = await r.json();
           this.plans = j.data || [];
+          this.total = (j.meta && j.meta.total) || this.plans.length;
+        },
+        get pageCount() { return Math.max(1, Math.ceil(this.total / this.pageSize)); },
+        get rangeText() {
+          if (!this.total) return '0';
+          const lo = (this.page - 1) * this.pageSize + 1;
+          const hi = Math.min(this.total, lo + this.plans.length - 1);
+          return `${lo}–${hi} of ${this.total}`;
+        },
+        async goPage(delta) {
+          const next = Math.min(this.pageCount, Math.max(1, this.page + delta));
+          if (next === this.page) return;
+          this.page = next;
+          await this.load();
         },
         bars(p) {
           const pr = p.progress || {};
@@ -219,7 +231,18 @@ document.addEventListener('alpine:init', () => {
           const total = pr.total || 0;
           return ` ${done}/${total}`;
         },
-      
+        canCancel(p) { return p.state !== 'done' && p.state !== 'cancelled'; },
+        async cancelPlan(p) {
+          const pr = p.progress || {};
+          const remaining = (pr.queued || 0) + (pr.leased || 0) + (pr.running || 0);
+          if (!confirm(`Cancel plan #${p.id} "${p.name || ''}"?\n` +
+                       `${remaining} task(s) will be cancelled (already-running tasks finish on their own).`)) return;
+          const r = await fetch(`${window.QA_BASE_PATH || ''}/api/qa/plans/${p.id}/cancel`,
+                                {method: 'POST'});
+          await r.json();
+          await this.load();
+        },
+
   }))
 
   // Format engineering-assessment axis (0..1) as a coloured bar with
@@ -247,13 +270,33 @@ document.addEventListener('alpine:init', () => {
     scoring: {},                                  // mutation hash → scoring blob
     onDemandConfigs: [],                          // schedules with mode=on_demand for "fire" dropdown
     fireStatus: '',
+    page: 1,
+    pageSize: 50,
+    total: 0,
+    get pageCount() { return Math.max(1, Math.ceil(this.total / this.pageSize)); },
+    get rangeText() {
+      if (!this.total) return '0';
+      const lo = (this.page - 1) * this.pageSize + 1;
+      const hi = Math.min(this.total, lo + this.mutations.length - 1);
+      return `${lo}–${hi} of ${this.total}`;
+    },
+    async goPage(delta) {
+      const next = Math.min(this.pageCount, Math.max(1, this.page + delta));
+      if (next === this.page) return;
+      this.page = next;
+      await this.load();
+    },
     async load() {
-      const get = async (path) => (await (await fetch(`${window.QA_BASE_PATH || ''}${path}`)).json()).data || [];
-      this.mutations = await get('/api/search/aggregates/by_mutation');
-      const allConfigs = await get('/api/qa/auto-plan/configs');
+      const offset = (this.page - 1) * this.pageSize;
+      const base = window.QA_BASE_PATH || '';
+      const r = await (await fetch(`${base}/api/search/aggregates/by_mutation` +
+                                   `?limit=${this.pageSize}&offset=${offset}`)).json();
+      this.mutations = r.data || [];
+      this.total = (r.meta && r.meta.total) || this.mutations.length;
+      const allConfigsR = await (await fetch(`${base}/api/qa/auto-plan/configs`)).json();
+      const allConfigs = allConfigsR.data || [];
       this.onDemandConfigs = allConfigs.filter(c => c.mode === 'on_demand' && c.enabled);
       // Load scoring for each mutation in parallel.
-      const base = window.QA_BASE_PATH || '';
       const tasks = this.mutations.map(async (m) => {
         try {
           const r = await fetch(`${base}/api/search/scoring/${m.mutation}`);
@@ -330,18 +373,6 @@ document.addEventListener('alpine:init', () => {
       const d = Math.round((b || 0) - (a || 0));
       return d > 0 ? `+${d}` : String(d);
     },
-  }))
-
-  Alpine.data('genesView', () => ({
-    
-        rows: [],
-        total: 1,
-        async load() {
-          const r = await (await fetch(`${window.QA_BASE_PATH || ''}/api/search/aggregates/by_gene`)).json();
-          this.rows = r.data || [];
-          this.total = Math.max(1, ...this.rows.map(g => g.runs_with + g.runs_without));
-        },
-      
   }))
 
   Alpine.data('autoPlan', () => ({

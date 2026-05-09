@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=428f09ab"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -29,6 +29,15 @@ th { color: #8b949e; font-weight: normal; }
 .bar .b-cancelled { background: #6e7681; }
 .meta { color: #8b949e; font-size: 0.85em; }
 .empty { color: #8b949e; padding: 40px; text-align: center; }
+.btn-cancel { background: #21262d; color: #f47067; border: 1px solid #f4706755;
+              padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
+.btn-cancel:hover { background: #b62324; color: white; border-color: #da3633; }
+.pager { margin-top: 12px; display: flex; gap: 8px; align-items: center;
+         font-size: 0.85em; color: #8b949e; }
+.pager .btn-page { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+                   padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
+.pager .btn-page:hover:not(:disabled) { background: #30363d; }
+.pager .btn-page:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>
 </head>
 <body hx-boost="true" hx-ext="head-support">
@@ -43,12 +52,19 @@ th { color: #8b949e; font-weight: normal; }
     <div class="empty">no plans yet — try <code>quality-cli plans create --providers=… --scenarios=…</code></div>
   </template>
 
+  <div class="pager" x-show="total > 0">
+    <span x-text="rangeText"></span>
+    <button class="btn-page" :disabled="page <= 1" @click="goPage(-1)">← prev</button>
+    <span x-text="`page ${page} / ${pageCount}`"></span>
+    <button class="btn-page" :disabled="page >= pageCount" @click="goPage(1)">next →</button>
+  </div>
+
   <template x-if="plans.length > 0">
     <table>
       <thead><tr>
         <th>id</th><th>name</th><th>state</th>
         <th>providers</th><th>scenarios</th>
-        <th>progress</th><th>created</th>
+        <th>progress</th><th>created</th><th></th>
       </tr></thead>
       <tbody>
         <template x-for="p in plans" :key="p.id">
@@ -67,6 +83,10 @@ th { color: #8b949e; font-weight: normal; }
               <span class="meta" x-text="progressText(p)"></span>
             </td>
             <td class="meta" x-text="(p.created_at || '').slice(0, 19)"></td>
+            <td>
+              <button x-show="canCancel(p)" class="btn-cancel"
+                      @click="cancelPlan(p)">cancel</button>
+            </td>
           </tr>
         </template>
       </tbody>

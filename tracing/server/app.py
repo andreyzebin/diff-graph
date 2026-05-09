@@ -192,7 +192,7 @@ async def api_step_result(run_id: str, agent_id: str, step: int):
 
 
 # ── Search API (TODO §5e.11) ──────────────────────────────────────────────
-# Rich-filter list, tool-call cross-run search, gene catalogue, aggregates.
+# Rich-filter list, tool-call cross-run search, aggregates.
 # Storage abstraction lives in tracing/server/store.py — same shape will
 # accept a future FilesystemTraceStore for the secondary FS-only viewer.
 
@@ -223,9 +223,6 @@ async def api_search_runs(
     # evolutionary identity
     generation: Optional[str] = None,
     mutation: Optional[str] = None,
-    gene: Optional[str] = None,            # CSV: all listed must be present (AND)
-    gene_any: Optional[str] = None,        # CSV: any of these (OR)
-    without_gene: Optional[str] = None,    # CSV: NOT contains
     # work object
     pr_url: Optional[str] = None,
     project: Optional[str] = None,
@@ -243,19 +240,14 @@ async def api_search_runs(
 ):
     """Run search with the §5e.11 filters. All params optional.
 
-    CSV params (`gene`, `gene_any`, `without_gene`) accept comma-
-    separated lists. Returns `{data, meta}` envelope so the
-    `--json` CLI mode (TODO §5e.13) and the agent-friendly stdout
-    contract are stable.
+    Returns `{data, meta}` envelope so the `--json` CLI mode (TODO
+    §5e.13) and the agent-friendly stdout contract are stable.
     """
     f = RunFilter(
         kind=kind, agent_name=agent, model=model, status=status,
         since=since, until=until,
         duration_gt_ms=duration_gt_ms, tokens_gt=tokens_gt,
         generation=generation, mutation=mutation,
-        genes=_split_csv(gene),
-        genes_any=_split_csv(gene_any),
-        without_gene=_split_csv(without_gene),
         pr_url=pr_url, project=project, file=file, jira=jira,
         scenario_id=scenario, scenario_tag=scenario_tag,
         linked_run=linked_run,
@@ -305,12 +297,6 @@ async def api_search_tool_calls(
         "data": hits,
         "meta": {"limit": f.limit, "offset": f.offset, "returned": len(hits)},
     })
-
-
-@app.get("/api/search/genes")
-async def api_search_genes():
-    """Gene catalogue: every gene observed in any run + its run count."""
-    return JSONResponse({"data": _store().list_genes()})
 
 
 @app.get("/api/search/dimensions")
@@ -377,21 +363,21 @@ async def api_aggregate_by_mutation(
     generation: Optional[str] = None,
     since: Optional[str] = None,
     until: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
 ):
     f = RunFilter(generation=generation, since=since, until=until,
                   limit=10**9, offset=0)
-    return JSONResponse({"data": _store().aggregate_by_mutation(f)})
-
-
-@app.get("/api/search/aggregates/by_gene")
-async def api_aggregate_by_gene(
-    scenario_tag: Optional[str] = None,
-    since: Optional[str] = None,
-    until: Optional[str] = None,
-):
-    f = RunFilter(scenario_tag=scenario_tag, since=since, until=until,
-                  limit=10**9, offset=0)
-    return JSONResponse({"data": _store().aggregate_by_gene(f)})
+    rows = _store().aggregate_by_mutation(f)
+    total = len(rows)
+    eff_limit = max(1, min(500, limit))
+    eff_offset = max(0, offset)
+    page = rows[eff_offset:eff_offset + eff_limit]
+    return JSONResponse({
+        "data": page,
+        "meta": {"limit": eff_limit, "offset": eff_offset,
+                 "returned": len(page), "total": total},
+    })
 
 
 @app.get("/api/search/runs/{run_id}")
@@ -772,14 +758,16 @@ async def api_qa_create_plan(p: PlanCreatePayload):
 @app.get("/api/qa/plans")
 async def api_qa_list_plans(state: Optional[str] = None,
                             limit: int = 50, offset: int = 0):
-    rows = _qa_plans.list(state=state,
-                          limit=max(1, min(500, limit)),
-                          offset=max(0, offset))
+    eff_limit = max(1, min(500, limit))
+    eff_offset = max(0, offset)
+    rows = _qa_plans.list(state=state, limit=eff_limit, offset=eff_offset)
+    total = _qa_plans.count(state=state)
     return JSONResponse({
         "data": [plan_to_dict(p,
                               progress=_qa_plans.progress(p.id))
                  for p in rows],
-        "meta": {"limit": limit, "offset": offset, "returned": len(rows)},
+        "meta": {"limit": eff_limit, "offset": eff_offset,
+                 "returned": len(rows), "total": total},
     })
 
 
@@ -798,11 +786,6 @@ async def qa_runs_page(request: Request):
 @app.get("/qa/plans", response_class=HTMLResponse)
 async def qa_plans_page(request: Request):
     return templates.TemplateResponse(request, "qa_plans.html", {"active": "plans"})
-
-
-@app.get("/qa/genes", response_class=HTMLResponse)
-async def qa_genes_page(request: Request):
-    return templates.TemplateResponse(request, "qa_genes.html", {"active": "genes"})
 
 
 @app.get("/qa/auto-plan", response_class=HTMLResponse)

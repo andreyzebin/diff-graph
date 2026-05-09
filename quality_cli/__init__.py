@@ -17,6 +17,5 @@ Entry points:
     python -m quality_cli runs list ...
     python -m quality_cli runs get <id>
     python -m quality_cli tool-calls ...
-    python -m quality_cli genes
-    python -m quality_cli aggregates by-{provider,scenario,gene}
+    python -m quality_cli aggregates by-{provider,scenario}
 """

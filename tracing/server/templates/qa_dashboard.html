@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=428f09ab"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -26,7 +26,6 @@ table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
 th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #30363d; }
 th { color: #8b949e; font-weight: normal; }
 .tn { font-variant-numeric: tabular-nums; text-align: right; }
-.gene-chip { color: #58a6ff; font-family: ui-monospace, monospace; }
 </style>
 </head>
 <body hx-boost="true" hx-ext="head-support">
@@ -55,10 +54,6 @@ th { color: #8b949e; font-weight: normal; }
     <div class="card">
       <div class="label">scenarios touched</div>
       <div class="value" x-text="scenarios"></div>
-    </div>
-    <div class="card">
-      <div class="label">genes detected</div>
-      <div class="value" x-text="genes.length"></div>
     </div>
   </div>
 
@@ -102,20 +97,6 @@ th { color: #8b949e; font-weight: normal; }
     </table>
   </div>
 
-  <div class="section">
-    <h2>genes (run counts)</h2>
-    <table>
-      <thead><tr><th>gene</th><th class="tn">runs</th></tr></thead>
-      <tbody>
-        <template x-for="g in genes" :key="g.gene">
-          <tr>
-            <td><a class="run-link gene-chip" :href="`{{ base_path }}/qa/runs?gene=${g.gene}`" x-text="g.gene"></a></td>
-            <td class="tn" x-text="g.runs_count"></td>
-          </tr>
-        </template>
-      </tbody>
-    </table>
-  </div>
 </div>
 
 

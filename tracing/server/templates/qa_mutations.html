@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=428f09ab"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -52,6 +52,12 @@ th { color: #8b949e; font-weight: normal; }
 .axis-na   { color: #6e7681; font-size: 0.85em; }
 .axes-grid { display: grid; grid-template-columns: 90px 80px 90px; gap: 4px 12px; font-size: 0.85em; }
 .axes-grid .label { color: #8b949e; }
+.pager { margin-top: 12px; display: flex; gap: 8px; align-items: center;
+         font-size: 0.85em; color: #8b949e; }
+.pager .btn-page { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+                   padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
+.pager .btn-page:hover:not(:disabled) { background: #30363d; }
+.pager .btn-page:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>
 </head>
 <body hx-boost="true" hx-ext="head-support">
@@ -79,11 +85,17 @@ th { color: #8b949e; font-weight: normal; }
   <!-- Mutations list -->
   <div class="section">
     <h2>all mutations · pick two checkboxes to compare</h2>
+    <div class="muted" style="margin-bottom:8px;" x-show="fireStatus" x-text="fireStatus"></div>
     <template x-if="mutations.length === 0">
       <div class="empty">no mutations yet</div>
     </template>
+    <div class="pager" x-show="total > 0">
+      <span x-text="rangeText"></span>
+      <button class="btn-page" :disabled="page <= 1" @click="goPage(-1)">← prev</button>
+      <span x-text="`page ${page} / ${pageCount}`"></span>
+      <button class="btn-page" :disabled="page >= pageCount" @click="goPage(1)">next →</button>
+    </div>
     <template x-if="mutations.length > 0">
-      <div class="muted" style="margin-bottom:8px;" x-text="fireStatus"></div>
       <table>
         <thead><tr>
           <th>pick</th><th>mutation</th><th>branches</th>

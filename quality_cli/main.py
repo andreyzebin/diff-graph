@@ -100,9 +100,6 @@ def runs_list(
     # evolutionary
     generation: Optional[str] = typer.Option(None),
     mutation: Optional[str] = typer.Option(None, help="exact or short hash"),
-    gene: Optional[str] = typer.Option(None, help="comma-separated; ALL must be present"),
-    gene_any: Optional[str] = typer.Option(None, help="comma-separated; ANY of these"),
-    without_gene: Optional[str] = typer.Option(None, help="comma-separated; NONE of these"),
     # work objects
     project: Optional[str] = typer.Option(None),
     file: Optional[str] = typer.Option(None, help="path in files_touched"),
@@ -127,9 +124,6 @@ def runs_list(
     f = RunFilter(
         kind=kind, agent_name=agent, model=model, status=status,
         generation=generation, mutation=mutation,
-        genes=_split_csv(gene),
-        genes_any=_split_csv(gene_any),
-        without_gene=_split_csv(without_gene),
         project=project, file=file, jira=jira,
         scenario_id=scenario, scenario_tag=scenario_tag, pr_url=pr_url,
         duration_gt_ms=duration_gt_ms, tokens_gt=tokens_gt,
@@ -272,31 +266,6 @@ def tools_list(
     _Out.console.print(table)
 
 
-# ── genes ─────────────────────────────────────────────────────────────────
-
-@app.command("genes")
-def genes_list(
-    db: Optional[str] = typer.Option(None, "--db"),
-):
-    """Catalogue: every gene observed in any run, with run counts."""
-    rows = _store(db).list_genes()
-
-    if _Out.json_mode:
-        _emit(rows)
-        return
-
-    if not rows:
-        _emit([], suggestion="this DB has no runs with genes detected yet")
-        return
-
-    table = Table(title=f"genes · {len(rows)} observed")
-    table.add_column("gene", style="cyan")
-    table.add_column("runs", justify="right")
-    for r in rows:
-        table.add_row(r["gene"], str(r["runs_count"]))
-    _Out.console.print(table)
-
-
 # ── aggregates ────────────────────────────────────────────────────────────
 
 @agg_app.command("by-provider")
@@ -362,31 +331,6 @@ def agg_scenario(
             f"{r.get('avg_duration_ms') or 0:.0f}",
             str(r["completed"]),
         )
-    _Out.console.print(table)
-
-
-@agg_app.command("by-gene")
-def agg_gene(
-    scenario_tag: Optional[str] = typer.Option(None, help="filter to runs with this scenario tag"),
-    since: Optional[str] = typer.Option(None),
-    until: Optional[str] = typer.Option(None),
-    db: Optional[str] = typer.Option(None, "--db"),
-):
-    """Per-gene runs_with vs runs_without — substrate for evolution feedback."""
-    f = RunFilter(scenario_tag=scenario_tag, since=since, until=until, limit=10**9)
-    rows = _store(db).aggregate_by_gene(f)
-    if _Out.json_mode:
-        _emit(rows)
-        return
-    if not rows:
-        _emit([], suggestion="no runs in scope have gene data")
-        return
-    table = Table(title="by gene")
-    table.add_column("gene", style="cyan")
-    table.add_column("with", justify="right")
-    table.add_column("without", justify="right")
-    for r in rows:
-        table.add_row(r["gene"], str(r["runs_with"]), str(r["runs_without"]))
     _Out.console.print(table)
 
 

@@ -1,5 +1,5 @@
-{# Shared QA nav. Pass `active` ∈ {overview, runs, plans, mutations,
-   genes, auto-plan} so the current tab gets bolded. Identical layout
+{# Shared QA nav. Pass `active` ∈ {overview, schedules, plans, workers,
+   runs, mutations} so the current tab gets bolded. Identical layout
    across all qa_* pages by construction. #}
 <div class="qa-nav">
   {% set tabs = [
@@ -9,7 +9,6 @@
     ("workers",   "/qa/workers"),
     ("runs",      "/qa/runs"),
     ("mutations", "/qa/mutations"),
-    ("genes",     "/qa/genes"),
   ] %}
   {% for label, href in tabs %}
     {% if label == active %}

@@ -81,7 +81,7 @@ class TraceDBWriter:
             ("agent_name", "TEXT"),
             ("generation", "TEXT"),
             ("mutation", "TEXT"),
-            ("genes", "TEXT"),                # JSON array
+            ("genes", "TEXT"),                # JSON array — legacy column, no longer written; kept to avoid migration
             ("project", "TEXT"),
             ("files_touched", "TEXT"),        # JSON array
             ("jira_keys", "TEXT"),            # JSON array
@@ -178,7 +178,6 @@ class TraceDBWriter:
 
     def set_search_metadata(self, *,
                             agent_name: str = "",
-                            genes: list[str] | None = None,
                             project: str = "",
                             files_touched: list[str] | None = None,
                             jira_keys: list[str] | None = None,
@@ -197,9 +196,6 @@ class TraceDBWriter:
             if agent_name:
                 updates.append("agent_name=?")
                 params.append(agent_name)
-            if genes is not None:
-                updates.append("genes=?")
-                params.append(json.dumps(genes, ensure_ascii=False))
             if project:
                 updates.append("project=?")
                 params.append(project)

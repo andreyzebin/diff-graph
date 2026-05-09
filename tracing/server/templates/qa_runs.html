@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=428f09ab"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -49,8 +49,6 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 .kind-agent { color: #56d364; }
 .kind-judge { color: #d2a8ff; }
 .kind-evaluator { color: #c69026; }
-.gene-chip { display: inline-block; padding: 1px 6px; margin: 1px; background: #1f6feb33;
-             color: #58a6ff; border-radius: 3px; font-size: 0.75em; }
 .tag-chip { display: inline-block; padding: 1px 6px; margin: 1px; background: #21262d;
             color: #8b949e; border-radius: 3px; font-size: 0.75em; }
 .linked-chip { display: inline-block; padding: 1px 6px; background: #d2a8ff22;
@@ -127,35 +125,7 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
       <input x-model.lazy="filters.mutation" placeholder="hash..." @change="search()">
     </label>
 
-    <!-- Multi-selects: gene / without_gene / scenario_tag -->
-    <label>gene <span style="color:#8b949e;">(AND)</span>
-      <div class="multi">
-        <template x-for="g in filters.gene_arr" :key="g">
-          <span class="chip" x-text="g" @click="filters.gene_arr = filters.gene_arr.filter(x => x !== g); search();"></span>
-        </template>
-        <select @change="addToList('gene_arr', $event.target.value); $event.target.value=''">
-          <option value="">+ add</option>
-          <template x-for="v in dims.genes">
-            <option :value="v" x-text="v" :disabled="filters.gene_arr.includes(v)"></option>
-          </template>
-        </select>
-      </div>
-    </label>
-
-    <label>without_gene
-      <div class="multi">
-        <template x-for="g in filters.without_gene_arr" :key="g">
-          <span class="chip" x-text="g" @click="filters.without_gene_arr = filters.without_gene_arr.filter(x => x !== g); search();"></span>
-        </template>
-        <select @change="addToList('without_gene_arr', $event.target.value); $event.target.value=''">
-          <option value="">+ add</option>
-          <template x-for="v in dims.genes">
-            <option :value="v" x-text="v" :disabled="filters.without_gene_arr.includes(v)"></option>
-          </template>
-        </select>
-      </div>
-    </label>
-
+    <!-- Multi-selects: scenario_tag -->
     <label>scenario_tag
       <div class="multi">
         <template x-for="t in filters.scenario_tag_arr" :key="t">
@@ -213,7 +183,6 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
           <th>mutation</th>
           <th class="dur-cell">dur ms</th>
           <th>linked</th>
-          <th>genes</th>
           <th>tags</th>
           <th>started</th>
         </tr>
@@ -236,14 +205,6 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
                 <a class="linked-chip" :href="`{{ base_path }}/runs/${r.linked_run_id}`"
                    :title="`open ${r.kind === 'agent' ? 'judge' : 'agent'} run ${r.linked_run_id}`"
                    x-text="`↗ ${(r.kind === 'agent' ? 'judge' : 'agent')}`"></a>
-              </template>
-            </td>
-            <td>
-              <template x-for="g in (r.genes || []).slice(0, 3)">
-                <span class="gene-chip" x-text="g"></span>
-              </template>
-              <template x-if="(r.genes || []).length > 3">
-                <span class="meta" x-text="`+${r.genes.length - 3}`"></span>
               </template>
             </td>
             <td>

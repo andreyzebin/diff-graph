@@ -679,6 +679,18 @@ class PlanStore:
             ).fetchall()
         return [self._row_to_plan(r) for r in rows]
 
+    def count(self, *, state: Optional[str] = None) -> int:
+        clauses, params = ["1=1"], []
+        if state:
+            clauses.append("state=?")
+            params.append(state)
+        with self.queue._lock, self.queue._conn() as c:
+            row = c.execute(
+                f"SELECT COUNT(*) AS n FROM qa_plans WHERE {' AND '.join(clauses)}",
+                params,
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
     def progress(self, plan_id: int) -> dict:
         """Aggregate stats across the plan's tasks."""
         with self.queue._lock, self.queue._conn() as c:

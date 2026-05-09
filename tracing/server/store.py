@@ -5,7 +5,7 @@ Phase 1 of the search API (TODO §5e.11). Implements the SQLite
 backend with rich filtering across the new search-dimension columns
 added by orchestra/trace_db.py:
 
-  agent_name, kind, generation, mutation, genes (JSON array),
+  agent_name, kind, generation, mutation,
   project, files_touched, jira_keys, scenario_id, scenario_tags,
   linked_run_id, duration_ms, fs_trace_path
 
@@ -16,9 +16,8 @@ secondary FS-only viewer).
 
 Design notes:
 - All filters are optional; absence = "any".
-- Multi-value filters (?gene=X&gene=Y) are AND by default for genes
-  / tags / files_touched / jira_keys (all listed must be present).
-  ?gene_any=X|Y is OR.
+- Multi-value filters (?file=X&file=Y) are AND by default for tags /
+  files_touched / jira_keys (all listed must be present).
 - Time filters use ISO-8601 strings to keep the API stable across
   timezones.
 - Pagination via offset for now; cursor is in the design backlog.
@@ -52,9 +51,6 @@ class RunFilter:
     # By evolutionary identity
     generation: Optional[str] = None
     mutation: Optional[str] = None      # exact or prefix
-    genes: list[str] = field(default_factory=list)         # all listed (AND)
-    genes_any: list[str] = field(default_factory=list)     # any listed (OR)
-    without_gene: list[str] = field(default_factory=list)  # NOT contains
 
     # By work object
     pr_url: Optional[str] = None
@@ -95,8 +91,7 @@ class SQLiteTraceStore:
     Queries assume the schema produced by orchestra/trace_db.py
     after the §5e.11 migration. Older DBs without the new columns
     will get NULL rows for those fields — queries that filter on
-    them return empty, which is the correct behaviour ("you have
-    no runs tagged with gene X because this DB pre-dates genes").
+    them return empty, which is the correct behaviour.
     """
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH):
@@ -122,7 +117,7 @@ class SQLiteTraceStore:
             SELECT id, kind, agent_name, model, status,
                    started_at, finished_at, duration_ms,
                    pr_url, project, scenario_id, scenario_tags,
-                   generation, mutation, genes, files_touched, jira_keys,
+                   generation, mutation, files_touched, jira_keys,
                    linked_run_id, fs_trace_path,
                    findings_count, total_tokens_paid, prompt_source, prompt_hash
             FROM runs
@@ -217,30 +212,6 @@ class SQLiteTraceStore:
             out.append(d)
         return out
 
-    # ── Genes ───────────────────────────────────────────────────────────
-
-    def list_genes(self) -> list[dict]:
-        """Catalogue: each gene with run counts.
-
-        Reads runs.genes (JSON array) via json_each and tallies.
-        Genes that have never been seen on any run row are absent —
-        that's correct behaviour; the catalogue lists what's
-        actually been observed in this DB.
-        """
-        q = """
-            SELECT json_each.value AS gene, COUNT(*) AS runs_count
-            FROM runs, json_each(runs.genes)
-            WHERE runs.genes IS NOT NULL AND runs.genes != ''
-            GROUP BY json_each.value
-            ORDER BY runs_count DESC
-        """
-        try:
-            with self._conn() as c:
-                rows = c.execute(q).fetchall()
-        except FileNotFoundError:
-            return []
-        return [{"gene": r["gene"], "runs_count": r["runs_count"]} for r in rows]
-
     # ── Aggregates ──────────────────────────────────────────────────────
 
     def list_dimensions(self) -> dict:
@@ -249,7 +220,7 @@ class SQLiteTraceStore:
         out = {
             "kind": [], "agent_name": [], "model": [],
             "scenario_id": [], "generation": [], "project": [],
-            "scenario_tags": [], "genes": [], "status": [],
+            "scenario_tags": [], "status": [],
         }
         try:
             with self._conn() as c:
@@ -263,7 +234,7 @@ class SQLiteTraceStore:
                     ).fetchall()
                     out[col] = [r["v"] for r in rows]
                 # JSON-array columns: json_each + DISTINCT
-                for col in ("scenario_tags", "genes"):
+                for col in ("scenario_tags",):
                     rows = c.execute(
                         f"SELECT DISTINCT json_each.value AS v "
                         f"FROM runs, json_each(runs.{col}) "
@@ -660,40 +631,6 @@ class SQLiteTraceStore:
                  reverse=True)
         return out
 
-    def aggregate_by_gene(self, f: RunFilter | None = None) -> list[dict]:
-        """For each gene present in any run, count runs WITH and runs WITHOUT.
-
-        Useful for §5e.12 evolution feedback: "does gene X help?".
-        Pure count for now; pass-rate / score deltas come once the
-        bench's qa_runs table is wired in (Phase 5).
-        """
-        f = f or RunFilter(limit=10**9, offset=0)
-        where, params = self._where_for_runs(f)
-        # Total in scope
-        try:
-            with self._conn() as c:
-                total = c.execute(f"SELECT COUNT(*) FROM runs WHERE {where}",
-                                  params).fetchone()[0]
-                # Per-gene: rows that contain this gene
-                rows = c.execute(f"""
-                    SELECT json_each.value AS gene, COUNT(*) AS runs_with
-                    FROM runs, json_each(runs.genes)
-                    WHERE {where} AND runs.genes IS NOT NULL AND runs.genes != ''
-                    GROUP BY json_each.value
-                    ORDER BY runs_with DESC
-                """, params).fetchall()
-        except FileNotFoundError:
-            return []
-        out = []
-        for r in rows:
-            with_ = int(r["runs_with"])
-            out.append({
-                "gene": r["gene"],
-                "runs_with": with_,
-                "runs_without": int(total) - with_,
-            })
-        return out
-
     # ── Internals ───────────────────────────────────────────────────────
 
     _ALLOWED_SORT = {
@@ -712,7 +649,7 @@ class SQLiteTraceStore:
             return {}
         d = dict(row)
         # Decode JSON arrays for ergonomic consumer access.
-        for k in ("genes", "files_touched", "jira_keys", "scenario_tags"):
+        for k in ("files_touched", "jira_keys", "scenario_tags"):
             v = d.get(k)
             if v and isinstance(v, str):
                 try:
@@ -761,26 +698,7 @@ class SQLiteTraceStore:
             clauses.append("total_tokens_paid >= ?")
             params.append(int(f.tokens_gt))
 
-        # JSON-array contains: AND-semantic for genes / files / jira / tags
-        for gene in f.genes:
-            clauses.append(
-                "EXISTS (SELECT 1 FROM json_each(runs.genes) "
-                "WHERE json_each.value = ?)"
-            )
-            params.append(gene)
-        for gene in f.without_gene:
-            clauses.append(
-                "NOT EXISTS (SELECT 1 FROM json_each(runs.genes) "
-                "WHERE json_each.value = ?)"
-            )
-            params.append(gene)
-        if f.genes_any:
-            placeholders = ",".join("?" for _ in f.genes_any)
-            clauses.append(
-                f"EXISTS (SELECT 1 FROM json_each(runs.genes) "
-                f"WHERE json_each.value IN ({placeholders}))"
-            )
-            params.extend(f.genes_any)
+        # JSON-array contains: AND-semantic for files / jira / tags
         if f.file:
             clauses.append(
                 "EXISTS (SELECT 1 FROM json_each(runs.files_touched) "
