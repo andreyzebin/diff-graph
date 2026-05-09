@@ -606,13 +606,18 @@ async def api_qa_list_workers():
     by_owner: dict[str, dict] = {}
     for r in rows:
         by_owner[r["lease_owner"]] = dict(r)
-    now = datetime.now(timezone.utc)
+    now_utc = datetime.now(timezone.utc)
+    now_naive = datetime.now()
     out = []
     for w in workers:
         d = dict(w)
         try:
             last = datetime.fromisoformat(w["last_heartbeat"])
-            d["heartbeat_age_s"] = int((now - last).total_seconds())
+            # Old rows (pre UTC migration) are naive local time; new
+            # rows are tz-aware UTC. Compare against the matching now
+            # so we don't get a TypeError that hides liveness.
+            ref = now_utc if last.tzinfo else now_naive
+            d["heartbeat_age_s"] = int((ref - last).total_seconds())
         except Exception:
             d["heartbeat_age_s"] = None
         # Health classification (used by the fleet UI):
