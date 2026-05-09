@@ -946,6 +946,443 @@ generation-over-generation throughput trends are queryable.
 
 ---
 
+## 5e. Quality API server — DB-backed state, web UI + CLI clients
+
+> Productionisation layer for §5c: the QC pipeline becomes a
+> long-running server with DB state (so it survives restarts), a
+> single API surface, a web UI for navigation, and a thin CLI
+> client. Replaces the §5c sketch where state lived in
+> `qa-state.json` + `queue-<ts>.jsonl` files and `bench-schedule`
+> did the work itself. Aligns the QC pipeline with the rest of the
+> ecosystem (one FastAPI app, one DB, cross-linkable URLs between
+> traces, runs, plans, and scenarios).
+
+### 5e.1 Server consolidation: pr-analytics → quality-api
+
+Today three FastAPI surfaces exist in parallel:
+- `webhook/` — incoming Bitbucket events (reactive, stays separate;
+  it has a different lifecycle than a control-plane).
+- `tracing/` (TODO §4.1) — trace browser, runs list, live event WS.
+- `pr-analytics/` — production review-quality metrics dashboard.
+
+Adding a fourth `qa-api/` would split the control-plane further.
+**Fold trace browser + QA scheduler into pr-analytics**, renaming
+the package conceptually to `quality-api`. One process, one DB
+(SQLite now, Postgres when contention demands), one deploy. Three
+route packs in one app:
+
+```
+quality-api  (was pr-analytics)
+├── /prod/*         — production metrics (existing)
+├── /traces/*       — trace browser (move from diff-graph/tracing/)
+└── /qa/*           — QC scheduler (new)
+```
+
+Cross-link benefits:
+- run page → trace page → specific agent step (single URL space).
+- mutation page → "regression in scenario X since this commit".
+- scenario page → all past runs across all branches/mutations.
+
+Webhook keeps its own lifecycle. Diff-graph CLI stays (the bench
+worker invokes it as a subprocess).
+
+### 5e.2 DB-backed state model (replaces qa-state.json)
+
+```sql
+qa_branches
+  branch              TEXT PK
+  last_qc_commit      TEXT
+  last_seen           DATETIME
+  state               TEXT       -- new | qc_running | qc_ready | qc_failed | superseded
+
+qa_plans              -- one row per "plan a QC matrix" call
+  id                  INTEGER PK
+  created_at          DATETIME
+  created_by          TEXT       -- user / cron / api / webhook
+  branches            JSON       -- list of (branch, sha)
+  providers           JSON
+  scenarios           JSON
+  attempts_min        INTEGER
+  state               TEXT       -- queued | running | done | cancelled
+  cancel_reason       TEXT
+
+qa_tasks              -- one row per (plan, branch, sha, provider, scenario, attempt_n)
+  id                  INTEGER PK
+  plan_id             INTEGER FK
+  branch              TEXT
+  mutation_hash       TEXT
+  provider            TEXT
+  scenario            TEXT
+  attempt_n           INTEGER
+  state               TEXT       -- queued | leased | running | finished | error | cancelled
+  priority            INTEGER    -- lower = sooner; sentinel/cheap first
+  lease_owner         TEXT       -- worker id; NULL when queued
+  lease_expires_at    DATETIME   -- heartbeat-driven
+  enqueued_at         DATETIME
+  started_at          DATETIME
+  finished_at         DATETIME
+  trace_run_id        TEXT       -- FK to traces.runs
+  result_json         JSON       -- judge verdict + scores
+  error_class         TEXT       -- timeout | api | bench-error | NULL
+
+qa_runs               -- finished outcomes (= §5c's agent_qa_runs renamed)
+  -- hs_*, co_*, agent_warnings_count, etc. as in §5c.499
+
+qa_workers            -- liveness
+  id                  TEXT PK    -- uuid + hostname
+  pid                 INTEGER
+  provider            TEXT       -- which LLM endpoint this worker serves
+  capacity            INTEGER    -- max in-flight tasks
+  started_at          DATETIME
+  last_heartbeat      DATETIME
+  state               TEXT       -- running | idle | dead
+
+qa_mutations          -- (future, §5c.609) explicit prompt-version entity
+  hash                TEXT PK
+  parent_a            TEXT
+  parent_b            TEXT       -- NULL unless cross-bred
+  prompt_blob         JSON       -- compiled prompt set
+  source              TEXT       -- manual | evolved | merged
+  created_at          DATETIME
+```
+
+**Restart recovery.** On server start, a reaper:
+1. `UPDATE qa_tasks SET state='queued', lease_owner=NULL
+    WHERE state='leased' AND lease_expires_at < NOW()` —
+    abandoned leases return to the queue.
+2. `UPDATE qa_workers SET state='dead'
+    WHERE last_heartbeat < NOW() - 60s`.
+3. Scans `qa_plans WHERE state='running'` to recompute progress
+    (no plan-level lock state to recover; tasks are the unit).
+
+No "in-flight queue file" to lose, no "did we already start this
+plan" ambiguity — the DB IS the truth.
+
+### 5e.3 API surface
+
+```
+# Discovery / planning
+POST /qa/discover                       — git fetch + diff vs qa_branches
+GET  /qa/branches                       — table view, filter by state
+POST /qa/plans                          — create plan {branches, providers, scenarios, attempts_min}
+GET  /qa/plans?state=&since=            — list with pagination
+GET  /qa/plans/{id}                     — one + summary (done / total / pass rate)
+POST /qa/plans/{id}/cancel              — soft cancel (running tasks finish, queued drop)
+
+# Execution (worker contract)
+POST /qa/tasks/lease?provider=X         — atomic SELECT…LIMIT 1 + UPDATE state='leased'
+POST /qa/tasks/{id}/heartbeat           — extend lease_expires_at
+POST /qa/tasks/{id}/finish              — submit {state, result_json, trace_run_id, error_class?}
+POST /qa/tasks/{id}/cancel              — abort an in-flight task
+
+# Browse
+GET  /qa/tasks?state=&plan=&branch=     — list
+GET  /qa/tasks/{id}                     — one + result + trace link
+
+# Outcomes / dashboards
+GET  /qa/runs?branch=&mutation=         — finished runs, filterable
+GET  /qa/runs/{id}                      — one
+GET  /qa/dashboards/branches            — per-branch deploy-ready bool
+GET  /qa/dashboards/mutations           — per-(branch, mutation_hash) scoreboard
+GET  /qa/dashboards/scenarios           — per-scenario discriminative power
+                                          (variance across mutations — sentinel calibration)
+
+# Cross-domain
+GET  /scenarios                         — all known scenarios (read from bench repo)
+GET  /scenarios/{id}                    — one + run history timeline
+GET  /traces/{run_id}                   — full trace (existing trace browser route)
+
+# Live (WebSocket)
+WS   /qa/live/tasks                     — stream task state-transitions (low-volume)
+WS   /qa/live/tasks/{id}                — per-task event tail (high-volume:
+                                          agent_step, tool_request/result, reflect, judge)
+WS   /qa/live/plans/{id}                — per-plan progress counters
+```
+
+The lease contract is the one piece that has to be transactional:
+`SELECT … FOR UPDATE LIMIT 1` (or SQLite's BEGIN IMMEDIATE) + the
+status flip happen in one transaction. Workers can crash safely;
+reaper recovers leased-but-dead tasks back to queued.
+
+### 5e.4 Worker model
+
+`bench-schedule worker --provider qwen3-6 --capacity 2`:
+
+```
+register POST /qa/workers (gets a worker_id)
+loop:
+    task = POST /qa/tasks/lease?provider=qwen3-6
+    if not task: sleep(3); continue
+    spawn heartbeat thread (every 15s, lease 60s)
+    try:
+        invoke benchmark/cli.py run -s <scenario> -p <provider> ... 
+                     -- in a per-task git worktree (no collisions)
+        result = parse_result_json + parse_invocations + parse_judge
+        POST /qa/tasks/{id}/finish {state='finished', result, trace_run_id}
+    except Exception as e:
+        POST /qa/tasks/{id}/finish {state='error', error_class=type(e).__name__}
+    cleanup worktree
+```
+
+Workers are stateless over the API. Multi-machine, multi-provider
+just works. The server doesn't track in-flight in memory — only
+through DB state + heartbeat.
+
+Gentle vs aggressive in this model:
+- `bench-schedule worker --provider qwen3-6 --capacity 1` =
+  gentle (one task at a time per provider).
+- `bench-schedule worker --provider qwen3-6 --capacity 4` =
+  aggressive.
+- A central token bucket lives server-side
+  (`qa_provider_rate_limits` table) and the lease query honours
+  it. So even with capacity=N the server won't hand out more than
+  the rate-limited budget.
+
+### 5e.5 CLI client (thin, talks to API)
+
+```
+bench-schedule discover                                        → POST /qa/discover
+bench-schedule plan --branches feature/X,feature/Y             → POST /qa/plans
+bench-schedule plan --auto-discover-since master               → /qa/discover then /qa/plans
+bench-schedule worker --provider qwen3-6 --capacity 2          → polls /qa/tasks/lease
+bench-schedule status                                          → GET /qa/dashboards/branches
+bench-schedule report --plan 42                                → GET /qa/plans/42 (markdown)
+bench-schedule watch 42                                        → WS /qa/live/plans/42 (rich live)
+bench-schedule logs <task-id>                                  → WS /qa/live/tasks/<id>
+```
+
+No local DB, no `qa-state.json`, no `queue-*.jsonl`. Single config
+file holds only `--server URL` + auth token. The CLI is just a
+shell over HTTP.
+
+### 5e.6 Web UI (additive in pr-analytics, FastAPI + HTMX/Alpine)
+
+```
+/qa/                            — landing: live counts + recent plans
+/qa/branches/                   — branch | last_commit | state | pass_rate | last_run
+/qa/plans/                      — plan_id | created_by | branches | progress | state
+/qa/plans/{id}                  — drill: matrix (provider × scenario), per-cell pass/fail
+                                  + live progress bar + cancel button
+/qa/tasks/{id}                  — drill: lineage + live event feed
+                                  + ↗ trace, ↗ scenario, ↗ run, ↗ plan
+/qa/runs/{id}                   — drill: judge verdict, agent_warnings, side-effects
+                                  + ↗ trace, ↗ plan, ↗ mutation
+/qa/scenarios/                  — list + discrimination power
+/qa/scenarios/{id}              — history timeline
+/qa/dashboards/mutations        — per-mutation scoreboard, deploy-ready badge
+/qa/dashboards/calibrate        — sentinel candidate variance plot
+
+/traces/                        — existing trace browser (moved here)
+/traces/{run_id}                — existing trace UI
+/prod/                          — existing pr-analytics dashboard
+```
+
+Cross-links between routes (run ↔ trace ↔ plan ↔ scenario ↔
+mutation) are the main UX: one URL space, one navigation graph.
+
+Each WS route emits standard JSON events; same payload shape as
+`agent_step` / `agent_tool_*` records that already land in trace
+DB. The web UI subscribes per-task to render a live progress card:
+
+```
+┌─ Task #1234 — REV-001 / qwen3-6 / attempt 1 ──────────────┐
+│ status: running   step 14/50   tokens: 12.4k / 50k        │
+│ ─────────────────────────────────────────────────────────  │
+│ ▸ step 12  read_file("PricingService.java", changes_only)  │
+│ ▸ step 13  read_outline("Order.java")                       │
+│ ▼ step 14  reflect()  ← in flight                           │
+│   learned: …                                                │
+│   questions_remaining: [Q1, Q2, …]                          │
+└────────────────────────────────────────────────────────────┘
+                                            [↗ open full trace]
+```
+
+### 5e.7 Live observation pipe (server-side fan-out)
+
+The bench worker writes events to `~/.diffgraph/traces.db` exactly
+as it does today (no change to the agent path). The server tails
+events for currently-leased tasks and republishes them on
+`/qa/live/tasks/{id}`:
+
+- v1 (SQLite): `SELECT … WHERE id > $cursor` polled every 500ms
+  per active subscriber. Fine for ~10s of concurrent watchers.
+- v2 (when we move to PG): `LISTEN/NOTIFY` channel per run_id.
+- v3 (if scale demands): worker emits to a pub/sub side-channel
+  (Redis Streams) and the server forwards to WS subscribers
+  without going through DB at all.
+
+Don't over-engineer v1; the agent already writes incrementally so
+polling is genuinely fine for our load.
+
+### 5e.8 Server topology nuances
+
+A. **SQLite vs Postgres.** Stay on SQLite until contention bites
+   (probably >5 concurrent workers writing tasks). PG migration is
+   mechanical; do it when measured, not preemptively. WAL mode +
+   `PRAGMA busy_timeout = 5000` is enough for now.
+
+B. **Auth.** Even local — once we have a web UI and multi-worker,
+   we need at least token-based auth on `/qa/tasks/*`. Simple env:
+   `QA_WORKER_TOKEN` + `QA_ADMIN_TOKEN`. Browser session is
+   cookie-based. Don't ship without this.
+
+C. **Where scheduler policy lives.** The "which task goes next"
+   decision lives in the lease query, not in a separate planner
+   process. Policy = `ORDER BY priority, enqueued_at LIMIT 1`
+   plus a WHERE clause for rate budget / fairness. Adding new
+   priorities is a SQL change, no new component.
+
+D. **Webhook integration (later).** `/qa/discover` can be wired
+   into the Bitbucket webhook so a push to `feature/*` auto-
+   creates a plan. Connects reactive event flow to the QC matrix.
+   Easy add-on; don't put it in MVP.
+
+E. **Mutation tracking.** Today mutation = SHA. If §5c.609
+   evolution lands, mutations come from semantic merges, not
+   commits. Add `qa_mutations` (above) when that's real; not now.
+
+F. **Bench worker location.** Workers can be co-located with the
+   server (single host, simplest) or run on a remote machine
+   (e.g. one with the LLM-ssh tunnel set up). API is HTTP, so it
+   doesn't matter. Document `--server` config explicitly so this
+   stays decoupled.
+
+### 5e.9 Migration from §5c sketch
+
+Drop the `qa-state.json` / `queue-*.jsonl` proposal entirely; it
+was always going to be a stop-gap. The original §5c MVP order
+(steps 1-8) reshuffles to:
+
+1. Move `tracing/` FastAPI app under `pr-analytics/` (mechanical,
+   no behaviour change).
+2. Add DB schema (5e.2) + migration script.
+3. Implement `/qa/discover`, `/qa/plans` (POST/GET), `/qa/tasks`
+   list + lease + heartbeat + finish.
+4. Rewrite `bench-schedule` as API client (no local state).
+5. Build the worker loop; verify gentle mode end-to-end on one
+   provider.
+6. Add metrics/result computation in `/qa/tasks/{id}/finish` —
+   compute hs_/co_ scores from the judge response, write
+   `qa_runs` row.
+7. Dashboards: branches, mutations, scenarios. Read-only HTML
+   first, progressive enhancement to live updates.
+8. Live WS routes: plan-level first (low volume), then task-level.
+9. Sentinel calibration page (variance plot from `qa_runs`).
+10. Aggressive mode: per-provider rate limits + multi-worker.
+11. Webhook auto-discover (5e.8.D).
+12. (Future) §5c.609 evolution loop on top.
+
+### 5e.10a Two trace storages — SQLite + filesystem tree
+
+We have (and want to keep) **two trace storages with different
+purposes** — both written by the same agent, neither subsumes the
+other:
+
+1. **SQLite** `~/.diffgraph/traces.db`
+   - Schema: `runs` + `events`. Append-only event log per run.
+   - Purpose: **fast queries**. List recent runs, sort by tags,
+     join with `qa_runs`, count tool calls per type, detect
+     stuck steps via timestamp gaps, render the live progress
+     feed.
+   - Always written.
+   - Indexed by `run_id`, `started_at`, `pr_url`, `prompt_hash`.
+
+2. **Filesystem tree** under `BENCHMARK_TRACE_DIR` /
+   `DIFFGRAPH_TRACE_PATH`
+   - Layout (today): `agent/agents/<sub_agent>/step-NN-request.json`,
+     `step-NN-response.json`, `step-NN-tool-MM-request.json`,
+     `step-NN-tool-MM-response.json`, `events.jsonl`,
+     `meta.json`, plus per-attempt `invocations.json`,
+     `judge/{request,response}.json`, `result.json`.
+   - Purpose: **full-fidelity inspection**. Open one specific
+     LLM request as JSON (whole system prompt + messages + tools
+     schema) when debugging a drift; let an agent (or human) do
+     `read_file` over the tree to deep-dive a specific run. The
+     tree is structured for easy agentic walking: paths are
+     predictable, files are small enough to read directly,
+     hierarchy mirrors the agent's call graph.
+   - Written only when env / flag enables it.
+
+The two are **complementary**, not redundant:
+
+| Use case | SQLite | Filesystem |
+|---|---|---|
+| List runs | ✓ | — (no index) |
+| Live progress feed | ✓ (poll) | — (would need fs.watch) |
+| Joins with QA metrics | ✓ | — |
+| Read full step-12 LLM request body | partial (truncated in events) | ✓ (full JSON) |
+| Agentic deep-dive ("read the trace, find the drift") | hard (needs SQL) | ✓ (just `read_file`) |
+| Crash safety | ✓ (per-event commit) | ✓ (per-step write) |
+
+**Quality-api integration:**
+
+- Server **always** reads SQLite for indices, lists, dashboards,
+  live WS streams.
+- Server **records the filesystem path** alongside the run
+  (`qa_tasks.fs_trace_path` / `qa_runs.fs_trace_path` columns) so
+  every run page has a "↗ Filesystem trace" link with the
+  absolute path the human (or another agent) can `cd` into and
+  `ls` directly.
+- The web UI offers two views per run:
+  - **Indexed view** (`/traces/{run_id}`) — current fast browser,
+    SQLite-backed.
+  - **Tree view** (`/traces/{run_id}/files`) — file-explorer over
+    the filesystem trace tree, server reads files on demand and
+    renders raw JSON / pretty diff. Useful when the indexed view
+    truncated something.
+- Agentic deep-dive workflow: a meta-agent (debugger / evaluator)
+  gets the absolute path, opens it via standard `read_file`/
+  `list_files` tools — same shape as our DiffSearch sibling
+  mounts in §9. The tree literally fits the workspace-as-files
+  model. Could even be auto-mounted under
+  `workspace/traces/<run_id>/` for a debugging sub-agent.
+
+**Retention.**
+- SQLite: long retention (we want trends across mutations);
+  prune events older than ~6m if size becomes a problem.
+- Filesystem: shorter retention by default (it's bigger). One
+  policy per source:
+  - bench's `BENCHMARK_TRACE_DIR` — keep last N sessions, GC
+    older.
+  - production webhook traces — keep 30 days, GC older.
+  - QA pipeline traces — keep all that match a `qa_runs` row,
+    GC orphans.
+
+**Disk-space failure mode.** If the filesystem trace path is
+unwritable (disk full, permissions), the agent must NOT fail —
+SQLite is the source of truth, fs trace is best-effort. Already
+the case in `cli.py`'s trace writer; document it explicitly so
+nobody changes it.
+
+**Schema column to add to `qa_tasks`/`qa_runs`:**
+```
+fs_trace_path  TEXT  -- absolute path to the run's tree, or NULL if disabled
+```
+
+When the server returns a task / run JSON, it includes this path
+so the CLI can `bench-schedule logs <task-id> --files` open the
+tree directly without going through the API. Useful when the
+WebSocket isn't enough or the run is already finished.
+
+### 5e.10 Where it lives
+
+- Server / DB / web UI: `pr-analytics/` (becomes the unified
+  quality-api).
+- Trace browser: moved from `diff-graph/tracing/` into
+  `pr-analytics/routes/traces/`.
+- Worker + CLI: `code-review-benchmarks/qa/` — `bench-schedule`
+  binary, only API client + worker loop.
+- Diff-graph itself: untouched. The trace DB it writes to
+  (`~/.diffgraph/traces.db`) is consumed by the server.
+
+**Effort.** Phase 1-3 (schema + lease/heartbeat/finish + CLI
+client): ~3-5 days. Phase 4-7 (dashboards + workers + metrics):
+~1 week. Phase 8-12 (live WS + calibration + multi-worker +
+webhook): ~1 week. Whole thing 2-3 weeks of focused work. Each
+phase is independently shippable.
+
+---
+
 ## 5b. Jira context — agent reads the ticket and follows links
 
 **Why.** Today the reviewer only sees the PR description. A real
