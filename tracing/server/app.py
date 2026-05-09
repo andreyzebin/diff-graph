@@ -356,6 +356,175 @@ async def api_search_run(run_id: str):
     return JSONResponse({"data": r})
 
 
+# ── Task queue API (TODO §5e.4 / §5e.9 step 3) ─────────────────────────────
+# Worker contract: enqueue / lease / heartbeat / finish + reaper.
+# Plans (group of tasks) and discover (git-fetch driven enqueue) sit on top
+# of these primitives in a follow-up.
+
+from pydantic import BaseModel
+from typing import Any
+from quality_api.queue import TaskQueue, TaskSpec, task_to_dict
+
+
+_qa_queue = TaskQueue()
+# Reap stale leases on server start so kill -9 mid-run doesn't strand tasks.
+_qa_queue.reap_stale_leases(grace_seconds=0)
+
+
+class TaskCreatePayload(BaseModel):
+    scenario_id: str
+    provider: str
+    attempt_n: int = 1
+    branch: str = ""
+    mutation_hash: str = ""
+    plan_id: Optional[int] = None
+    priority: int = 100
+    payload: dict = {}
+
+
+class TaskFinishPayload(BaseModel):
+    worker_id: str
+    state: str = "finished"           # finished | error | cancelled
+    trace_run_id: Optional[str] = None
+    result: Optional[dict] = None
+    error_class: Optional[str] = None
+
+
+class TaskHeartbeatPayload(BaseModel):
+    worker_id: str
+    lease_seconds: int = 60
+
+
+class TaskLeasePayload(BaseModel):
+    provider: str
+    worker_id: str
+    lease_seconds: int = 60
+
+
+class WorkerRegisterPayload(BaseModel):
+    worker_id: Optional[str] = None
+    provider: str = ""
+    capacity: int = 1
+    pid: Optional[int] = None
+
+
+@app.post("/api/qa/tasks")
+async def api_qa_create_task(p: TaskCreatePayload):
+    """Enqueue a single task. Future /api/qa/plans will fan out into
+    many of these in one request."""
+    spec = TaskSpec(
+        scenario_id=p.scenario_id, provider=p.provider,
+        attempt_n=p.attempt_n, branch=p.branch,
+        mutation_hash=p.mutation_hash, plan_id=p.plan_id,
+        priority=p.priority, payload=p.payload or {},
+    )
+    task_id = _qa_queue.enqueue(spec)
+    t = _qa_queue.get(task_id)
+    return JSONResponse({"data": task_to_dict(t)}, status_code=201)
+
+
+@app.get("/api/qa/tasks")
+async def api_qa_list_tasks(
+    state: Optional[str] = None,
+    provider: Optional[str] = None,
+    plan_id: Optional[int] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    rows = _qa_queue.list(state=state, provider=provider, plan_id=plan_id,
+                          limit=max(1, min(500, limit)),
+                          offset=max(0, offset))
+    return JSONResponse({
+        "data": [task_to_dict(r) for r in rows],
+        "meta": {"limit": limit, "offset": offset, "returned": len(rows)},
+    })
+
+
+@app.get("/api/qa/tasks/{task_id}")
+async def api_qa_get_task(task_id: int):
+    t = _qa_queue.get(task_id)
+    if not t:
+        return JSONResponse({"error": {"code": "not_found",
+                                       "message": f"task {task_id} not found"}},
+                             status_code=404)
+    return JSONResponse({"data": task_to_dict(t)})
+
+
+@app.post("/api/qa/tasks/lease")
+async def api_qa_lease(p: TaskLeasePayload):
+    """Atomic next-task pickup. Returns 204 if queue is empty for
+    this provider — cleaner than 200 with null data for poll loops."""
+    t = _qa_queue.lease(provider=p.provider, worker_id=p.worker_id,
+                        lease_seconds=max(5, p.lease_seconds))
+    if t is None:
+        # 200 with data=null — workers poll this in a loop, easier to
+        # branch on `data is None` than to check for 204.
+        return JSONResponse({"data": None, "meta": {"empty": True}})
+    return JSONResponse({"data": task_to_dict(t)})
+
+
+@app.post("/api/qa/tasks/{task_id}/heartbeat")
+async def api_qa_heartbeat(task_id: int, p: TaskHeartbeatPayload):
+    """Extend lease. Returns 200 with `{ok: false}` if the task was
+    reaped or finished — worker should stop work then."""
+    ok = _qa_queue.heartbeat(task_id, worker_id=p.worker_id,
+                             lease_seconds=max(5, p.lease_seconds))
+    return JSONResponse({"data": {"ok": ok}})
+
+
+@app.post("/api/qa/tasks/{task_id}/finish")
+async def api_qa_finish(task_id: int, p: TaskFinishPayload):
+    if p.state not in ("finished", "error", "cancelled"):
+        return JSONResponse({"error": {"code": "invalid_state",
+                                       "message": f"state must be finished|error|cancelled, got {p.state}"}},
+                             status_code=400)
+    ok = _qa_queue.finish(task_id, worker_id=p.worker_id, state=p.state,
+                          trace_run_id=p.trace_run_id, result=p.result,
+                          error_class=p.error_class)
+    if not ok:
+        return JSONResponse({"error": {"code": "lease_lost",
+                                       "message": f"task {task_id}: lease lost or wrong worker"}},
+                             status_code=409)
+    return JSONResponse({"data": {"ok": True}})
+
+
+@app.post("/api/qa/tasks/{task_id}/cancel")
+async def api_qa_cancel(task_id: int):
+    ok = _qa_queue.cancel(task_id)
+    if not ok:
+        return JSONResponse({"error": {"code": "terminal",
+                                       "message": f"task {task_id}: already in terminal state"}},
+                             status_code=409)
+    return JSONResponse({"data": {"ok": True}})
+
+
+@app.post("/api/qa/tasks/reap")
+async def api_qa_reap(grace_seconds: int = 30):
+    """Manually trigger the reaper (also runs on server start)."""
+    n = _qa_queue.reap_stale_leases(grace_seconds=grace_seconds)
+    return JSONResponse({"data": {"reaped": n}})
+
+
+@app.post("/api/qa/workers")
+async def api_qa_register_worker(p: WorkerRegisterPayload):
+    wid = _qa_queue.register_worker(
+        worker_id=p.worker_id, provider=p.provider,
+        capacity=p.capacity, pid=p.pid,
+    )
+    return JSONResponse({"data": {"worker_id": wid}}, status_code=201)
+
+
+@app.post("/api/qa/workers/{worker_id}/heartbeat")
+async def api_qa_worker_heartbeat(worker_id: str):
+    ok = _qa_queue.worker_heartbeat(worker_id)
+    return JSONResponse({"data": {"ok": ok}})
+
+
+@app.get("/api/qa/workers")
+async def api_qa_list_workers():
+    return JSONResponse({"data": _qa_queue.list_workers()})
+
+
 # ── Existing endpoints continue below ──────────────────────────────────────
 
 @app.get("/api/runs/{run_id}/events")
