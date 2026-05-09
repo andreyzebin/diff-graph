@@ -413,14 +413,31 @@ document.addEventListener('alpine:init', () => {
                               '#f47067', '#ff9b73', '#fbcb6f']},
         },
       };
-      // resize-on-mount helper: vega's container measure is 0 when
-      // the parent is x-show=false (Alpine collapses it). Calling
-      // view.resize() on the embed promise recomputes against the
-      // now-visible bounding box.
-      const embed = (sel, spec) =>
-        vegaEmbed(sel, spec, {actions: false})
-          .then(({view}) => view.resize())
+      // Render helper. The trick: width:'container' in the spec reads
+      // the parent's bounding box at embed time, but Alpine x-show may
+      // not have expanded the parent yet (display:none ⇒ width 0 ⇒
+      // vega lays out as a 20px-wide strip). One immediate
+      // view.resize() isn't enough either if the swap happens later.
+      // Instead, attach a ResizeObserver to the chart-frame and call
+      // view.resize() every time the container changes size — fires
+      // exactly once when Alpine flips display:none → block.
+      const embed = (sel, spec) => {
+        const el = document.querySelector(sel);
+        if (!el) return;
+        return vegaEmbed(sel, spec, {actions: false})
+          .then(({view}) => {
+            view.resize();
+            if (window.ResizeObserver) {
+              const ro = new ResizeObserver(() => view.resize());
+              ro.observe(el);
+              // Stash so a second render (e.g. after data reload)
+              // disconnects the previous observer instead of leaking.
+              if (el._vegaRO) el._vegaRO.disconnect();
+              el._vegaRO = ro;
+            }
+          })
           .catch(() => {});
+      };
 
       // (1) Trend per lineage — one line per (lineage × scenario);
       // mutations appear automatically as POINTS along their lineage.
