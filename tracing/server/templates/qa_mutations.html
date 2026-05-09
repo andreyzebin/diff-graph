@@ -76,33 +76,6 @@ th { color: #8b949e; font-weight: normal; }
     <button class="btn" @click="selected = []; comparison = null">clear</button>
   </div>
 
-  <!-- Promote-ready -->
-  <template x-if="promote.length > 0">
-    <div class="section">
-      <h2>promote-ready (most recent full pass per branch)</h2>
-      <table>
-        <thead><tr>
-          <th>config</th><th>branch</th><th>sha</th><th>plan</th><th>planned at</th>
-        </tr></thead>
-        <tbody>
-          <template x-for="p in promote" :key="`${p.config_id}-${p.branch}`">
-            <tr>
-              <td x-text="`#${p.config_id}`"></td>
-              <td x-text="p.branch"></td>
-              <td class="mut">
-                <a class="run-link" :href="`{{ base_path }}/qa/runs?mutation=${p.sha}`"
-                   x-text="p.sha.slice(0, 12)"></a>
-                <span class="promote">✓ promote-ready</span>
-              </td>
-              <td><a class="run-link" :href="`{{ base_path }}/qa/plans`" x-text="`#${p.plan_id}`"></a></td>
-              <td style="color: #8b949e;" x-text="(p.planned_at || '').slice(0, 19)"></td>
-            </tr>
-          </template>
-        </tbody>
-      </table>
-    </div>
-  </template>
-
   <!-- Mutations list -->
   <div class="section">
     <h2>all mutations · pick two checkboxes to compare</h2>
@@ -110,6 +83,7 @@ th { color: #8b949e; font-weight: normal; }
       <div class="empty">no mutations yet</div>
     </template>
     <template x-if="mutations.length > 0">
+      <div class="muted" style="margin-bottom:8px;" x-text="fireStatus"></div>
       <table>
         <thead><tr>
           <th>pick</th><th>mutation</th><th>generation</th>
@@ -118,6 +92,7 @@ th { color: #8b949e; font-weight: normal; }
           <th class="tn">pass%</th>
           <th class="tn">avg dur ms</th>
           <th>last seen</th>
+          <th></th>
         </tr></thead>
         <tbody>
           <template x-for="m in mutations" :key="m.mutation">
@@ -140,6 +115,25 @@ th { color: #8b949e; font-weight: normal; }
               <td class="tn" x-text="passRate(scoring[m.mutation])"></td>
               <td class="tn" x-text="Math.round(m.avg_duration_ms || 0)"></td>
               <td style="color:#8b949e;" x-text="(m.last_seen || '').slice(0,19)"></td>
+              <td>
+                <template x-if="onDemandConfigs.length > 0">
+                  <span @click.stop>
+                    <select :id="`fire-${m.mutation}`"
+                            style="background:#0d1117; border:1px solid #30363d;
+                                   color:#c9d1d9; padding:3px 6px; border-radius:3px;
+                                   font-size:0.8em;">
+                      <template x-for="cfg in onDemandConfigs" :key="cfg.id">
+                        <option :value="cfg.id" x-text="cfg.name || `config #${cfg.id}`"></option>
+                      </template>
+                    </select>
+                    <button class="btn"
+                            @click.stop="fireSchedule(m.mutation, $event)">▶ fire</button>
+                  </span>
+                </template>
+                <template x-if="onDemandConfigs.length === 0">
+                  <span class="muted" style="font-size:0.75em;">no on_demand schedules</span>
+                </template>
+              </td>
             </tr>
           </template>
         </tbody>

@@ -69,6 +69,7 @@ class AutoPlanConfig:
     enabled: bool
     created_at: str
     last_discover_at: Optional[str]
+    mode: str = "auto"                   # 'auto' | 'on_demand'
 
 
 def _row_to_config(row: sqlite3.Row | None) -> Optional[AutoPlanConfig]:
@@ -104,6 +105,7 @@ def _row_to_config(row: sqlite3.Row | None) -> Optional[AutoPlanConfig]:
         enabled=bool(row["enabled"]),
         created_at=row["created_at"],
         last_discover_at=row["last_discover_at"],
+        mode=(_col("mode", "auto") or "auto"),
     )
 
 
@@ -122,6 +124,7 @@ def config_to_dict(c: AutoPlanConfig) -> dict:
         "enabled": c.enabled,
         "created_at": c.created_at,
         "last_discover_at": c.last_discover_at,
+        "mode": c.mode,
     }
 
 
@@ -230,7 +233,8 @@ class AutoPlanStore:
                    pacing: str = "aggressive",
                    pacing_window_seconds: int = 0,
                    attempts_min: int = 1,
-                   enabled: bool = True) -> int:
+                   enabled: bool = True,
+                   mode: str = "auto") -> int:
         if not providers:
             raise ValueError("providers required")
         scenarios = scenarios or []
@@ -239,6 +243,8 @@ class AutoPlanStore:
             raise ValueError("either scenarios or scenario_tags must be set")
         if pacing not in ("aggressive", "spread"):
             raise ValueError(f"pacing must be 'aggressive' or 'spread', got {pacing}")
+        if mode not in ("auto", "on_demand"):
+            raise ValueError(f"mode must be 'auto' or 'on_demand', got {mode}")
         repo_path = str(Path(repo_path).expanduser().resolve())
         if bench_repo_path:
             bench_repo_path = str(Path(bench_repo_path).expanduser().resolve())
@@ -249,10 +255,10 @@ class AutoPlanStore:
                    (name, repo_path, branch_pattern, bench_repo_path,
                     providers, scenarios, scenario_tags,
                     min_gap_seconds, pacing, pacing_window_seconds,
-                    attempts_min, enabled, created_at,
+                    attempts_min, enabled, mode, created_at,
                     -- legacy NOT-NULL columns: keep them satisfied with empty arrays.
                     unit_scenarios, full_scenarios, full_period_seconds)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                            ?, ?, ?)""",
                 (name or "", repo_path, branch_pattern, bench_repo_path,
                  json.dumps(providers, ensure_ascii=False),
@@ -260,7 +266,7 @@ class AutoPlanStore:
                  json.dumps(scenario_tags, ensure_ascii=False),
                  int(min_gap_seconds), pacing, int(pacing_window_seconds),
                  int(attempts_min), 1 if enabled else 0,
-                 datetime.now().isoformat(),
+                 mode, datetime.now().isoformat(),
                  "[]", "[]", 86400),
             )
             c.commit()
@@ -275,7 +281,7 @@ class AutoPlanStore:
             "name", "repo_path", "branch_pattern", "bench_repo_path",
             "providers", "scenarios", "scenario_tags",
             "min_gap_seconds", "pacing", "pacing_window_seconds",
-            "attempts_min", "enabled",
+            "attempts_min", "enabled", "mode",
         }
         sets, params = [], []
         for k, v in fields.items():
@@ -335,6 +341,10 @@ class AutoPlanStore:
             else self.list_configs(only_enabled=True)
         )
         configs = [c for c in configs if c is not None]
+        # mode='on_demand' configs don't fire on auto discovery — they
+        # only run when explicitly triggered via fire_on(). The discovery
+        # supervisor calls discover() without config_id; we filter here.
+        configs = [c for c in configs if (c.mode or "auto") == "auto"]
         created = []
         for cfg in configs:
             for plan in self._discover_one(cfg):
@@ -346,6 +356,29 @@ class AutoPlanStore:
                 )
                 c.commit()
         return created
+
+    def fire_on(self, config_id: int, *, branch: str, sha: str) -> Optional[dict]:
+        """Manually fire an on_demand config against a specific (branch, sha).
+
+        Idempotent via qa_planned_commits — same (config × branch × sha)
+        produces no duplicate plan.
+        """
+        cfg = self.get_config(config_id)
+        if cfg is None or not cfg.enabled:
+            return None
+        if self._already_planned(config_id, branch, sha):
+            return None
+        scenarios = resolve_scenarios(cfg)
+        if not scenarios:
+            return None
+        plan_id, task_ids = self._create_plan(cfg, branch, sha, scenarios)
+        self._record_planned(config_id, branch, sha,
+                             cfg.name or f"config-{config_id}", plan_id)
+        return {
+            "config_id": config_id, "config_name": cfg.name,
+            "branch": branch, "sha": sha,
+            "plan_id": plan_id, "task_count": len(task_ids),
+        }
 
     def _discover_one(self, cfg: AutoPlanConfig) -> list[dict]:
         out: list[dict] = []

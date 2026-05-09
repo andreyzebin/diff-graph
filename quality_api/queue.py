@@ -130,6 +130,9 @@ class TaskQueue:
                 ("qa_auto_plan_configs",  "min_gap_seconds",      "INTEGER NOT NULL DEFAULT 0"),
                 ("qa_auto_plan_configs",  "pacing",               "TEXT NOT NULL DEFAULT 'aggressive'"),
                 ("qa_auto_plan_configs",  "pacing_window_seconds","INTEGER NOT NULL DEFAULT 0"),
+                # mode: 'auto' fires on new commits via DiscoverySupervisor;
+                # 'on_demand' is hand-fired from UI/CLI per (branch, sha).
+                ("qa_auto_plan_configs",  "mode",                 "TEXT NOT NULL DEFAULT 'auto'"),
             ]:
                 try:
                     c.execute(f"SELECT {col} FROM {table} LIMIT 0")
@@ -393,10 +396,14 @@ class TaskQueue:
 
     def _maybe_finish_plan(self, plan_id: int) -> bool:
         """Transition plan running → done iff no non-terminal tasks
-        remain. Cancelled plans are left as-is. When transitioning,
-        also computes promote_ready: True iff every task finished
-        cleanly (state='finished', no errors). Returns True if the
+        remain. Cancelled plans are left as-is. Returns True if the
         plan was transitioned now.
+
+        Note: promote_ready column on qa_plans is legacy/inert — the
+        full-vs-unit framing was dropped in favour of open scenario-set
+        schedules. Score-based promotion uses the per-mutation
+        scoring axes (hard / soft / methodology) rather than a
+        per-plan boolean.
         """
         with self._lock, self._conn() as c:
             row = c.execute(
@@ -404,24 +411,17 @@ class TaskQueue:
             ).fetchone()
             if not row or row["state"] != "running":
                 return False
-            counts = c.execute(
-                """SELECT
-                       SUM(CASE WHEN state IN ('queued','leased','running') THEN 1 ELSE 0 END) AS pending,
-                       SUM(CASE WHEN state='finished' THEN 1 ELSE 0 END) AS finished,
-                       COUNT(*) AS total
-                   FROM qa_tasks WHERE plan_id=?""",
+            non_terminal = c.execute(
+                """SELECT COUNT(*) AS n FROM qa_tasks
+                   WHERE plan_id=? AND state IN ('queued','leased','running')""",
                 (plan_id,),
             ).fetchone()
-            if int(counts["pending"] or 0) > 0:
+            if int(non_terminal["n"] or 0) > 0:
                 return False
-            promote_ready = (
-                int(counts["total"] or 0) > 0
-                and int(counts["finished"] or 0) == int(counts["total"] or 0)
-            )
             c.execute(
-                "UPDATE qa_plans SET state='done', promote_ready=? "
+                "UPDATE qa_plans SET state='done' "
                 "WHERE id=? AND state='running'",
-                (1 if promote_ready else 0, plan_id),
+                (plan_id,),
             )
             c.commit()
             return True

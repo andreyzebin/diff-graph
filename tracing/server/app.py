@@ -855,6 +855,7 @@ class AutoPlanCreatePayload(BaseModel):
     pacing_window_seconds: int = 0
     attempts_min: int = 1
     enabled: bool = True
+    mode: str = "auto"                 # 'auto' | 'on_demand'
 
 
 class AutoPlanUpdatePayload(BaseModel):
@@ -871,6 +872,12 @@ class AutoPlanUpdatePayload(BaseModel):
     pacing_window_seconds: Optional[int] = None
     attempts_min: Optional[int] = None
     enabled: Optional[bool] = None
+    mode: Optional[str] = None
+
+
+class AutoPlanFireOnPayload(BaseModel):
+    branch: str
+    sha: str
 
 
 @app.post("/api/qa/auto-plan/configs")
@@ -888,6 +895,7 @@ async def api_qa_auto_create(p: AutoPlanCreatePayload):
             pacing_window_seconds=p.pacing_window_seconds,
             attempts_min=p.attempts_min,
             enabled=p.enabled,
+            mode=p.mode,
         )
     except ValueError as e:
         return JSONResponse({"error": {"code": "invalid", "message": str(e)}},
@@ -1003,37 +1011,21 @@ async def api_qa_auto_delete(config_id: int):
     return JSONResponse({"data": {"ok": ok}})
 
 
-@app.get("/api/qa/promote-ready")
-async def api_qa_promote_ready():
-    """Most recent promote-ready full plan per (config, branch).
+@app.post("/api/qa/auto-plan/configs/{config_id}/fire-on")
+async def api_qa_auto_fire_on(config_id: int, p: AutoPlanFireOnPayload):
+    """Manually trigger an on_demand schedule on a specific (branch, sha).
 
-    A plan is promote_ready=true when state='done' and every task
-    finished cleanly (no errors). For auto-plans the kind comes from
-    qa_planned_commits.plan_kind — only 'full' kind plans gate promote.
+    Use case: 'this commit looks promising on unit-tier — run the full
+    integration matrix against it'. The schedule defines WHAT (scenarios,
+    providers, attempts_min, pacing); fire-on picks THE COMMIT to run
+    it on. Idempotent — same triple won't double-plan.
     """
-    import sqlite3
-    from orchestra.trace_db import DEFAULT_DB_PATH
-    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("""
-        SELECT pc.config_id, pc.branch, pc.sha, pc.planned_at,
-               p.id AS plan_id, p.state, p.promote_ready, p.created_at
-        FROM qa_planned_commits pc
-        JOIN qa_plans p ON p.id = pc.plan_id
-        WHERE pc.plan_kind='full' AND p.state='done' AND p.promote_ready=1
-        ORDER BY pc.config_id, pc.branch, pc.planned_at DESC
-    """).fetchall()
-    conn.close()
-    # Keep only the most recent promote-ready per (config, branch).
-    seen: set[tuple] = set()
-    out = []
-    for r in rows:
-        key = (r["config_id"], r["branch"])
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(dict(r))
-    return JSONResponse({"data": out})
+    out = _qa_auto.fire_on(config_id, branch=p.branch, sha=p.sha)
+    if out is None:
+        return JSONResponse({"error": {"code": "no_op",
+                                       "message": "config disabled, no scenarios resolved, or already planned for this commit"}},
+                             status_code=409)
+    return JSONResponse({"data": out}, status_code=201)
 
 
 @app.post("/api/qa/auto-plan/discover")

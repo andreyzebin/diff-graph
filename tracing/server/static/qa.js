@@ -241,15 +241,17 @@ document.addEventListener('alpine:init', () => {
 
   Alpine.data('mutationsView', () => ({
     mutations: [],
-    promote: [],
     selected: [],
     comparison: null,
     scoringCompare: null,
     scoring: {},                                  // mutation hash → scoring blob
+    onDemandConfigs: [],                          // schedules with mode=on_demand for "fire" dropdown
+    fireStatus: '',
     async load() {
       const get = async (path) => (await (await fetch(`${window.QA_BASE_PATH || ''}${path}`)).json()).data || [];
       this.mutations = await get('/api/search/aggregates/by_mutation');
-      this.promote = await get('/api/qa/promote-ready');
+      const allConfigs = await get('/api/qa/auto-plan/configs');
+      this.onDemandConfigs = allConfigs.filter(c => c.mode === 'on_demand' && c.enabled);
       // Load scoring for each mutation in parallel.
       const base = window.QA_BASE_PATH || '';
       const tasks = this.mutations.map(async (m) => {
@@ -260,6 +262,24 @@ document.addEventListener('alpine:init', () => {
         } catch (e) { /* skip */ }
       });
       await Promise.all(tasks);
+    },
+    async fireSchedule(mutation, event) {
+      // Picks the schedule selected in the row's <select> dropdown.
+      const select = event.currentTarget.parentElement.querySelector('select');
+      const configId = parseInt(select.value, 10);
+      if (!configId) return;
+      const base = window.QA_BASE_PATH || '';
+      const r = await fetch(`${base}/api/qa/auto-plan/configs/${configId}/fire-on`, {
+        method: 'POST', headers: {'content-type': 'application/json'},
+        body: JSON.stringify({branch: 'master', sha: mutation}),
+      });
+      const j = await r.json();
+      if (j.error) {
+        this.fireStatus = `${mutation.slice(0,7)}: ${j.error.message}`;
+      } else {
+        const cfg = this.onDemandConfigs.find(c => c.id === configId);
+        this.fireStatus = `${mutation.slice(0,7)} → "${cfg.name}": plan #${j.data.plan_id} (${j.data.task_count} tasks)`;
+      }
     },
     toggleSelect(mut) {
       if (this.selected.includes(mut)) {
