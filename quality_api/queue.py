@@ -712,6 +712,76 @@ class PlanStore:
             ).fetchone()
         return self._row_to_plan(row) if row else None
 
+    def live_score(self, plan_id: int) -> dict:
+        """Running mean of judge overall_score across judge runs whose
+        time-window matches a task in this plan.
+
+        Match join is the same as /api/search/runs?plan=N — by mutation
+        + task.started_at..finished_at window. Score is parsed from the
+        judge's `agent_llm_response` event payload (data.overall_score
+        or data.data.overall_score).
+
+        Returns:
+          {"n": int, "mean": float|None, "last": [{"score": float,
+           "scenario": str, "ts": iso}, …]}  -- last 5 in chrono order.
+        """
+        out = {"n": 0, "mean": None, "last": []}
+        with self.queue._lock, self.queue._conn() as c:
+            rows = c.execute(
+                """
+                SELECT r.id, r.scenario_id, r.finished_at
+                FROM runs r
+                WHERE r.kind='judge' AND r.status='completed'
+                  AND EXISTS (
+                    SELECT 1 FROM qa_tasks t
+                    WHERE t.plan_id = ?
+                      AND t.mutation_hash = r.mutation
+                      AND t.started_at IS NOT NULL
+                      AND r.started_at >= t.started_at
+                      AND r.started_at <= COALESCE(t.finished_at, datetime('now'))
+                  )
+                ORDER BY r.finished_at DESC LIMIT 200
+                """,
+                (plan_id,),
+            ).fetchall()
+            if not rows:
+                return out
+            judge_ids = [r["id"] for r in rows]
+            placeholders = ",".join("?" for _ in judge_ids)
+            ev_rows = c.execute(
+                f"""SELECT run_id, data_json FROM events
+                    WHERE event_type='agent_llm_response'
+                      AND run_id IN ({placeholders})""",
+                judge_ids,
+            ).fetchall()
+        scores_by_id: dict[str, float] = {}
+        for r in ev_rows:
+            try:
+                d = json.loads(r["data_json"])
+                inner = d.get("data") or d.get("content") or {}
+                if isinstance(inner, str):
+                    inner = json.loads(inner)
+                if isinstance(inner, dict) and "overall_score" in inner:
+                    scores_by_id[r["run_id"]] = float(inner["overall_score"])
+            except Exception:
+                continue
+        if not scores_by_id:
+            return out
+        scores = list(scores_by_id.values())
+        out["n"] = len(scores)
+        out["mean"] = round(sum(scores) / len(scores), 3)
+        # Tail: most recent 5, in chrono order (oldest first).
+        tail = []
+        for r in rows[:5]:
+            s = scores_by_id.get(r["id"])
+            if s is None:
+                continue
+            tail.append({"score": round(s, 3),
+                         "scenario": r["scenario_id"] or "",
+                         "ts": r["finished_at"]})
+        out["last"] = list(reversed(tail))
+        return out
+
     def list(self, *, state: Optional[str] = None,
              limit: int = 50, offset: int = 0) -> list[PlanRow]:
         clauses, params = ["1=1"], []
@@ -938,7 +1008,8 @@ class PlanStore:
 
 
 def plan_to_dict(p: PlanRow, *, progress: dict | None = None,
-                 eta: dict | None = None) -> dict:
+                 eta: dict | None = None,
+                 live_score: dict | None = None) -> dict:
     out = {
         "id": p.id,
         "name": p.name,
@@ -956,6 +1027,8 @@ def plan_to_dict(p: PlanRow, *, progress: dict | None = None,
         out["progress"] = progress
     if eta is not None:
         out["eta"] = eta
+    if live_score is not None:
+        out["live_score"] = live_score
     return out
 
 

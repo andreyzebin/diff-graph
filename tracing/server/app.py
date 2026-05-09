@@ -777,7 +777,8 @@ async def api_qa_list_plans(state: Optional[str] = None,
     return JSONResponse({
         "data": [plan_to_dict(p,
                               progress=_qa_plans.progress(p.id),
-                              eta=_qa_plans.eta(p.id))
+                              eta=_qa_plans.eta(p.id),
+                              live_score=_qa_plans.live_score(p.id))
                  for p in rows],
         "meta": {"limit": eff_limit, "offset": eff_offset,
                  "returned": len(rows), "total": total},
@@ -828,7 +829,8 @@ async def api_qa_get_plan(plan_id: int):
                              status_code=404)
     return JSONResponse({"data": plan_to_dict(p,
                                               progress=_qa_plans.progress(plan_id),
-                                              eta=_qa_plans.eta(plan_id))})
+                                              eta=_qa_plans.eta(plan_id),
+                                              live_score=_qa_plans.live_score(plan_id))})
 
 
 @app.post("/api/qa/plans/{plan_id}/cancel")

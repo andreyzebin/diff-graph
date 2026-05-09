@@ -29,6 +29,7 @@ th { color: #8b949e; font-weight: normal; }
 .bar .b-cancelled { background: #6e7681; }
 .meta { color: #8b949e; font-size: 0.85em; }
 .meta.eta { color: #c69026; cursor: help; border-bottom: 1px dotted #c6902644; }
+.meta.score { color: #56d364; cursor: help; border-bottom: 1px dotted #56d36444; }
 .empty { color: #8b949e; padding: 40px; text-align: center; }
 .btn-cancel { background: #21262d; color: #f47067; border: 1px solid #f4706755;
               padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
@@ -89,6 +90,9 @@ th { color: #8b949e; font-weight: normal; }
               <span class="meta eta" x-show="etaText(p)"
                     :title="etaTooltip(p)"
                     x-text="' · eta ' + etaText(p)"></span>
+              <span class="meta score" x-show="scoreText(p)"
+                    :title="scoreTooltip(p)"
+                    x-text="scoreText(p)"></span>
             </td>
             <td class="meta" x-text="fmtLocal(p.created_at)"></td>
             <td>

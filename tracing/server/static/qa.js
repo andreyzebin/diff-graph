@@ -275,6 +275,18 @@ document.addEventListener('alpine:init', () => {
           return `eta_at: ${e.eta_at}\n` + parts.join('\n') +
                  `\nbased on ${e.based_on.history_runs} historical runs`;
         },
+        scoreText(p) {
+          const s = p.live_score;
+          if (!s || !s.n) return '';
+          return ` · score ${s.mean.toFixed(2)} (n=${s.n})`;
+        },
+        scoreTooltip(p) {
+          const s = p.live_score;
+          if (!s || !s.n) return '';
+          const tail = (s.last || []).map(x =>
+            `${x.scenario || '?'}: ${x.score.toFixed(2)}`).join('\n');
+          return `running mean across ${s.n} judge runs\n— recent —\n${tail}`;
+        },
         canCancel(p) { return p.state !== 'done' && p.state !== 'cancelled'; },
         async cancelPlan(p) {
           const pr = p.progress || {};

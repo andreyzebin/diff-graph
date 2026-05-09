@@ -701,6 +701,14 @@ def worker_loop(
         env = dict(os.environ)
         if t.mutation_hash:
             env["DIFFGRAPH_MUTATION_OVERRIDE"] = t.mutation_hash
+        # Force bench to write judge artefacts to disk + trace DB. Without
+        # this env var bench's session_dir stays None and the judge runs
+        # the LLM call but never writes a `kind=judge` row, so /qa/plans
+        # has no scoring data for these tasks.
+        env.setdefault(
+            "BENCHMARK_TRACE_DIR",
+            str(Path.home() / ".diffgraph" / "bench-runs"),
+        )
         try:
             proc = subprocess.run(
                 ["bash", "-c", cmd],
