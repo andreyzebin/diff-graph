@@ -343,6 +343,17 @@ async def api_aggregate_by_scenario(
     return JSONResponse({"data": _store().aggregate_by_scenario(f)})
 
 
+@app.get("/api/search/aggregates/by_mutation")
+async def api_aggregate_by_mutation(
+    generation: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+):
+    f = RunFilter(generation=generation, since=since, until=until,
+                  limit=10**9, offset=0)
+    return JSONResponse({"data": _store().aggregate_by_mutation(f)})
+
+
 @app.get("/api/search/aggregates/by_gene")
 async def api_aggregate_by_gene(
     scenario_tag: Optional[str] = None,
@@ -375,10 +386,12 @@ from quality_api.queue import (
     TaskQueue, TaskSpec, task_to_dict,
     PlanStore, PlanSpec, plan_to_dict,
 )
+from quality_api.discovery import AutoPlanStore, config_to_dict
 
 
 _qa_queue = TaskQueue()
 _qa_plans = PlanStore(_qa_queue)
+_qa_auto = AutoPlanStore(_qa_queue)
 # Reap stale leases on server start so kill -9 mid-run doesn't strand tasks.
 _qa_queue.reap_stale_leases(grace_seconds=0)
 
@@ -610,6 +623,11 @@ async def qa_genes_page(request: Request):
     return templates.TemplateResponse(request, "qa_genes.html", {})
 
 
+@app.get("/qa/auto-plan", response_class=HTMLResponse)
+async def qa_auto_plan_page(request: Request):
+    return templates.TemplateResponse(request, "qa_auto_plan.html", {})
+
+
 @app.get("/api/qa/plans/{plan_id}")
 async def api_qa_get_plan(plan_id: int):
     p = _qa_plans.get(plan_id)
@@ -625,6 +643,85 @@ async def api_qa_get_plan(plan_id: int):
 async def api_qa_cancel_plan(plan_id: int):
     n = _qa_plans.cancel(plan_id)
     return JSONResponse({"data": {"cancelled_tasks": n}})
+
+
+# ── Auto-plan (5c discover→plan loop, git-driven) ──────────────────────────
+
+class AutoPlanCreatePayload(BaseModel):
+    name: str = ""
+    repo_path: str
+    branch_pattern: str
+    providers: list[str]
+    unit_scenarios: list[str]
+    full_scenarios: list[str] = []
+    full_period_seconds: int = 86400
+    attempts_min: int = 1
+    enabled: bool = True
+
+
+@app.post("/api/qa/auto-plan/configs")
+async def api_qa_auto_create(p: AutoPlanCreatePayload):
+    try:
+        cid = _qa_auto.add_config(
+            name=p.name, repo_path=p.repo_path,
+            branch_pattern=p.branch_pattern,
+            providers=p.providers,
+            unit_scenarios=p.unit_scenarios,
+            full_scenarios=p.full_scenarios,
+            full_period_seconds=p.full_period_seconds,
+            attempts_min=p.attempts_min,
+            enabled=p.enabled,
+        )
+    except ValueError as e:
+        return JSONResponse({"error": {"code": "invalid", "message": str(e)}},
+                             status_code=400)
+    cfg = _qa_auto.get_config(cid)
+    return JSONResponse({"data": config_to_dict(cfg)}, status_code=201)
+
+
+@app.get("/api/qa/auto-plan/configs")
+async def api_qa_auto_list():
+    return JSONResponse({"data": [config_to_dict(c) for c in _qa_auto.list_configs()]})
+
+
+@app.get("/api/qa/auto-plan/configs/{config_id}")
+async def api_qa_auto_get(config_id: int):
+    c = _qa_auto.get_config(config_id)
+    if not c:
+        return JSONResponse({"error": {"code": "not_found",
+                                       "message": f"config {config_id} not found"}},
+                             status_code=404)
+    return JSONResponse({"data": config_to_dict(c)})
+
+
+@app.patch("/api/qa/auto-plan/configs/{config_id}")
+async def api_qa_auto_patch(config_id: int, enabled: Optional[bool] = None):
+    if enabled is None:
+        return JSONResponse({"error": {"code": "no_op", "message": "nothing to update"}},
+                             status_code=400)
+    ok = _qa_auto.set_enabled(config_id, enabled)
+    if not ok:
+        return JSONResponse({"error": {"code": "not_found",
+                                       "message": f"config {config_id} not found"}},
+                             status_code=404)
+    return JSONResponse({"data": {"ok": True}})
+
+
+@app.delete("/api/qa/auto-plan/configs/{config_id}")
+async def api_qa_auto_delete(config_id: int):
+    ok = _qa_auto.delete_config(config_id)
+    return JSONResponse({"data": {"ok": ok}})
+
+
+@app.post("/api/qa/auto-plan/discover")
+async def api_qa_auto_discover(config_id: Optional[int] = None):
+    """Manual discover sweep. Idempotent — only creates plans for
+    (branch, sha, kind) triples not yet planned. Watch-daemon will
+    call this on a timer, but it's also safe to invoke from the UI
+    button or CLI for ad-hoc sweeps."""
+    created = _qa_auto.discover(config_id=config_id)
+    return JSONResponse({"data": created,
+                         "meta": {"created_count": len(created)}})
 
 
 # ── Existing endpoints continue below ──────────────────────────────────────

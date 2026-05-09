@@ -152,6 +152,37 @@ class TaskQueue:
                 );
                 CREATE INDEX IF NOT EXISTS idx_qa_workers_provider ON qa_workers(provider);
 
+                CREATE TABLE IF NOT EXISTS qa_auto_plan_configs (
+                    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name                 TEXT,
+                    repo_path            TEXT NOT NULL,
+                    branch_pattern       TEXT NOT NULL,        -- glob
+                    providers            TEXT NOT NULL,        -- JSON list
+                    unit_scenarios       TEXT NOT NULL,        -- JSON list — every commit
+                    full_scenarios       TEXT,                 -- JSON list — periodic
+                    full_period_seconds  INTEGER DEFAULT 86400,-- min gap between full runs per branch
+                    attempts_min         INTEGER DEFAULT 1,
+                    enabled              INTEGER NOT NULL DEFAULT 1,
+                    created_at           TEXT NOT NULL,
+                    last_discover_at     TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_qa_apc_enabled ON qa_auto_plan_configs(enabled);
+
+                CREATE TABLE IF NOT EXISTS qa_planned_commits (
+                    -- Idempotency ledger: one row per (config, branch, sha,
+                    -- plan_kind) ever planned. discover() consults this
+                    -- before creating a plan; same (config, branch, sha,
+                    -- kind) never produces two plans, even after crash.
+                    config_id      INTEGER NOT NULL,
+                    branch         TEXT NOT NULL,
+                    sha            TEXT NOT NULL,
+                    plan_kind      TEXT NOT NULL,           -- 'unit' | 'full'
+                    plan_id        INTEGER NOT NULL,
+                    planned_at     TEXT NOT NULL,
+                    PRIMARY KEY (config_id, branch, sha, plan_kind)
+                );
+                CREATE INDEX IF NOT EXISTS idx_qa_pc_branch ON qa_planned_commits(branch, planned_at DESC);
+
                 CREATE TABLE IF NOT EXISTS qa_plans (
                     id                INTEGER PRIMARY KEY AUTOINCREMENT,
                     name              TEXT,

@@ -317,6 +317,33 @@ class SQLiteTraceStore:
             return []
         return [dict(r) for r in rows]
 
+    def aggregate_by_mutation(self, f: RunFilter | None = None) -> list[dict]:
+        """One row per mutation hash — runs count, duration percentiles,
+        link to generation. Substrate for "is mutation B better than A"
+        comparisons (§5e.11)."""
+        f = f or RunFilter(limit=10**9, offset=0)
+        where, params = self._where_for_runs(f)
+        q = f"""
+            SELECT mutation,
+                   MIN(generation)                         AS generation,
+                   COUNT(*)                                AS runs,
+                   AVG(duration_ms)                        AS avg_duration_ms,
+                   SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+                   SUM(CASE WHEN status='error' THEN 1 ELSE 0 END)     AS errored,
+                   MIN(started_at)                         AS first_seen,
+                   MAX(started_at)                         AS last_seen
+            FROM runs
+            WHERE {where} AND mutation IS NOT NULL AND mutation != ''
+            GROUP BY mutation
+            ORDER BY last_seen DESC
+        """
+        try:
+            with self._conn() as c:
+                rows = c.execute(q, params).fetchall()
+        except FileNotFoundError:
+            return []
+        return [dict(r) for r in rows]
+
     def aggregate_by_gene(self, f: RunFilter | None = None) -> list[dict]:
         """For each gene present in any run, count runs WITH and runs WITHOUT.
 

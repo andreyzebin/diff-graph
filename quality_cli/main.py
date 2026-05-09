@@ -23,11 +23,14 @@ tools_app = typer.Typer(help="Cross-run tool-call search.", no_args_is_help=True
 agg_app = typer.Typer(help="Aggregate views.", no_args_is_help=True)
 plans_app = typer.Typer(help="QA plans (group of tasks).", no_args_is_help=True)
 tasks_app = typer.Typer(help="QA tasks.", no_args_is_help=True)
+auto_app = typer.Typer(help="Auto-plan: git-driven discovery + plan creation.",
+                       no_args_is_help=True)
 app.add_typer(runs_app, name="runs")
 app.add_typer(tools_app, name="tool-calls")
 app.add_typer(agg_app, name="aggregates")
 app.add_typer(plans_app, name="plans")
 app.add_typer(tasks_app, name="tasks")
+app.add_typer(auto_app, name="auto-plan")
 
 
 # Output mode is a global state cell so subcommands can read it without
@@ -684,6 +687,158 @@ def datetime_now() -> str:
     """Compact timestamp for idle-loop logging."""
     from datetime import datetime
     return datetime.now().strftime("%H:%M:%S")
+
+
+# ── auto-plan ─────────────────────────────────────────────────────────────
+
+from quality_api.discovery import AutoPlanStore, config_to_dict, git_list_branches  # noqa: E402
+
+
+def _autostore() -> AutoPlanStore:
+    return AutoPlanStore(_queue())
+
+
+@auto_app.command("add")
+def auto_add(
+    repo: str = typer.Option(..., help="path to git repo to watch"),
+    branch_pattern: str = typer.Option("master,feature/*",
+        help="comma-separated globs"),
+    providers: str = typer.Option(..., help="comma-separated"),
+    unit_scenarios: str = typer.Option(...,
+        help="comma-separated; sentinel set fired on every commit"),
+    full_scenarios: Optional[str] = typer.Option(None,
+        help="comma-separated; full matrix fired periodically"),
+    full_period_seconds: int = typer.Option(86400, help="seconds between full runs per branch"),
+    attempts_min: int = typer.Option(1),
+    name: Optional[str] = typer.Option(None),
+    enabled: bool = typer.Option(True),
+):
+    """Register a watched repo + branch pattern.
+
+    On every `auto-plan discover` run the planner looks at matching
+    branches' HEAD SHAs; for each new (branch, sha) pair it creates
+    a plan with the unit_scenarios cross-product and (if configured
+    and the branch hasn't had a recent full run) also a plan with
+    full_scenarios. Both kinds are tracked in qa_planned_commits so
+    the same triple is never planned twice.
+    """
+    try:
+        cid = _autostore().add_config(
+            name=name or "",
+            repo_path=repo,
+            branch_pattern=branch_pattern,
+            providers=_split_csv(providers),
+            unit_scenarios=_split_csv(unit_scenarios),
+            full_scenarios=_split_csv(full_scenarios),
+            full_period_seconds=full_period_seconds,
+            attempts_min=attempts_min,
+            enabled=enabled,
+        )
+    except ValueError as e:
+        _emit_error("invalid", str(e))
+    cfg = _autostore().get_config(cid)
+    if _Out.json_mode:
+        _emit(config_to_dict(cfg))
+        return
+    _Out.console.print(f"[green]created config[/green] [cyan]#{cid}[/cyan] · {cfg.name or '(unnamed)'}")
+    _Out.console.print(f"  repo: {cfg.repo_path}")
+    _Out.console.print(f"  branches: {cfg.branch_pattern}")
+    _Out.console.print(f"  unit: {', '.join(cfg.unit_scenarios)}")
+    if cfg.full_scenarios:
+        _Out.console.print(f"  full: {', '.join(cfg.full_scenarios)}  every {cfg.full_period_seconds}s")
+    _Out.console.print(f"  providers: {', '.join(cfg.providers)}")
+
+
+@auto_app.command("list")
+def auto_list():
+    cfgs = _autostore().list_configs()
+    if _Out.json_mode:
+        _emit([config_to_dict(c) for c in cfgs])
+        return
+    if not cfgs:
+        _emit([], suggestion="add one via `quality-cli auto-plan add ...`")
+        return
+    table = Table(title=f"auto-plan configs · {len(cfgs)}")
+    table.add_column("id", style="cyan", justify="right")
+    table.add_column("name")
+    table.add_column("repo")
+    table.add_column("branches")
+    table.add_column("unit/full")
+    table.add_column("providers")
+    table.add_column("enabled")
+    table.add_column("last discover")
+    for c in cfgs:
+        table.add_row(
+            str(c.id),
+            c.name or "",
+            c.repo_path[-30:],
+            c.branch_pattern,
+            f"{len(c.unit_scenarios)}/{len(c.full_scenarios)}",
+            ",".join(c.providers),
+            "✓" if c.enabled else "·",
+            (c.last_discover_at or "")[:19],
+        )
+    _Out.console.print(table)
+
+
+@auto_app.command("discover")
+def auto_discover(
+    config_id: Optional[int] = typer.Option(None, help="discover only this config"),
+):
+    """Manual discovery sweep — idempotent over qa_planned_commits."""
+    created = _autostore().discover(config_id=config_id)
+    if _Out.json_mode:
+        _emit(created)
+        return
+    if not created:
+        _Out.console.print("[dim]no new commits — nothing to plan[/dim]")
+        return
+    _Out.console.print(f"[green]created {len(created)} plan(s)[/green]")
+    for p in created:
+        _Out.console.print(
+            f"  [cyan]#{p['plan_id']}[/cyan] {p['plan_kind']:5} {p['branch']:35} "
+            f"{p['sha'][:7]}  ({p['task_count']} task(s))"
+        )
+
+
+@auto_app.command("enable")
+def auto_enable(config_id: int):
+    ok = _autostore().set_enabled(config_id, True)
+    if not ok:
+        _emit_error("not_found", f"config {config_id} not found")
+    if not _Out.json_mode:
+        _Out.console.print(f"[green]enabled[/green] config #{config_id}")
+
+
+@auto_app.command("disable")
+def auto_disable(config_id: int):
+    ok = _autostore().set_enabled(config_id, False)
+    if not ok:
+        _emit_error("not_found", f"config {config_id} not found")
+    if not _Out.json_mode:
+        _Out.console.print(f"[yellow]disabled[/yellow] config #{config_id}")
+
+
+@auto_app.command("delete")
+def auto_delete(config_id: int):
+    ok = _autostore().delete_config(config_id)
+    if not _Out.json_mode:
+        msg = "[red]deleted[/red]" if ok else "[dim]nothing to delete[/dim]"
+        _Out.console.print(f"{msg} config #{config_id}")
+
+
+@auto_app.command("branches")
+def auto_branches(repo: str = typer.Argument(..., help="path to git repo")):
+    """List branches + HEAD SHAs in the repo (debugging utility)."""
+    pairs = git_list_branches(repo)
+    if _Out.json_mode:
+        _emit([{"branch": b, "sha": s} for b, s in pairs])
+        return
+    if not pairs:
+        _Out.console.print(f"[dim]no branches found in {repo}[/dim]")
+        return
+    for b, sha in pairs:
+        _Out.console.print(f"  [cyan]{sha[:7]}[/cyan]  {b}")
 
 
 if __name__ == "__main__":
