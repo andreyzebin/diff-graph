@@ -396,7 +396,11 @@ document.addEventListener('alpine:init', () => {
       this.status = all.length
         ? `${all.length} judge runs across ${this.lineages.length} lineage(s)`
         : 'no data';
-      setTimeout(() => this.renderCharts(), 50);
+      // Wait for Alpine to reactively flip the x-show divs + browser
+      // to repaint, THEN measure container widths and embed. Double-
+      // RAF is the cheapest reliable way to land after a layout cycle.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => this.renderCharts()));
     },
     renderCharts() {
       if (!window.vegaEmbed || this.rows.length === 0) return;
@@ -413,30 +417,22 @@ document.addEventListener('alpine:init', () => {
                               '#f47067', '#ff9b73', '#fbcb6f']},
         },
       };
-      // Render helper. The trick: width:'container' in the spec reads
-      // the parent's bounding box at embed time, but Alpine x-show may
-      // not have expanded the parent yet (display:none ⇒ width 0 ⇒
-      // vega lays out as a 20px-wide strip). One immediate
-      // view.resize() isn't enough either if the swap happens later.
-      // Instead, attach a ResizeObserver to the chart-frame and call
-      // view.resize() every time the container changes size — fires
-      // exactly once when Alpine flips display:none → block.
-      const embed = (sel, spec) => {
+      // Width strategy: read the chart-frame's bounding box NOW (after
+      // the double-RAF wait above) and pass an explicit pixel width
+      // into each spec. width:'container' + ResizeObserver looked
+      // tempting but caused a "flicker normal → narrow" regression
+      // when a vertical scrollbar appeared mid-render and the
+      // observer measured a transient too-small width, after which
+      // vega settled into a 16px strip. Fixed pixel width is stable.
+      const measure = (sel) => {
         const el = document.querySelector(sel);
-        if (!el) return;
-        return vegaEmbed(sel, spec, {actions: false})
-          .then(({view}) => {
-            view.resize();
-            if (window.ResizeObserver) {
-              const ro = new ResizeObserver(() => view.resize());
-              ro.observe(el);
-              // Stash so a second render (e.g. after data reload)
-              // disconnects the previous observer instead of leaking.
-              if (el._vegaRO) el._vegaRO.disconnect();
-              el._vegaRO = ro;
-            }
-          })
-          .catch(() => {});
+        if (!el) return 800;
+        const w = Math.floor(el.getBoundingClientRect().width - 8);
+        return Math.max(400, w);
+      };
+      const embed = (sel, spec) => {
+        spec.width = measure(sel);
+        return vegaEmbed(sel, spec, {actions: false}).catch(() => {});
       };
 
       // (1) Trend per lineage — one line per (lineage × scenario);
