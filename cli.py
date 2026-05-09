@@ -416,17 +416,33 @@ async def _run_async(
         if session_dir is not None:
             sc_parent = session_dir / _safe_seg(prov_label) / _safe_seg(s.id)
             attempt_dir = _next_attempt_dir(sc_parent)
-            agent_dir = attempt_dir / "agent"
-            judge_dir = attempt_dir / "judge"
-            agent_dir.mkdir()
-            judge_dir.mkdir()
+            # Homogeneous trace layout (TODO §5e.10a):
+            #   attempt-NN/runs/agent/  ← DIFFGRAPH_TRACE_PATH
+            #   attempt-NN/runs/judge/  ← LLMJudge writes here via TraceFSWriter
+            #   attempt-NN/runs/agent/invocations.json
+            # Agent and judge get the same scaffolding so the same
+            # tooling (read_file walks, tree views, debugger sub-agents)
+            # works for both.
+            runs_root = attempt_dir / "runs"
+            agent_dir = runs_root / "agent"
+            judge_dir = runs_root / "judge"
+            agent_dir.mkdir(parents=True)
+            judge_dir.mkdir(parents=True)
             env_overrides["DIFFGRAPH_TRACE_PATH"] = str(agent_dir)
+            # Tag the run row in trace DB with bench-specific search
+            # dimensions (TODO §5e.11). diff-graph's cli.py reads these
+            # env vars and writes them onto runs.scenario_id /
+            # runs.scenario_tags so dashboards can filter
+            # "all REV-001 runs" or "all tier:unit runs".
+            env_overrides["DIFFGRAPH_SCENARIO_ID"] = s.id
+            if s.tags:
+                env_overrides["DIFFGRAPH_SCENARIO_TAGS"] = ",".join(s.tags)
             # When the scenario opts into agent-isolation features or
             # asserts via intended_concerns / intended_findings, have
             # the agent write its tool invocations log next to the
             # attempt artefacts so the judge can pick it up.
             if _scenario_needs_invocations(s):
-                invocations_path = attempt_dir / "invocations.json"
+                invocations_path = agent_dir / "invocations.json"
 
         bb_cfg = {**s.input["bitbucket"], "connection": bitbucket_connection, "verify_ssl": not no_verify_ssl}
         result = None
@@ -439,6 +455,8 @@ async def _run_async(
                     judge_dir=judge_dir,
                     model=judge_cfg.get("model", ""),
                     verdict_source=judge_cfg.get("verdict_source", "api"),
+                    scenario_id=s.id,
+                    scenario_tags=list(s.tags or []),
                 )
                 result = await run_scenario(
                     scenario=s,

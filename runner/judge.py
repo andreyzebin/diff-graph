@@ -195,14 +195,30 @@ class LLMJudge(Judge):
     def __init__(self, llm_client: LLMClient, view: AgentPRView,
                  judge_dir: str | Path | None = None,
                  model: str = "",
-                 verdict_source: str = "api"):
+                 verdict_source: str = "api",
+                 scenario_id: str = "",
+                 scenario_tags: list[str] | None = None,
+                 linked_run_id: str = ""):
         self._llm_client = llm_client
         self._view = view
         self._template = PROMPT_TEMPLATE_PATH.read_text()
-        # When set, dump request/response of every judge LLM call into this
-        # exact directory. The benchmark passes <attempt_dir>/judge/.
+        # When set, dump request/response of every judge LLM call under
+        # this directory using the unified trace layout (TODO §5e.10a):
+        # judge_dir/run.json, events.jsonl, agents/judge-0/step-NN-{request,response}.json
+        # The benchmark passes <attempt_dir>/runs/judge/.
         self._judge_dir_path = Path(judge_dir).expanduser() if judge_dir else None
         self._model = model
+        # One trace writer per scenario evaluation. Lazily created on
+        # first _trace_request to avoid spawning empty trace dirs when
+        # evaluate() is never called (smoke / dry-run paths).
+        self._trace_writer = None
+        self._trace_step = 0
+        # Search-dimension metadata that the bench knows at construction
+        # time (TODO §5e.11) — passed through to the writer so the runs
+        # row is filterable by scenario / tags / linked agent run.
+        self._scenario_id = scenario_id or ""
+        self._scenario_tags = list(scenario_tags or [])
+        self._linked_run_id = linked_run_id or ""
         # Channel through which the agent surfaces its APPROVED/NEEDS_WORK
         # verdict — the agent's output interface contract. "api" reads
         # Bitbucket's participants endpoint (production); "comment" scans
@@ -298,13 +314,26 @@ class LLMJudge(Judge):
 
     # ── trace helpers ────────────────────────────────────────────────
     def _load_invocations(self) -> list[dict]:
-        """Read invocations.json (sibling of judge_dir). Empty when
-        the bench didn't open one for this attempt (no agent-isolation
-        knobs in the scenario)."""
+        """Read invocations.json — written by the agent's CLI when
+        --invocations-out points at a path. Layout (post §5e.10a):
+            attempt_dir/
+                runs/
+                    agent/    ← judge_dir.parent.parent / 'agent' / invocations.json
+                    judge/    ← judge_dir
+        Falls back to legacy `<attempt>/invocations.json` for older
+        sessions that pre-date the runs/<kind>/ layout.
+        """
         if self._judge_dir_path is None:
             return []
-        inv_path = self._judge_dir_path.parent / "invocations.json"
-        if not inv_path.exists():
+        # New layout: attempt_dir/runs/agent/invocations.json
+        candidates = [
+            self._judge_dir_path.parent / "agent" / "invocations.json",
+            # Legacy: attempt_dir/invocations.json (kept as fallback)
+            self._judge_dir_path.parent / "invocations.json",
+            self._judge_dir_path.parent.parent / "invocations.json",
+        ]
+        inv_path = next((p for p in candidates if p.exists()), None)
+        if inv_path is None:
             return []
         try:
             data = json.loads(inv_path.read_text(encoding="utf-8"))
@@ -388,49 +417,64 @@ class LLMJudge(Judge):
                     })
         return out
 
-    def _judge_dir(self, scenario_id: str) -> Path | None:
-        if self._judge_dir_path is None:
-            return None
-        self._judge_dir_path.mkdir(parents=True, exist_ok=True)
-        return self._judge_dir_path
-
-    def _atomic_write(self, path: Path, data: dict) -> None:
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-        tmp.replace(path)
+    def _ensure_writer(self):
+        """Lazy-init the unified writer on the first request."""
+        if self._trace_writer is not None:
+            return self._trace_writer
+        from .trace_writer import JudgeTraceWriter
+        self._trace_writer = JudgeTraceWriter(
+            run_dir=self._judge_dir_path,
+            model=self._model,
+            sub_agent_name="judge",
+            kind="judge",
+            scenario_id=self._scenario_id,
+            scenario_tags=self._scenario_tags,
+            linked_run_id=self._linked_run_id,
+        )
+        return self._trace_writer
 
     def _trace_request(self, scenario_id: str, prompt: str) -> None:
-        d = self._judge_dir(scenario_id)
-        if not d:
+        if self._judge_dir_path is None:
             return
-        from datetime import datetime
-        self._atomic_write(d / "request.json", {
-            "ts": datetime.now().isoformat(),
-            "model": self._model,
-            "prompt": prompt,
-        })
+        w = self._ensure_writer()
+        # Stash the step #; response comes back paired in _trace_response.
+        self._pending_step = self._trace_step
+        self._pending_prompt = prompt
 
     def _trace_response(self, scenario_id: str, data: dict) -> None:
-        d = self._judge_dir(scenario_id)
-        if not d:
+        if self._judge_dir_path is None:
             return
-        from datetime import datetime
-        self._atomic_write(d / "response.json", {
-            "ts": datetime.now().isoformat(),
-            "data": data,
-        })
+        w = self._ensure_writer()
+        step = getattr(self, "_pending_step", self._trace_step)
+        prompt = getattr(self, "_pending_prompt", "")
+        w.write_step(
+            step=step,
+            request={"prompt": prompt, "model": self._model},
+            response={"data": data},
+        )
+        self._trace_step = step + 1
 
     def _trace_error(self, scenario_id: str, exc: Exception) -> None:
-        d = self._judge_dir(scenario_id)
-        if not d:
+        if self._judge_dir_path is None:
             return
-        from datetime import datetime
-        self._atomic_write(d / "error.json", {
-            "ts": datetime.now().isoformat(),
-            "error": str(exc),
-            "type": type(exc).__name__,
-        })
+        w = self._ensure_writer()
+        step = getattr(self, "_pending_step", self._trace_step)
+        prompt = getattr(self, "_pending_prompt", "")
+        w.write_step(
+            step=step,
+            request={"prompt": prompt, "model": self._model},
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        self._trace_step = step + 1
+        # Mark the run as errored on finish.
+        self._trace_status = "error"
+
+    def _finish_trace(self):
+        """Called by run_scenario after evaluate() returns (or raises)."""
+        if self._trace_writer is None:
+            return
+        status = getattr(self, "_trace_status", "completed")
+        self._trace_writer.finish(status=status)
 
 
 # ── Pure helpers ───────────────────────────────────────────────────

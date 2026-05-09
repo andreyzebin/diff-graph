@@ -215,7 +215,17 @@ async def run_scenario(
             pr_url=proxy.pr_url,
         )
 
-    judge_output = await judge.evaluate(scenario=scenario, exclude_comment_ids=set(posted_ids))
+    try:
+        judge_output = await judge.evaluate(scenario=scenario, exclude_comment_ids=set(posted_ids))
+    finally:
+        # Close the judge's trace writer (run.json status, sqlite UPDATE).
+        # No-op if the judge wasn't writing traces (no judge_dir set).
+        finish = getattr(judge, "_finish_trace", None)
+        if callable(finish):
+            try:
+                finish()
+            except Exception:
+                pass
     duration = time.monotonic() - start
 
     result = score_scenario(
