@@ -5,6 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <style>
 body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 .qa-nav { margin-bottom: 16px; font-size: 0.9em; }
@@ -64,7 +65,7 @@ th { color: #8b949e; font-weight: normal; }
 .promote-yes { color: #56d364; font-size: 0.7em; }
 </style>
 </head>
-<body>
+<body hx-boost="true">
 {% include "_qa_nav.html" %}
 
 <h1>QA · Auto-plan</h1>
