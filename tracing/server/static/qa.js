@@ -318,6 +318,163 @@ document.addEventListener('alpine:init', () => {
     return r === null ? '—' : `${Math.round(r * 100)}%`;
   }
 
+  Alpine.data('scoringView', () => ({
+    picked: [],                          // selected mutation hashes (max 4)
+    scenario: '',                        // single-scenario filter
+    rows: [],                            // per_run_scores rows
+    availableMutations: [],
+    availableScenarios: [],
+    status: '',
+    async init() {
+      // Populate dropdowns: mutations from aggregate; scenarios from
+      // dimensions endpoint (already filtered to ones we have data for).
+      const base = window.QA_BASE_PATH || '';
+      const muts = (await (await fetch(`${base}/api/search/aggregates/by_mutation?limit=200`)).json()).data || [];
+      this.availableMutations = muts.map(m => m.mutation).filter(Boolean);
+      const dims = (await (await fetch(`${base}/api/search/dimensions`)).json()).data || {};
+      this.availableScenarios = (dims.scenario_id || []).filter(Boolean).sort();
+      // Pre-pick from URL ?mutation=... if present.
+      const sp = new URLSearchParams(window.location.search);
+      const initMuts = sp.getAll('mutation').flatMap(s => s.split(',')).filter(Boolean);
+      for (const m of initMuts.slice(0, 4)) this.picked.push(m);
+      const initScen = sp.get('scenario');
+      if (initScen) this.scenario = initScen;
+      if (this.picked.length) await this.reload();
+    },
+    addMutation(m) {
+      if (!m || this.picked.includes(m) || this.picked.length >= 4) return;
+      this.picked.push(m);
+      this.pushUrl();
+      this.reload();
+    },
+    removeMutation(m) {
+      this.picked = this.picked.filter(x => x !== m);
+      this.pushUrl();
+      this.reload();
+    },
+    pushUrl() {
+      const qs = new URLSearchParams();
+      for (const m of this.picked) qs.append('mutation', m);
+      if (this.scenario) qs.set('scenario', this.scenario);
+      const url = window.location.pathname + (qs.toString() ? '?' + qs.toString() : '');
+      window.history.replaceState({}, '', url);
+    },
+    async reload() {
+      this.pushUrl();
+      if (this.picked.length === 0) { this.rows = []; return; }
+      this.status = 'loading…';
+      const base = window.QA_BASE_PATH || '';
+      const all = [];
+      for (const m of this.picked) {
+        const qs = new URLSearchParams({mutation: m, limit: '1000'});
+        if (this.scenario) qs.set('scenario', this.scenario);
+        const r = await (await fetch(`${base}/api/search/per_run_scores?${qs}`)).json();
+        for (const row of (r.data || [])) all.push(row);
+      }
+      this.rows = all;
+      this.status = all.length ? `${all.length} judge runs` : 'no data';
+      // Defer to allow Alpine x-show to expand the chart divs first.
+      setTimeout(() => this.renderCharts(), 0);
+    },
+    renderCharts() {
+      if (!window.vegaEmbed || this.rows.length === 0) return;
+      // Short-hash mutation column for legend brevity.
+      const data = this.rows.map(r => ({...r, mutation_short: (r.mutation || '').slice(0, 8)}));
+      const dark = {
+        config: {
+          background: 'transparent',
+          view: {stroke: 'transparent'},
+          axis: {labelColor: '#c9d1d9', titleColor: '#8b949e',
+                  domainColor: '#30363d', gridColor: '#21262d', tickColor: '#30363d'},
+          legend: {labelColor: '#c9d1d9', titleColor: '#8b949e'},
+          title:  {color: '#c9d1d9'},
+          range: {category: ['#56d364', '#58a6ff', '#d2a8ff', '#c69026']},
+        },
+      };
+
+      // (a) Box plot per scenario — only when no specific scenario picked.
+      if (!this.scenario) {
+        const spec = {
+          ...dark,
+          width: 'container', height: 280,
+          mark: {type: 'boxplot', extent: 1.5, size: 18},
+          data: {values: data},
+          encoding: {
+            x: {field: 'scenario', type: 'nominal', title: 'scenario',
+                axis: {labelAngle: -30}},
+            y: {field: 'score', type: 'quantitative', title: 'overall_score',
+                scale: {domain: [0, 1]}},
+            color: {field: 'mutation_short', type: 'nominal', title: 'mutation'},
+            xOffset: {field: 'mutation_short'},
+          },
+        };
+        vegaEmbed('#chart-box', spec, {actions: false});
+      }
+
+      // (b) Per-attempt timeline — when a single scenario is picked.
+      if (this.scenario) {
+        const spec = {
+          ...dark,
+          width: 'container', height: 280,
+          data: {values: data},
+          mark: {type: 'line', point: {filled: true, size: 80}},
+          encoding: {
+            x: {field: 'ts', type: 'temporal', title: 'judge finished_at'},
+            y: {field: 'score', type: 'quantitative', title: 'overall_score',
+                scale: {domain: [0, 1]}},
+            color: {field: 'mutation_short', type: 'nominal', title: 'mutation'},
+            tooltip: [
+              {field: 'mutation_short', type: 'nominal'},
+              {field: 'score', type: 'quantitative'},
+              {field: 'fp_count', type: 'quantitative'},
+              {field: 'warnings_count', type: 'quantitative'},
+              {field: 'ts', type: 'temporal'},
+            ],
+          },
+        };
+        vegaEmbed('#chart-timeline', spec, {actions: false});
+      }
+
+      // (c) Cross-mutation comparison — mean ± 95% CI per (scenario, mutation).
+      if (this.picked.length >= 2) {
+        const spec = {
+          ...dark,
+          width: 'container', height: 320,
+          data: {values: data},
+          layer: [
+            // Bars: mean
+            {
+              mark: {type: 'bar', size: 14, opacity: 0.8},
+              encoding: {
+                x: {field: 'scenario', type: 'nominal', title: 'scenario',
+                    axis: {labelAngle: -30}},
+                xOffset: {field: 'mutation_short'},
+                y: {aggregate: 'mean', field: 'score', type: 'quantitative',
+                    title: 'mean score', scale: {domain: [0, 1]}},
+                color: {field: 'mutation_short', type: 'nominal', title: 'mutation'},
+              },
+            },
+            // Whiskers: 95% CI via errorbar(ci) — vega-lite computes
+            // mean ± 1.96·SE under the hood for the 'ci' extent.
+            {
+              mark: {type: 'errorbar', extent: 'ci', ticks: true,
+                      color: '#c9d1d9'},
+              encoding: {
+                x: {field: 'scenario', type: 'nominal'},
+                xOffset: {field: 'mutation_short'},
+                y: {field: 'score', type: 'quantitative',
+                    title: 'mean score'},
+                color: {field: 'mutation_short', type: 'nominal',
+                        legend: null},
+              },
+            },
+          ],
+        };
+        vegaEmbed('#chart-compare', spec, {actions: false});
+      }
+    },
+  }))
+
   Alpine.data('mutationsView', () => ({
     mutations: [],
     selected: [],

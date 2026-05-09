@@ -559,6 +559,119 @@ class SQLiteTraceStore:
         ]
         return out
 
+    def per_run_scores(self, *, mutation: Optional[str] = None,
+                       scenario: Optional[str] = None,
+                       limit: int = 1000) -> list[dict]:
+        """Flat list of per-run judge scores. One row = one (agent ↔
+        judge) pair; the consumer plots box/violin/timeline over these.
+
+        `mutation` filters on runs.mutation prefix (matches the short
+        hash you see on /qa/mutations). `scenario` filters on agent
+        run's scenario_id; passing both narrows to a single cell.
+
+        Returns rows shaped for charting:
+            {
+              mutation, scenario, model, ts,
+              agent_id, judge_id, score,
+              hard_skill, soft_skill, methodology,
+              fp_count, warnings_count, found_rate
+            }
+
+        Score axes are computed per run with the same formulas as
+        `mutation_scoring()` but emit the raw (un-aggregated) values
+        so flap analysis / variance / per-attempt timelines are
+        possible from this single endpoint.
+        """
+        out: list[dict] = []
+        clauses = ["a.kind='agent'"]
+        params: list[Any] = []
+        if mutation:
+            clauses.append("(a.mutation = ? OR a.mutation LIKE ?)")
+            params.extend([mutation, mutation + "%"])
+        if scenario:
+            clauses.append("a.scenario_id = ?")
+            params.append(scenario)
+        clauses.append("a.linked_run_id IS NOT NULL")
+
+        try:
+            with self._conn() as c:
+                pairs = c.execute(
+                    f"""SELECT a.id AS agent_id, a.scenario_id, a.model,
+                              a.mutation, a.linked_run_id AS judge_id,
+                              a.finished_at AS ts
+                       FROM runs a
+                       WHERE {' AND '.join(clauses)}
+                       ORDER BY a.finished_at DESC
+                       LIMIT ?""",
+                    params + [limit],
+                ).fetchall()
+                if not pairs:
+                    return []
+                judge_ids = [p["judge_id"] for p in pairs]
+                placeholders = ",".join("?" for _ in judge_ids)
+                ev_rows = c.execute(
+                    f"""SELECT run_id, data_json FROM events
+                        WHERE event_type='agent_llm_response'
+                          AND run_id IN ({placeholders})""",
+                    judge_ids,
+                ).fetchall()
+        except FileNotFoundError:
+            return []
+
+        judge_data: dict[str, dict] = {}
+        for r in ev_rows:
+            try:
+                d = json.loads(r["data_json"])
+                inner = d.get("data") or d.get("content") or {}
+                if isinstance(inner, str):
+                    inner = json.loads(inner)
+                if isinstance(inner, dict):
+                    judge_data[r["run_id"]] = inner
+            except Exception:
+                pass
+
+        for p in pairs:
+            j = judge_data.get(p["judge_id"])
+            if not j:
+                continue
+            score = float(j.get("overall_score") or 0)
+            req = j.get("required_comments") or []
+            found_rate = (sum(1 for r in req if r.get("found")) /
+                          max(1, len(req))) if req else None
+            fps = j.get("false_positives") or []
+            warnings = j.get("agent_warnings") or []
+            warn_n = len(warnings)
+            methodology = max(0.0, 1.0 - (warn_n / 3.0))
+
+            mm = j.get("must_mention") or []
+            soft = None
+            if mm:
+                ma_ok = j.get("must_address_satisfied")
+                forb = j.get("forbidden_present") or []
+                mm_match = (sum(1 for r in mm if r.get("matched")) /
+                            max(1, len(mm)))
+                forb_violation = sum(1 for r in forb
+                                     if not (r.get("reasoning") or "").lower().startswith("no"))
+                forb_rate = (forb_violation / max(1, len(forb))) if forb else 0
+                soft = max(0.0, min(1.0, mm_match * (1.0 if ma_ok else 0.5) * (1 - forb_rate)))
+
+            out.append({
+                "mutation": p["mutation"] or "",
+                "scenario": p["scenario_id"] or "",
+                "model": p["model"] or "",
+                "ts": p["ts"] or "",
+                "agent_id": p["agent_id"],
+                "judge_id": p["judge_id"],
+                "score": round(score, 3),
+                "hard_skill": round(score, 3),  # same as overall_score per-run
+                "soft_skill": round(soft, 3) if soft is not None else None,
+                "methodology": round(methodology, 3),
+                "fp_count": len(fps),
+                "warnings_count": warn_n,
+                "found_rate": (round(found_rate, 3) if found_rate is not None else None),
+            })
+        return out
+
     def aggregate_by_mutation(self, f: RunFilter | None = None) -> list[dict]:
         """One row per mutation hash, UNION'd from two sources:
 

@@ -350,6 +350,25 @@ async def api_mutation_scoring(mutation: str):
     return JSONResponse({"data": _store().mutation_scoring(mutation)})
 
 
+@app.get("/api/search/per_run_scores")
+async def api_per_run_scores(
+    mutation: Optional[str] = None,
+    scenario: Optional[str] = None,
+    limit: int = 1000,
+):
+    """Flat per-run judge scores for charting (box / violin / timeline).
+    Each row is one (agent ↔ judge) pair with overall_score, hard /
+    soft / methodology axes, fp_count, warnings_count, found_rate.
+    Either filter narrows to a slice; both narrows to one cell.
+    """
+    rows = _store().per_run_scores(
+        mutation=mutation, scenario=scenario,
+        limit=max(1, min(5000, int(limit))),
+    )
+    return JSONResponse({"data": rows,
+                         "meta": {"returned": len(rows), "limit": limit}})
+
+
 @app.get("/api/search/scoring-compare")
 async def api_scoring_compare(a: str, b: str):
     """Side-by-side scoring of two mutations along assessment axes."""
@@ -813,6 +832,12 @@ async def qa_auto_plan_page(request: Request):
 @app.get("/qa/workers", response_class=HTMLResponse)
 async def qa_workers_page(request: Request):
     return templates.TemplateResponse(request, "qa_workers.html", {"active": "workers"})
+
+
+@app.get("/qa/scoring", response_class=HTMLResponse)
+async def qa_scoring_page(request: Request):
+    return templates.TemplateResponse(request, "qa_scoring.html",
+                                       {"active": "scoring"})
 
 
 @app.get("/qa/mutations", response_class=HTMLResponse)
