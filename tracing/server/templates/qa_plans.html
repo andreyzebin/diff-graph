@@ -28,6 +28,7 @@ th { color: #8b949e; font-weight: normal; }
 .bar .b-error    { background: #f47067; }
 .bar .b-cancelled { background: #6e7681; }
 .meta { color: #8b949e; font-size: 0.85em; }
+.meta.eta { color: #c69026; cursor: help; border-bottom: 1px dotted #c6902644; }
 .empty { color: #8b949e; padding: 40px; text-align: center; }
 .btn-cancel { background: #21262d; color: #f47067; border: 1px solid #f4706755;
               padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
@@ -81,6 +82,9 @@ th { color: #8b949e; font-weight: normal; }
                 </template>
               </div>
               <span class="meta" x-text="progressText(p)"></span>
+              <span class="meta eta" x-show="etaText(p)"
+                    :title="etaTooltip(p)"
+                    x-text="' · eta ' + etaText(p)"></span>
             </td>
             <td class="meta" x-text="(p.created_at || '').slice(0, 19)"></td>
             <td>

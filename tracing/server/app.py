@@ -764,7 +764,8 @@ async def api_qa_list_plans(state: Optional[str] = None,
     total = _qa_plans.count(state=state)
     return JSONResponse({
         "data": [plan_to_dict(p,
-                              progress=_qa_plans.progress(p.id))
+                              progress=_qa_plans.progress(p.id),
+                              eta=_qa_plans.eta(p.id))
                  for p in rows],
         "meta": {"limit": eff_limit, "offset": eff_offset,
                  "returned": len(rows), "total": total},
@@ -814,7 +815,8 @@ async def api_qa_get_plan(plan_id: int):
                                        "message": f"plan {plan_id} not found"}},
                              status_code=404)
     return JSONResponse({"data": plan_to_dict(p,
-                                              progress=_qa_plans.progress(plan_id))})
+                                              progress=_qa_plans.progress(plan_id),
+                                              eta=_qa_plans.eta(plan_id))})
 
 
 @app.post("/api/qa/plans/{plan_id}/cancel")

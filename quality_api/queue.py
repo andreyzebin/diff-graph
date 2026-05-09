@@ -521,6 +521,19 @@ class TaskQueue:
                     "WHERE state='running' AND last_heartbeat < ?",
                     (stale_cutoff,),
                 )
+                # Release leased tasks owned by any worker currently in
+                # a terminal state — otherwise tasks block on lease
+                # expiry, which is later than dead-classification.
+                c.execute(
+                    """UPDATE qa_tasks
+                       SET state='queued', lease_owner=NULL,
+                           lease_expires_at=NULL, started_at=NULL
+                       WHERE state IN ('leased', 'running')
+                         AND lease_owner IN (
+                           SELECT id FROM qa_workers
+                           WHERE state IN ('dead', 'stopped')
+                         )""",
+                )
                 if gc_terminal_after_seconds > 0:
                     c.execute(
                         "DELETE FROM qa_workers "
@@ -703,6 +716,143 @@ class PlanStore:
         out["total"] = sum(out.values())
         return out
 
+    def eta(self, plan_id: int) -> dict:
+        """ETA for a plan based on historical durations of analogous
+        (scenario × provider) runs.
+
+        Strategy:
+        - For each task, look up avg(duration_ms) across all
+          finished agent runs with the same (scenario_id, provider).
+          Falls back to per-provider mean, then to a 60s default
+          when nothing is known.
+        - For 'leased' / 'running' tasks, subtract elapsed time
+          from the estimated total (clamped to ≥ 1s).
+        - Per-provider concurrency comes from qa_worker_pools'
+          target_workers (or 1 if no pool exists for the provider).
+        - Plan ETA = max across providers of (remaining_seconds /
+          parallel_workers).
+
+        Returns:
+          {
+            "remaining_tasks": int,
+            "eta_seconds": int | None,
+            "eta_at":      iso8601 | None,
+            "per_provider": [
+                {"provider": str, "remaining_tasks": int,
+                 "remaining_seconds": int, "workers": int,
+                 "eta_seconds": int}, …
+            ],
+            "based_on": {"history_runs": int, "fallback_default_s": 60}
+          }
+        """
+        now = datetime.now()
+        with self.queue._lock, self.queue._conn() as c:
+            tasks = c.execute(
+                """SELECT id, scenario_id, provider, state, started_at
+                   FROM qa_tasks WHERE plan_id=?""",
+                (plan_id,),
+            ).fetchall()
+            if not tasks:
+                return {"remaining_tasks": 0, "eta_seconds": 0,
+                        "eta_at": now.isoformat(timespec="seconds"),
+                        "per_provider": [],
+                        "based_on": {"history_runs": 0, "fallback_default_s": 60}}
+
+            # Historical averages — agent runs only.
+            # Note: runs.model is the LLM model name (e.g. 'deepseek-chat')
+            # while qa_tasks.provider is the user-facing key ('deepseek').
+            # We match by scenario only — model is too noisy across configs
+            # — and fall back gracefully when a scenario has no history.
+            hist_rows = c.execute(
+                """SELECT scenario_id,
+                          AVG(duration_ms) AS avg_ms,
+                          COUNT(*) AS n
+                   FROM runs
+                   WHERE kind='agent' AND status='completed'
+                     AND duration_ms IS NOT NULL
+                     AND scenario_id IS NOT NULL
+                   GROUP BY scenario_id""",
+            ).fetchall()
+            by_scenario: dict[str, float] = {
+                r["scenario_id"]: float(r["avg_ms"]) for r in hist_rows
+            }
+            global_row = c.execute(
+                """SELECT AVG(duration_ms) AS avg_ms, COUNT(*) AS n
+                   FROM runs
+                   WHERE kind='agent' AND status='completed'
+                     AND duration_ms IS NOT NULL""",
+            ).fetchone()
+            global_avg_ms = float(global_row["avg_ms"]) if global_row and global_row["avg_ms"] else None
+            history_runs_total = int(global_row["n"]) if global_row else 0
+
+            # Concurrency policy from pools.
+            pool_rows = c.execute(
+                """SELECT provider, target_workers
+                   FROM qa_worker_pools WHERE enabled=1""",
+            ).fetchall()
+            workers_by_provider: dict[str, int] = {
+                r["provider"]: max(1, int(r["target_workers"])) for r in pool_rows
+            }
+
+        FALLBACK_MS = 60_000.0
+
+        def _est_total_ms(scen: str, prov: str) -> float:
+            return (by_scenario.get(scen)
+                    or global_avg_ms
+                    or FALLBACK_MS)
+
+        terminal = {"finished", "cancelled", "error"}
+        per_prov: dict[str, dict] = {}
+        remaining_total = 0
+        for t in tasks:
+            if t["state"] in terminal:
+                continue
+            prov = t["provider"] or "?"
+            scen = t["scenario_id"] or ""
+            est = _est_total_ms(scen, prov)
+            if t["state"] in ("leased", "running") and t["started_at"]:
+                try:
+                    started = datetime.fromisoformat(t["started_at"])
+                    elapsed = max(0.0, (now - started).total_seconds() * 1000.0)
+                    remaining_ms = max(1000.0, est - elapsed)
+                except Exception:
+                    remaining_ms = est
+            else:
+                remaining_ms = est
+            slot = per_prov.setdefault(prov, {"provider": prov,
+                                              "remaining_tasks": 0,
+                                              "remaining_ms": 0.0})
+            slot["remaining_tasks"] += 1
+            slot["remaining_ms"] += remaining_ms
+            remaining_total += 1
+
+        per_provider_out = []
+        plan_eta_s = 0
+        for prov, slot in per_prov.items():
+            workers = workers_by_provider.get(prov, 1)
+            eta_s = int(round(slot["remaining_ms"] / 1000.0 / max(1, workers)))
+            per_provider_out.append({
+                "provider": prov,
+                "remaining_tasks": slot["remaining_tasks"],
+                "remaining_seconds": int(round(slot["remaining_ms"] / 1000.0)),
+                "workers": workers,
+                "eta_seconds": eta_s,
+            })
+            plan_eta_s = max(plan_eta_s, eta_s)
+
+        eta_at = (now + timedelta(seconds=plan_eta_s)
+                  ).isoformat(timespec="seconds") if remaining_total else now.isoformat(timespec="seconds")
+
+        return {
+            "remaining_tasks": remaining_total,
+            "eta_seconds": plan_eta_s if remaining_total else 0,
+            "eta_at": eta_at,
+            "per_provider": sorted(per_provider_out,
+                                   key=lambda x: -x["eta_seconds"]),
+            "based_on": {"history_runs": history_runs_total,
+                         "fallback_default_s": int(FALLBACK_MS / 1000)},
+        }
+
     def cancel(self, plan_id: int) -> int:
         """Soft-cancel: mark plan + its queued tasks as cancelled.
         Returns count of tasks cancelled."""
@@ -752,7 +902,8 @@ class PlanStore:
         )
 
 
-def plan_to_dict(p: PlanRow, *, progress: dict | None = None) -> dict:
+def plan_to_dict(p: PlanRow, *, progress: dict | None = None,
+                 eta: dict | None = None) -> dict:
     out = {
         "id": p.id,
         "name": p.name,
@@ -768,6 +919,8 @@ def plan_to_dict(p: PlanRow, *, progress: dict | None = None) -> dict:
     }
     if progress is not None:
         out["progress"] = progress
+    if eta is not None:
+        out["eta"] = eta
     return out
 
 

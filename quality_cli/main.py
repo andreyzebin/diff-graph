@@ -433,8 +433,9 @@ def plans_get(plan_id: int = typer.Argument(...)):
     if not p:
         _emit_error("not_found", f"plan {plan_id} not found")
     progress = plans.progress(plan_id)
+    eta = plans.eta(plan_id)
     if _Out.json_mode:
-        _emit(plan_to_dict(p, progress=progress))
+        _emit(plan_to_dict(p, progress=progress, eta=eta))
         return
     _Out.console.print(f"[bold]plan #{p.id}[/bold] · state=[cyan]{p.state}[/cyan]")
     _Out.console.print(f"  name: {p.name or '(unnamed)'}")
@@ -445,6 +446,17 @@ def plans_get(plan_id: int = typer.Argument(...)):
         _Out.console.print(f"  branches:  {', '.join(p.branches)}")
     _Out.console.print(f"  attempts_min: {p.attempts_min}")
     _Out.console.print(f"\n[dim]progress:[/dim] {progress}")
+    if eta.get("remaining_tasks"):
+        _Out.console.print(
+            f"[dim]eta:[/dim] [yellow]~{eta['eta_seconds'] // 60}m[/yellow] "
+            f"({eta['remaining_tasks']} task(s) left, "
+            f"based on {eta['based_on']['history_runs']} historical runs)"
+        )
+        for pp in eta["per_provider"]:
+            _Out.console.print(
+                f"  · {pp['provider']}: {pp['remaining_tasks']} tasks · "
+                f"{pp['workers']} worker(s) → ~{pp['eta_seconds']//60}m"
+            )
 
 
 @plans_app.command("cancel")
@@ -454,6 +466,75 @@ def plans_cancel(plan_id: int = typer.Argument(...)):
         _emit({"cancelled_tasks": n})
         return
     _Out.console.print(f"[yellow]cancelled[/yellow] plan #{plan_id} · {n} task(s) marked cancelled")
+
+
+@plans_app.command("watch")
+def plans_watch(
+    plan_id: int = typer.Argument(...),
+    interval: float = typer.Option(2.0, help="poll interval in seconds"),
+):
+    """Live progress bar for a plan. Polls the queue every <interval>s
+    and renders a Rich bar with completed/total counts + ETA. Exits
+    when the plan reaches a terminal state."""
+    import time
+    from rich.progress import (Progress, BarColumn, TextColumn,
+                                TaskProgressColumn, TimeRemainingColumn)
+    plans = PlanStore(_queue())
+    p = plans.get(plan_id)
+    if not p:
+        _emit_error("not_found", f"plan {plan_id} not found")
+
+    if _Out.json_mode:
+        # JSON-mode: emit one snapshot per poll until terminal.
+        while True:
+            p = plans.get(plan_id)
+            prog = plans.progress(plan_id)
+            eta = plans.eta(plan_id)
+            _emit(plan_to_dict(p, progress=prog, eta=eta))
+            if p.state in ("done", "cancelled"):
+                break
+            time.sleep(interval)
+        return
+
+    progress_widget = Progress(
+        TextColumn("[bold]plan #{task.fields[plan_id]}[/bold]"),
+        BarColumn(bar_width=40),
+        TaskProgressColumn(),
+        TextColumn("[dim]{task.fields[breakdown]}[/dim]"),
+        TextColumn("eta [yellow]{task.fields[eta_text]}[/yellow]"),
+        TimeRemainingColumn(),
+        console=_Out.console,
+    )
+    with progress_widget as bar:
+        prog = plans.progress(plan_id)
+        eta = plans.eta(plan_id)
+        total = max(1, prog.get("total", 1))
+        done = (prog.get("finished", 0) + prog.get("error", 0)
+                + prog.get("cancelled", 0))
+        task = bar.add_task("plan", total=total, completed=done,
+                            plan_id=plan_id, breakdown="", eta_text="…")
+        while True:
+            p = plans.get(plan_id)
+            prog = plans.progress(plan_id)
+            eta = plans.eta(plan_id)
+            done = (prog.get("finished", 0) + prog.get("error", 0)
+                    + prog.get("cancelled", 0))
+            breakdown = (f"finished={prog.get('finished',0)} "
+                         f"running={prog.get('running',0)+prog.get('leased',0)} "
+                         f"queued={prog.get('queued',0)} "
+                         f"errored={prog.get('error',0)} "
+                         f"cancelled={prog.get('cancelled',0)}")
+            eta_s = eta.get("eta_seconds", 0)
+            eta_text = ("done" if not eta.get("remaining_tasks") else
+                        (f"~{eta_s}s" if eta_s < 60 else
+                         f"~{eta_s//60}m" if eta_s < 3600 else
+                         f"~{eta_s/3600:.1f}h"))
+            bar.update(task, completed=done, total=max(total, prog.get("total", total)),
+                       breakdown=breakdown, eta_text=eta_text)
+            if p.state in ("done", "cancelled"):
+                break
+            time.sleep(interval)
+    _Out.console.print(f"\n[bold]final:[/bold] state=[cyan]{p.state}[/cyan]  {breakdown}")
 
 
 # ── tasks ─────────────────────────────────────────────────────────────────
@@ -585,10 +666,14 @@ def worker_loop(
         if not _Out.json_mode:
             _Out.console.print(f"[green]→ leased[/green] task #{t.id} scenario={t.scenario_id} attempt={t.attempt_n}")
 
-        # Heartbeat thread — extends lease while bench runs.
+        # Heartbeat thread — extends task lease AND refreshes the
+        # worker row while bench runs. Without the worker_heartbeat
+        # call here, list_workers' stale_after_seconds (90s) would
+        # falsely mark the worker as 'dead' during long tests.
         hb_stop = threading.Event()
         def _hb():
             while not hb_stop.is_set():
+                q.worker_heartbeat(wid)
                 if not q.heartbeat(t.id, worker_id=wid, lease_seconds=lease_seconds):
                     # Task got reaped or finished — signal worker to abort.
                     hb_stop.set()

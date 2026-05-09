@@ -231,6 +231,23 @@ document.addEventListener('alpine:init', () => {
           const total = pr.total || 0;
           return ` ${done}/${total}`;
         },
+        etaText(p) {
+          const e = p.eta;
+          if (!e || !e.remaining_tasks) return '';
+          const s = e.eta_seconds;
+          if (!s) return '';
+          if (s < 60) return `~${s}s`;
+          if (s < 3600) return `~${Math.round(s/60)}m`;
+          return `~${(s/3600).toFixed(1)}h`;
+        },
+        etaTooltip(p) {
+          const e = p.eta;
+          if (!e) return '';
+          const parts = e.per_provider.map(pp =>
+            `${pp.provider}: ${pp.remaining_tasks} tasks · ${pp.workers} worker(s) · ~${Math.round(pp.eta_seconds/60)}m`);
+          return `eta_at: ${e.eta_at}\n` + parts.join('\n') +
+                 `\nbased on ${e.based_on.history_runs} historical runs`;
+        },
         canCancel(p) { return p.state !== 'done' && p.state !== 'cancelled'; },
         async cancelPlan(p) {
           const pr = p.progress || {};
