@@ -18,14 +18,23 @@ DEFAULT_DB_PATH = Path.home() / ".diffgraph" / "traces.db"
 
 
 class TraceDBWriter:
-    """Writes events to SQLite in real-time."""
+    """Writes events to SQLite in real-time.
 
-    def __init__(self, db_path: str | Path = DEFAULT_DB_PATH, run_id: str = ""):
+    The optional `kind` parameter tags the run as 'agent' (default —
+    diff-graph's own agentic ReAct loop), 'judge' (single-shot
+    scoring call from the bench) or 'evaluator' (future debugger
+    sub-agents that read traces). All three share the same `runs` /
+    `events` tables; `kind` is just a filterable column.
+    """
+
+    def __init__(self, db_path: str | Path = DEFAULT_DB_PATH, run_id: str = "",
+                 kind: str = "agent"):
         import threading
         db_path = Path(db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db_path = db_path
         self.run_id = run_id or str(uuid.uuid4())[:12]
+        self.kind = kind
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self._lock = threading.Lock()
@@ -60,32 +69,137 @@ class TraceDBWriter:
             CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id);
             CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id);
         """)
-        # Migrate: add columns if missing (existing DBs)
-        try:
-            self.conn.execute("SELECT prompt_source FROM runs LIMIT 0")
-        except sqlite3.OperationalError:
-            self.conn.execute("ALTER TABLE runs ADD COLUMN prompt_source TEXT")
-            self.conn.execute("ALTER TABLE runs ADD COLUMN prompt_hash TEXT")
-        try:
-            self.conn.execute("SELECT tags FROM runs LIMIT 0")
-        except sqlite3.OperationalError:
-            self.conn.execute("ALTER TABLE runs ADD COLUMN tags TEXT")
+        # Migrate: add columns if missing (existing DBs).
+        # Each column is a separate try/except so we can add new ones
+        # without disturbing the existing migration order.
+        for col, decl in [
+            ("prompt_source", "TEXT"),
+            ("prompt_hash", "TEXT"),
+            ("tags", "TEXT"),
+            ("kind", "TEXT DEFAULT 'agent'"),
+            # 5e.11 — first-class search dimensions
+            ("agent_name", "TEXT"),
+            ("generation", "TEXT"),
+            ("mutation", "TEXT"),
+            ("genes", "TEXT"),                # JSON array
+            ("project", "TEXT"),
+            ("files_touched", "TEXT"),        # JSON array
+            ("jira_keys", "TEXT"),            # JSON array
+            ("scenario_id", "TEXT"),
+            ("scenario_tags", "TEXT"),        # JSON array
+            ("linked_run_id", "TEXT"),
+            ("duration_ms", "INTEGER"),
+            ("fs_trace_path", "TEXT"),
+        ]:
+            try:
+                self.conn.execute(f"SELECT {col} FROM runs LIMIT 0")
+            except sqlite3.OperationalError:
+                self.conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
+
+        # Indices for the search dimensions (5e.11)
+        self.conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_runs_kind        ON runs(kind);
+            CREATE INDEX IF NOT EXISTS idx_runs_started     ON runs(started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_runs_mutation    ON runs(mutation);
+            CREATE INDEX IF NOT EXISTS idx_runs_generation  ON runs(generation);
+            CREATE INDEX IF NOT EXISTS idx_runs_agent       ON runs(agent_name);
+            CREATE INDEX IF NOT EXISTS idx_runs_project     ON runs(project);
+            CREATE INDEX IF NOT EXISTS idx_runs_scenario    ON runs(scenario_id);
+            CREATE INDEX IF NOT EXISTS idx_runs_linked      ON runs(linked_run_id);
+            CREATE INDEX IF NOT EXISTS idx_runs_status      ON runs(status);
+        """)
 
     def _insert_run(self):
         self.conn.execute(
-            "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
-            (self.run_id, datetime.now().isoformat(), "running"),
+            "INSERT INTO runs (id, started_at, status, kind) VALUES (?, ?, ?, ?)",
+            (self.run_id, datetime.now().isoformat(), "running", self.kind),
         )
         self.conn.commit()
 
     def set_prompt_info(self, prompt_source: str, prompt_hash: str):
         """Set prompt source/hash early (before run finishes)."""
         with self._lock:
+            # Mirror prompt_source → generation, prompt_hash → mutation
+            # so the search-API columns are populated alongside the
+            # existing dashboard columns.
+            generation = self._derive_generation(prompt_source)
             self.conn.execute(
-                "UPDATE runs SET prompt_source=?, prompt_hash=? WHERE id=?",
-                (prompt_source, prompt_hash, self.run_id),
+                "UPDATE runs SET prompt_source=?, prompt_hash=?, "
+                "generation=?, mutation=? WHERE id=?",
+                (prompt_source, prompt_hash, generation, prompt_hash, self.run_id),
             )
             self.conn.commit()
+
+    @staticmethod
+    def _derive_generation(prompt_source: str) -> str:
+        """Extract a stable generation id from a prompt source URI.
+
+        Examples:
+          "diffgraph/prompts" → "prompts"
+          "file:///.../prompts-experimental" → "prompts-experimental"
+          "bitbucket://server/SBLOOM/diffgraph-prompts/refs/main/prompts" → "prompts"
+        """
+        if not prompt_source:
+            return ""
+        s = str(prompt_source).rstrip("/")
+        return s.rsplit("/", 1)[-1] if "/" in s else s
+
+    def set_search_metadata(self, *,
+                            agent_name: str = "",
+                            genes: list[str] | None = None,
+                            project: str = "",
+                            files_touched: list[str] | None = None,
+                            jira_keys: list[str] | None = None,
+                            scenario_id: str = "",
+                            scenario_tags: list[str] | None = None,
+                            linked_run_id: str = "",
+                            fs_trace_path: str = "") -> None:
+        """Populate the search-dimension columns on the runs row.
+
+        Best-effort: tracing must never crash the agent. Any subset of
+        the fields can be passed; unset fields are left alone.
+        """
+        try:
+            updates = []
+            params = []
+            if agent_name:
+                updates.append("agent_name=?")
+                params.append(agent_name)
+            if genes is not None:
+                updates.append("genes=?")
+                params.append(json.dumps(genes, ensure_ascii=False))
+            if project:
+                updates.append("project=?")
+                params.append(project)
+            if files_touched is not None:
+                updates.append("files_touched=?")
+                params.append(json.dumps(files_touched, ensure_ascii=False))
+            if jira_keys is not None:
+                updates.append("jira_keys=?")
+                params.append(json.dumps(jira_keys, ensure_ascii=False))
+            if scenario_id:
+                updates.append("scenario_id=?")
+                params.append(scenario_id)
+            if scenario_tags is not None:
+                updates.append("scenario_tags=?")
+                params.append(json.dumps(scenario_tags, ensure_ascii=False))
+            if linked_run_id:
+                updates.append("linked_run_id=?")
+                params.append(linked_run_id)
+            if fs_trace_path:
+                updates.append("fs_trace_path=?")
+                params.append(fs_trace_path)
+            if not updates:
+                return
+            params.append(self.run_id)
+            with self._lock:
+                self.conn.execute(
+                    f"UPDATE runs SET {', '.join(updates)} WHERE id=?",
+                    params,
+                )
+                self.conn.commit()
+        except Exception:
+            pass
 
     def on_event(self, event_type: str, **kw):
         """Called on every event. Writes to DB immediately."""
@@ -136,15 +250,45 @@ class TraceDBWriter:
                    findings_count: int = 0, total_tokens_paid: int = 0,
                    prompt_source: str = "", prompt_hash: str = ""):
         """Mark run as completed."""
-        self.conn.execute(
-            "UPDATE runs SET finished_at=?, model=?, pr_url=?, diff_summary=?, "
-            "findings_count=?, total_tokens_paid=?, status='completed', "
-            "prompt_source=?, prompt_hash=? WHERE id=?",
-            (datetime.now().isoformat(), model, pr_url, diff_summary,
-             findings_count, total_tokens_paid,
-             prompt_source, prompt_hash, self.run_id),
-        )
-        self.conn.commit()
+        # Compute duration_ms from started_at (if present).
+        duration_ms = None
+        try:
+            row = self.conn.execute(
+                "SELECT started_at FROM runs WHERE id=?", (self.run_id,)
+            ).fetchone()
+            if row and row[0]:
+                started = datetime.fromisoformat(row[0])
+                duration_ms = int((datetime.now() - started).total_seconds() * 1000)
+        except Exception:
+            duration_ms = None
+
+        # Extract search-dimension fields from pr_url + diff_summary
+        # (pure derivation — best effort).
+        project = _extract_project(pr_url)
+        files_touched = _extract_files_from_diff(diff_summary)
+
+        generation = self._derive_generation(prompt_source)
+        with self._lock:
+            self.conn.execute(
+                "UPDATE runs SET finished_at=?, model=?, pr_url=?, diff_summary=?, "
+                "findings_count=?, total_tokens_paid=?, status='completed', "
+                "prompt_source=COALESCE(NULLIF(?, ''), prompt_source), "
+                "prompt_hash=COALESCE(NULLIF(?, ''), prompt_hash), "
+                "generation=COALESCE(NULLIF(?, ''), generation), "
+                "mutation=COALESCE(NULLIF(?, ''), mutation), "
+                "duration_ms=?, "
+                "project=COALESCE(NULLIF(?, ''), project), "
+                "files_touched=COALESCE(NULLIF(?, '[]'), files_touched) "
+                "WHERE id=?",
+                (datetime.now().isoformat(), model, pr_url, diff_summary,
+                 findings_count, total_tokens_paid,
+                 prompt_source, prompt_hash, generation, prompt_hash,
+                 duration_ms,
+                 project,
+                 json.dumps(files_touched, ensure_ascii=False),
+                 self.run_id),
+            )
+            self.conn.commit()
 
     def close(self):
         self.conn.close()
@@ -315,3 +459,87 @@ class TraceDBReader:
 
     def close(self):
         self.conn.close()
+
+
+# ── Search-dimension extractors (5e.11) ─────────────────────────────────────
+# Pure functions, used by both the writer (denormalises into runs row at
+# finish time) and any external caller wiring tracing.
+
+import re as _re
+
+
+_PR_URL_PROJECT_RE = _re.compile(r"/projects/([^/]+)/repos/", _re.IGNORECASE)
+_DIFF_FILE_RE = _re.compile(r"^[+-]{3} (?:[ab]/)?(.+?)(?:\s+\(\w+\))?\s*$", _re.MULTILINE)
+
+
+def _extract_project(pr_url: str) -> str:
+    """Extract Bitbucket project key from a PR URL.
+
+    Examples:
+      "https://bitbucket-ci/projects/SBLOOM/repos/foo/pull-requests/123" → "SBLOOM"
+      "" → ""
+    """
+    if not pr_url:
+        return ""
+    m = _PR_URL_PROJECT_RE.search(str(pr_url))
+    return m.group(1) if m else ""
+
+
+def _extract_files_from_diff(diff_summary: str) -> list[str]:
+    """Extract file paths from a diff_summary blob.
+
+    diff_summary is a render of the diff (possibly truncated). We
+    scan for `+++ b/path` and `--- a/path` markers and unique-ify
+    while preserving order. Returns up to 50 paths to keep the JSON
+    blob bounded.
+    """
+    if not diff_summary:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _DIFF_FILE_RE.finditer(str(diff_summary)):
+        path = m.group(1).strip()
+        if path == "/dev/null" or not path:
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+        if len(out) >= 50:
+            break
+    return out
+
+
+_JIRA_KEY_RE = _re.compile(r"\b([A-Z][A-Z0-9]{1,9})-(\d+)\b")
+_JIRA_KEY_DENYLIST = {"HTTP", "HTTPS", "JIRA", "TODO", "FIXME", "NOTE", "BUG"}
+
+
+def _extract_jira_keys(text: str, project_whitelist: list[str] | None = None) -> list[str]:
+    """Extract Jira-style ticket keys from arbitrary text.
+
+    `project_whitelist` is recommended in production to filter false
+    positives like `HTTP-404`. When None, denylist of common false
+    positives is used.
+
+    Returns up to 20 unique keys, in order of first appearance.
+    """
+    if not text:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    whitelist = set(project_whitelist) if project_whitelist else None
+    for m in _JIRA_KEY_RE.finditer(str(text)):
+        proj = m.group(1)
+        if whitelist is not None:
+            if proj not in whitelist:
+                continue
+        elif proj in _JIRA_KEY_DENYLIST:
+            continue
+        key = f"{proj}-{m.group(2)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+        if len(out) >= 20:
+            break
+    return out

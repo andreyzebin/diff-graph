@@ -286,6 +286,27 @@ def _run_with_dispatcher(
         fs_dir.mkdir(parents=True, exist_ok=True)
         _trace_fs = TraceFSWriter(fs_dir)
 
+    # Populate the run row's search-dimension columns up front (5e.11):
+    # agent_name, genes, project, scenario_id/tags from env, fs_trace_path.
+    # Best-effort — tracing must never crash the agent.
+    try:
+        from orchestra.genes import detect_genes
+        _detected_genes = detect_genes(pr)
+    except Exception:
+        _detected_genes = []
+    _scenario_id_env = os.environ.get("DIFFGRAPH_SCENARIO_ID", "")
+    _scenario_tags_env = os.environ.get("DIFFGRAPH_SCENARIO_TAGS", "")
+    _scenario_tags_list = [t.strip() for t in _scenario_tags_env.split(",") if t.strip()]
+    _trace_db.set_search_metadata(
+        agent_name=agent_name,
+        genes=_detected_genes,
+        scenario_id=_scenario_id_env,
+        scenario_tags=_scenario_tags_list or None,
+        fs_trace_path=str(fs_dir) if fs_dir is not None else "",
+    )
+    _trace_db.set_prompt_info(str(prompt_source),
+                              mutation if mutation != "unknown" else "")
+
     event_handler = _make_event_handler(effective_model)
 
     def _on_event(event: str, **kw):
