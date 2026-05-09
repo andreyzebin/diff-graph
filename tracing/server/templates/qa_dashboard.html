@@ -34,7 +34,7 @@ th { color: #8b949e; font-weight: normal; }
 
 <h1>QA · Overview</h1>
 
-<div x-data="dash" x-init="load()">
+<div x-data="dash" x-init="load(); setInterval(() => load(), 10000)">
   <div class="cards">
     <div class="card">
       <div class="label">total runs</div>

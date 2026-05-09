@@ -33,7 +33,7 @@ th { color: #8b949e; font-weight: normal; }
 Auto-detected from prompt content at run start. Click a gene to filter runs.
 </p>
 
-<div x-data="genesView" x-init="load()">
+<div x-data="genesView" x-init="load(); setInterval(() => load(), 30000)">
   <template x-if="rows.length === 0">
     <div class="empty">no genes detected yet</div>
   </template>

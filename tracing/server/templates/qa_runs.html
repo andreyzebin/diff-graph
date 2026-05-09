@@ -72,7 +72,7 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 
 <h1>QA · Runs</h1>
 
-<div x-data="runsView" x-init="init()">
+<div x-data="runsView" x-init="init(); setInterval(() => search(true), 5000)">
   <div class="filter-grid">
     <label>kind
       <select x-model="filters.kind" @change="search()">

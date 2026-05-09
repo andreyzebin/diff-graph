@@ -54,7 +54,7 @@ th { color: #8b949e; font-weight: normal; }
   Promote-ready highlights mutations whose full plan finished cleanly.
 </p>
 
-<div x-data="mutationsView" x-init="load()">
+<div x-data="mutationsView" x-init="load(); setInterval(() => load(), 10000)">
 
   <!-- Compare bar -->
   <div class="compare-bar" x-show="selected.length > 0">
