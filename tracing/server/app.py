@@ -363,10 +363,14 @@ async def api_search_run(run_id: str):
 
 from pydantic import BaseModel
 from typing import Any
-from quality_api.queue import TaskQueue, TaskSpec, task_to_dict
+from quality_api.queue import (
+    TaskQueue, TaskSpec, task_to_dict,
+    PlanStore, PlanSpec, plan_to_dict,
+)
 
 
 _qa_queue = TaskQueue()
+_qa_plans = PlanStore(_qa_queue)
 # Reap stale leases on server start so kill -9 mid-run doesn't strand tasks.
 _qa_queue.reap_stale_leases(grace_seconds=0)
 
@@ -523,6 +527,74 @@ async def api_qa_worker_heartbeat(worker_id: str):
 @app.get("/api/qa/workers")
 async def api_qa_list_workers():
     return JSONResponse({"data": _qa_queue.list_workers()})
+
+
+# ── Plans (group of tasks via cross-product) ───────────────────────────────
+
+class PlanCreatePayload(BaseModel):
+    name: str = ""
+    created_by: str = ""
+    branches: list[str] = []                 # [] = single empty-branch row
+    providers: list[str]
+    scenarios: list[str]
+    attempts_min: int = 1
+    priority: int = 100
+    notes: str = ""
+
+
+@app.post("/api/qa/plans")
+async def api_qa_create_plan(p: PlanCreatePayload):
+    """Cross-product (branches × providers × scenarios × attempts_min)
+    of tasks, all tagged with the new plan_id. Empty branches → one row
+    per (provider, scenario) — for scenarios that don't carry a branch.
+    """
+    try:
+        plan_id, task_ids = _qa_plans.create(PlanSpec(
+            name=p.name, created_by=p.created_by,
+            branches=p.branches, providers=p.providers,
+            scenarios=p.scenarios, attempts_min=p.attempts_min,
+            priority=p.priority, notes=p.notes,
+        ))
+    except ValueError as e:
+        return JSONResponse({"error": {"code": "invalid_plan",
+                                       "message": str(e)}},
+                             status_code=400)
+    plan = _qa_plans.get(plan_id)
+    return JSONResponse({"data": plan_to_dict(plan,
+                                              progress=_qa_plans.progress(plan_id)),
+                         "meta": {"task_ids": task_ids}},
+                        status_code=201)
+
+
+@app.get("/api/qa/plans")
+async def api_qa_list_plans(state: Optional[str] = None,
+                            limit: int = 50, offset: int = 0):
+    rows = _qa_plans.list(state=state,
+                          limit=max(1, min(500, limit)),
+                          offset=max(0, offset))
+    return JSONResponse({
+        "data": [plan_to_dict(p,
+                              progress=_qa_plans.progress(p.id))
+                 for p in rows],
+        "meta": {"limit": limit, "offset": offset, "returned": len(rows)},
+    })
+
+
+@app.get("/api/qa/plans/{plan_id}")
+async def api_qa_get_plan(plan_id: int):
+    p = _qa_plans.get(plan_id)
+    if not p:
+        return JSONResponse({"error": {"code": "not_found",
+                                       "message": f"plan {plan_id} not found"}},
+                             status_code=404)
+    return JSONResponse({"data": plan_to_dict(p,
+                                              progress=_qa_plans.progress(plan_id))})
+
+
+@app.post("/api/qa/plans/{plan_id}/cancel")
+async def api_qa_cancel_plan(plan_id: int):
+    n = _qa_plans.cancel(plan_id)
+    return JSONResponse({"data": {"cancelled_tasks": n}})
 
 
 # ── Existing endpoints continue below ──────────────────────────────────────

@@ -21,9 +21,13 @@ app = typer.Typer(help="Search and drill over the diff-graph trace DB.",
 runs_app = typer.Typer(help="Run-level queries.", no_args_is_help=True)
 tools_app = typer.Typer(help="Cross-run tool-call search.", no_args_is_help=True)
 agg_app = typer.Typer(help="Aggregate views.", no_args_is_help=True)
+plans_app = typer.Typer(help="QA plans (group of tasks).", no_args_is_help=True)
+tasks_app = typer.Typer(help="QA tasks.", no_args_is_help=True)
 app.add_typer(runs_app, name="runs")
 app.add_typer(tools_app, name="tool-calls")
 app.add_typer(agg_app, name="aggregates")
+app.add_typer(plans_app, name="plans")
+app.add_typer(tasks_app, name="tasks")
 
 
 # Output mode is a global state cell so subcommands can read it without
@@ -381,6 +385,305 @@ def agg_gene(
     for r in rows:
         table.add_row(r["gene"], str(r["runs_with"]), str(r["runs_without"]))
     _Out.console.print(table)
+
+
+# ── plans ─────────────────────────────────────────────────────────────────
+
+from quality_api.queue import (  # noqa: E402
+    TaskQueue, PlanStore, PlanSpec, TaskSpec, plan_to_dict, task_to_dict,
+)
+
+
+def _queue() -> TaskQueue:
+    return TaskQueue()
+
+
+@plans_app.command("create")
+def plans_create(
+    providers: str = typer.Option(..., help="comma-separated, e.g. deepseek,qwen3-6"),
+    scenarios: str = typer.Option(..., help="comma-separated scenario ids"),
+    branches: Optional[str] = typer.Option(None, help="comma-separated, omit for branch-less scenarios"),
+    attempts_min: int = typer.Option(1, help="attempts per (branch × provider × scenario) cell"),
+    priority: int = typer.Option(100),
+    name: Optional[str] = typer.Option(None),
+    notes: Optional[str] = typer.Option(None),
+    created_by: str = typer.Option("cli"),
+):
+    """Create a plan — a cross-product of (branches × providers × scenarios × attempts_min).
+
+    Each cell becomes one task in qa_tasks tagged with the new plan_id.
+    """
+    spec = PlanSpec(
+        name=name or "",
+        created_by=created_by,
+        branches=_split_csv(branches),
+        providers=_split_csv(providers),
+        scenarios=_split_csv(scenarios),
+        attempts_min=attempts_min,
+        priority=priority,
+        notes=notes or "",
+    )
+    plans = PlanStore(_queue())
+    try:
+        plan_id, task_ids = plans.create(spec)
+    except ValueError as e:
+        _emit_error("invalid_plan", str(e))
+    p = plans.get(plan_id)
+    progress = plans.progress(plan_id)
+    if _Out.json_mode:
+        _emit(plan_to_dict(p, progress=progress),
+              meta={"task_ids": task_ids})
+        return
+    _Out.console.print(f"[green]created plan[/green] [cyan]#{plan_id}[/cyan] · {len(task_ids)} task(s) enqueued")
+    _Out.console.print(f"  providers: {', '.join(p.providers)}")
+    _Out.console.print(f"  scenarios: {', '.join(p.scenarios)}")
+    if p.branches:
+        _Out.console.print(f"  branches:  {', '.join(p.branches)}")
+    _Out.console.print(f"  attempts_min: {p.attempts_min}")
+
+
+@plans_app.command("list")
+def plans_list(
+    state: Optional[str] = typer.Option(None),
+    limit: int = typer.Option(20),
+):
+    plans = PlanStore(_queue())
+    rows = plans.list(state=state, limit=limit)
+    data = [plan_to_dict(p, progress=plans.progress(p.id)) for p in rows]
+    if _Out.json_mode:
+        _emit(data)
+        return
+    if not data:
+        _emit([], suggestion="no plans yet — try `quality-cli plans create ...`")
+        return
+    table = Table(title=f"plans · {len(data)}")
+    table.add_column("id", style="cyan", justify="right")
+    table.add_column("name")
+    table.add_column("state")
+    table.add_column("providers")
+    table.add_column("scenarios")
+    table.add_column("queued/leased/done", justify="right")
+    table.add_column("created")
+    for d in data:
+        prog = d["progress"]
+        bar = f"{prog.get('queued', 0)}/{prog.get('leased', 0) + prog.get('running', 0)}/{prog.get('finished', 0)}"
+        table.add_row(
+            str(d["id"]),
+            (d["name"] or "")[:30],
+            d["state"],
+            ",".join(d["providers"])[:20],
+            ",".join(d["scenarios"])[:30],
+            bar,
+            d["created_at"][:19],
+        )
+    _Out.console.print(table)
+
+
+@plans_app.command("get")
+def plans_get(plan_id: int = typer.Argument(...)):
+    plans = PlanStore(_queue())
+    p = plans.get(plan_id)
+    if not p:
+        _emit_error("not_found", f"plan {plan_id} not found")
+    progress = plans.progress(plan_id)
+    if _Out.json_mode:
+        _emit(plan_to_dict(p, progress=progress))
+        return
+    _Out.console.print(f"[bold]plan #{p.id}[/bold] · state=[cyan]{p.state}[/cyan]")
+    _Out.console.print(f"  name: {p.name or '(unnamed)'}")
+    _Out.console.print(f"  created: {p.created_at} by {p.created_by or '?'}")
+    _Out.console.print(f"  providers: {', '.join(p.providers)}")
+    _Out.console.print(f"  scenarios: {', '.join(p.scenarios)}")
+    if p.branches:
+        _Out.console.print(f"  branches:  {', '.join(p.branches)}")
+    _Out.console.print(f"  attempts_min: {p.attempts_min}")
+    _Out.console.print(f"\n[dim]progress:[/dim] {progress}")
+
+
+@plans_app.command("cancel")
+def plans_cancel(plan_id: int = typer.Argument(...)):
+    n = PlanStore(_queue()).cancel(plan_id)
+    if _Out.json_mode:
+        _emit({"cancelled_tasks": n})
+        return
+    _Out.console.print(f"[yellow]cancelled[/yellow] plan #{plan_id} · {n} task(s) marked cancelled")
+
+
+# ── tasks ─────────────────────────────────────────────────────────────────
+
+@tasks_app.command("list")
+def tasks_list(
+    state: Optional[str] = typer.Option(None),
+    provider: Optional[str] = typer.Option(None),
+    plan_id: Optional[int] = typer.Option(None),
+    limit: int = typer.Option(20),
+):
+    rows = _queue().list(state=state, provider=provider, plan_id=plan_id, limit=limit)
+    data = [task_to_dict(r) for r in rows]
+    if _Out.json_mode:
+        _emit(data)
+        return
+    if not data:
+        _emit([], suggestion="no tasks yet — try `quality-cli plans create ...`")
+        return
+    table = Table(title=f"tasks · {len(data)}")
+    table.add_column("id", style="cyan", justify="right")
+    table.add_column("state")
+    table.add_column("provider")
+    table.add_column("scenario")
+    table.add_column("attempt", justify="right")
+    table.add_column("plan", justify="right")
+    table.add_column("worker")
+    table.add_column("trace_run_id")
+    for d in data:
+        table.add_row(
+            str(d["id"]),
+            d["state"],
+            d["provider"],
+            d["scenario_id"],
+            str(d["attempt_n"]),
+            str(d["plan_id"] or ""),
+            (d.get("lease_owner") or "")[:14],
+            (d.get("trace_run_id") or "")[:14],
+        )
+    _Out.console.print(table)
+
+
+@tasks_app.command("reap")
+def tasks_reap(grace_seconds: int = typer.Option(30)):
+    """Recover stale-leased tasks back to queued."""
+    n = _queue().reap_stale_leases(grace_seconds=grace_seconds)
+    if _Out.json_mode:
+        _emit({"reaped": n})
+        return
+    _Out.console.print(f"[green]reaped[/green] {n} stale lease(s)")
+
+
+# ── worker ────────────────────────────────────────────────────────────────
+
+@app.command("worker")
+def worker_loop(
+    provider: str = typer.Option(..., help="LLM provider this worker serves"),
+    capacity: int = typer.Option(1, help="(reserved — single in-flight task for now)"),
+    bench_cmd: str = typer.Option(
+        "cd /home/andrey/repos/code-review-benchmarks "
+        "&& source .env "
+        "&& unset ALL_PROXY all_proxy "
+        "&& .venv/bin/python benchmark/cli.py run -s {scenario} -p {provider}",
+        help="Shell command template; {scenario} and {provider} are substituted from the task. "
+             "Default invokes code-review-benchmarks; override to plug in a different runner.",
+    ),
+    poll_seconds: int = typer.Option(3, help="poll interval when queue is empty"),
+    lease_seconds: int = typer.Option(120, help="lease duration; heartbeat resets it"),
+    heartbeat_seconds: int = typer.Option(30, help="heartbeat interval"),
+    max_tasks: int = typer.Option(0, help="stop after N tasks (0 = forever)"),
+):
+    """Long-running worker: lease task → run bench → finish.
+
+    Talks directly to the local TaskQueue (offline mode). HTTP variant
+    will land alongside the `--server` flag; same loop, different
+    transport for lease/heartbeat/finish.
+    """
+    import os
+    import signal
+    import subprocess
+    import threading
+    import time
+
+    q = _queue()
+    wid = q.register_worker(provider=provider, capacity=capacity, pid=os.getpid())
+    stop = threading.Event()
+
+    def _stop(signum, frame):
+        stop.set()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, _stop)
+        except Exception:
+            pass
+
+    if not _Out.json_mode:
+        _Out.console.print(f"[green]worker[/green] [cyan]{wid}[/cyan] · provider={provider} · pid={os.getpid()}")
+        _Out.console.print(f"[dim]bench_cmd template: {bench_cmd}[/dim]")
+        _Out.console.print(f"[dim]ctrl-c to stop · max_tasks={max_tasks or '∞'}[/dim]")
+
+    completed = 0
+    while not stop.is_set():
+        if max_tasks and completed >= max_tasks:
+            break
+
+        # Worker heartbeat — keep alive in qa_workers regardless of leasing.
+        q.worker_heartbeat(wid)
+
+        t = q.lease(provider=provider, worker_id=wid, lease_seconds=lease_seconds)
+        if t is None:
+            if not _Out.json_mode:
+                _Out.console.print(f"[dim]· idle · {datetime_now()}[/dim]")
+            stop.wait(poll_seconds)
+            continue
+
+        if not _Out.json_mode:
+            _Out.console.print(f"[green]→ leased[/green] task #{t.id} scenario={t.scenario_id} attempt={t.attempt_n}")
+
+        # Heartbeat thread — extends lease while bench runs.
+        hb_stop = threading.Event()
+        def _hb():
+            while not hb_stop.is_set():
+                if not q.heartbeat(t.id, worker_id=wid, lease_seconds=lease_seconds):
+                    # Task got reaped or finished — signal worker to abort.
+                    hb_stop.set()
+                    return
+                hb_stop.wait(heartbeat_seconds)
+        hb_thread = threading.Thread(target=_hb, daemon=True)
+        hb_thread.start()
+
+        # Build + run bench command.
+        cmd = bench_cmd.format(scenario=t.scenario_id, provider=t.provider,
+                               branch=t.branch, mutation=t.mutation_hash,
+                               attempt=t.attempt_n)
+        result_state = "finished"
+        error_class = None
+        result_payload: dict = {}
+        try:
+            proc = subprocess.run(
+                ["bash", "-c", cmd],
+                capture_output=True, text=True,
+                timeout=lease_seconds * 10,  # generous outer cap
+            )
+            result_payload = {
+                "exit_code": proc.returncode,
+                "stdout_tail": proc.stdout[-500:],
+                "stderr_tail": proc.stderr[-500:],
+            }
+            if proc.returncode != 0:
+                result_state = "error"
+                error_class = "non_zero_exit"
+        except subprocess.TimeoutExpired:
+            result_state = "error"
+            error_class = "timeout"
+        except Exception as exc:
+            result_state = "error"
+            error_class = type(exc).__name__
+            result_payload = {"exception": str(exc)}
+
+        hb_stop.set()
+        hb_thread.join(timeout=1)
+
+        ok = q.finish(t.id, worker_id=wid, state=result_state,
+                      result=result_payload, error_class=error_class)
+        completed += 1
+        if not _Out.json_mode:
+            tag = "[green]✓ finished[/green]" if result_state == "finished" else f"[red]✗ {error_class}[/red]"
+            _Out.console.print(f"  {tag} task #{t.id} · finish_ok={ok}")
+
+    if not _Out.json_mode:
+        _Out.console.print(f"[dim]worker {wid} stopped · completed={completed}[/dim]")
+
+
+def datetime_now() -> str:
+    """Compact timestamp for idle-loop logging."""
+    from datetime import datetime
+    return datetime.now().strftime("%H:%M:%S")
 
 
 if __name__ == "__main__":

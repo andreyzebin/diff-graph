@@ -151,6 +151,20 @@ class TaskQueue:
                     state             TEXT NOT NULL DEFAULT 'running'
                 );
                 CREATE INDEX IF NOT EXISTS idx_qa_workers_provider ON qa_workers(provider);
+
+                CREATE TABLE IF NOT EXISTS qa_plans (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name              TEXT,
+                    created_at        TEXT NOT NULL,
+                    created_by        TEXT,
+                    branches          TEXT,           -- JSON list
+                    providers         TEXT,           -- JSON list
+                    scenarios         TEXT,           -- JSON list
+                    attempts_min      INTEGER NOT NULL DEFAULT 1,
+                    state             TEXT NOT NULL DEFAULT 'running',
+                    notes             TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_qa_plans_state ON qa_plans(state);
             """)
             c.commit()
 
@@ -379,6 +393,188 @@ class TaskQueue:
             result_json=result,
             error_class=row["error_class"],
         )
+
+
+# ── Plans ────────────────────────────────────────────────────────────────────
+
+@dataclass
+class PlanSpec:
+    """Inputs for create_plan — describes the QC matrix to enqueue."""
+    name: str = ""
+    created_by: str = ""
+    branches: list[str] = field(default_factory=list)         # ["feature/X", ...]
+    providers: list[str] = field(default_factory=list)        # ["deepseek", "qwen3-6"]
+    scenarios: list[str] = field(default_factory=list)        # ["REV-001", ...]
+    attempts_min: int = 1
+    priority: int = 100
+    notes: str = ""
+
+
+@dataclass
+class PlanRow:
+    id: int
+    name: str
+    created_at: str
+    created_by: str
+    branches: list[str]
+    providers: list[str]
+    scenarios: list[str]
+    attempts_min: int
+    state: str
+    notes: str
+
+
+class PlanStore:
+    """Plans live alongside tasks in the same DB. A plan is just an
+    aggregate handle over N tasks (cross-product of branches × providers
+    × scenarios × attempts_min). Cancelling a plan soft-cancels its
+    queued tasks; running tasks finish on their own.
+    """
+
+    def __init__(self, queue: TaskQueue):
+        self.queue = queue
+
+    def create(self, spec: PlanSpec) -> tuple[int, list[int]]:
+        """Insert plan + fan-out into qa_tasks. Returns (plan_id, [task_ids]).
+
+        Empty branches → enqueue tasks without branch (single-PR-less
+        scenarios; the bench knows from scenario.id alone). Empty
+        providers / scenarios → ValueError.
+        """
+        if not spec.providers:
+            raise ValueError("plan requires at least one provider")
+        if not spec.scenarios:
+            raise ValueError("plan requires at least one scenario")
+
+        now = datetime.now().isoformat()
+        with self.queue._lock, self.queue._conn() as c:
+            cur = c.execute(
+                """INSERT INTO qa_plans
+                   (name, created_at, created_by, branches, providers,
+                    scenarios, attempts_min, state, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
+                (spec.name or "", now, spec.created_by or "",
+                 json.dumps(spec.branches, ensure_ascii=False),
+                 json.dumps(spec.providers, ensure_ascii=False),
+                 json.dumps(spec.scenarios, ensure_ascii=False),
+                 max(1, spec.attempts_min), spec.notes or ""),
+            )
+            plan_id = int(cur.lastrowid)
+            c.commit()
+
+        # Fan-out via the existing enqueue (each acquires the queue lock
+        # individually, but at the speed of bulk inserts it's fine).
+        task_ids: list[int] = []
+        branches = spec.branches or [""]    # [""] → one task per (provider, scenario)
+        for branch in branches:
+            for provider in spec.providers:
+                for scenario in spec.scenarios:
+                    for attempt_n in range(1, max(1, spec.attempts_min) + 1):
+                        tid = self.queue.enqueue(TaskSpec(
+                            scenario_id=scenario,
+                            provider=provider,
+                            attempt_n=attempt_n,
+                            branch=branch,
+                            plan_id=plan_id,
+                            priority=spec.priority,
+                            payload={"plan_name": spec.name} if spec.name else {},
+                        ))
+                        task_ids.append(tid)
+        return plan_id, task_ids
+
+    def get(self, plan_id: int) -> Optional[PlanRow]:
+        with self.queue._lock, self.queue._conn() as c:
+            row = c.execute(
+                "SELECT * FROM qa_plans WHERE id=?", (plan_id,)
+            ).fetchone()
+        return self._row_to_plan(row) if row else None
+
+    def list(self, *, state: Optional[str] = None,
+             limit: int = 50, offset: int = 0) -> list[PlanRow]:
+        clauses, params = ["1=1"], []
+        if state:
+            clauses.append("state=?")
+            params.append(state)
+        params.extend([limit, offset])
+        with self.queue._lock, self.queue._conn() as c:
+            rows = c.execute(
+                f"SELECT * FROM qa_plans WHERE {' AND '.join(clauses)} "
+                f"ORDER BY id DESC LIMIT ? OFFSET ?",
+                params,
+            ).fetchall()
+        return [self._row_to_plan(r) for r in rows]
+
+    def progress(self, plan_id: int) -> dict:
+        """Aggregate stats across the plan's tasks."""
+        with self.queue._lock, self.queue._conn() as c:
+            rows = c.execute(
+                """SELECT state, COUNT(*) AS n
+                   FROM qa_tasks WHERE plan_id=? GROUP BY state""",
+                (plan_id,),
+            ).fetchall()
+        out = {r["state"]: int(r["n"]) for r in rows}
+        out["total"] = sum(out.values())
+        return out
+
+    def cancel(self, plan_id: int) -> int:
+        """Soft-cancel: mark plan + its queued tasks as cancelled.
+        Returns count of tasks cancelled."""
+        with self.queue._lock, self.queue._conn() as c:
+            c.execute("UPDATE qa_plans SET state='cancelled' WHERE id=?", (plan_id,))
+            cur = c.execute(
+                """UPDATE qa_tasks SET state='cancelled', finished_at=?
+                   WHERE plan_id=? AND state IN ('queued', 'leased', 'running')""",
+                (datetime.now().isoformat(), plan_id),
+            )
+            c.commit()
+            return cur.rowcount
+
+    @staticmethod
+    def _row_to_plan(row: sqlite3.Row | None) -> Optional[PlanRow]:
+        if row is None:
+            return None
+        try:
+            branches = json.loads(row["branches"]) if row["branches"] else []
+        except Exception:
+            branches = []
+        try:
+            providers = json.loads(row["providers"]) if row["providers"] else []
+        except Exception:
+            providers = []
+        try:
+            scenarios = json.loads(row["scenarios"]) if row["scenarios"] else []
+        except Exception:
+            scenarios = []
+        return PlanRow(
+            id=int(row["id"]),
+            name=row["name"] or "",
+            created_at=row["created_at"],
+            created_by=row["created_by"] or "",
+            branches=branches,
+            providers=providers,
+            scenarios=scenarios,
+            attempts_min=int(row["attempts_min"]),
+            state=row["state"],
+            notes=row["notes"] or "",
+        )
+
+
+def plan_to_dict(p: PlanRow, *, progress: dict | None = None) -> dict:
+    out = {
+        "id": p.id,
+        "name": p.name,
+        "created_at": p.created_at,
+        "created_by": p.created_by,
+        "branches": p.branches,
+        "providers": p.providers,
+        "scenarios": p.scenarios,
+        "attempts_min": p.attempts_min,
+        "state": p.state,
+        "notes": p.notes,
+    }
+    if progress is not None:
+        out["progress"] = progress
+    return out
 
 
 def task_to_dict(t: TaskRow) -> dict:
