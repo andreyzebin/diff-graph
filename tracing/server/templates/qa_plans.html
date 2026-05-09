@@ -6,6 +6,8 @@
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
+<script>window.QA_BASE_PATH = "{{ base_path }}";</script>
+<script defer src="{{ base_path }}/static/qa.js"></script>
 <style>
 body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 .qa-nav { margin-bottom: 16px; font-size: 0.9em; }
@@ -28,12 +30,12 @@ th { color: #8b949e; font-weight: normal; }
 .empty { color: #8b949e; padding: 40px; text-align: center; }
 </style>
 </head>
-<body>
+<body hx-boost="true">
 {% include "_qa_nav.html" %}
 
 <h1>QA · Plans</h1>
 
-<div x-data="plansView()" x-init="load()">
+<div x-data="plansView" x-init="load()">
   <template x-if="plans.length === 0">
     <div class="empty">no plans yet — try <code>quality-cli plans create --providers=… --scenarios=…</code></div>
   </template>
@@ -69,37 +71,6 @@ th { color: #8b949e; font-weight: normal; }
   </template>
 </div>
 
-<script>
-function plansView() {
-  return {
-    plans: [],
-    async load() {
-      const r = await fetch(`{{ base_path }}/api/qa/plans?limit=50`);
-      const j = await r.json();
-      this.plans = j.data || [];
-    },
-    bars(p) {
-      const pr = p.progress || {};
-      const order = ['finished', 'running', 'queued', 'leased', 'error', 'cancelled'];
-      const segs = [];
-      for (const k of order) {
-        const n = pr[k] || 0;
-        if (n > 0) segs.push({k: k === 'leased' ? 'running' : k, n});
-      }
-      return segs.length ? segs : [{k: 'queued', n: 1}];
-    },
-    bartip(p) {
-      const pr = p.progress || {};
-      return Object.entries(pr).filter(([k]) => k !== 'total').map(([k,n]) => `${k}: ${n}`).join(' · ');
-    },
-    progressText(p) {
-      const pr = p.progress || {};
-      const done = (pr.finished || 0) + (pr.error || 0) + (pr.cancelled || 0);
-      const total = pr.total || 0;
-      return ` ${done}/${total}`;
-    },
-  };
-}
-</script>
+
 </body>
 </html>

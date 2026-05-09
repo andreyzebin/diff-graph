@@ -6,6 +6,8 @@
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
+<script>window.QA_BASE_PATH = "{{ base_path }}";</script>
+<script defer src="{{ base_path }}/static/qa.js"></script>
 <style>
 body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 .qa-nav { margin-bottom: 16px; font-size: 0.9em; }
@@ -26,12 +28,12 @@ th { color: #8b949e; font-weight: normal; }
 .gene-chip { color: #58a6ff; font-family: ui-monospace, monospace; }
 </style>
 </head>
-<body>
+<body hx-boost="true">
 {% include "_qa_nav.html" %}
 
 <h1>QA · Overview</h1>
 
-<div x-data="dash()" x-init="load()">
+<div x-data="dash" x-init="load()">
   <div class="cards">
     <div class="card">
       <div class="label">total runs</div>
@@ -115,38 +117,6 @@ th { color: #8b949e; font-weight: normal; }
   </div>
 </div>
 
-<script>
-function dash() {
-  return {
-    totalRuns: '…', agentRuns: '…', judgeRuns: '…',
-    mutations: '…', scenarios: '…',
-    byProvider: [], byScenario: [], genes: [],
-    async load() {
-      const get = async (path) => (await (await fetch(`{{ base_path }}${path}`)).json()).data;
 
-      // counts via /api/search/runs?limit=1 — we just need meta.total
-      const fetchCount = async (extra = '') => {
-        const r = await (await fetch(`{{ base_path }}/api/search/runs?limit=1${extra}`)).json();
-        return (r.meta && r.meta.total) || 0;
-      };
-      this.totalRuns = await fetchCount();
-      this.agentRuns = await fetchCount('&kind=agent');
-      this.judgeRuns = await fetchCount('&kind=judge');
-
-      this.byProvider = await get('/api/search/aggregates/by_provider');
-      this.byScenario = await get('/api/search/aggregates/by_scenario');
-      this.genes = await get('/api/search/genes');
-
-      // unique mutations / scenarios — count distinct keys via tables loaded
-      this.scenarios = this.byScenario.length;
-      const muts = new Set();
-      // crude — sample first page of runs to estimate; replace with /api/aggregates/by_mutation later
-      const runs = await get('/api/search/runs?limit=200');
-      runs.forEach(r => { if (r.mutation) muts.add(r.mutation); });
-      this.mutations = muts.size;
-    },
-  };
-}
-</script>
 </body>
 </html>

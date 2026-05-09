@@ -6,6 +6,8 @@
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
+<script>window.QA_BASE_PATH = "{{ base_path }}";</script>
+<script defer src="{{ base_path }}/static/qa.js"></script>
 <style>
 body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 .qa-nav { margin-bottom: 16px; font-size: 0.9em; }
@@ -22,7 +24,7 @@ th { color: #8b949e; font-weight: normal; }
 .empty { color: #8b949e; padding: 40px; text-align: center; }
 </style>
 </head>
-<body>
+<body hx-boost="true">
 {% include "_qa_nav.html" %}
 
 <h1>QA · Genes</h1>
@@ -30,7 +32,7 @@ th { color: #8b949e; font-weight: normal; }
 Auto-detected from prompt content at run start. Click a gene to filter runs.
 </p>
 
-<div x-data="genesView()" x-init="load()">
+<div x-data="genesView" x-init="load()">
   <template x-if="rows.length === 0">
     <div class="empty">no genes detected yet</div>
   </template>
@@ -57,18 +59,6 @@ Auto-detected from prompt content at run start. Click a gene to filter runs.
   </template>
 </div>
 
-<script>
-function genesView() {
-  return {
-    rows: [],
-    total: 1,
-    async load() {
-      const r = await (await fetch(`{{ base_path }}/api/search/aggregates/by_gene`)).json();
-      this.rows = r.data || [];
-      this.total = Math.max(1, ...this.rows.map(g => g.runs_with + g.runs_without));
-    },
-  };
-}
-</script>
+
 </body>
 </html>

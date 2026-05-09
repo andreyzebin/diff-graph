@@ -6,6 +6,8 @@
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
+<script>window.QA_BASE_PATH = "{{ base_path }}";</script>
+<script defer src="{{ base_path }}/static/qa.js"></script>
 <style>
 body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 .qa-nav { margin-bottom: 16px; font-size: 0.9em; }
@@ -42,7 +44,7 @@ th { color: #8b949e; font-weight: normal; }
            background: #56d36422; border-radius: 3px; }
 </style>
 </head>
-<body>
+<body hx-boost="true">
 {% include "_qa_nav.html" %}
 
 <h1>QA · Mutations</h1>
@@ -51,7 +53,7 @@ th { color: #8b949e; font-weight: normal; }
   Promote-ready highlights mutations whose full plan finished cleanly.
 </p>
 
-<div x-data="mutationsView()" x-init="load()">
+<div x-data="mutationsView" x-init="load()">
 
   <!-- Compare bar -->
   <div class="compare-bar" x-show="selected.length > 0">
@@ -168,46 +170,6 @@ th { color: #8b949e; font-weight: normal; }
 
 </div>
 
-<script>
-function mutationsView() {
-  return {
-    mutations: [],
-    promote: [],
-    selected: [],
-    comparison: null,
-    async load() {
-      const get = async (path) => (await (await fetch(`{{ base_path }}${path}`)).json()).data || [];
-      this.mutations = await get('/api/search/aggregates/by_mutation');
-      this.promote = await get('/api/qa/promote-ready');
-    },
-    toggleSelect(mut) {
-      if (this.selected.includes(mut)) {
-        this.selected = this.selected.filter(m => m !== mut);
-      } else {
-        if (this.selected.length >= 2) this.selected.shift();
-        this.selected.push(mut);
-      }
-    },
-    async loadCompare() {
-      if (this.selected.length !== 2) return;
-      const [a, b] = this.selected;
-      const r = await fetch(`{{ base_path }}/api/search/compare?a=${a}&b=${b}`);
-      this.comparison = (await r.json()).data;
-    },
-    deltaClass(a, b) {
-      if (!a || !b) return 'delta-zero';
-      const d = (b || 0) - (a || 0);
-      if (Math.abs(d) < 50) return 'delta-zero';
-      return d > 0 ? 'delta-neg' : 'delta-pos';      // negative dur change = faster = good
-    },
-    deltaText(a, b) {
-      if (!a && !b) return '';
-      if (!a || !b) return '?';
-      const d = Math.round((b || 0) - (a || 0));
-      return d > 0 ? `+${d}` : String(d);
-    },
-  };
-}
-</script>
+
 </body>
 </html>
