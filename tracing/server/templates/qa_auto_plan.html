@@ -48,6 +48,20 @@ th { color: #8b949e; font-weight: normal; }
 .section-row {
   display: flex; justify-content: space-between; align-items: center; gap: 10px;
 }
+.history-table { margin-top: 10px; font-size: 0.8em; }
+.history-table th { color: #6e7681; padding: 4px 8px; }
+.history-table td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
+.bar { display: inline-flex; height: 10px; border-radius: 2px; overflow: hidden; min-width: 80px; }
+.bar div { height: 100%; }
+.bar .b-finished { background: #56d364; }
+.bar .b-running  { background: #c69026; }
+.bar .b-queued   { background: #30363d; }
+.bar .b-error    { background: #f47067; }
+.bar .b-cancelled { background: #6e7681; }
+.state-running { color: #c69026; }
+.state-done    { color: #56d364; }
+.state-cancelled { color: #6e7681; }
+.promote-yes { color: #56d364; font-size: 0.7em; }
 </style>
 </head>
 <body>
@@ -125,6 +139,61 @@ th { color: #8b949e; font-weight: normal; }
               <span class="k">last discover</span>
               <span class="muted" x-text="c.last_discover_at || '(never)'"></span>
             </div>
+            <div style="margin-top: 8px;">
+              <button class="btn"
+                      @click="toggleHistory(c.id)"
+                      x-text="(history[c.id] && historyOpen[c.id]) ? 'hide history' : 'show history'"></button>
+              <span class="muted" style="margin-left: 8px;"
+                    x-text="historyMeta[c.id] || ''"></span>
+            </div>
+            <template x-if="historyOpen[c.id] && history[c.id]">
+              <div>
+                <template x-if="history[c.id].length === 0">
+                  <div class="muted" style="padding: 8px;">no plans created by this config yet</div>
+                </template>
+                <template x-if="history[c.id].length > 0">
+                  <table class="history-table">
+                    <thead><tr>
+                      <th>plan</th><th>branch</th><th>sha</th>
+                      <th>state</th><th>progress</th><th>planned at</th>
+                    </tr></thead>
+                    <tbody>
+                      <template x-for="h in history[c.id]" :key="`${h.plan_id}`">
+                        <tr>
+                          <td>
+                            <a class="run-link" :href="`{{ base_path }}/qa/plans`"
+                               x-text="`#${h.plan_id}`"></a>
+                          </td>
+                          <td x-text="h.branch"></td>
+                          <td>
+                            <a class="run-link"
+                               :href="`{{ base_path }}/qa/runs?mutation=${h.sha}`"
+                               style="font-family: ui-monospace, monospace;"
+                               x-text="h.sha.slice(0, 7)"></a>
+                          </td>
+                          <td>
+                            <span :class="`state-${h.plan_state || 'unknown'}`"
+                                  x-text="h.plan_state || '?'"></span>
+                            <template x-if="h.promote_ready">
+                              <span class="promote-yes"> ✓ promote-ready</span>
+                            </template>
+                          </td>
+                          <td>
+                            <div class="bar" :title="bartip(h.progress)">
+                              <template x-for="seg in bars(h.progress)" :key="seg.k">
+                                <div :class="`b-${seg.k}`" :style="`flex: ${seg.n};`"></div>
+                              </template>
+                            </div>
+                            <span class="muted" x-text="progressText(h.progress)"></span>
+                          </td>
+                          <td class="muted" x-text="(h.planned_at || '').slice(0, 19)"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </template>
+              </div>
+            </template>
           </div>
         </template>
 
@@ -245,6 +314,9 @@ function autoPlan() {
     editStatus: '',
     editingId: null,
     editForm: {},
+    history: {},        // config_id → array of planned commits
+    historyOpen: {},    // config_id → bool
+    historyMeta: {},    // config_id → "N plans · M branches"
     form: {
       name: '', repo_path: '/home/andrey/repos/diff-graph',
       branch_pattern: 'master,feature/*',
@@ -260,6 +332,39 @@ function autoPlan() {
     async load() {
       const r = await fetch(`{{ base_path }}/api/qa/auto-plan/configs`);
       this.configs = (await r.json()).data || [];
+    },
+    async toggleHistory(configId) {
+      this.historyOpen[configId] = !this.historyOpen[configId];
+      if (this.historyOpen[configId] && !this.history[configId]) {
+        await this.fetchHistory(configId);
+      }
+    },
+    async fetchHistory(configId) {
+      const r = await fetch(`{{ base_path }}/api/qa/auto-plan/configs/${configId}/history?limit=50`);
+      const j = await r.json();
+      this.history[configId] = j.data || [];
+      const branches = new Set(this.history[configId].map(h => h.branch));
+      this.historyMeta[configId] = `${this.history[configId].length} plans · ${branches.size} branch(es)`;
+    },
+    bars(progress) {
+      const pr = progress || {};
+      const order = ['finished', 'running', 'leased', 'queued', 'error', 'cancelled'];
+      const segs = [];
+      for (const k of order) {
+        const n = pr[k] || 0;
+        if (n > 0) segs.push({k: k === 'leased' ? 'running' : k, n});
+      }
+      return segs.length ? segs : [{k: 'queued', n: 1}];
+    },
+    bartip(p) {
+      const pr = p || {};
+      return Object.entries(pr).filter(([k]) => k !== 'total').map(([k,n]) => `${k}: ${n}`).join(' · ');
+    },
+    progressText(p) {
+      const pr = p || {};
+      const done = (pr.finished || 0) + (pr.error || 0) + (pr.cancelled || 0);
+      const total = pr.total || 0;
+      return ` ${done}/${total}`;
     },
     async discoverAll() {
       this.discoverStatus = 'discovering...';

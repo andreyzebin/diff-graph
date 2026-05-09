@@ -761,6 +761,38 @@ async def api_qa_auto_update(config_id: int, p: AutoPlanUpdatePayload):
     return JSONResponse({"data": config_to_dict(cfg)})
 
 
+@app.get("/api/qa/auto-plan/configs/{config_id}/history")
+async def api_qa_auto_history(config_id: int, limit: int = 50):
+    """Plans created by this config — every (branch × sha) ever
+    planned, joined with qa_plans for current state + progress."""
+    import sqlite3
+    from orchestra.trace_db import DEFAULT_DB_PATH
+    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT pc.branch, pc.sha, pc.plan_kind, pc.plan_id, pc.planned_at,
+               p.name AS plan_name, p.state AS plan_state,
+               p.promote_ready, p.providers, p.scenarios
+        FROM qa_planned_commits pc
+        LEFT JOIN qa_plans p ON p.id = pc.plan_id
+        WHERE pc.config_id = ?
+        ORDER BY pc.planned_at DESC
+        LIMIT ?
+    """, (config_id, max(1, min(500, limit)))).fetchall()
+    items = []
+    for r in rows:
+        d = dict(r)
+        # Add progress counts via the existing PlanStore aggregator.
+        if d.get("plan_id"):
+            try:
+                d["progress"] = _qa_plans.progress(int(d["plan_id"]))
+            except Exception:
+                d["progress"] = {}
+        items.append(d)
+    conn.close()
+    return JSONResponse({"data": items, "meta": {"returned": len(items)}})
+
+
 @app.get("/api/qa/auto-plan/configs/{config_id}/preview-scenarios")
 async def api_qa_auto_preview_scenarios(config_id: int):
     """Resolve scenario_tags filter against the configured bench repo
