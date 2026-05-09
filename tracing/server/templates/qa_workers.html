@@ -23,9 +23,13 @@ th { color: #8b949e; font-weight: normal; }
 .muted { color: #8b949e; font-size: 0.85em; }
 .empty { color: #8b949e; padding: 30px; text-align: center; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-.dot-busy  { background: #c69026; box-shadow: 0 0 6px #c69026aa; }
-.dot-idle  { background: #56d364; }
-.dot-dead  { background: #6e7681; }
+.dot-busy    { background: #c69026; box-shadow: 0 0 6px #c69026aa; }
+.dot-idle    { background: #56d364; }
+.dot-stopped { background: #58a6ff; }
+.dot-dead    { background: #f47067; }
+.btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+       padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
+.btn:hover { background: #30363d; }
 .task-link { color: #58a6ff; text-decoration: none;
              font-family: ui-monospace, monospace; }
 .task-link:hover { text-decoration: underline; }
@@ -33,6 +37,16 @@ th { color: #8b949e; font-weight: normal; }
 .tag-chip { display: inline-block; padding: 1px 6px; background: #21262d;
             color: #8b949e; border-radius: 3px; font-size: 0.75em; }
 .refresh-meta { float: right; }
+.form-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.form-row input, .form-row select {
+  background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+  padding: 4px 8px; border-radius: 4px; font-size: 0.85em;
+}
+.btn-primary { background: #1f6feb; border-color: #388bfd; color: white; }
+.btn-primary:hover { background: #388bfd; }
+.btn-danger { background: #b62324; border-color: #da3633; color: white; }
+.btn-danger:hover { background: #da3633; }
+.section-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 </style>
 </head>
 <body hx-boost="true" hx-ext="head-support">
@@ -42,7 +56,61 @@ th { color: #8b949e; font-weight: normal; }
   <span class="muted refresh-meta" x-data="{}" x-text="'· auto-refresh every 5s'"></span>
 </h1>
 
-<div x-data="workersView" x-init="load(); setInterval(() => load(), 5000)">
+<div x-data="workersView" x-init="load(); loadPools(); setInterval(() => { load(); loadPools(); }, 5000)">
+
+  <!-- Pool config: server-side supervisor spawns workers per these rules -->
+  <div class="section">
+    <div class="section-row">
+      <h2>pools <span class="muted" x-text="`(${pools.length})`"></span> ·
+          <span class="muted">supervisor keeps target alive while queue has work for the provider</span></h2>
+    </div>
+    <template x-if="pools.length === 0">
+      <div class="empty">no pools configured · workers must be started manually</div>
+    </template>
+    <template x-if="pools.length > 0">
+      <table>
+        <thead><tr>
+          <th>id</th><th>name</th><th>provider</th>
+          <th class="tn">target</th><th>trigger</th>
+          <th class="tn">idle exit</th><th>state</th>
+          <th>last check</th><th></th>
+        </tr></thead>
+        <tbody>
+          <template x-for="p in pools" :key="p.id">
+            <tr>
+              <td x-text="`#${p.id}`"></td>
+              <td x-text="p.name || '(unnamed)'"></td>
+              <td x-text="p.provider"></td>
+              <td class="tn" x-text="p.target_workers"></td>
+              <td x-text="p.trigger"></td>
+              <td class="tn" x-text="`${p.max_idle_seconds}s`"></td>
+              <td>
+                <span :class="p.enabled ? 'dot dot-idle' : 'dot dot-dead'"></span>
+                <span x-text="p.enabled ? 'enabled' : 'disabled'"></span>
+              </td>
+              <td class="muted" x-text="(p.last_check_at || 'never').slice(0, 19)"></td>
+              <td>
+                <button class="btn" @click="togglePool(p)" x-text="p.enabled ? 'disable' : 'enable'"></button>
+                <button class="btn btn-danger" @click="deletePool(p.id)">×</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </template>
+
+    <div class="form-row" style="margin-top: 12px;">
+      <input x-model="poolForm.name" placeholder="name (e.g. deepseek-default)" style="width: 200px;">
+      <input x-model="poolForm.provider" placeholder="provider" style="width: 130px;">
+      <span class="muted">target</span>
+      <input type="number" x-model.number="poolForm.target_workers" min="1" style="width: 60px;">
+      <span class="muted">idle exit (s)</span>
+      <input type="number" x-model.number="poolForm.max_idle_seconds" style="width: 80px;">
+      <button class="btn-primary btn" @click="createPool()">add pool</button>
+      <span class="muted" x-text="poolStatus"></span>
+    </div>
+  </div>
+
 
   <div class="section">
     <h2>fleet · <span x-text="`${workers.length} worker(s)`"></span>

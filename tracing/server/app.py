@@ -396,13 +396,26 @@ from quality_api.queue import (
     PlanStore, PlanSpec, plan_to_dict,
 )
 from quality_api.discovery import AutoPlanStore, config_to_dict
+from quality_api.pools import PoolStore, WorkerSupervisor, pool_to_dict
 
 
 _qa_queue = TaskQueue()
 _qa_plans = PlanStore(_qa_queue)
 _qa_auto = AutoPlanStore(_qa_queue)
+_qa_pools = PoolStore(_qa_queue)
+_qa_supervisor = WorkerSupervisor(_qa_queue, _qa_pools, check_interval_seconds=20)
 # Reap stale leases on server start so kill -9 mid-run doesn't strand tasks.
 _qa_queue.reap_stale_leases(grace_seconds=0)
+
+
+@app.on_event("startup")
+async def _start_qa_supervisor():
+    _qa_supervisor.start()
+
+
+@app.on_event("shutdown")
+async def _stop_qa_supervisor():
+    await _qa_supervisor.stop()
 
 
 class TaskCreatePayload(BaseModel):
@@ -556,10 +569,18 @@ async def api_qa_worker_heartbeat(worker_id: str):
 
 @app.get("/api/qa/workers")
 async def api_qa_list_workers():
-    """Worker fleet + each worker's currently-leased task (if any)."""
+    """Worker fleet + each worker's currently-leased task.
+
+    Self-healing happens inside TaskQueue.list_workers (called below):
+      - Workers with stale heartbeat (>90s) AND state='running'
+        get auto-flipped to state='dead'.
+      - Worker rows state ∈ ('dead','stopped') older than 1h are
+        auto-deleted.
+    UI polls every 5s, fleet stays tidy without manual cleanup.
+    """
     import sqlite3
-    from orchestra.trace_db import DEFAULT_DB_PATH
     from datetime import datetime
+    from orchestra.trace_db import DEFAULT_DB_PATH
     workers = _qa_queue.list_workers()
     conn = sqlite3.connect(str(DEFAULT_DB_PATH))
     conn.row_factory = sqlite3.Row
@@ -577,16 +598,115 @@ async def api_qa_list_workers():
     out = []
     for w in workers:
         d = dict(w)
-        # Stale heartbeat → worker is dead even if state still says running.
         try:
             last = datetime.fromisoformat(w["last_heartbeat"])
             d["heartbeat_age_s"] = int((now - last).total_seconds())
         except Exception:
             d["heartbeat_age_s"] = None
-        d["alive"] = d["heartbeat_age_s"] is not None and d["heartbeat_age_s"] < 90
+        # Health classification (used by the fleet UI):
+        #   running  — fresh heartbeat (<90s) and worker_state == 'running'
+        #   stopped  — clean exit, worker_state == 'stopped'
+        #   dead     — stale heartbeat AND state != 'stopped' (crashed
+        #              or forcibly killed)
+        recorded = (w.get("state") or "running").strip().lower()
+        fresh_hb = (d["heartbeat_age_s"] is not None
+                    and d["heartbeat_age_s"] < 90)
+        if recorded == "stopped":
+            health = "stopped"
+        elif fresh_hb and recorded == "running":
+            health = "running"
+        else:
+            health = "dead"
+        d["health"] = health
+        # Back-compat for the existing UI: alive == running or stopped
+        # (the worker hasn't crashed). Busy/idle dot derives from this.
+        d["alive"] = (health == "running")
         d["current_task"] = by_owner.get(w["id"])
         out.append(d)
     return JSONResponse({"data": out})
+
+
+# ── Worker pools (server-side supervisor) ─────────────────────────────────
+
+class PoolCreatePayload(BaseModel):
+    name: str = ""
+    provider: str
+    target_workers: int = 1
+    trigger: str = "live_queue"
+    max_idle_seconds: int = 120
+    bench_cmd: str = ""
+    enabled: bool = True
+
+
+class PoolUpdatePayload(BaseModel):
+    name: Optional[str] = None
+    provider: Optional[str] = None
+    target_workers: Optional[int] = None
+    trigger: Optional[str] = None
+    max_idle_seconds: Optional[int] = None
+    bench_cmd: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+@app.post("/api/qa/worker-pools")
+async def api_qa_pool_create(p: PoolCreatePayload):
+    try:
+        pid = _qa_pools.add(
+            name=p.name, provider=p.provider,
+            target_workers=p.target_workers, trigger=p.trigger,
+            max_idle_seconds=p.max_idle_seconds, bench_cmd=p.bench_cmd,
+            enabled=p.enabled,
+        )
+    except ValueError as e:
+        return JSONResponse({"error": {"code": "invalid", "message": str(e)}},
+                             status_code=400)
+    return JSONResponse({"data": pool_to_dict(_qa_pools.get(pid))}, status_code=201)
+
+
+@app.get("/api/qa/worker-pools")
+async def api_qa_pool_list():
+    return JSONResponse({"data": [pool_to_dict(p) for p in _qa_pools.list()]})
+
+
+@app.put("/api/qa/worker-pools/{pool_id}")
+async def api_qa_pool_update(pool_id: int, p: PoolUpdatePayload):
+    fields = {k: v for k, v in p.model_dump().items() if v is not None}
+    if not fields:
+        return JSONResponse({"error": {"code": "no_op", "message": "nothing to update"}},
+                             status_code=400)
+    ok = _qa_pools.update(pool_id, **fields)
+    if not ok:
+        return JSONResponse({"error": {"code": "not_found", "message": f"pool {pool_id} not found"}},
+                             status_code=404)
+    return JSONResponse({"data": pool_to_dict(_qa_pools.get(pool_id))})
+
+
+@app.delete("/api/qa/worker-pools/{pool_id}")
+async def api_qa_pool_delete(pool_id: int):
+    ok = _qa_pools.delete(pool_id)
+    return JSONResponse({"data": {"ok": ok}})
+
+
+@app.post("/api/qa/workers/cleanup-dead")
+async def api_qa_cleanup_dead_workers():
+    """Remove dead/stopped worker rows older than 1h. Manual button on
+    the UI calls this to keep the fleet table tidy."""
+    import sqlite3
+    from orchestra.trace_db import DEFAULT_DB_PATH
+    from datetime import datetime, timedelta
+    cutoff = (datetime.now() - timedelta(hours=1)).isoformat()
+    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+    try:
+        cur = conn.execute(
+            """DELETE FROM qa_workers
+               WHERE state IN ('dead', 'stopped')
+                  OR (state='running' AND last_heartbeat < ?)""",
+            (cutoff,),
+        )
+        conn.commit()
+        return JSONResponse({"data": {"deleted": cur.rowcount}})
+    finally:
+        conn.close()
 
 
 # ── Plans (group of tasks via cross-product) ───────────────────────────────

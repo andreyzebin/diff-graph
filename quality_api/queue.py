@@ -198,6 +198,25 @@ class TaskQueue:
                 );
                 CREATE INDEX IF NOT EXISTS idx_qa_apc_enabled ON qa_auto_plan_configs(enabled);
 
+                CREATE TABLE IF NOT EXISTS qa_worker_pools (
+                    -- Server-side worker supervisor config: "keep N alive
+                    -- workers for provider X while queue has tasks".
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name            TEXT,
+                    provider        TEXT NOT NULL,
+                    target_workers  INTEGER NOT NULL DEFAULT 1,
+                    trigger         TEXT NOT NULL DEFAULT 'live_queue',
+                    -- 'live_queue' = spawn while queue non-empty for this provider
+                    -- (future: 'cron', 'always_on')
+                    max_idle_seconds INTEGER NOT NULL DEFAULT 120,
+                    bench_cmd       TEXT,           -- override worker --bench-cmd template
+                    enabled         INTEGER NOT NULL DEFAULT 1,
+                    created_at      TEXT NOT NULL,
+                    last_check_at   TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_qa_pools_enabled ON qa_worker_pools(enabled);
+                CREATE INDEX IF NOT EXISTS idx_qa_pools_provider ON qa_worker_pools(provider);
+
                 CREATE TABLE IF NOT EXISTS qa_planned_commits (
                     -- Idempotency ledger: one row per (config, branch, sha,
                     -- plan_kind) ever planned. discover() consults this
@@ -469,8 +488,48 @@ class TaskQueue:
             c.commit()
             return cur.rowcount > 0
 
-    def list_workers(self) -> list[dict]:
+    def worker_set_state(self, worker_id: str, state: str) -> bool:
+        """Mark worker as stopped (clean exit) / dead (forcibly killed)."""
         with self._lock, self._conn() as c:
+            cur = c.execute(
+                "UPDATE qa_workers SET state=?, last_heartbeat=? WHERE id=?",
+                (state, datetime.now().isoformat(), worker_id),
+            )
+            c.commit()
+            return cur.rowcount > 0
+
+    def list_workers(self,
+                     stale_after_seconds: int = 90,
+                     gc_terminal_after_seconds: int = 3600) -> list[dict]:
+        """List worker fleet, self-healing on every call:
+
+        - heartbeat > stale_after_seconds AND state='running' → state='dead'
+        - state ∈ ('dead', 'stopped') AND heartbeat > gc_terminal_after_seconds
+          → row deleted
+
+        Server endpoint and CLI both call this, so dead/stopped workers
+        auto-classify and auto-evict regardless of who's looking. Pass
+        gc_terminal_after_seconds=0 to retain (no GC).
+        """
+        now = datetime.now()
+        stale_cutoff = (now - timedelta(seconds=stale_after_seconds)).isoformat()
+        gc_cutoff = (now - timedelta(seconds=gc_terminal_after_seconds)).isoformat()
+        with self._lock, self._conn() as c:
+            try:
+                c.execute(
+                    "UPDATE qa_workers SET state='dead' "
+                    "WHERE state='running' AND last_heartbeat < ?",
+                    (stale_cutoff,),
+                )
+                if gc_terminal_after_seconds > 0:
+                    c.execute(
+                        "DELETE FROM qa_workers "
+                        "WHERE state IN ('dead', 'stopped') AND last_heartbeat < ?",
+                        (gc_cutoff,),
+                    )
+                c.commit()
+            except Exception:
+                pass
             rows = c.execute("SELECT * FROM qa_workers ORDER BY started_at DESC").fetchall()
         return [dict(r) for r in rows]
 

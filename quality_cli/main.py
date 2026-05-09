@@ -580,6 +580,10 @@ def worker_loop(
     lease_seconds: int = typer.Option(120, help="lease duration; heartbeat resets it"),
     heartbeat_seconds: int = typer.Option(30, help="heartbeat interval"),
     max_tasks: int = typer.Option(0, help="stop after N tasks (0 = forever)"),
+    max_idle_seconds: int = typer.Option(0,
+        help="exit after N consecutive seconds of empty queue (0 = forever). "
+             "Used by the server supervisor to spin workers down when the "
+             "queue dries up. Set to 120 for typical pool-managed workers."),
 ):
     """Long-running worker: lease task → run bench → finish.
 
@@ -611,6 +615,8 @@ def worker_loop(
         _Out.console.print(f"[dim]ctrl-c to stop · max_tasks={max_tasks or '∞'}[/dim]")
 
     completed = 0
+    idle_since: float | None = None  # set when first idle poll seen
+    import time as _time
     while not stop.is_set():
         if max_tasks and completed >= max_tasks:
             break
@@ -620,10 +626,17 @@ def worker_loop(
 
         t = q.lease(provider=provider, worker_id=wid, lease_seconds=lease_seconds)
         if t is None:
+            if idle_since is None:
+                idle_since = _time.monotonic()
+            elif max_idle_seconds and (_time.monotonic() - idle_since) >= max_idle_seconds:
+                if not _Out.json_mode:
+                    _Out.console.print(f"[dim]· {datetime_now()} idle for {max_idle_seconds}s — exiting[/dim]")
+                break
             if not _Out.json_mode:
                 _Out.console.print(f"[dim]· idle · {datetime_now()}[/dim]")
             stop.wait(poll_seconds)
             continue
+        idle_since = None  # got work, reset idle counter
 
         if not _Out.json_mode:
             _Out.console.print(f"[green]→ leased[/green] task #{t.id} scenario={t.scenario_id} attempt={t.attempt_n}")
@@ -679,6 +692,13 @@ def worker_loop(
             tag = "[green]✓ finished[/green]" if result_state == "finished" else f"[red]✗ {error_class}[/red]"
             _Out.console.print(f"  {tag} task #{t.id} · finish_ok={ok}")
 
+    # Mark the worker row as cleanly stopped — distinguishes it in
+    # the fleet UI from workers that died unexpectedly (state='dead'
+    # from stale heartbeat).
+    try:
+        q.worker_set_state(wid, "stopped")
+    except Exception:
+        pass
     if not _Out.json_mode:
         _Out.console.print(f"[dim]worker {wid} stopped · completed={completed}[/dim]")
 

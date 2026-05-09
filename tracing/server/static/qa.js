@@ -432,24 +432,72 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('workersView', () => ({
     workers: [],
     leasedTasks: [],
-    get busyCount() { return this.workers.filter(w => w.alive && w.current_task).length },
-    get idleCount() { return this.workers.filter(w => w.alive && !w.current_task).length },
-    get deadCount() { return this.workers.filter(w => !w.alive).length },
+    pools: [],
+    poolForm: { name: '', provider: 'deepseek', target_workers: 1, max_idle_seconds: 120 },
+    poolStatus: '',
+    cleanupStatus: '',
+    get busyCount()    { return this.workers.filter(w => w.health === 'running' && w.current_task).length },
+    get idleCount()    { return this.workers.filter(w => w.health === 'running' && !w.current_task).length },
+    get stoppedCount() { return this.workers.filter(w => w.health === 'stopped').length },
+    get deadCount()    { return this.workers.filter(w => w.health === 'dead').length },
     async load() {
       const base = window.QA_BASE_PATH || '';
       const r = await fetch(`${base}/api/qa/workers`);
       this.workers = (await r.json()).data || [];
-      // In-flight task list = each worker's current task, deduped.
       this.leasedTasks = this.workers
         .map(w => w.current_task)
         .filter(t => t);
     },
+    async loadPools() {
+      const base = window.QA_BASE_PATH || '';
+      const r = await fetch(`${base}/api/qa/worker-pools`);
+      this.pools = (await r.json()).data || [];
+    },
+    async createPool() {
+      this.poolStatus = 'creating…';
+      const base = window.QA_BASE_PATH || '';
+      const r = await fetch(`${base}/api/qa/worker-pools`, {
+        method: 'POST', headers: {'content-type': 'application/json'},
+        body: JSON.stringify(this.poolForm),
+      });
+      if (r.ok) {
+        this.poolStatus = 'created';
+        await this.loadPools();
+      } else {
+        const e = await r.json();
+        this.poolStatus = `error: ${(e.error && e.error.message) || r.status}`;
+      }
+    },
+    async togglePool(p) {
+      const base = window.QA_BASE_PATH || '';
+      await fetch(`${base}/api/qa/worker-pools/${p.id}`, {
+        method: 'PUT', headers: {'content-type': 'application/json'},
+        body: JSON.stringify({ enabled: !p.enabled }),
+      });
+      await this.loadPools();
+    },
+    async deletePool(id) {
+      if (!confirm(`delete pool #${id}?`)) return;
+      const base = window.QA_BASE_PATH || '';
+      await fetch(`${base}/api/qa/worker-pools/${id}`, {method: 'DELETE'});
+      await this.loadPools();
+    },
+    async cleanupDead() {
+      this.cleanupStatus = 'cleaning…';
+      const base = window.QA_BASE_PATH || '';
+      const r = await fetch(`${base}/api/qa/workers/cleanup-dead`, {method: 'POST'});
+      const j = await r.json();
+      this.cleanupStatus = `removed ${(j.data && j.data.deleted) || 0}`;
+      await this.load();
+    },
     dotClass(w) {
-      if (!w.alive) return 'dot-dead';
+      if (w.health === 'dead')    return 'dot-dead';
+      if (w.health === 'stopped') return 'dot-stopped';
       return w.current_task ? 'dot-busy' : 'dot-idle';
     },
     stateLabel(w) {
-      if (!w.alive) return 'dead';
+      if (w.health === 'dead')    return 'dead';
+      if (w.health === 'stopped') return 'stopped';
       return w.current_task ? 'busy' : 'idle';
     },
     heartbeatLabel(w) {
