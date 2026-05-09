@@ -8,8 +8,6 @@
 <script defer src="{{ base_path }}/static/qa.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
-<script defer src="https://unpkg.com/idiomorph@0.3.0"></script>
-<script defer src="https://unpkg.com/idiomorph@0.3.0/dist/idiomorph-ext.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
 <style>
 body { padding: 20px; max-width: 1400px; margin: 0 auto; }
@@ -33,7 +31,7 @@ th { color: #8b949e; font-weight: normal; }
 .empty { color: #8b949e; padding: 40px; text-align: center; }
 </style>
 </head>
-<body hx-boost="true" hx-ext="morph,head-support" hx-swap="morph">
+<body hx-boost="true" hx-ext="head-support">
 {% include "_qa_nav.html" %}
 
 <h1>QA · Plans</h1>
