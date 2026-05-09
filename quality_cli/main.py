@@ -827,6 +827,61 @@ def auto_delete(config_id: int):
         _Out.console.print(f"{msg} config #{config_id}")
 
 
+@auto_app.command("watch")
+def auto_watch(
+    interval: int = typer.Option(60, help="poll interval in seconds"),
+    config_id: Optional[int] = typer.Option(None,
+        help="only sweep this config (default: all enabled)"),
+    once: bool = typer.Option(False, help="single sweep, then exit"),
+):
+    """Long-running poller: discover() every N seconds.
+
+    State is fully in DB — restart-safe, never plans the same
+    (branch, sha, kind) twice. SIGINT/SIGTERM exits cleanly.
+    """
+    import signal, time, threading
+    store = _autostore()
+    stop = threading.Event()
+    def _stop(signum, frame): stop.set()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try: signal.signal(sig, _stop)
+        except Exception: pass
+
+    if not _Out.json_mode:
+        _Out.console.print(f"[green]watching[/green] · interval={interval}s · config={config_id or 'all'}")
+        _Out.console.print(f"[dim]ctrl-c to stop{' · single sweep' if once else ''}[/dim]")
+
+    sweeps = 0
+    while not stop.is_set():
+        try:
+            created = store.discover(config_id=config_id)
+        except Exception as exc:
+            if not _Out.json_mode:
+                _Out.console.print(f"[red]discover error:[/red] {type(exc).__name__}: {exc}")
+            created = []
+        sweeps += 1
+        if _Out.json_mode:
+            _emit({"sweep": sweeps, "created": created},
+                  meta={"created_count": len(created)})
+        else:
+            ts = datetime_now()
+            if created:
+                _Out.console.print(f"[green]· {ts}[/green] sweep #{sweeps} → {len(created)} plan(s)")
+                for p in created:
+                    _Out.console.print(
+                        f"    [cyan]#{p['plan_id']}[/cyan] {p['plan_kind']:5} "
+                        f"{p['branch']:30} {p['sha'][:7]} ({p['task_count']} tasks)"
+                    )
+            else:
+                _Out.console.print(f"[dim]· {ts} sweep #{sweeps} — no new commits[/dim]")
+        if once:
+            break
+        stop.wait(interval)
+
+    if not _Out.json_mode:
+        _Out.console.print(f"[dim]stopped after {sweeps} sweep(s)[/dim]")
+
+
 @auto_app.command("branches")
 def auto_branches(repo: str = typer.Argument(..., help="path to git repo")):
     """List branches + HEAD SHAs in the repo (debugging utility)."""

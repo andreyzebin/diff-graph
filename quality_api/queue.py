@@ -115,6 +115,16 @@ class TaskQueue:
 
     def _ensure_schema(self) -> None:
         with self._lock, self._conn() as c:
+            # Idempotent column additions for existing DBs.
+            try:
+                c.execute("SELECT promote_ready FROM qa_plans LIMIT 0")
+            except sqlite3.OperationalError:
+                try:
+                    c.execute("ALTER TABLE qa_plans ADD COLUMN promote_ready INTEGER NOT NULL DEFAULT 0")
+                    c.execute("CREATE INDEX IF NOT EXISTS idx_qa_plans_promote ON qa_plans(promote_ready)")
+                    c.commit()
+                except sqlite3.OperationalError:
+                    pass  # table doesn't exist yet — created below
             c.executescript("""
                 CREATE TABLE IF NOT EXISTS qa_tasks (
                     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -193,9 +203,11 @@ class TaskQueue:
                     scenarios         TEXT,           -- JSON list
                     attempts_min      INTEGER NOT NULL DEFAULT 1,
                     state             TEXT NOT NULL DEFAULT 'running',
+                    promote_ready     INTEGER NOT NULL DEFAULT 0,
                     notes             TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_qa_plans_state ON qa_plans(state);
+                CREATE INDEX IF NOT EXISTS idx_qa_plans_promote ON qa_plans(promote_ready);
             """)
             c.commit()
 
@@ -338,7 +350,9 @@ class TaskQueue:
 
     def _maybe_finish_plan(self, plan_id: int) -> bool:
         """Transition plan running → done iff no non-terminal tasks
-        remain. Cancelled plans are left as-is. Returns True if the
+        remain. Cancelled plans are left as-is. When transitioning,
+        also computes promote_ready: True iff every task finished
+        cleanly (state='finished', no errors). Returns True if the
         plan was transitioned now.
         """
         with self._lock, self._conn() as c:
@@ -347,16 +361,24 @@ class TaskQueue:
             ).fetchone()
             if not row or row["state"] != "running":
                 return False
-            non_terminal = c.execute(
-                """SELECT COUNT(*) AS n FROM qa_tasks
-                   WHERE plan_id=? AND state IN ('queued', 'leased', 'running')""",
+            counts = c.execute(
+                """SELECT
+                       SUM(CASE WHEN state IN ('queued','leased','running') THEN 1 ELSE 0 END) AS pending,
+                       SUM(CASE WHEN state='finished' THEN 1 ELSE 0 END) AS finished,
+                       COUNT(*) AS total
+                   FROM qa_tasks WHERE plan_id=?""",
                 (plan_id,),
             ).fetchone()
-            if int(non_terminal["n"]) > 0:
+            if int(counts["pending"] or 0) > 0:
                 return False
+            promote_ready = (
+                int(counts["total"] or 0) > 0
+                and int(counts["finished"] or 0) == int(counts["total"] or 0)
+            )
             c.execute(
-                "UPDATE qa_plans SET state='done' WHERE id=? AND state='running'",
-                (plan_id,),
+                "UPDATE qa_plans SET state='done', promote_ready=? "
+                "WHERE id=? AND state='running'",
+                (1 if promote_ready else 0, plan_id),
             )
             c.commit()
             return True
@@ -491,6 +513,7 @@ class PlanRow:
     attempts_min: int
     state: str
     notes: str
+    promote_ready: bool = False
 
 
 class PlanStore:
@@ -614,6 +637,11 @@ class PlanStore:
             scenarios = json.loads(row["scenarios"]) if row["scenarios"] else []
         except Exception:
             scenarios = []
+        # promote_ready may be missing on rows from pre-migration DBs.
+        try:
+            promote_ready = bool(row["promote_ready"]) if row["promote_ready"] is not None else False
+        except (KeyError, IndexError):
+            promote_ready = False
         return PlanRow(
             id=int(row["id"]),
             name=row["name"] or "",
@@ -625,6 +653,7 @@ class PlanStore:
             attempts_min=int(row["attempts_min"]),
             state=row["state"],
             notes=row["notes"] or "",
+            promote_ready=promote_ready,
         )
 
 
@@ -639,6 +668,7 @@ def plan_to_dict(p: PlanRow, *, progress: dict | None = None) -> dict:
         "scenarios": p.scenarios,
         "attempts_min": p.attempts_min,
         "state": p.state,
+        "promote_ready": p.promote_ready,
         "notes": p.notes,
     }
     if progress is not None:

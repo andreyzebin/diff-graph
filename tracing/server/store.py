@@ -317,6 +317,96 @@ class SQLiteTraceStore:
             return []
         return [dict(r) for r in rows]
 
+    def compare_mutations(self, mutation_a: str, mutation_b: str) -> dict:
+        """Side-by-side per (scenario, provider) for two mutations.
+
+        Returns {a: {mutation, generation, runs_count}, b: …, cells:
+        [{scenario, provider, a_runs, a_avg_dur, b_runs, b_avg_dur,
+          a_completed, b_completed}]}.
+
+        Useful for "did mutation B regress on REV-001/qwen3-6 vs A?"
+        Pure aggregate — for full per-attempt data the caller drills
+        via /api/search/runs?mutation=X.
+        """
+        try:
+            with self._conn() as c:
+                # Per-mutation summary
+                summaries = {}
+                for label, mut in (("a", mutation_a), ("b", mutation_b)):
+                    row = c.execute(
+                        """SELECT mutation, MIN(generation) AS generation,
+                                  COUNT(*) AS runs_count
+                           FROM runs WHERE mutation=?""", (mut,)
+                    ).fetchone()
+                    summaries[label] = dict(row) if row else {
+                        "mutation": mut, "generation": None, "runs_count": 0
+                    }
+
+                # Per (scenario, provider) cells, joined.
+                rows = c.execute(
+                    """SELECT
+                           COALESCE(a.scenario_id, b.scenario_id) AS scenario,
+                           COALESCE(a.model, b.model)             AS provider,
+                           a.runs        AS a_runs,
+                           a.avg_dur_ms  AS a_avg_dur,
+                           a.completed   AS a_completed,
+                           b.runs        AS b_runs,
+                           b.avg_dur_ms  AS b_avg_dur,
+                           b.completed   AS b_completed
+                       FROM
+                         (SELECT scenario_id, model,
+                                 COUNT(*) AS runs,
+                                 AVG(duration_ms) AS avg_dur_ms,
+                                 SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed
+                          FROM runs WHERE mutation=?
+                          GROUP BY scenario_id, model) a
+                       FULL OUTER JOIN
+                         (SELECT scenario_id, model,
+                                 COUNT(*) AS runs,
+                                 AVG(duration_ms) AS avg_dur_ms,
+                                 SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed
+                          FROM runs WHERE mutation=?
+                          GROUP BY scenario_id, model) b
+                       ON a.scenario_id=b.scenario_id AND a.model=b.model
+                       ORDER BY scenario, provider""",
+                    (mutation_a, mutation_b),
+                ).fetchall()
+        except sqlite3.OperationalError:
+            # SQLite < 3.39 has no FULL OUTER JOIN — fall back to UNION.
+            with self._conn() as c:
+                summaries = {}
+                for label, mut in (("a", mutation_a), ("b", mutation_b)):
+                    row = c.execute(
+                        """SELECT mutation, MIN(generation) AS generation,
+                                  COUNT(*) AS runs_count
+                           FROM runs WHERE mutation=?""", (mut,)
+                    ).fetchone()
+                    summaries[label] = dict(row) if row else {
+                        "mutation": mut, "generation": None, "runs_count": 0
+                    }
+                cells: dict[tuple, dict] = {}
+                for label, mut in (("a", mutation_a), ("b", mutation_b)):
+                    rs = c.execute(
+                        """SELECT scenario_id, model,
+                                  COUNT(*) AS runs,
+                                  AVG(duration_ms) AS avg_dur,
+                                  SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed
+                           FROM runs WHERE mutation=?
+                           GROUP BY scenario_id, model""", (mut,)
+                    ).fetchall()
+                    for r in rs:
+                        key = (r["scenario_id"] or "", r["model"] or "")
+                        if key not in cells:
+                            cells[key] = {"scenario": key[0], "provider": key[1]}
+                        cells[key][f"{label}_runs"] = int(r["runs"] or 0)
+                        cells[key][f"{label}_avg_dur"] = r["avg_dur"]
+                        cells[key][f"{label}_completed"] = int(r["completed"] or 0)
+                rows = list(cells.values())
+                return {"a": summaries["a"], "b": summaries["b"], "cells": rows}
+        return {"a": summaries["a"], "b": summaries["b"],
+                "cells": [dict(r) for r in rows]}
+
+
     def aggregate_by_mutation(self, f: RunFilter | None = None) -> list[dict]:
         """One row per mutation hash — runs count, duration percentiles,
         link to generation. Substrate for "is mutation B better than A"

@@ -343,6 +343,15 @@ async def api_aggregate_by_scenario(
     return JSONResponse({"data": _store().aggregate_by_scenario(f)})
 
 
+@app.get("/api/search/compare")
+async def api_compare_mutations(a: str, b: str):
+    """Side-by-side compare of two mutation hashes — per (scenario,
+    provider) runs / avg-duration / completed counts. Used by
+    /qa/compare?a=…&b=…
+    """
+    return JSONResponse({"data": _store().compare_mutations(a, b)})
+
+
 @app.get("/api/search/aggregates/by_mutation")
 async def api_aggregate_by_mutation(
     generation: Optional[str] = None,
@@ -628,6 +637,11 @@ async def qa_auto_plan_page(request: Request):
     return templates.TemplateResponse(request, "qa_auto_plan.html", {})
 
 
+@app.get("/qa/mutations", response_class=HTMLResponse)
+async def qa_mutations_page(request: Request):
+    return templates.TemplateResponse(request, "qa_mutations.html", {})
+
+
 @app.get("/api/qa/plans/{plan_id}")
 async def api_qa_get_plan(plan_id: int):
     p = _qa_plans.get(plan_id)
@@ -711,6 +725,39 @@ async def api_qa_auto_patch(config_id: int, enabled: Optional[bool] = None):
 async def api_qa_auto_delete(config_id: int):
     ok = _qa_auto.delete_config(config_id)
     return JSONResponse({"data": {"ok": ok}})
+
+
+@app.get("/api/qa/promote-ready")
+async def api_qa_promote_ready():
+    """Most recent promote-ready full plan per (config, branch).
+
+    A plan is promote_ready=true when state='done' and every task
+    finished cleanly (no errors). For auto-plans the kind comes from
+    qa_planned_commits.plan_kind — only 'full' kind plans gate promote.
+    """
+    import sqlite3
+    from orchestra.trace_db import DEFAULT_DB_PATH
+    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT pc.config_id, pc.branch, pc.sha, pc.planned_at,
+               p.id AS plan_id, p.state, p.promote_ready, p.created_at
+        FROM qa_planned_commits pc
+        JOIN qa_plans p ON p.id = pc.plan_id
+        WHERE pc.plan_kind='full' AND p.state='done' AND p.promote_ready=1
+        ORDER BY pc.config_id, pc.branch, pc.planned_at DESC
+    """).fetchall()
+    conn.close()
+    # Keep only the most recent promote-ready per (config, branch).
+    seen: set[tuple] = set()
+    out = []
+    for r in rows:
+        key = (r["config_id"], r["branch"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(r))
+    return JSONResponse({"data": out})
 
 
 @app.post("/api/qa/auto-plan/discover")

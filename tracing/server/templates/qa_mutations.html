@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>QA · Mutations</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="{{ base_path }}/static/trace.css">
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+body { padding: 20px; max-width: 1400px; margin: 0 auto; }
+.qa-nav { margin-bottom: 16px; font-size: 0.9em; }
+.qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
+.qa-nav a:hover { text-decoration: underline; }
+.section { margin-top: 20px; padding: 12px; background: #161b22;
+           border: 1px solid #30363d; border-radius: 6px; }
+.section h2 { font-size: 0.95em; color: #c9d1d9; margin: 0 0 12px 0; font-weight: normal; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #30363d; }
+th { color: #8b949e; font-weight: normal; }
+.tn { font-variant-numeric: tabular-nums; text-align: right; }
+.mut { color: #c9d1d9; font-family: ui-monospace, monospace; }
+.gen { color: #d2a8ff; font-family: ui-monospace, monospace; }
+.row-checkbox { cursor: pointer; }
+.row-checkbox.selected { background: #1f6feb33; }
+.empty { color: #8b949e; padding: 30px; text-align: center; }
+.btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+       padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
+.btn:hover { background: #30363d; }
+.btn-primary { background: #1f6feb; border-color: #388bfd; color: white; }
+.btn-primary:hover { background: #388bfd; }
+.btn-primary:disabled { background: #1f2937; color: #6e7681; cursor: not-allowed; }
+.compare-bar {
+  position: sticky; top: 0; z-index: 10;
+  background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+  padding: 10px; margin: 10px 0;
+}
+.compare-cells td { font-variant-numeric: tabular-nums; }
+.delta-pos { color: #56d364; }
+.delta-neg { color: #f47067; }
+.delta-zero { color: #8b949e; }
+.promote { color: #56d364; font-size: 0.75em; padding: 1px 6px;
+           background: #56d36422; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="qa-nav">
+  <a href="{{ base_path }}/qa/">overview</a>
+  <a href="{{ base_path }}/qa/runs">runs</a>
+  <a href="{{ base_path }}/qa/plans">plans</a>
+  <a href="{{ base_path }}/qa/mutations"><b>mutations</b></a>
+  <a href="{{ base_path }}/qa/genes">genes</a>
+  <a href="{{ base_path }}/qa/auto-plan">auto-plan</a>
+  <a href="{{ base_path }}/">traces</a>
+</div>
+
+<h1>QA · Mutations</h1>
+<p style="color: #8b949e; font-size: 0.9em;">
+  Each row is one prompt-content hash. Pick two to diff side-by-side.
+  Promote-ready highlights mutations whose full plan finished cleanly.
+</p>
+
+<div x-data="mutationsView()" x-init="load()">
+
+  <!-- Compare bar -->
+  <div class="compare-bar" x-show="selected.length > 0">
+    selected: <span class="mut" x-text="(selected[0] || '').slice(0,8)"></span>
+    <template x-if="selected.length === 2">
+      <span> · vs · <span class="mut" x-text="(selected[1] || '').slice(0,8)"></span></span>
+    </template>
+    <button class="btn-primary btn" :disabled="selected.length !== 2"
+            @click="loadCompare()">compare</button>
+    <button class="btn" @click="selected = []; comparison = null">clear</button>
+  </div>
+
+  <!-- Promote-ready -->
+  <template x-if="promote.length > 0">
+    <div class="section">
+      <h2>promote-ready (most recent full pass per branch)</h2>
+      <table>
+        <thead><tr>
+          <th>config</th><th>branch</th><th>sha</th><th>plan</th><th>planned at</th>
+        </tr></thead>
+        <tbody>
+          <template x-for="p in promote" :key="`${p.config_id}-${p.branch}`">
+            <tr>
+              <td x-text="`#${p.config_id}`"></td>
+              <td x-text="p.branch"></td>
+              <td class="mut">
+                <a class="run-link" :href="`{{ base_path }}/qa/runs?mutation=${p.sha}`"
+                   x-text="p.sha.slice(0, 12)"></a>
+                <span class="promote">✓ promote-ready</span>
+              </td>
+              <td><a class="run-link" :href="`{{ base_path }}/qa/plans`" x-text="`#${p.plan_id}`"></a></td>
+              <td style="color: #8b949e;" x-text="(p.planned_at || '').slice(0, 19)"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </template>
+
+  <!-- Mutations list -->
+  <div class="section">
+    <h2>all mutations · pick two checkboxes to compare</h2>
+    <template x-if="mutations.length === 0">
+      <div class="empty">no mutations yet</div>
+    </template>
+    <template x-if="mutations.length > 0">
+      <table>
+        <thead><tr>
+          <th>pick</th><th>mutation</th><th>generation</th>
+          <th class="tn">runs</th><th class="tn">avg dur ms</th>
+          <th class="tn">completed</th><th>last seen</th>
+        </tr></thead>
+        <tbody>
+          <template x-for="m in mutations" :key="m.mutation">
+            <tr :class="selected.includes(m.mutation) ? 'row-checkbox selected' : 'row-checkbox'"
+                @click="toggleSelect(m.mutation)">
+              <td>
+                <input type="checkbox" :checked="selected.includes(m.mutation)"
+                       @click.stop="toggleSelect(m.mutation)">
+              </td>
+              <td>
+                <a class="mut run-link" :href="`{{ base_path }}/qa/runs?mutation=${m.mutation}`"
+                   x-text="m.mutation"></a>
+              </td>
+              <td><a class="gen run-link" :href="`{{ base_path }}/qa/runs?generation=${m.generation}`"
+                     x-text="m.generation"></a></td>
+              <td class="tn" x-text="m.runs"></td>
+              <td class="tn" x-text="Math.round(m.avg_duration_ms || 0)"></td>
+              <td class="tn" x-text="m.completed"></td>
+              <td style="color:#8b949e;" x-text="(m.last_seen || '').slice(0,19)"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </template>
+  </div>
+
+  <!-- Comparison cells -->
+  <template x-if="comparison">
+    <div class="section">
+      <h2>compare ·
+        <span class="mut" x-text="(comparison.a.mutation || '').slice(0,8)"></span>
+        →
+        <span class="mut" x-text="(comparison.b.mutation || '').slice(0,8)"></span>
+      </h2>
+      <table class="compare-cells">
+        <thead><tr>
+          <th>scenario</th><th>provider</th>
+          <th class="tn">A runs</th><th class="tn">B runs</th>
+          <th class="tn">A avg ms</th><th class="tn">B avg ms</th>
+          <th class="tn">Δ ms</th>
+          <th class="tn">A done</th><th class="tn">B done</th>
+        </tr></thead>
+        <tbody>
+          <template x-for="cell in comparison.cells" :key="`${cell.scenario}|${cell.provider}`">
+            <tr>
+              <td x-text="cell.scenario"></td>
+              <td x-text="cell.provider"></td>
+              <td class="tn" x-text="cell.a_runs || 0"></td>
+              <td class="tn" x-text="cell.b_runs || 0"></td>
+              <td class="tn" x-text="Math.round(cell.a_avg_dur || 0)"></td>
+              <td class="tn" x-text="Math.round(cell.b_avg_dur || 0)"></td>
+              <td class="tn"
+                  :class="deltaClass(cell.a_avg_dur, cell.b_avg_dur)"
+                  x-text="deltaText(cell.a_avg_dur, cell.b_avg_dur)"></td>
+              <td class="tn" x-text="cell.a_completed || 0"></td>
+              <td class="tn" x-text="cell.b_completed || 0"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </template>
+
+</div>
+
+<script>
+function mutationsView() {
+  return {
+    mutations: [],
+    promote: [],
+    selected: [],
+    comparison: null,
+    async load() {
+      const get = async (path) => (await (await fetch(`{{ base_path }}${path}`)).json()).data || [];
+      this.mutations = await get('/api/search/aggregates/by_mutation');
+      this.promote = await get('/api/qa/promote-ready');
+    },
+    toggleSelect(mut) {
+      if (this.selected.includes(mut)) {
+        this.selected = this.selected.filter(m => m !== mut);
+      } else {
+        if (this.selected.length >= 2) this.selected.shift();
+        this.selected.push(mut);
+      }
+    },
+    async loadCompare() {
+      if (this.selected.length !== 2) return;
+      const [a, b] = this.selected;
+      const r = await fetch(`{{ base_path }}/api/search/compare?a=${a}&b=${b}`);
+      this.comparison = (await r.json()).data;
+    },
+    deltaClass(a, b) {
+      if (!a || !b) return 'delta-zero';
+      const d = (b || 0) - (a || 0);
+      if (Math.abs(d) < 50) return 'delta-zero';
+      return d > 0 ? 'delta-neg' : 'delta-pos';      // negative dur change = faster = good
+    },
+    deltaText(a, b) {
+      if (!a && !b) return '';
+      if (!a || !b) return '?';
+      const d = Math.round((b || 0) - (a || 0));
+      return d > 0 ? `+${d}` : String(d);
+    },
+  };
+}
+</script>
+</body>
+</html>
