@@ -9,6 +9,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+from typing import Optional
+
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -188,6 +190,173 @@ async def api_step_result(run_id: str, agent_id: str, step: int):
     new_msgs = tool_msgs[prev_tool_count:]
     return PlainTextResponse("\n---\n".join(new_msgs) if new_msgs else "(no tool results)")
 
+
+# ── Search API (TODO §5e.11) ──────────────────────────────────────────────
+# Rich-filter list, tool-call cross-run search, gene catalogue, aggregates.
+# Storage abstraction lives in tracing/server/store.py — same shape will
+# accept a future FilesystemTraceStore for the secondary FS-only viewer.
+
+from tracing.server.store import SQLiteTraceStore, RunFilter, ToolCallFilter
+
+
+def _store() -> SQLiteTraceStore:
+    return SQLiteTraceStore()
+
+
+def _split_csv(v: Optional[str]) -> list[str]:
+    if not v:
+        return []
+    return [s.strip() for s in v.split(",") if s.strip()]
+
+
+@app.get("/api/search/runs")
+async def api_search_runs(
+    # run attributes
+    kind: Optional[str] = None,
+    agent: Optional[str] = None,
+    model: Optional[str] = None,
+    status: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    duration_gt_ms: Optional[int] = None,
+    tokens_gt: Optional[int] = None,
+    # evolutionary identity
+    generation: Optional[str] = None,
+    mutation: Optional[str] = None,
+    gene: Optional[str] = None,            # CSV: all listed must be present (AND)
+    gene_any: Optional[str] = None,        # CSV: any of these (OR)
+    without_gene: Optional[str] = None,    # CSV: NOT contains
+    # work object
+    pr_url: Optional[str] = None,
+    project: Optional[str] = None,
+    file: Optional[str] = None,
+    jira: Optional[str] = None,
+    scenario: Optional[str] = None,
+    scenario_tag: Optional[str] = None,
+    # relationship
+    linked_run: Optional[str] = None,
+    # pagination & sort
+    limit: int = 50,
+    offset: int = 0,
+    sort: str = "started_at",
+    order: str = "desc",
+):
+    """Run search with the §5e.11 filters. All params optional.
+
+    CSV params (`gene`, `gene_any`, `without_gene`) accept comma-
+    separated lists. Returns `{data, meta}` envelope so the
+    `--json` CLI mode (TODO §5e.13) and the agent-friendly stdout
+    contract are stable.
+    """
+    f = RunFilter(
+        kind=kind, agent_name=agent, model=model, status=status,
+        since=since, until=until,
+        duration_gt_ms=duration_gt_ms, tokens_gt=tokens_gt,
+        generation=generation, mutation=mutation,
+        genes=_split_csv(gene),
+        genes_any=_split_csv(gene_any),
+        without_gene=_split_csv(without_gene),
+        pr_url=pr_url, project=project, file=file, jira=jira,
+        scenario_id=scenario, scenario_tag=scenario_tag,
+        linked_run=linked_run,
+        limit=max(1, min(500, int(limit))),
+        offset=max(0, int(offset)),
+        sort=sort, order=order,
+    )
+    s = _store()
+    runs = s.list_runs(f)
+    total = s.count_runs(f)
+    return JSONResponse({
+        "data": runs,
+        "meta": {
+            "total": total,
+            "limit": f.limit, "offset": f.offset,
+            "has_more": (f.offset + len(runs)) < total,
+        },
+    })
+
+
+@app.get("/api/search/tool_calls")
+async def api_search_tool_calls(
+    tool: Optional[str] = None,
+    agent: Optional[str] = None,
+    model: Optional[str] = None,
+    args_contains: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Find tool-call examples across all runs (§5e.11 layer 3).
+
+    Result rows include enough run context (model, agent, scenario,
+    fs_trace_path) that the consumer can render or drill in without
+    a second round-trip.
+    """
+    f = ToolCallFilter(
+        tool=tool, agent_name=agent, model=model,
+        args_contains=args_contains,
+        since=since, until=until,
+        limit=max(1, min(500, int(limit))),
+        offset=max(0, int(offset)),
+    )
+    hits = _store().search_tool_calls(f)
+    return JSONResponse({
+        "data": hits,
+        "meta": {"limit": f.limit, "offset": f.offset, "returned": len(hits)},
+    })
+
+
+@app.get("/api/search/genes")
+async def api_search_genes():
+    """Gene catalogue: every gene observed in any run + its run count."""
+    return JSONResponse({"data": _store().list_genes()})
+
+
+@app.get("/api/search/aggregates/by_provider")
+async def api_aggregate_by_provider(
+    kind: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+):
+    f = RunFilter(kind=kind, since=since, until=until,
+                  limit=10**9, offset=0)
+    return JSONResponse({"data": _store().aggregate_by_provider(f)})
+
+
+@app.get("/api/search/aggregates/by_scenario")
+async def api_aggregate_by_scenario(
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    generation: Optional[str] = None,
+):
+    f = RunFilter(since=since, until=until, generation=generation,
+                  limit=10**9, offset=0)
+    return JSONResponse({"data": _store().aggregate_by_scenario(f)})
+
+
+@app.get("/api/search/aggregates/by_gene")
+async def api_aggregate_by_gene(
+    scenario_tag: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+):
+    f = RunFilter(scenario_tag=scenario_tag, since=since, until=until,
+                  limit=10**9, offset=0)
+    return JSONResponse({"data": _store().aggregate_by_gene(f)})
+
+
+@app.get("/api/search/runs/{run_id}")
+async def api_search_run(run_id: str):
+    r = _store().get_run(run_id)
+    if not r:
+        return JSONResponse({"error": {"code": "not_found",
+                                       "message": f"run {run_id} not found"}},
+                             status_code=404)
+    return JSONResponse({"data": r})
+
+
+# ── Existing endpoints continue below ──────────────────────────────────────
 
 @app.get("/api/runs/{run_id}/events")
 async def api_run_events(run_id: str):
