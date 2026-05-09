@@ -349,21 +349,21 @@ def _queue() -> TaskQueue:
 def plans_create(
     providers: str = typer.Option(..., help="comma-separated, e.g. deepseek,qwen3-6"),
     scenarios: str = typer.Option(..., help="comma-separated scenario ids"),
-    branches: Optional[str] = typer.Option(None, help="comma-separated, omit for branch-less scenarios"),
-    attempts_min: int = typer.Option(1, help="attempts per (branch × provider × scenario) cell"),
+    lineages: Optional[str] = typer.Option(None, help="comma-separated lineages (typically git branches like `master`); omit for lineage-less scenarios"),
+    attempts_min: int = typer.Option(1, help="attempts per (lineage × provider × scenario) cell"),
     priority: int = typer.Option(100),
     name: Optional[str] = typer.Option(None),
     notes: Optional[str] = typer.Option(None),
     created_by: str = typer.Option("cli"),
 ):
-    """Create a plan — a cross-product of (branches × providers × scenarios × attempts_min).
+    """Create a plan — a cross-product of (lineages × providers × scenarios × attempts_min).
 
     Each cell becomes one task in qa_tasks tagged with the new plan_id.
     """
     spec = PlanSpec(
         name=name or "",
         created_by=created_by,
-        branches=_split_csv(branches),
+        lineages=_split_csv(lineages),
         providers=_split_csv(providers),
         scenarios=_split_csv(scenarios),
         attempts_min=attempts_min,
@@ -384,8 +384,8 @@ def plans_create(
     _Out.console.print(f"[green]created plan[/green] [cyan]#{plan_id}[/cyan] · {len(task_ids)} task(s) enqueued")
     _Out.console.print(f"  providers: {', '.join(p.providers)}")
     _Out.console.print(f"  scenarios: {', '.join(p.scenarios)}")
-    if p.branches:
-        _Out.console.print(f"  branches:  {', '.join(p.branches)}")
+    if p.lineages:
+        _Out.console.print(f"  lineages:  {', '.join(p.lineages)}")
     _Out.console.print(f"  attempts_min: {p.attempts_min}")
 
 
@@ -442,8 +442,8 @@ def plans_get(plan_id: int = typer.Argument(...)):
     _Out.console.print(f"  created: {p.created_at} by {p.created_by or '?'}")
     _Out.console.print(f"  providers: {', '.join(p.providers)}")
     _Out.console.print(f"  scenarios: {', '.join(p.scenarios)}")
-    if p.branches:
-        _Out.console.print(f"  branches:  {', '.join(p.branches)}")
+    if p.lineages:
+        _Out.console.print(f"  lineages:  {', '.join(p.lineages)}")
     _Out.console.print(f"  attempts_min: {p.attempts_min}")
     _Out.console.print(f"\n[dim]progress:[/dim] {progress}")
     if eta.get("remaining_tasks"):
@@ -688,7 +688,7 @@ def worker_loop(
 
         # Build + run bench command.
         cmd = bench_cmd.format(scenario=t.scenario_id, provider=t.provider,
-                               branch=t.branch, mutation=t.mutation_hash,
+                               lineage=t.lineage, mutation=t.mutation_hash,
                                attempt=t.attempt_n)
         result_state = "finished"
         error_class = None
@@ -783,7 +783,7 @@ def auto_add(
     tags: Optional[str] = typer.Option(None,
         help="scenario tags filter (CSV) — resolved at discover-time against --bench-repo"),
     min_gap_seconds: int = typer.Option(0,
-        help="debounce per branch: at most one plan per branch per N seconds (0 = every commit)"),
+        help="debounce per lineage: at most one plan per lineage per N seconds (0 = every commit)"),
     pacing: str = typer.Option("aggressive",
         help="'aggressive' (queue all immediately) or 'spread' (stagger over pacing-window-seconds)"),
     pacing_window_seconds: int = typer.Option(0,
@@ -795,7 +795,7 @@ def auto_add(
     """Register a watched repo + branch pattern.
 
     Configs are open: each describes a filter (explicit scenarios OR
-    tag selector) + cadence (min_gap_seconds debounce per branch) +
+    tag selector) + cadence (min_gap_seconds debounce per lineage) +
     pacing (aggressive vs spread). Multiple configs run in parallel —
     typical setup is one config for sentinel-on-every-commit and
     another for full-slice-once-a-day.
@@ -920,7 +920,7 @@ def auto_discover(
     _Out.console.print(f"[green]created {len(created)} plan(s)[/green]")
     for p in created:
         _Out.console.print(
-            f"  [cyan]#{p['plan_id']}[/cyan] {p['plan_kind']:5} {p['branch']:35} "
+            f"  [cyan]#{p['plan_id']}[/cyan] {p['plan_kind']:5} {p['lineage']:35} "
             f"{p['sha'][:7]}  ({p['task_count']} task(s))"
         )
 
@@ -961,7 +961,7 @@ def auto_watch(
     """Long-running poller: discover() every N seconds.
 
     State is fully in DB — restart-safe, never plans the same
-    (branch, sha, kind) twice. SIGINT/SIGTERM exits cleanly.
+    (lineage, sha, kind) twice. SIGINT/SIGTERM exits cleanly.
     """
     import signal, time, threading
     store = _autostore()
@@ -994,7 +994,7 @@ def auto_watch(
                 for p in created:
                     _Out.console.print(
                         f"    [cyan]#{p['plan_id']}[/cyan] {p['plan_kind']:5} "
-                        f"{p['branch']:30} {p['sha'][:7]} ({p['task_count']} tasks)"
+                        f"{p['lineage']:30} {p['sha'][:7]} ({p['task_count']} tasks)"
                     )
             else:
                 _Out.console.print(f"[dim]· {ts} sweep #{sweeps} — no new commits[/dim]")

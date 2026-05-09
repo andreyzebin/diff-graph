@@ -13,7 +13,7 @@ crash; the reaper recovers leased-but-dead tasks back to queued.
 Design notes:
 - Queue is FIFO with `priority` column for sentinel ordering.
 - Each task carries enough payload (scenario_id, provider,
-  attempt_n, mutation_hash, branch) for the worker to invoke the
+  attempt_n, mutation_hash, lineage) for the worker to invoke the
   bench without hitting the API again.
 - Lease has an explicit `lease_expires_at`; heartbeat extends it.
 - Reaper runs at server startup and on demand via /qa/tasks/reap.

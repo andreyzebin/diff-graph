@@ -999,17 +999,17 @@ qa_plans              -- one row per "plan a QC matrix" call
   id                  INTEGER PK
   created_at          DATETIME
   created_by          TEXT       -- user / cron / api / webhook
-  branches            JSON       -- list of (branch, sha)
+  lineages            JSON       -- list of (lineage, sha)
   providers           JSON
   scenarios           JSON
   attempts_min        INTEGER
   state               TEXT       -- queued | running | done | cancelled
   cancel_reason       TEXT
 
-qa_tasks              -- one row per (plan, branch, sha, provider, scenario, attempt_n)
+qa_tasks              -- one row per (plan, lineage, sha, provider, scenario, attempt_n)
   id                  INTEGER PK
   plan_id             INTEGER FK
-  branch              TEXT
+  lineage             TEXT
   mutation_hash       TEXT
   provider            TEXT
   scenario            TEXT
@@ -1064,7 +1064,7 @@ plan" ambiguity — the DB IS the truth.
 # Discovery / planning
 POST /qa/discover                       — git fetch + diff vs qa_branches
 GET  /qa/branches                       — table view, filter by state
-POST /qa/plans                          — create plan {branches, providers, scenarios, attempts_min}
+POST /qa/plans                          — create plan {lineages, providers, scenarios, attempts_min}
 GET  /qa/plans?state=&since=            — list with pagination
 GET  /qa/plans/{id}                     — one + summary (done / total / pass rate)
 POST /qa/plans/{id}/cancel              — soft cancel (running tasks finish, queued drop)
@@ -1076,14 +1076,14 @@ POST /qa/tasks/{id}/finish              — submit {state, result_json, trace_ru
 POST /qa/tasks/{id}/cancel              — abort an in-flight task
 
 # Browse
-GET  /qa/tasks?state=&plan=&branch=     — list
+GET  /qa/tasks?state=&plan=&lineage=    — list
 GET  /qa/tasks/{id}                     — one + result + trace link
 
 # Outcomes / dashboards
-GET  /qa/runs?branch=&mutation=         — finished runs, filterable
+GET  /qa/runs?lineage=&mutation=        — finished runs, filterable
 GET  /qa/runs/{id}                      — one
-GET  /qa/dashboards/branches            — per-branch deploy-ready bool
-GET  /qa/dashboards/mutations           — per-(branch, mutation_hash) scoreboard
+GET  /qa/dashboards/lineages            — per-lineage deploy-ready bool
+GET  /qa/dashboards/mutations           — per-(lineage, mutation_hash) scoreboard
 GET  /qa/dashboards/scenarios           — per-scenario discriminative power
                                           (variance across mutations — sentinel calibration)
 
@@ -1142,10 +1142,10 @@ Gentle vs aggressive in this model:
 
 ```
 bench-schedule discover                                        → POST /qa/discover
-bench-schedule plan --branches feature/X,feature/Y             → POST /qa/plans
+bench-schedule plan --lineages feature/X,feature/Y             → POST /qa/plans
 bench-schedule plan --auto-discover-since master               → /qa/discover then /qa/plans
 bench-schedule worker --provider qwen3-6 --capacity 2          → polls /qa/tasks/lease
-bench-schedule status                                          → GET /qa/dashboards/branches
+bench-schedule status                                          → GET /qa/dashboards/lineages
 bench-schedule report --plan 42                                → GET /qa/plans/42 (markdown)
 bench-schedule watch 42                                        → WS /qa/live/plans/42 (rich live)
 bench-schedule logs <task-id>                                  → WS /qa/live/tasks/<id>
@@ -1159,8 +1159,8 @@ shell over HTTP.
 
 ```
 /qa/                            — landing: live counts + recent plans
-/qa/branches/                   — branch | last_commit | state | pass_rate | last_run
-/qa/plans/                      — plan_id | created_by | branches | progress | state
+/qa/lineages/                   — lineage | last_commit | state | pass_rate | last_run
+/qa/plans/                      — plan_id | created_by | lineages | progress | state
 /qa/plans/{id}                  — drill: matrix (provider × scenario), per-cell pass/fail
                                   + live progress bar + cancel button
 /qa/tasks/{id}                  — drill: lineage + live event feed

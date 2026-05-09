@@ -54,7 +54,7 @@ class TaskSpec:
     scenario_id: str
     provider: str
     attempt_n: int = 1
-    branch: str = ""
+    lineage: str = ""
     mutation_hash: str = ""
     plan_id: Optional[int] = None
     priority: int = 100              # lower = sooner
@@ -64,13 +64,19 @@ class TaskSpec:
 
 @dataclass
 class TaskRow:
-    """Persisted shape — what /qa/tasks endpoints return."""
+    """Persisted shape — what /qa/tasks endpoints return.
+
+    `lineage` = a long-lived line of git commits we're testing as a
+    hypothesis (typically a git branch like `master` or `feature/foo`);
+    `mutation_hash` = a specific commit on that lineage we benched
+    against.
+    """
     id: int
     state: str
     scenario_id: str
     provider: str
     attempt_n: int
-    branch: str
+    lineage: str
     mutation_hash: str
     plan_id: Optional[int]
     priority: int
@@ -138,7 +144,7 @@ class TaskQueue:
                 ("qa_auto_plan_configs",  "pacing",               "TEXT NOT NULL DEFAULT 'aggressive'"),
                 ("qa_auto_plan_configs",  "pacing_window_seconds","INTEGER NOT NULL DEFAULT 0"),
                 # mode: 'auto' fires on new commits via DiscoverySupervisor;
-                # 'on_demand' is hand-fired from UI/CLI per (branch, sha).
+                # 'on_demand' is hand-fired from UI/CLI per (lineage, sha).
                 ("qa_auto_plan_configs",  "mode",                 "TEXT NOT NULL DEFAULT 'auto'"),
                 # Per-pool subprocess timeout — DeepSeek runs can take
                 # 10–15min; we cap each task's bench subprocess at this
@@ -154,6 +160,21 @@ class TaskQueue:
                         # table doesn't exist yet — will be created by the
                         # CREATE TABLE block below.
                         pass
+            # Rename branch → lineage on qa_tasks and qa_planned_commits;
+            # rename branches → lineages on qa_plans. Idempotent: SELECT
+            # the new name first, only ALTER if it errors.
+            for table, old, new in [
+                ("qa_tasks",            "branch",   "lineage"),
+                ("qa_planned_commits",  "branch",   "lineage"),
+                ("qa_plans",            "branches", "lineages"),
+            ]:
+                try:
+                    c.execute(f"SELECT {new} FROM {table} LIMIT 0")
+                except sqlite3.OperationalError:
+                    try:
+                        c.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
+                    except sqlite3.OperationalError:
+                        pass  # table doesn't exist yet — initial CREATE will use new name
             try:
                 c.execute("CREATE INDEX IF NOT EXISTS idx_qa_plans_promote ON qa_plans(promote_ready)")
                 c.execute("CREATE INDEX IF NOT EXISTS idx_qa_tasks_not_before ON qa_tasks(not_before)")
@@ -166,7 +187,7 @@ class TaskQueue:
                     scenario_id       TEXT NOT NULL,
                     provider          TEXT NOT NULL,
                     attempt_n         INTEGER NOT NULL DEFAULT 1,
-                    branch            TEXT,
+                    lineage           TEXT,
                     mutation_hash     TEXT,
                     plan_id           INTEGER,
                     priority          INTEGER NOT NULL DEFAULT 100,
@@ -204,7 +225,7 @@ class TaskQueue:
                     providers            TEXT NOT NULL,        -- JSON list
                     unit_scenarios       TEXT NOT NULL,        -- JSON list — every commit
                     full_scenarios       TEXT,                 -- JSON list — periodic
-                    full_period_seconds  INTEGER DEFAULT 86400,-- min gap between full runs per branch
+                    full_period_seconds  INTEGER DEFAULT 86400,-- min gap between full runs per lineage
                     attempts_min         INTEGER DEFAULT 1,
                     enabled              INTEGER NOT NULL DEFAULT 1,
                     created_at           TEXT NOT NULL,
@@ -233,26 +254,26 @@ class TaskQueue:
                 CREATE INDEX IF NOT EXISTS idx_qa_pools_provider ON qa_worker_pools(provider);
 
                 CREATE TABLE IF NOT EXISTS qa_planned_commits (
-                    -- Idempotency ledger: one row per (config, branch, sha,
+                    -- Idempotency ledger: one row per (config, lineage, sha,
                     -- plan_kind) ever planned. discover() consults this
-                    -- before creating a plan; same (config, branch, sha,
+                    -- before creating a plan; same (config, lineage, sha,
                     -- kind) never produces two plans, even after crash.
                     config_id      INTEGER NOT NULL,
-                    branch         TEXT NOT NULL,
+                    lineage        TEXT NOT NULL,
                     sha            TEXT NOT NULL,
                     plan_kind      TEXT NOT NULL,           -- 'unit' | 'full'
                     plan_id        INTEGER NOT NULL,
                     planned_at     TEXT NOT NULL,
-                    PRIMARY KEY (config_id, branch, sha, plan_kind)
+                    PRIMARY KEY (config_id, lineage, sha, plan_kind)
                 );
-                CREATE INDEX IF NOT EXISTS idx_qa_pc_branch ON qa_planned_commits(branch, planned_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_qa_pc_lineage ON qa_planned_commits(lineage, planned_at DESC);
 
                 CREATE TABLE IF NOT EXISTS qa_plans (
                     id                INTEGER PRIMARY KEY AUTOINCREMENT,
                     name              TEXT,
                     created_at        TEXT NOT NULL,
                     created_by        TEXT,
-                    branches          TEXT,           -- JSON list
+                    lineages          TEXT,           -- JSON list
                     providers         TEXT,           -- JSON list
                     scenarios         TEXT,           -- JSON list
                     attempts_min      INTEGER NOT NULL DEFAULT 1,
@@ -272,12 +293,12 @@ class TaskQueue:
         with self._lock, self._conn() as c:
             cur = c.execute(
                 """INSERT INTO qa_tasks
-                   (state, scenario_id, provider, attempt_n, branch,
+                   (state, scenario_id, provider, attempt_n, lineage,
                     mutation_hash, plan_id, priority, payload, enqueued_at,
                     not_before)
                    VALUES ('queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (spec.scenario_id, spec.provider, spec.attempt_n,
-                 spec.branch or "", spec.mutation_hash or "",
+                 spec.lineage or "", spec.mutation_hash or "",
                  spec.plan_id, spec.priority,
                  json.dumps(spec.payload, ensure_ascii=False),
                  _now().isoformat(),
@@ -601,7 +622,7 @@ class TaskQueue:
             scenario_id=row["scenario_id"],
             provider=row["provider"],
             attempt_n=int(row["attempt_n"]),
-            branch=row["branch"] or "",
+            lineage=row["lineage"] or "",
             mutation_hash=row["mutation_hash"] or "",
             plan_id=row["plan_id"],
             priority=int(row["priority"]),
@@ -621,10 +642,14 @@ class TaskQueue:
 
 @dataclass
 class PlanSpec:
-    """Inputs for create_plan — describes the QC matrix to enqueue."""
+    """Inputs for create_plan — describes the QC matrix to enqueue.
+
+    `lineages` = the list of long-lived lines of git commits we're
+    testing (typically git branches like `master` or `feature/foo`).
+    """
     name: str = ""
     created_by: str = ""
-    branches: list[str] = field(default_factory=list)         # ["feature/X", ...]
+    lineages: list[str] = field(default_factory=list)         # ["feature/X", ...]
     providers: list[str] = field(default_factory=list)        # ["deepseek", "qwen3-6"]
     scenarios: list[str] = field(default_factory=list)        # ["REV-001", ...]
     attempts_min: int = 1
@@ -638,7 +663,7 @@ class PlanRow:
     name: str
     created_at: str
     created_by: str
-    branches: list[str]
+    lineages: list[str]
     providers: list[str]
     scenarios: list[str]
     attempts_min: int
@@ -649,7 +674,7 @@ class PlanRow:
 
 class PlanStore:
     """Plans live alongside tasks in the same DB. A plan is just an
-    aggregate handle over N tasks (cross-product of branches × providers
+    aggregate handle over N tasks (cross-product of lineages × providers
     × scenarios × attempts_min). Cancelling a plan soft-cancels its
     queued tasks; running tasks finish on their own.
     """
@@ -660,7 +685,7 @@ class PlanStore:
     def create(self, spec: PlanSpec) -> tuple[int, list[int]]:
         """Insert plan + fan-out into qa_tasks. Returns (plan_id, [task_ids]).
 
-        Empty branches → enqueue tasks without branch (single-PR-less
+        Empty lineages → enqueue tasks without lineage (single-PR-less
         scenarios; the bench knows from scenario.id alone). Empty
         providers / scenarios → ValueError.
         """
@@ -673,11 +698,11 @@ class PlanStore:
         with self.queue._lock, self.queue._conn() as c:
             cur = c.execute(
                 """INSERT INTO qa_plans
-                   (name, created_at, created_by, branches, providers,
+                   (name, created_at, created_by, lineages, providers,
                     scenarios, attempts_min, state, notes)
                    VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
                 (spec.name or "", now, spec.created_by or "",
-                 json.dumps(spec.branches, ensure_ascii=False),
+                 json.dumps(spec.lineages, ensure_ascii=False),
                  json.dumps(spec.providers, ensure_ascii=False),
                  json.dumps(spec.scenarios, ensure_ascii=False),
                  max(1, spec.attempts_min), spec.notes or ""),
@@ -688,8 +713,8 @@ class PlanStore:
         # Fan-out via the existing enqueue (each acquires the queue lock
         # individually, but at the speed of bulk inserts it's fine).
         task_ids: list[int] = []
-        branches = spec.branches or [""]    # [""] → one task per (provider, scenario)
-        for branch in branches:
+        lineages = spec.lineages or [""]    # [""] → one task per (provider, scenario)
+        for lineage in lineages:
             for provider in spec.providers:
                 for scenario in spec.scenarios:
                     for attempt_n in range(1, max(1, spec.attempts_min) + 1):
@@ -697,7 +722,7 @@ class PlanStore:
                             scenario_id=scenario,
                             provider=provider,
                             attempt_n=attempt_n,
-                            branch=branch,
+                            lineage=lineage,
                             plan_id=plan_id,
                             priority=spec.priority,
                             payload={"plan_name": spec.name} if spec.name else {},
@@ -976,9 +1001,9 @@ class PlanStore:
         if row is None:
             return None
         try:
-            branches = json.loads(row["branches"]) if row["branches"] else []
+            lineages = json.loads(row["lineages"]) if row["lineages"] else []
         except Exception:
-            branches = []
+            lineages = []
         try:
             providers = json.loads(row["providers"]) if row["providers"] else []
         except Exception:
@@ -997,7 +1022,7 @@ class PlanStore:
             name=row["name"] or "",
             created_at=row["created_at"],
             created_by=row["created_by"] or "",
-            branches=branches,
+            lineages=lineages,
             providers=providers,
             scenarios=scenarios,
             attempts_min=int(row["attempts_min"]),
@@ -1015,7 +1040,7 @@ def plan_to_dict(p: PlanRow, *, progress: dict | None = None,
         "name": p.name,
         "created_at": p.created_at,
         "created_by": p.created_by,
-        "branches": p.branches,
+        "lineages": p.lineages,
         "providers": p.providers,
         "scenarios": p.scenarios,
         "attempts_min": p.attempts_min,
@@ -1040,7 +1065,7 @@ def task_to_dict(t: TaskRow) -> dict:
         "scenario_id": t.scenario_id,
         "provider": t.provider,
         "attempt_n": t.attempt_n,
-        "branch": t.branch,
+        "lineage": t.lineage,
         "mutation_hash": t.mutation_hash,
         "plan_id": t.plan_id,
         "priority": t.priority,

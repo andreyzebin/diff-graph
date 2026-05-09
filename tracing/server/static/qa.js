@@ -321,11 +321,11 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('scoringView', () => ({
     picked: [],                          // selected mutation hashes (max 4)
     scenario: '',                        // single-scenario filter
-    branch: '',                          // git branch (= "mutation" after rename)
+    lineage: '',                         // a long-lived line of git commits (typically a git branch like `master` or `feature/foo`)
     rows: [],                            // per_run_scores rows
     availableMutations: [],
     availableScenarios: [],
-    availableBranches: [],
+    availableLineages: [],
     status: '',
     async init() {
       // Populate dropdowns: mutations from aggregate; scenarios from
@@ -335,16 +335,16 @@ document.addEventListener('alpine:init', () => {
       this.availableMutations = muts.map(m => m.mutation).filter(Boolean);
       const dims = (await (await fetch(`${base}/api/search/dimensions`)).json()).data || {};
       this.availableScenarios = (dims.scenario_id || []).filter(Boolean).sort();
-      this.availableBranches = (dims.branch || []).filter(Boolean).sort();
-      // Pre-pick from URL ?mutation=... | ?branch=... if present.
+      this.availableLineages = (dims.lineage || []).filter(Boolean).sort();
+      // Pre-pick from URL ?mutation=... | ?lineage=... if present.
       const sp = new URLSearchParams(window.location.search);
       const initMuts = sp.getAll('mutation').flatMap(s => s.split(',')).filter(Boolean);
       for (const m of initMuts.slice(0, 4)) this.picked.push(m);
       const initScen = sp.get('scenario');
       if (initScen) this.scenario = initScen;
-      const initBranch = sp.get('branch');
-      if (initBranch) this.branch = initBranch;
-      if (this.picked.length || this.branch) await this.reload();
+      const initLineage = sp.get('lineage');
+      if (initLineage) this.lineage = initLineage;
+      if (this.picked.length || this.lineage) await this.reload();
     },
     addMutation(m) {
       if (!m || this.picked.includes(m) || this.picked.length >= 4) return;
@@ -361,24 +361,24 @@ document.addEventListener('alpine:init', () => {
       const qs = new URLSearchParams();
       for (const m of this.picked) qs.append('mutation', m);
       if (this.scenario) qs.set('scenario', this.scenario);
-      if (this.branch)   qs.set('branch', this.branch);
+      if (this.lineage)  qs.set('lineage', this.lineage);
       const url = window.location.pathname + (qs.toString() ? '?' + qs.toString() : '');
       window.history.replaceState({}, '', url);
     },
     async reload() {
       this.pushUrl();
-      if (this.picked.length === 0 && !this.branch) { this.rows = []; return; }
+      if (this.picked.length === 0 && !this.lineage) { this.rows = []; return; }
       this.status = 'loading…';
       const base = window.QA_BASE_PATH || '';
       const all = [];
-      // Branch mode: one fetch covering every commit on this branch.
-      if (this.branch) {
-        const qs = new URLSearchParams({branch: this.branch, limit: '5000'});
+      // Lineage mode: one fetch covering every commit on this lineage.
+      if (this.lineage) {
+        const qs = new URLSearchParams({lineage: this.lineage, limit: '5000'});
         if (this.scenario) qs.set('scenario', this.scenario);
         const r = await (await fetch(`${base}/api/search/per_run_scores?${qs}`)).json();
         for (const row of (r.data || [])) all.push(row);
       }
-      // Specific mutation mode (also works alongside branch — set
+      // Specific mutation mode (also works alongside lineage — set
       // intersection follows from the SQL filter ANDing all params).
       for (const m of this.picked) {
         const qs = new URLSearchParams({mutation: m, limit: '1000'});
@@ -450,10 +450,10 @@ document.addEventListener('alpine:init', () => {
         vegaEmbed('#chart-timeline', spec, {actions: false});
       }
 
-      // (d) Trend along a branch — one line per scenario, x = chronology
-      // of commits on the branch, y = mean(score) per commit. Shows
-      // whether the branch's quality is drifting / improving / flat.
-      if (this.branch && this.picked.length === 0) {
+      // (d) Trend along a lineage — one line per scenario, x = chronology
+      // of commits on the lineage, y = mean(score) per commit. Shows
+      // whether the lineage's quality is drifting / improving / flat.
+      if (this.lineage && this.picked.length === 0) {
         const spec = {
           ...dark,
           width: 'container', height: 320,
@@ -471,7 +471,7 @@ document.addEventListener('alpine:init', () => {
           ],
           encoding: {
             x: {field: 'first_ts', type: 'temporal',
-                title: `commits on ${this.branch} (chronological)`},
+                title: `commits on ${this.lineage} (chronological)`},
             y: {field: 'mean_score', type: 'quantitative',
                 title: 'mean overall_score', scale: {domain: [0, 1]}},
             color: {field: 'scenario', type: 'nominal',
@@ -581,7 +581,7 @@ document.addEventListener('alpine:init', () => {
       const base = window.QA_BASE_PATH || '';
       const r = await fetch(`${base}/api/qa/auto-plan/configs/${configId}/fire-on`, {
         method: 'POST', headers: {'content-type': 'application/json'},
-        body: JSON.stringify({branch: 'master', sha: mutation}),
+        body: JSON.stringify({lineage: 'master', sha: mutation}),
       });
       const j = await r.json();
       if (j.error) {
@@ -653,7 +653,7 @@ document.addEventListener('alpine:init', () => {
         editForm: {},
         history: {},        // config_id → array of planned commits
         historyOpen: {},    // config_id → bool
-        historyMeta: {},    // config_id → "N plans · M branches"
+        historyMeta: {},    // config_id → "N plans · M lineages"
         form: {
           name: '', repo_path: '/home/andrey/repos/diff-graph',
           branch_pattern: 'master,feature/*',
@@ -680,8 +680,8 @@ document.addEventListener('alpine:init', () => {
           const r = await fetch(`${window.QA_BASE_PATH || ''}/api/qa/auto-plan/configs/${configId}/history?limit=50`);
           const j = await r.json();
           this.history[configId] = j.data || [];
-          const branches = new Set(this.history[configId].map(h => h.branch));
-          this.historyMeta[configId] = `${this.history[configId].length} plans · ${branches.size} branch(es)`;
+          const lineages = new Set(this.history[configId].map(h => h.lineage));
+          this.historyMeta[configId] = `${this.history[configId].length} plans · ${lineages.size} lineage(s)`;
         },
         bars(progress) {
           const pr = progress || {};

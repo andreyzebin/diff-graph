@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=888d7b8a"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=06510108"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -98,7 +98,7 @@ th { color: #8b949e; font-weight: normal; }
     <template x-if="mutations.length > 0">
       <table>
         <thead><tr>
-          <th>pick</th><th>mutation</th><th>branches</th>
+          <th>pick</th><th>mutation</th><th>lineages</th>
           <th class="tn">runs</th>
           <th>hard</th><th>soft</th><th>method</th>
           <th class="tn">pass%</th>
@@ -118,7 +118,7 @@ th { color: #8b949e; font-weight: normal; }
                 <a class="mut run-link" :href="`{{ base_path }}/qa/runs?mutation=${m.mutation}`"
                    x-text="m.mutation"></a>
               </td>
-              <td x-text="m.branches || '—'" :title="m.full_sha || ''"></td>
+              <td x-text="m.lineages || '—'" :title="m.full_sha || ''"></td>
               <td class="tn" x-text="m.runs"></td>
               <td><span x-html="axisBar(scoring[m.mutation], 'hard_skill')"></span></td>
               <td><span x-html="axisBar(scoring[m.mutation], 'soft_skill')"></span></td>

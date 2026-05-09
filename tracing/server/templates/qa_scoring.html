@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=888d7b8a"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=06510108"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -54,16 +54,16 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
   <!-- Controls -->
   <div class="section">
     <div class="controls">
-      <label title="long-lived idea / hypothesis (will be renamed to 'mutation' after the schema rename)">
-        branch
-        <select x-model="branch" @change="reload()">
+      <label title="a long-lived line of git commits we're testing as a hypothesis (typically a git branch like `master` or `feature/foo`)">
+        lineage
+        <select x-model="lineage" @change="reload()">
           <option value="">none</option>
-          <template x-for="b in availableBranches">
+          <template x-for="b in availableLineages">
             <option :value="b" x-text="b"></option>
           </template>
         </select>
       </label>
-      <label title="commit on the branch (will be renamed to 'generation' after schema rename)">
+      <label title="a specific commit on the lineage we benched against">
         commit
         <select @change="addMutation($event.target.value); $event.target.value=''">
           <option value="">+ pick (up to 4)</option>
@@ -88,28 +88,28 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
       <span class="muted" x-text="status"></span>
     </div>
     <div class="legend-note">
-      Pick a <b>branch</b> to watch its quality trend across all its
+      Pick a <b>lineage</b> to watch its quality trend across all its
       commits. Pick specific <b>commits</b> (1-4) to see distribution
       and side-by-side comparison. Mix both to slice further.
     </div>
   </div>
 
-  <template x-if="picked.length === 0 && !branch">
-    <div class="empty">pick a branch or one or more commits above</div>
+  <template x-if="picked.length === 0 && !lineage">
+    <div class="empty">pick a lineage or one or more commits above</div>
   </template>
 
-  <template x-if="(picked.length > 0 || branch) && rows.length === 0 && status === 'no data'">
+  <template x-if="(picked.length > 0 || lineage) && rows.length === 0 && status === 'no data'">
     <div class="empty">no judge runs yet for this selection — fire a plan from /qa/mutations and wait</div>
   </template>
 
-  <!-- (d) Trend along a branch — only when branch is picked alone. -->
-  <div class="section" x-show="branch && picked.length === 0 && rows.length > 0">
-    <h2>trend on <span x-text="branch"></span> · mean score per commit</h2>
+  <!-- (d) Trend along a lineage — only when lineage is picked alone. -->
+  <div class="section" x-show="lineage && picked.length === 0 && rows.length > 0">
+    <h2>trend on <span x-text="lineage"></span> · mean score per commit</h2>
     <div id="chart-trend" class="chart-frame"></div>
     <div class="legend-note">
-      Each line is one scenario; each dot is one commit on this branch.
+      Each line is one scenario; each dot is one commit on this lineage.
       Sloping down = quality drift (look for what changed). Flat = the
-      branch holds its score across iterations. Wide jumps with few
+      lineage holds its score across iterations. Wide jumps with few
       commits = high variance — needs more repeats to be sure.
     </div>
   </div>

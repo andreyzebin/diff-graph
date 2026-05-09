@@ -8,10 +8,12 @@ full-slice-once-a-day, but the system doesn't enforce that
 shape.
 
 Concepts (TODO §5e.11+):
-- generation     = git branch (e.g. master, feature/foo)
-- mutation       = commit SHA on that branch
+- lineage        = a long-lived line of git commits we're testing
+                   as a hypothesis (typically a git branch like
+                   `master` or `feature/foo`)
+- mutation       = a specific commit on that lineage we benched
 - config         = description of what to plan + cadence + pacing
-- planned_commit = idempotency ledger row, keyed by (config × branch
+- planned_commit = idempotency ledger row, keyed by (config × lineage
                    × sha × kind=config_name)
 
 Crash-resilience: all state in SQLite. discover() is idempotent —
@@ -20,12 +22,12 @@ configs produce zero new plans the second time.
 
 Cadence:
 - min_gap_seconds=0   → fire on every new commit (default for unit)
-- min_gap_seconds=N   → debounce per branch — at most one plan per
-                        branch per N seconds (typical for full
+- min_gap_seconds=N   → debounce per lineage — at most one plan per
+                        lineage per N seconds (typical for full
                         runs that are too expensive to run on every
                         push). Implemented by checking the latest
                         qa_planned_commits row for this (config,
-                        branch).
+                        lineage).
 
 Pacing:
 - aggressive          → all tasks enqueued with not_before=NULL,
@@ -56,13 +58,13 @@ from .queue import PlanSpec, PlanStore, TaskQueue, TaskSpec
 class AutoPlanConfig:
     id: int
     name: str
-    repo_path: str                       # repo to watch (branches × HEAD shas)
-    branch_pattern: str                  # CSV of globs
+    repo_path: str                       # repo to watch (git branches × HEAD shas)
+    branch_pattern: str                  # CSV of globs — git-side pattern matched against actual git branches
     bench_repo_path: str                 # where benchmark/scenarios/*.yaml lives
     providers: list[str]
     scenarios: list[str]                 # explicit scenario ids
     scenario_tags: list[str]             # tag filter (resolved at discover-time)
-    min_gap_seconds: int                 # debounce per branch
+    min_gap_seconds: int                 # debounce per lineage
     pacing: str                          # 'aggressive' | 'spread'
     pacing_window_seconds: int
     attempts_min: int
@@ -152,6 +154,9 @@ def git_list_branches(repo_path: str) -> list[tuple[str, str]]:
 
 
 def match_any(branch: str, patterns_csv: str) -> bool:
+    """Match a git branch name against the config's branch_pattern globs.
+    The parameter name stays `branch` because this helper operates on
+    raw git-side branch strings (the `branch_pattern` exception)."""
     if not patterns_csv:
         return False
     return any(fnmatch.fnmatch(branch, p.strip()) for p in patterns_csv.split(",") if p.strip())
@@ -357,26 +362,26 @@ class AutoPlanStore:
                 c.commit()
         return created
 
-    def fire_on(self, config_id: int, *, branch: str, sha: str) -> Optional[dict]:
-        """Manually fire an on_demand config against a specific (branch, sha).
+    def fire_on(self, config_id: int, *, lineage: str, sha: str) -> Optional[dict]:
+        """Manually fire an on_demand config against a specific (lineage, sha).
 
-        Idempotent via qa_planned_commits — same (config × branch × sha)
+        Idempotent via qa_planned_commits — same (config × lineage × sha)
         produces no duplicate plan.
         """
         cfg = self.get_config(config_id)
         if cfg is None or not cfg.enabled:
             return None
-        if self._already_planned(config_id, branch, sha):
+        if self._already_planned(config_id, lineage, sha):
             return None
         scenarios = resolve_scenarios(cfg)
         if not scenarios:
             return None
-        plan_id, task_ids = self._create_plan(cfg, branch, sha, scenarios)
-        self._record_planned(config_id, branch, sha,
+        plan_id, task_ids = self._create_plan(cfg, lineage, sha, scenarios)
+        self._record_planned(config_id, lineage, sha,
                              cfg.name or f"config-{config_id}", plan_id)
         return {
             "config_id": config_id, "config_name": cfg.name,
-            "branch": branch, "sha": sha,
+            "lineage": lineage, "sha": sha,
             "plan_id": plan_id, "task_count": len(task_ids),
         }
 
@@ -385,50 +390,52 @@ class AutoPlanStore:
         scenarios = resolve_scenarios(cfg)
         if not scenarios:
             return out
-        branches = [(b, sha) for (b, sha) in git_list_branches(cfg.repo_path)
+        # Each git branch matched by branch_pattern becomes a lineage —
+        # a long-lived line of git commits we'll bench against.
+        lineages = [(b, sha) for (b, sha) in git_list_branches(cfg.repo_path)
                     if match_any(b, cfg.branch_pattern)]
 
-        for branch, sha in branches:
-            # Skip if this exact (config, branch, sha) was already planned —
+        for lineage, sha in lineages:
+            # Skip if this exact (config, lineage, sha) was already planned —
             # idempotent across crashes.
-            if self._already_planned(cfg.id, branch, sha):
+            if self._already_planned(cfg.id, lineage, sha):
                 continue
-            # Debounce: skip if there's a recent plan for THIS branch
+            # Debounce: skip if there's a recent plan for THIS lineage
             # within min_gap_seconds (regardless of sha).
             if cfg.min_gap_seconds > 0:
                 cutoff = (datetime.now(timezone.utc) - timedelta(seconds=cfg.min_gap_seconds)).isoformat()
-                if self._has_recent_plan(cfg.id, branch, cutoff):
+                if self._has_recent_plan(cfg.id, lineage, cutoff):
                     continue
 
-            plan_id, task_ids = self._create_plan(cfg, branch, sha, scenarios)
-            self._record_planned(cfg.id, branch, sha, cfg.name or f"config-{cfg.id}", plan_id)
+            plan_id, task_ids = self._create_plan(cfg, lineage, sha, scenarios)
+            self._record_planned(cfg.id, lineage, sha, cfg.name or f"config-{cfg.id}", plan_id)
             out.append({
                 "config_id": cfg.id, "config_name": cfg.name,
-                "branch": branch, "sha": sha,
+                "lineage": lineage, "sha": sha,
                 "plan_id": plan_id, "task_count": len(task_ids),
             })
         return out
 
-    def _create_plan(self, cfg: AutoPlanConfig, branch: str, sha: str,
+    def _create_plan(self, cfg: AutoPlanConfig, lineage: str, sha: str,
                      scenarios: list[str]) -> tuple[int, list[int]]:
-        """Fan out tasks for this (config, branch, sha) cell.
+        """Fan out tasks for this (config, lineage, sha) cell.
 
         With pacing='spread', tasks within the cell are staggered
         using not_before so workers don't blast through the LLM
         endpoint all at once.
         """
-        plan_name = f"auto:{cfg.name or cfg.id}:{branch}@{sha[:7]}"
+        plan_name = f"auto:{cfg.name or cfg.id}:{lineage}@{sha[:7]}"
         # Build the spec without the cross-product defaults; we manage
         # the fan-out manually here so we can apply pacing.
         with self.queue._lock, self.queue._conn() as c:
             cur = c.execute(
                 """INSERT INTO qa_plans
-                   (name, created_at, created_by, branches, providers,
+                   (name, created_at, created_by, lineages, providers,
                     scenarios, attempts_min, state, notes)
                    VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
                 (plan_name, datetime.now(timezone.utc).isoformat(),
                  f"auto-plan/config-{cfg.id}",
-                 json.dumps([branch]),
+                 json.dumps([lineage]),
                  json.dumps(cfg.providers),
                  json.dumps(scenarios),
                  max(1, cfg.attempts_min),
@@ -457,7 +464,7 @@ class AutoPlanStore:
                         scenario_id=scenario,
                         provider=provider,
                         attempt_n=attempt_n,
-                        branch=branch,
+                        lineage=lineage,
                         mutation_hash=sha,
                         plan_id=plan_id,
                         priority=100,
@@ -472,32 +479,32 @@ class AutoPlanStore:
 
     # ── Idempotency ledger ────────────────────────────────────────────
 
-    def _already_planned(self, config_id: int, branch: str, sha: str) -> bool:
+    def _already_planned(self, config_id: int, lineage: str, sha: str) -> bool:
         with self.queue._lock, self.queue._conn() as c:
             row = c.execute(
                 """SELECT 1 FROM qa_planned_commits
-                   WHERE config_id=? AND branch=? AND sha=?""",
-                (config_id, branch, sha),
+                   WHERE config_id=? AND lineage=? AND sha=?""",
+                (config_id, lineage, sha),
             ).fetchone()
         return row is not None
 
-    def _has_recent_plan(self, config_id: int, branch: str, since_iso: str) -> bool:
+    def _has_recent_plan(self, config_id: int, lineage: str, since_iso: str) -> bool:
         with self.queue._lock, self.queue._conn() as c:
             row = c.execute(
                 """SELECT 1 FROM qa_planned_commits
-                   WHERE config_id=? AND branch=? AND planned_at >= ?""",
-                (config_id, branch, since_iso),
+                   WHERE config_id=? AND lineage=? AND planned_at >= ?""",
+                (config_id, lineage, since_iso),
             ).fetchone()
         return row is not None
 
-    def _record_planned(self, config_id: int, branch: str,
+    def _record_planned(self, config_id: int, lineage: str,
                         sha: str, kind: str, plan_id: int) -> None:
         with self.queue._lock, self.queue._conn() as c:
             c.execute(
                 """INSERT OR IGNORE INTO qa_planned_commits
-                   (config_id, branch, sha, plan_kind, plan_id, planned_at)
+                   (config_id, lineage, sha, plan_kind, plan_id, planned_at)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (config_id, branch, sha, kind, plan_id,
+                (config_id, lineage, sha, kind, plan_id,
                  datetime.now(timezone.utc).isoformat()),
             )
             c.commit()
@@ -516,7 +523,7 @@ class DiscoverySupervisor:
                               new commits appear
 
     Together they make the auto-plan loop run hands-free: a `git push`
-    that updates a watched branch produces a planned commit on the
+    that updates a watched lineage produces a planned commit on the
     next discovery tick, which spawns a worker on the next pool tick,
     which leases tasks and runs the bench.
     """

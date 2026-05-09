@@ -231,7 +231,7 @@ class SQLiteTraceStore:
             "kind": [], "agent_name": [], "model": [],
             "scenario_id": [], "generation": [], "project": [],
             "scenario_tags": [], "status": [],
-            "branch": [],
+            "lineage": [],
         }
         try:
             with self._conn() as c:
@@ -253,18 +253,18 @@ class SQLiteTraceStore:
                         f"ORDER BY v"
                     ).fetchall()
                     out[col] = [r["v"] for r in rows]
-                # Branch lives in qa_tasks (a scheduling concept), not
-                # in runs. Pull distinct values so the /qa/scoring branch
+                # Lineage lives in qa_tasks (a scheduling concept), not
+                # in runs. Pull distinct values so the /qa/scoring lineage
                 # dropdown can populate.
                 try:
                     rows = c.execute(
-                        "SELECT DISTINCT branch AS v FROM qa_tasks "
-                        "WHERE branch IS NOT NULL AND branch != '' "
+                        "SELECT DISTINCT lineage AS v FROM qa_tasks "
+                        "WHERE lineage IS NOT NULL AND lineage != '' "
                         "ORDER BY v"
                     ).fetchall()
-                    out["branch"] = [r["v"] for r in rows]
+                    out["lineage"] = [r["v"] for r in rows]
                 except sqlite3.OperationalError:
-                    out["branch"] = []
+                    out["lineage"] = []
         except FileNotFoundError:
             pass
         return out
@@ -575,7 +575,7 @@ class SQLiteTraceStore:
     def per_run_scores(self, *, mutation: Optional[str] = None,
                        scenario: Optional[str] = None,
                        generation: Optional[str] = None,
-                       branch: Optional[str] = None,
+                       lineage: Optional[str] = None,
                        limit: int = 1000) -> list[dict]:
         """Flat list of per-run judge scores. One row = one (agent ↔
         judge) pair; the consumer plots box/violin/timeline over these.
@@ -609,21 +609,21 @@ class SQLiteTraceStore:
         if scenario:
             clauses.append("a.scenario_id = ?")
             params.append(scenario)
-        if branch:
-            # Branch lives in qa_tasks.branch, not in runs. Match via
+        if lineage:
+            # Lineage lives in qa_tasks.lineage, not in runs. Match via
             # mutation + task time-window (same join we use for the
             # plan_id filter) — captures every agent run spawned by a
-            # task on this branch, including for interaction scenarios
+            # task on this lineage, including for interaction scenarios
             # where runs.scenario_id is NULL.
             clauses.append(
                 "EXISTS (SELECT 1 FROM qa_tasks t "
-                " WHERE t.branch = ? "
+                " WHERE t.lineage = ? "
                 "   AND t.mutation_hash = a.mutation "
                 "   AND t.started_at IS NOT NULL "
                 "   AND a.started_at >= t.started_at "
                 "   AND a.started_at <= COALESCE(t.finished_at, datetime('now')))"
             )
-            params.append(branch)
+            params.append(lineage)
         clauses.append("a.linked_run_id IS NOT NULL")
 
         try:
@@ -743,12 +743,12 @@ class SQLiteTraceStore:
 
                 # Source B: discovered-but-maybe-no-runs from
                 # qa_planned_commits. Use SUBSTR to short-key match.
-                # branches surfaces here so we can display
+                # lineages surfaces here so we can display
                 # "discovered on master" before any run exists.
                 planned = c.execute("""
                     SELECT SUBSTR(sha, 1, 7)                       AS sha7,
                            sha                                     AS full_sha,
-                           GROUP_CONCAT(DISTINCT branch)           AS branches,
+                           GROUP_CONCAT(DISTINCT lineage)          AS lineages,
                            MIN(planned_at)                         AS first_planned,
                            MAX(planned_at)                         AS last_planned,
                            COUNT(DISTINCT plan_id)                 AS plans
@@ -774,7 +774,7 @@ class SQLiteTraceStore:
                 }
                 by_sha7[sha7] = row
             row["full_sha"] = p["full_sha"]
-            row["branches"] = p["branches"]
+            row["lineages"] = p["lineages"]
             row["plans"] = p["plans"]
             row["first_planned"] = p["first_planned"]
             row["last_planned"] = p["last_planned"]

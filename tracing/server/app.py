@@ -355,19 +355,20 @@ async def api_per_run_scores(
     mutation: Optional[str] = None,
     scenario: Optional[str] = None,
     generation: Optional[str] = None,
-    branch: Optional[str] = None,
+    lineage: Optional[str] = None,
     limit: int = 1000,
 ):
     """Flat per-run judge scores for charting (box / violin / timeline).
     Each row is one (agent ↔ judge) pair with overall_score, hard /
     soft / methodology axes, fp_count, warnings_count, found_rate.
-    Filters narrow incrementally: pass `branch` (= long-lived git
-    branch tracked in qa_tasks; will be renamed to "mutation" after
-    schema rename) to watch every commit on it.
+    Filters narrow incrementally: pass `lineage` (= a long-lived line
+    of git commits we're testing as a hypothesis, typically a git
+    branch like `master` or `feature/foo`; tracked in qa_tasks.lineage)
+    to watch every commit on it.
     """
     rows = _store().per_run_scores(
         mutation=mutation, scenario=scenario,
-        generation=generation, branch=branch,
+        generation=generation, lineage=lineage,
         limit=max(1, min(5000, int(limit))),
     )
     return JSONResponse({"data": rows,
@@ -458,7 +459,7 @@ class TaskCreatePayload(BaseModel):
     scenario_id: str
     provider: str
     attempt_n: int = 1
-    branch: str = ""
+    lineage: str = ""
     mutation_hash: str = ""
     plan_id: Optional[int] = None
     priority: int = 100
@@ -497,7 +498,7 @@ async def api_qa_create_task(p: TaskCreatePayload):
     many of these in one request."""
     spec = TaskSpec(
         scenario_id=p.scenario_id, provider=p.provider,
-        attempt_n=p.attempt_n, branch=p.branch,
+        attempt_n=p.attempt_n, lineage=p.lineage,
         mutation_hash=p.mutation_hash, plan_id=p.plan_id,
         priority=p.priority, payload=p.payload or {},
     )
@@ -759,7 +760,7 @@ async def api_qa_cleanup_dead_workers():
 class PlanCreatePayload(BaseModel):
     name: str = ""
     created_by: str = ""
-    branches: list[str] = []                 # [] = single empty-branch row
+    lineages: list[str] = []                 # [] = single empty-lineage row
     providers: list[str]
     scenarios: list[str]
     attempts_min: int = 1
@@ -769,14 +770,14 @@ class PlanCreatePayload(BaseModel):
 
 @app.post("/api/qa/plans")
 async def api_qa_create_plan(p: PlanCreatePayload):
-    """Cross-product (branches × providers × scenarios × attempts_min)
-    of tasks, all tagged with the new plan_id. Empty branches → one row
-    per (provider, scenario) — for scenarios that don't carry a branch.
+    """Cross-product (lineages × providers × scenarios × attempts_min)
+    of tasks, all tagged with the new plan_id. Empty lineages → one row
+    per (provider, scenario) — for scenarios that don't carry a lineage.
     """
     try:
         plan_id, task_ids = _qa_plans.create(PlanSpec(
             name=p.name, created_by=p.created_by,
-            branches=p.branches, providers=p.providers,
+            lineages=p.lineages, providers=p.providers,
             scenarios=p.scenarios, attempts_min=p.attempts_min,
             priority=p.priority, notes=p.notes,
         ))
@@ -879,7 +880,7 @@ class AutoPlanCreatePayload(BaseModel):
     providers: list[str]
     scenarios: list[str] = []          # explicit ids
     scenario_tags: list[str] = []      # tag filter (resolved at discover-time)
-    min_gap_seconds: int = 0           # debounce per branch (0 = every commit)
+    min_gap_seconds: int = 0           # debounce per lineage (0 = every commit)
     pacing: str = "aggressive"         # 'aggressive' | 'spread'
     pacing_window_seconds: int = 0
     attempts_min: int = 1
@@ -905,7 +906,7 @@ class AutoPlanUpdatePayload(BaseModel):
 
 
 class AutoPlanFireOnPayload(BaseModel):
-    branch: str
+    lineage: str
     sha: str
 
 
@@ -981,14 +982,14 @@ async def api_qa_auto_update(config_id: int, p: AutoPlanUpdatePayload):
 
 @app.get("/api/qa/auto-plan/configs/{config_id}/history")
 async def api_qa_auto_history(config_id: int, limit: int = 50):
-    """Plans created by this config — every (branch × sha) ever
+    """Plans created by this config — every (lineage × sha) ever
     planned, joined with qa_plans for current state + progress."""
     import sqlite3
     from orchestra.trace_db import DEFAULT_DB_PATH
     conn = sqlite3.connect(str(DEFAULT_DB_PATH))
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
-        SELECT pc.branch, pc.sha, pc.plan_kind, pc.plan_id, pc.planned_at,
+        SELECT pc.lineage, pc.sha, pc.plan_kind, pc.plan_id, pc.planned_at,
                p.name AS plan_name, p.state AS plan_state,
                p.promote_ready, p.providers, p.scenarios
         FROM qa_planned_commits pc
@@ -1042,14 +1043,14 @@ async def api_qa_auto_delete(config_id: int):
 
 @app.post("/api/qa/auto-plan/configs/{config_id}/fire-on")
 async def api_qa_auto_fire_on(config_id: int, p: AutoPlanFireOnPayload):
-    """Manually trigger an on_demand schedule on a specific (branch, sha).
+    """Manually trigger an on_demand schedule on a specific (lineage, sha).
 
     Use case: 'this commit looks promising on unit-tier — run the full
     integration matrix against it'. The schedule defines WHAT (scenarios,
     providers, attempts_min, pacing); fire-on picks THE COMMIT to run
     it on. Idempotent — same triple won't double-plan.
     """
-    out = _qa_auto.fire_on(config_id, branch=p.branch, sha=p.sha)
+    out = _qa_auto.fire_on(config_id, lineage=p.lineage, sha=p.sha)
     if out is None:
         return JSONResponse({"error": {"code": "no_op",
                                        "message": "config disabled, no scenarios resolved, or already planned for this commit"}},
@@ -1060,7 +1061,7 @@ async def api_qa_auto_fire_on(config_id: int, p: AutoPlanFireOnPayload):
 @app.post("/api/qa/auto-plan/discover")
 async def api_qa_auto_discover(config_id: Optional[int] = None):
     """Manual discover sweep. Idempotent — only creates plans for
-    (branch, sha, kind) triples not yet planned. Watch-daemon will
+    (lineage, sha, kind) triples not yet planned. Watch-daemon will
     call this on a timer, but it's also safe to invoke from the UI
     button or CLI for ad-hoc sweeps."""
     created = _qa_auto.discover(config_id=config_id)
