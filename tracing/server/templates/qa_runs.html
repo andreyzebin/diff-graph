@@ -64,14 +64,7 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 </style>
 </head>
 <body>
-<div class="qa-nav">
-  <a href="{{ base_path }}/qa/">overview</a>
-  <a href="{{ base_path }}/qa/runs"><b>runs</b></a>
-  <a href="{{ base_path }}/qa/plans">plans</a>
-  <a href="{{ base_path }}/qa/mutations">mutations</a>
-  <a href="{{ base_path }}/qa/genes">genes</a>
-  <a href="{{ base_path }}/qa/auto-plan">auto-plan</a>
-</div>
+{% include "_qa_nav.html" %}
 
 <h1>QA · Runs</h1>
 

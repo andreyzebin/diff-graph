@@ -614,32 +614,32 @@ async def api_qa_list_plans(state: Optional[str] = None,
 
 @app.get("/qa/", response_class=HTMLResponse)
 async def qa_dashboard(request: Request):
-    return templates.TemplateResponse(request, "qa_dashboard.html", {})
+    return templates.TemplateResponse(request, "qa_dashboard.html", {"active": "overview"})
 
 
 @app.get("/qa/runs", response_class=HTMLResponse)
 async def qa_runs_page(request: Request):
-    return templates.TemplateResponse(request, "qa_runs.html", {})
+    return templates.TemplateResponse(request, "qa_runs.html", {"active": "runs"})
 
 
 @app.get("/qa/plans", response_class=HTMLResponse)
 async def qa_plans_page(request: Request):
-    return templates.TemplateResponse(request, "qa_plans.html", {})
+    return templates.TemplateResponse(request, "qa_plans.html", {"active": "plans"})
 
 
 @app.get("/qa/genes", response_class=HTMLResponse)
 async def qa_genes_page(request: Request):
-    return templates.TemplateResponse(request, "qa_genes.html", {})
+    return templates.TemplateResponse(request, "qa_genes.html", {"active": "genes"})
 
 
 @app.get("/qa/auto-plan", response_class=HTMLResponse)
 async def qa_auto_plan_page(request: Request):
-    return templates.TemplateResponse(request, "qa_auto_plan.html", {})
+    return templates.TemplateResponse(request, "qa_auto_plan.html", {"active": "auto-plan"})
 
 
 @app.get("/qa/mutations", response_class=HTMLResponse)
 async def qa_mutations_page(request: Request):
-    return templates.TemplateResponse(request, "qa_mutations.html", {})
+    return templates.TemplateResponse(request, "qa_mutations.html", {"active": "mutations"})
 
 
 @app.get("/api/qa/plans/{plan_id}")

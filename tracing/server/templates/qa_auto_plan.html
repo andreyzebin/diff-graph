@@ -65,14 +65,7 @@ th { color: #8b949e; font-weight: normal; }
 </style>
 </head>
 <body>
-<div class="qa-nav">
-  <a href="{{ base_path }}/qa/">overview</a>
-  <a href="{{ base_path }}/qa/runs">runs</a>
-  <a href="{{ base_path }}/qa/plans">plans</a>
-  <a href="{{ base_path }}/qa/mutations">mutations</a>
-  <a href="{{ base_path }}/qa/genes">genes</a>
-  <a href="{{ base_path }}/qa/auto-plan"><b>auto-plan</b></a>
-</div>
+{% include "_qa_nav.html" %}
 
 <h1>QA · Auto-plan</h1>
 <p class="muted">
