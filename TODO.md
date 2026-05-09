@@ -1451,22 +1451,303 @@ server returns a task / run JSON, it includes both paths so:
 - New `kind='evaluator'` slots in by reusing the same writer,
   no new code needed.
 
+### 5e.11 Search & query API — debug-driven design
+
+Built on top of the storage abstraction (5e.10a). The API serves
+debugging needs we've actually hit, organised in four layers.
+
+**Storage roles, finalised.**
+- **SQLite is primary.** All search, list, aggregate, longest-runs,
+  outlier queries — driven by SQL. Every run record carries an
+  `fs_trace_path` so the API can always offer a "↗ filesystem
+  trace" link from any DB row. **DB to FS is one-way navigation:
+  DB → file paths**, not the other way around. The FS tree alone
+  doesn't power /api/runs — you'd have to walk every directory to
+  find one outlier.
+- **FS complements, doesn't replace.** Use cases: open one
+  specific LLM request body in full fidelity, agentic deep-dive
+  via `read_file` over the tree, bring a session dir from a
+  remote machine, archive long-term. The FS-only trace browser is
+  a separate thin app, useful for ad-hoc dumps but not the
+  primary source of truth.
+
+**Five dimensions of search, distilled from real debugging.**
+
+```
+A. by RUN attributes:
+   kind, agent_name, model, status, started_at, duration_ms,
+   tokens, prompt_hash (mutation), prompt_source (generation)
+
+B. by EVOLUTIONARY identity (genes / mutations / generations):
+   ?generation=prompts-experimental
+   ?mutation=abc1234                  # short hash
+   ?gene=diff_view_block              # AND when repeated
+   ?gene_any=phase_gating|bulk_post   # OR
+   ?without_gene=baked_existing_comments
+
+C. by WORK OBJECT (what was reviewed/touched):
+   ?pr_url=https://...
+   ?project=SBLOOM
+   ?file=PricingService.java          # one of files_touched
+   ?jira=ORD-234                      # one of jira_keys
+   ?scenario=DISP-002                 # bench scenario id
+   ?scenario_tag=tier:unit
+
+D. by ACTIVITY (what the agent did):
+   ?has_tool=reflect                  # called this tool at least once
+   ?has_event=agent_forced_done       # this event fired
+   ?tool=read_file                    # used in /tool_calls endpoint
+   ?args_path=$.confidence&args_value=high
+   ?response_size_gt=2000
+
+E. by RELATIONSHIP:
+   ?linked_run=<id>                   # paired agent ↔ judge
+   ?same_scenario_as=<id>             # same scenario, different mutation
+   ?has_finding_severity=BLOCKER
+```
+
+**Endpoint surface (refines 5e.3):**
+
+```
+# Layer 1: list runs
+GET /api/runs                         # all five dimensions as filters
+GET /api/runs/{id}                    # full run + linked agent/judge ↔ counterpart
+GET /api/runs/{id}/events             # paginated, filterable by tool/type
+GET /api/runs/{id}/steps              # step-level summary (count + duration per step)
+GET /api/runs/{id}/steps/{n}          # all events in one step
+GET /api/runs/{id}/tool_summary       # per-tool count/avg-duration for this run
+GET /api/runs/{id}/timeline           # ascii timeline for CLI rendering
+GET /api/runs/{id}/files              # links into FS tree for this run
+
+# Layer 2: cross-run search (the most-used family in practice)
+GET /api/tool_calls                   # "show me reflect examples on qwen3-6"
+GET /api/events                       # raw event search when tool_calls isn't enough
+GET /api/findings                     # search through agent's emitted findings
+GET /api/comments                     # search through agent's post_comments
+
+# Layer 3: catalogues / discovery
+GET /api/scenarios                    # all bench scenarios + run history per
+GET /api/scenarios/{id}               # drill: history + median per (provider, mutation)
+GET /api/genes                        # gene catalogue + runs/mutations counts
+GET /api/genes/{name}                 # one gene + perf delta with vs without
+GET /api/mutations                    # all known mutations
+GET /api/mutations/{hash}             # one mutation + manifest + parent links
+GET /api/work_objects                 # file/pr/jira/project/scenario keys touched
+GET /api/work_objects/{type}/{key}/runs   # runs touching this object
+
+# Layer 4: aggregates / regressions
+GET /api/aggregates/by_tool           # tool usage stats
+GET /api/aggregates/by_scenario       # per-scenario perf
+GET /api/aggregates/by_provider       # per-provider perf
+GET /api/aggregates/by_gene           # per-gene perf delta — substrate for evolution
+GET /api/regressions                  # baseline_hash vs candidate_hash
+GET /api/comparisons                  # arbitrary dimension cross-cut
+
+# Live (WebSocket)
+WS  /api/live/runs                    # task state-transitions
+WS  /api/live/runs/{id}               # per-run event tail
+WS  /api/live/plans/{id}              # per-plan progress
+```
+
+**Schema additions (denormalised for query speed):**
+
+```sql
+runs (extends 5e.10a):
+  agent_name      TEXT     -- root agent: dispatcher | reviewer | investigator | judge
+  generation      TEXT     -- prompt source identifier (e.g. "prompts-experimental")
+  mutation        TEXT     -- alias of prompt_hash; mutation hash
+  genes           TEXT     -- JSON array of gene names active in this mutation
+  project         TEXT     -- bitbucket project, extracted from pr_url
+  files_touched   TEXT     -- JSON array, extracted from diff_summary
+  jira_keys       TEXT     -- JSON array, extracted from PR description + comments
+  scenario_id     TEXT     -- bench scenario id, NULL outside bench
+  scenario_tags   TEXT     -- JSON array, e.g. ["tier:unit", "agent:dispatcher"]
+  linked_run_id   TEXT     -- pair: agent_run ↔ judge_run for the same attempt
+  duration_ms     INTEGER  -- finished_at - started_at, denormalised for sort
+  fs_trace_path   TEXT     -- absolute path to runs/<kind>-<id>/ tree, or NULL
+
+mutations:                  -- new table
+  hash            TEXT PK
+  generation      TEXT
+  manifest        TEXT     -- JSON {gene: on/off, ...}; NULL for commit-based mutations
+  kind            TEXT     -- 'commit' | 'toggle'
+  parent_a        TEXT
+  parent_b        TEXT
+  detected_at     DATETIME
+  created_by      TEXT     -- 'compiler' | 'manual' | 'evolution' | 'merge'
+
+INDEX idx_runs_kind_started   ON runs(kind, started_at DESC)
+INDEX idx_runs_mutation       ON runs(mutation)
+INDEX idx_runs_scenario       ON runs(scenario_id)
+INDEX idx_runs_project        ON runs(project)
+-- Gene/file/jira queries use json_each:
+--   SELECT … FROM runs, json_each(runs.genes) WHERE json_each.value = ?
+-- FTS5 on events.data_json — defer until perf shows it's needed.
+```
+
+### 5e.12 Genes — auto-detected now, toggle-driven later
+
+Genes are discrete features inside a mutation. Today: **auto-
+detected at compile time** from prompt content via marker
+patterns. Tomorrow: **explicit toggles** in a manifest, with
+prompts composed from base + gene patches. Both regimes share the
+same query API.
+
+**Auto-detection (Phase 1, current proposal):**
+
+```python
+# orchestra/genes.py
+GENES = {
+    "diff_view_block":            "## Diff view (how the file tools work)",
+    "agents_md_citation_rule":    "Cite the rule by name when it bears",
+    "severity_calibration_v2":    "follows consequence; verdict follows severity",
+    "comment_graph_tools":        "list_threads(start, n, sort)",
+    "no_baked_existing_comments": lambda agent: "existing_comments" not in agent.input_schema,
+    "open_closed_user_message":   "The tools above are **capabilities**",
+    # ...
+}
+
+# at compile time (orchestra/compiler.py):
+def detect_genes(prompts: AgentRegistry) -> list[str]:
+    out = []
+    for name, marker in GENES.items():
+        if callable(marker):
+            if any(marker(a) for a in prompts.values()):
+                out.append(name)
+        else:
+            if any(marker in (a.system_prompt + a.user_prompt) for a in prompts.values()):
+                out.append(name)
+    return sorted(out)
+```
+
+CLI passes `genes` to TraceDBWriter at run start. They land in
+`runs.genes` (frozen for that run; gene definitions are
+re-computed per future commit, but historical runs preserve their
+detected set).
+
+**Toggle-driven (Phase 2, forward direction):**
+
+When we move to composable prompts, mutation = manifest of
+`{gene: on/off}`. Compiler generates the prompts deterministically
+from base + applied gene patches. Search API doesn't change —
+`runs.genes` populated either by detection or by manifest keys
+where value=on. Evolution orchestrator (§5c.609) becomes
+combinatorial over toggles instead of LLM-as-merger.
+
+Defer until Phase 1 produces enough mutation × gene data to know
+which genes deserve to be promoted to first-class toggles.
+
+**Catalogue maintenance.** `orchestra/genes.py` is a flat dict.
+Adding a gene = one PR adding one entry + a marker in the prompt.
+CI assertion: every gene name referenced in scenarios/yaml or
+mutations table must exist in `GENES`. Removing a gene = needs
+migration script (or just freeze: old runs keep the detected set
+even if we drop the marker).
+
+### 5e.13 Clients — web + CLI (human and agent-friendly)
+
+Both are thin clients over `/api/*`. No backdoor access to DB or
+FS — everything goes through HTTP so the same view works locally,
+remote, or behind a reverse-proxy.
+
+**Web UI** — additive routes in pr-analytics. Same surface as
+described in 5e.6, gains pages for the new dimensions:
+
+```
+/qa/runs                    — list with filter chips (gene, mutation, project, …)
+/qa/runs/{id}               — drill, including ↗ FS path + ↗ linked judge/agent
+/qa/runs/{id}/files         — file-explorer over the FS trace tree
+/qa/genes                   — gene catalogue + perf deltas
+/qa/genes/{name}            — one gene's impact across mutations
+/qa/mutations               — mutation list + lineage tree (parent_a / parent_b)
+/qa/scenarios               — scenario catalogue
+/qa/work_objects/{type}     — pivot view by file / pr / jira / project
+/qa/regressions             — pick baseline + candidate, see deltas
+```
+
+**CLI — two output modes for two audiences.**
+
+`bench-schedule` / `quality-cli` is a thin HTTP client. Same
+commands, two output flavours:
+
+```
+quality-cli runs list                          # human: rich table, color
+quality-cli runs list --json                   # agent: structured JSON, stable schema
+quality-cli runs list --provider=qwen3-6 --gene=diff_view_block --since=24h
+
+quality-cli runs get <id>                      # human: rich panel + step timeline
+quality-cli runs get <id> --json               # agent: full run JSON, all events inline
+quality-cli runs get <id> --files              # open the FS tree path
+
+quality-cli tool-calls --tool=reflect --model=qwen3-6 --limit=5
+quality-cli tool-calls --tool=reflect --model=qwen3-6 --limit=5 --json
+                                               # agent: each row request+response paired
+
+quality-cli search "PricingService.getCheapest" --in=findings --since=7d
+quality-cli search "..." --json
+
+quality-cli regressions --baseline=abc12 --candidate=def34
+quality-cli aggregates by-gene --scope=tier:unit
+quality-cli replay <run_id> --provider=qwen3-6   # re-run with same mutation, different provider
+
+# Plan / queue (covered by §5c-5e earlier):
+quality-cli plan create --branches=feature/X
+quality-cli worker --provider=qwen3-6 --capacity=2
+quality-cli watch <plan_id>                     # WS live progress
+```
+
+**`--json` mode contract** — what an LLM agent gets:
+
+- Stable schema, documented in `/api/openapi.json`.
+- Always `{"data": …, "meta": {...}}` envelope.
+- Pagination cursors (not offsets) so the agent can iterate
+  without race conditions.
+- No interactive prompts, no color codes, no progress spinners.
+- Errors return structured `{"error": {"code": ..., "message": ...}}`.
+- `--quiet` suppresses everything except the JSON payload.
+
+Default (`without --json`) is human mode: rich tables, panels,
+colors, friendly error messages, may include suggestions like
+*"try `quality-cli runs list --gene=…` to filter"*.
+
+This makes the CLI **dual-purpose**: a developer types commands;
+a debugging sub-agent (per §9) calls the same binary with `--json`
+and reads structured output via standard `read_file` over its
+stdout. No special "agent API" needed.
+
 ### 5e.10 Where it lives
 
 - Server / DB / web UI: `pr-analytics/` (becomes the unified
   quality-api).
 - Trace browser: moved from `diff-graph/tracing/` into
   `pr-analytics/routes/traces/`.
-- Worker + CLI: `code-review-benchmarks/qa/` — `bench-schedule`
+- Worker + CLI: `code-review-benchmarks/qa/` — `quality-cli`
   binary, only API client + worker loop.
+- FS-only trace browser (secondary): standalone `bench-trace-fs/`
+  app — same HTML/JS as the primary, swaps the storage adapter
+  for `FilesystemTraceStore`. For ad-hoc dumps brought from
+  remote machines, useful but not load-bearing.
 - Diff-graph itself: untouched. The trace DB it writes to
   (`~/.diffgraph/traces.db`) is consumed by the server.
 
-**Effort.** Phase 1-3 (schema + lease/heartbeat/finish + CLI
-client): ~3-5 days. Phase 4-7 (dashboards + workers + metrics):
-~1 week. Phase 8-12 (live WS + calibration + multi-worker +
-webhook): ~1 week. Whole thing 2-3 weeks of focused work. Each
-phase is independently shippable.
+**Effort, recalibrated.**
+- Phase 1 — schema additions + gene auto-detect + writer wiring:
+  ~1 day. Pure refactor, no new server.
+- Phase 2 — minimal SQLite-backed quality-api (read-only:
+  `/api/runs`, `/api/runs/{id}`, `/api/tool_calls`, `/api/genes`):
+  ~2-3 days. Boots pr-analytics as a FastAPI app for the first
+  time.
+- Phase 3 — write endpoints + dashboards + CLI client (human
+  mode): ~1 week.
+- Phase 4 — `--json` mode + agent-friendly invariants + minimal
+  web UI for runs/genes/mutations: ~1 week.
+- Phase 5 — workers + plans + lease/heartbeat: ~1 week.
+- Phase 6 — live WS + regressions UI + FS-only trace browser:
+  ~1 week.
+
+Whole thing 4-5 weeks. Phases ship independently. Phase 1+2 is
+the smallest useful chunk (better-than-grep over historical
+traces) and is what I'm starting with.
 
 ---
 
