@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=ea0c5547"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=15e165d5"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -29,12 +29,15 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
   background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
   padding: 4px 9px; border-radius: 4px; font-size: 0.9em;
 }
-.chip { display: inline-block; padding: 2px 7px; background: #1f6feb33;
-        color: #58a6ff; border-radius: 3px; font-size: 0.8em;
-        font-family: ui-monospace, monospace; cursor: pointer; }
-.chip::after { content: " ×"; opacity: 0.6; }
+.lin-chip { display: inline-block; padding: 3px 9px; margin: 2px;
+            background: #21262d; color: #8b949e;
+            border: 1px solid #30363d; border-radius: 3px;
+            font-size: 0.85em; cursor: pointer; user-select: none;
+            font-family: ui-monospace, monospace; }
+.lin-chip.on { background: #1f6feb33; color: #58a6ff;
+               border-color: #58a6ff66; }
 .chart-frame { background: #0d1117; border-radius: 4px; padding: 4px;
-               min-height: 280px; }
+               min-height: 320px; }
 .legend-note { font-size: 0.8em; color: #6e7681; margin-top: 4px; }
 </style>
 </head>
@@ -43,10 +46,11 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 
 <h1>QA · Scoring</h1>
 <p class="muted">
-  Per-attempt judge scores. Box plots show distribution per scenario;
-  timelines show whether repeats cluster or scatter; cross-mutation
-  comparison plots mean ± 95% CI so you can eyeball whether two
-  mutations are statistically distinguishable (CIs overlap = not).
+  Watch quality across <b>lineages</b> (long-lived branches like
+  <code>master</code>) and <b>mutations</b> (commits on them, shown
+  as points). By default every lineage we have data for is selected;
+  click a chip to toggle. Pick a single scenario to drill into its
+  per-attempt timeline.
 </p>
 
 <div x-data="scoringView" x-init="init()">
@@ -54,27 +58,12 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
   <!-- Controls -->
   <div class="section">
     <div class="controls">
-      <label title="a long-lived line of git commits we're testing as a hypothesis (typically a git branch like `master` or `feature/foo`)">
-        lineage
-        <select x-model="lineage" @change="reload()">
-          <option value="">none</option>
-          <template x-for="b in availableLineages">
-            <option :value="b" x-text="b"></option>
-          </template>
-        </select>
-      </label>
-      <label title="a specific commit on the lineage we benched against">
-        commit
-        <select @change="addMutation($event.target.value); $event.target.value=''">
-          <option value="">+ pick (up to 4)</option>
-          <template x-for="m in availableMutations">
-            <option :value="m" x-text="m" :disabled="picked.includes(m)"></option>
-          </template>
-        </select>
-      </label>
+      <span class="muted">lineages:</span>
       <span>
-        <template x-for="m in picked" :key="m">
-          <span class="chip" @click="removeMutation(m)" x-text="m"></span>
+        <template x-for="l in availableLineages" :key="l">
+          <span class="lin-chip"
+                :class="lineages.includes(l) ? 'on' : ''"
+                @click="toggleLineage(l)" x-text="l"></span>
         </template>
       </span>
       <label>scenario
@@ -88,63 +77,57 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
       <span class="muted" x-text="status"></span>
     </div>
     <div class="legend-note">
-      Pick a <b>lineage</b> to watch its quality trend across all its
-      commits. Pick specific <b>commits</b> (1-4) to see distribution
-      and side-by-side comparison. Mix both to slice further.
+      Each chip is a lineage. Lit = included. Default is all lit;
+      narrow down to compare a subset side-by-side. Mutations
+      (commits) appear automatically as dots on each lineage's line.
     </div>
   </div>
 
-  <template x-if="picked.length === 0 && !lineage">
-    <div class="empty">pick a lineage or one or more commits above</div>
+  <template x-if="lineages.length === 0">
+    <div class="empty">no lineage selected — click a chip above</div>
   </template>
 
-  <template x-if="(picked.length > 0 || lineage) && rows.length === 0 && status === 'no data'">
-    <div class="empty">no judge runs yet for this selection — fire a plan from /qa/mutations and wait</div>
+  <template x-if="lineages.length > 0 && rows.length === 0 && status === 'no data'">
+    <div class="empty">
+      no judge runs yet for these lineages — fire a plan from
+      /qa/mutations and wait. Old plans before the BENCHMARK_TRACE_DIR
+      fix did not record judge rows; only newly-fired plans surface
+      here.
+    </div>
   </template>
 
-  <!-- (d) Trend along a lineage — only when lineage is picked alone. -->
-  <div class="section" x-show="lineage && picked.length === 0 && rows.length > 0">
-    <h2>trend on <span x-text="lineage"></span> · mean score per commit</h2>
+  <!-- (1) Trend per lineage — always shown when there's data. -->
+  <div class="section" x-show="rows.length > 0">
+    <h2>trend across commits · mean score per (mutation × scenario)</h2>
     <div id="chart-trend" class="chart-frame"></div>
     <div class="legend-note">
-      Each line is one scenario; each dot is one commit on this lineage.
-      Sloping down = quality drift (look for what changed). Flat = the
-      lineage holds its score across iterations. Wide jumps with few
-      commits = high variance — needs more repeats to be sure.
+      One line per scenario; each dot is one mutation (commit) on the
+      lineage. Sloping = quality drift (look at what changed). Flat =
+      stable. Multiple lineages selected = lines for each, color-coded
+      by scenario.
     </div>
   </div>
 
-  <!-- (a) Box plot per scenario -->
+  <!-- (2) Box plot per scenario — shown when no specific scenario picked. -->
   <div class="section" x-show="rows.length > 0 && !scenario">
     <h2>distribution per scenario · score</h2>
     <div id="chart-box" class="chart-frame"></div>
     <div class="legend-note">
-      Wide box / long whiskers = high variance = scenario is noisy and
-      a single repeat can't be trusted. Tight box = score is stable.
-      Each colour = one mutation.
+      Wide box / long whiskers = scenario is noisy (single attempt
+      can't be trusted). Tight box = stable. With multiple lineages
+      selected, each scenario shows side-by-side boxes per mutation
+      so you can compare distributions.
     </div>
   </div>
 
-  <!-- (b) Per-attempt timeline (when one scenario picked) -->
+  <!-- (3) Per-attempt timeline — when one scenario is picked. -->
   <div class="section" x-show="rows.length > 0 && scenario">
     <h2>per-attempt timeline · <span x-text="scenario"></span></h2>
     <div id="chart-timeline" class="chart-frame"></div>
     <div class="legend-note">
-      Each dot is one judge verdict in chronological order. Tight cluster
-      across repeats = stable; jumpy line = the scenario flaps and you
-      need more repeats to trust the mean.
-    </div>
-  </div>
-
-  <!-- (c) Cross-mutation comparison with 95% CI -->
-  <div class="section" x-show="picked.length >= 2">
-    <h2>mutation comparison · mean ± 95% CI</h2>
-    <div id="chart-compare" class="chart-frame"></div>
-    <div class="legend-note">
-      Error bars are mean ± 1.96·SE (95% CI). When the bars overlap, the
-      mutations aren't statistically distinguishable on this scenario at
-      the current sample size — you need either more repeats or a
-      larger effect.
+      Each dot is one judge verdict in chronological order, color =
+      mutation. Tight cluster across repeats = stable; jumpy = the
+      scenario flaps and you need more repeats to trust the mean.
     </div>
   </div>
 

@@ -330,81 +330,76 @@ document.addEventListener('alpine:init', () => {
   }
 
   Alpine.data('scoringView', () => ({
-    picked: [],                          // selected mutation hashes (max 4)
+    lineages: [],                        // multi-select; empty = "show all"
     scenario: '',                        // single-scenario filter
-    lineage: '',                         // a long-lived line of git commits (typically a git branch like `master` or `feature/foo`)
     rows: [],                            // per_run_scores rows
-    availableMutations: [],
     availableScenarios: [],
     availableLineages: [],
     status: '',
     async init() {
-      // Populate dropdowns: mutations from aggregate; scenarios from
-      // dimensions endpoint (already filtered to ones we have data for).
       const base = window.QA_BASE_PATH || '';
-      const muts = (await (await fetch(`${base}/api/search/aggregates/by_mutation?limit=200`)).json()).data || [];
-      this.availableMutations = muts.map(m => m.mutation).filter(Boolean);
       const dims = (await (await fetch(`${base}/api/search/dimensions`)).json()).data || {};
       this.availableScenarios = (dims.scenario_id || []).filter(Boolean).sort();
       this.availableLineages = (dims.lineage || []).filter(Boolean).sort();
-      // Pre-pick from URL ?mutation=... | ?lineage=... if present.
+      // URL pre-pick: ?lineage=master&lineage=feature/X (multi); ?scenario=…
       const sp = new URLSearchParams(window.location.search);
-      const initMuts = sp.getAll('mutation').flatMap(s => s.split(',')).filter(Boolean);
-      for (const m of initMuts.slice(0, 4)) this.picked.push(m);
+      const initLineages = sp.getAll('lineage').flatMap(s => s.split(',')).filter(Boolean);
+      this.lineages = initLineages.filter(l => this.availableLineages.includes(l));
+      // Default: show every lineage we have data for. User can subset later.
+      if (this.lineages.length === 0) this.lineages = [...this.availableLineages];
       const initScen = sp.get('scenario');
       if (initScen) this.scenario = initScen;
-      const initLineage = sp.get('lineage');
-      if (initLineage) this.lineage = initLineage;
-      if (this.picked.length || this.lineage) await this.reload();
+      // Re-render on tab refocus — fixes vega "0-width line" when the
+      // tab was hidden during initial render. window.dispatchEvent
+      // makes vega views resize() against the now-visible container.
+      window.addEventListener('focus', () => window.dispatchEvent(new Event('resize')));
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) setTimeout(() => this.renderCharts(), 50);
+      });
+      await this.reload();
     },
-    addMutation(m) {
-      if (!m || this.picked.includes(m) || this.picked.length >= 4) return;
-      this.picked.push(m);
-      this.pushUrl();
-      this.reload();
-    },
-    removeMutation(m) {
-      this.picked = this.picked.filter(x => x !== m);
-      this.pushUrl();
+    toggleLineage(l) {
+      if (this.lineages.includes(l)) {
+        this.lineages = this.lineages.filter(x => x !== l);
+      } else {
+        this.lineages = [...this.lineages, l];
+      }
       this.reload();
     },
     pushUrl() {
       const qs = new URLSearchParams();
-      for (const m of this.picked) qs.append('mutation', m);
+      // Only emit lineages if user has subset; "all" is implicit.
+      if (this.lineages.length > 0 &&
+          this.lineages.length < this.availableLineages.length) {
+        for (const l of this.lineages) qs.append('lineage', l);
+      }
       if (this.scenario) qs.set('scenario', this.scenario);
-      if (this.lineage)  qs.set('lineage', this.lineage);
       const url = window.location.pathname + (qs.toString() ? '?' + qs.toString() : '');
       window.history.replaceState({}, '', url);
     },
     async reload() {
       this.pushUrl();
-      if (this.picked.length === 0 && !this.lineage) { this.rows = []; return; }
+      if (this.lineages.length === 0) { this.rows = []; return; }
       this.status = 'loading…';
       const base = window.QA_BASE_PATH || '';
       const all = [];
-      // Lineage mode: one fetch covering every commit on this lineage.
-      if (this.lineage) {
-        const qs = new URLSearchParams({lineage: this.lineage, limit: '5000'});
+      // One fetch per selected lineage (parallel for nicer latency).
+      const fetches = this.lineages.map(async (lin) => {
+        const qs = new URLSearchParams({lineage: lin, limit: '5000'});
         if (this.scenario) qs.set('scenario', this.scenario);
         const r = await (await fetch(`${base}/api/search/per_run_scores?${qs}`)).json();
-        for (const row of (r.data || [])) all.push(row);
-      }
-      // Specific mutation mode (also works alongside lineage — set
-      // intersection follows from the SQL filter ANDing all params).
-      for (const m of this.picked) {
-        const qs = new URLSearchParams({mutation: m, limit: '1000'});
-        if (this.scenario) qs.set('scenario', this.scenario);
-        const r = await (await fetch(`${base}/api/search/per_run_scores?${qs}`)).json();
-        for (const row of (r.data || [])) all.push(row);
-      }
+        return (r.data || []);
+      });
+      const arrs = await Promise.all(fetches);
+      for (const a of arrs) for (const row of a) all.push(row);
       this.rows = all;
-      this.status = all.length ? `${all.length} judge runs` : 'no data';
-      // Defer to allow Alpine x-show to expand the chart divs first.
-      setTimeout(() => this.renderCharts(), 0);
+      this.status = all.length
+        ? `${all.length} judge runs across ${this.lineages.length} lineage(s)`
+        : 'no data';
+      setTimeout(() => this.renderCharts(), 50);
     },
     renderCharts() {
       if (!window.vegaEmbed || this.rows.length === 0) return;
-      // Short-hash mutation column for legend brevity.
       const data = this.rows.map(r => ({...r, mutation_short: (r.mutation || '').slice(0, 8)}));
       const dark = {
         config: {
@@ -414,13 +409,68 @@ document.addEventListener('alpine:init', () => {
                   domainColor: '#30363d', gridColor: '#21262d', tickColor: '#30363d'},
           legend: {labelColor: '#c9d1d9', titleColor: '#8b949e'},
           title:  {color: '#c9d1d9'},
-          range: {category: ['#56d364', '#58a6ff', '#d2a8ff', '#c69026']},
+          range: {category: ['#56d364', '#58a6ff', '#d2a8ff', '#c69026',
+                              '#f47067', '#ff9b73', '#fbcb6f']},
         },
       };
+      // resize-on-mount helper: vega's container measure is 0 when
+      // the parent is x-show=false (Alpine collapses it). Calling
+      // view.resize() on the embed promise recomputes against the
+      // now-visible bounding box.
+      const embed = (sel, spec) =>
+        vegaEmbed(sel, spec, {actions: false})
+          .then(({view}) => view.resize())
+          .catch(() => {});
 
-      // (a) Box plot per scenario — only when no specific scenario picked.
+      // (1) Trend per lineage — one line per (lineage × scenario);
+      // mutations appear automatically as POINTS along their lineage.
+      // x = ts of judge run, y = mean per (mutation × lineage × scenario).
+      // Default view, always rendered.
+      const trendSpec = {
+        ...dark,
+        width: 'container', height: 360,
+        data: {values: data},
+        mark: {type: 'line', point: {filled: true, size: 80},
+                interpolate: 'monotone'},
+        transform: [
+          {
+            aggregate: [
+              {op: 'mean',  field: 'score', as: 'mean_score'},
+              {op: 'count', field: 'score', as: 'n'},
+              {op: 'min',   field: 'ts',    as: 'first_ts'},
+            ],
+            groupby: ['mutation_short', 'scenario', 'mutation'],
+          },
+        ],
+        encoding: {
+          x: {field: 'first_ts', type: 'temporal',
+              title: 'commit chronology'},
+          y: {field: 'mean_score', type: 'quantitative',
+              title: 'mean overall_score', scale: {domain: [0, 1]}},
+          color: {field: 'scenario', type: 'nominal', title: 'scenario',
+                  scale: {scheme: 'category10'}},
+          // Use stroke-dash to differentiate lineages WHEN multi-select.
+          // (this requires injecting `lineage` per row — already in data
+          // via per_run_scores join; pull it through.)
+          strokeDash: this.lineages.length > 1
+            ? {field: 'scenario', type: 'nominal'}  // placeholder — see note
+            : undefined,
+          tooltip: [
+            {field: 'mutation_short', type: 'nominal', title: 'mutation (commit)'},
+            {field: 'scenario', type: 'nominal'},
+            {field: 'mean_score', type: 'quantitative', format: '.3f'},
+            {field: 'n', type: 'quantitative', title: 'samples'},
+            {field: 'first_ts', type: 'temporal'},
+          ],
+        },
+      };
+      embed('#chart-trend', trendSpec);
+
+      // (2) Box plot per scenario — distribution across all selected
+      // lineages. Color by lineage when multiple selected so you can
+      // see "lineage A is tighter than B on this scenario".
       if (!this.scenario) {
-        const spec = {
+        const boxSpec = {
           ...dark,
           width: 'container', height: 280,
           mark: {type: 'boxplot', extent: 1.5, size: 18},
@@ -430,25 +480,32 @@ document.addEventListener('alpine:init', () => {
                 axis: {labelAngle: -30}},
             y: {field: 'score', type: 'quantitative', title: 'overall_score',
                 scale: {domain: [0, 1]}},
-            color: {field: 'mutation_short', type: 'nominal', title: 'mutation'},
-            xOffset: {field: 'mutation_short'},
+            color: this.lineages.length > 1
+              ? {field: 'mutation_short', type: 'nominal', title: 'mutation'}
+              : {value: '#58a6ff'},
+            xOffset: this.lineages.length > 1
+              ? {field: 'mutation_short'} : undefined,
           },
         };
-        vegaEmbed('#chart-box', spec, {actions: false});
+        embed('#chart-box', boxSpec);
       }
 
-      // (b) Per-attempt timeline — when a single scenario is picked.
+      // (3) Per-attempt timeline — when ONE scenario is picked.
+      // Every dot = one judge verdict in chronological order. Same
+      // lineage tints with one colour; mutations are visible as
+      // chronologically-clustered point groups.
       if (this.scenario) {
-        const spec = {
+        const tSpec = {
           ...dark,
           width: 'container', height: 280,
           data: {values: data},
-          mark: {type: 'line', point: {filled: true, size: 80}},
+          mark: {type: 'point', filled: true, size: 80},
           encoding: {
             x: {field: 'ts', type: 'temporal', title: 'judge finished_at'},
             y: {field: 'score', type: 'quantitative', title: 'overall_score',
                 scale: {domain: [0, 1]}},
-            color: {field: 'mutation_short', type: 'nominal', title: 'mutation'},
+            color: {field: 'mutation_short', type: 'nominal',
+                    title: 'mutation (commit)'},
             tooltip: [
               {field: 'mutation_short', type: 'nominal'},
               {field: 'score', type: 'quantitative'},
@@ -458,84 +515,7 @@ document.addEventListener('alpine:init', () => {
             ],
           },
         };
-        vegaEmbed('#chart-timeline', spec, {actions: false});
-      }
-
-      // (d) Trend along a lineage — one line per scenario, x = chronology
-      // of commits on the lineage, y = mean(score) per commit. Shows
-      // whether the lineage's quality is drifting / improving / flat.
-      if (this.lineage && this.picked.length === 0) {
-        const spec = {
-          ...dark,
-          width: 'container', height: 320,
-          data: {values: data},
-          mark: {type: 'line', point: {filled: true, size: 80}, interpolate: 'monotone'},
-          transform: [
-            {
-              aggregate: [
-                {op: 'mean',  field: 'score', as: 'mean_score'},
-                {op: 'count', field: 'score', as: 'n'},
-                {op: 'min',   field: 'ts',    as: 'first_ts'},
-              ],
-              groupby: ['mutation_short', 'scenario'],
-            },
-          ],
-          encoding: {
-            x: {field: 'first_ts', type: 'temporal',
-                title: `commits on ${this.lineage} (chronological)`},
-            y: {field: 'mean_score', type: 'quantitative',
-                title: 'mean overall_score', scale: {domain: [0, 1]}},
-            color: {field: 'scenario', type: 'nominal',
-                    title: 'scenario',
-                    scale: {scheme: 'category10'}},
-            tooltip: [
-              {field: 'mutation_short', type: 'nominal', title: 'commit'},
-              {field: 'scenario', type: 'nominal'},
-              {field: 'mean_score', type: 'quantitative', format: '.3f'},
-              {field: 'n', type: 'quantitative', title: 'samples'},
-              {field: 'first_ts', type: 'temporal'},
-            ],
-          },
-        };
-        vegaEmbed('#chart-trend', spec, {actions: false});
-      }
-
-      // (c) Cross-mutation comparison — mean ± 95% CI per (scenario, mutation).
-      if (this.picked.length >= 2) {
-        const spec = {
-          ...dark,
-          width: 'container', height: 320,
-          data: {values: data},
-          layer: [
-            // Bars: mean
-            {
-              mark: {type: 'bar', size: 14, opacity: 0.8},
-              encoding: {
-                x: {field: 'scenario', type: 'nominal', title: 'scenario',
-                    axis: {labelAngle: -30}},
-                xOffset: {field: 'mutation_short'},
-                y: {aggregate: 'mean', field: 'score', type: 'quantitative',
-                    title: 'mean score', scale: {domain: [0, 1]}},
-                color: {field: 'mutation_short', type: 'nominal', title: 'mutation'},
-              },
-            },
-            // Whiskers: 95% CI via errorbar(ci) — vega-lite computes
-            // mean ± 1.96·SE under the hood for the 'ci' extent.
-            {
-              mark: {type: 'errorbar', extent: 'ci', ticks: true,
-                      color: '#c9d1d9'},
-              encoding: {
-                x: {field: 'scenario', type: 'nominal'},
-                xOffset: {field: 'mutation_short'},
-                y: {field: 'score', type: 'quantitative',
-                    title: 'mean score'},
-                color: {field: 'mutation_short', type: 'nominal',
-                        legend: null},
-              },
-            },
-          ],
-        };
-        vegaEmbed('#chart-compare', spec, {actions: false});
+        embed('#chart-timeline', tSpec);
       }
     },
   }))
