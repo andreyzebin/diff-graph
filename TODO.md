@@ -1781,6 +1781,27 @@ scenario where we need 10 reps to pin down the mean.
   scenarios (mean is biased by tail outliers; we already see
   this with stuck DeepSeek runs)
 
+**ROI per scenario — retire the expensive ones that catch nothing.**
+Cost is `mean(duration_ms) × attempts × providers`; value is
+information yield. A scenario whose pass_rate is ~1.0 across
+every mutation we've ever run, with no required-comment misses
+or false-positives, is just paying tribute — it never *catches*
+anything. Compute:
+
+- `pass_rate_p99` — stable-pass marker (≥ 0.99 across all mutations)
+- `failure_diversity` — how many distinct (mutation × kind-of-failure)
+  this scenario ever produced (required-comment-miss /
+  false-positive / status-verdict-flip / agent-warning)
+- `roi = failure_diversity / mean_duration_ms`
+
+Surface a "retirement candidates" list on `/qa/scenarios`:
+high-duration scenarios with low/zero failure_diversity over
+the last N mutations. Author manually retires (or downgrades
+their tag from `tier:integration` to `tier:smoke`). Don't auto-
+delete — keep human in the loop, the scenario may be a sentinel
+that *should* always pass and we want to know the day it
+doesn't. Flag, don't drop.
+
 **Surface.**
 - `/api/search/aggregates/by_scenario` extended with cv_score,
   cv_duration, n_runs columns
