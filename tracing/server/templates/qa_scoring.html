@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=2dc9c7cd"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=d5ac6fef"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -37,7 +37,13 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 .lin-chip.on { background: #1f6feb33; color: #58a6ff;
                border-color: #58a6ff66; }
 .chart-frame { background: #0d1117; border-radius: 4px; padding: 4px;
-               min-height: 320px; }
+               min-height: 320px;
+               /* Hard cap so vega-lite's width:'container' stays
+                  inside the section (otherwise a freshly-injected
+                  SVG can push the frame past its parent and the
+                  next measurement reads the inflated width). */
+               width: 100%; max-width: 100%; box-sizing: border-box;
+               overflow-x: hidden; }
 .legend-note { font-size: 0.8em; color: #6e7681; margin-top: 4px; }
 </style>
 </head>

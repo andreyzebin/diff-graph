@@ -417,21 +417,17 @@ document.addEventListener('alpine:init', () => {
                               '#f47067', '#ff9b73', '#fbcb6f']},
         },
       };
-      // Width strategy: read the chart-frame's bounding box NOW (after
-      // the double-RAF wait above) and pass an explicit pixel width
-      // into each spec. width:'container' + ResizeObserver looked
-      // tempting but caused a "flicker normal → narrow" regression
-      // when a vertical scrollbar appeared mid-render and the
-      // observer measured a transient too-small width, after which
-      // vega settled into a 16px strip. Fixed pixel width is stable.
-      const measure = (sel) => {
-        const el = document.querySelector(sel);
-        if (!el) return 800;
-        const w = Math.floor(el.getBoundingClientRect().width - 8);
-        return Math.max(400, w);
-      };
+      // Width strategy: vega-lite `width: 'container'` is correct in
+      // theory; the trick is making sure
+      //  (1) the container is laid out (not display:none) at embed time
+      //  (2) the container has a sensible upper bound so vega doesn't
+      //      grow it unbounded.
+      // Caller does (1) via double-RAF before calling renderCharts.
+      // (2) is enforced via CSS on .chart-frame (width:100%; max-width:
+      // 100%; box-sizing:border-box) — vega measures the parent's
+      // content-box and stays inside it.
       const embed = (sel, spec) => {
-        spec.width = measure(sel);
+        spec.width = 'container';
         return vegaEmbed(sel, spec, {actions: false}).catch(() => {});
       };
 
