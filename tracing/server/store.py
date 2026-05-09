@@ -125,7 +125,7 @@ class SQLiteTraceStore:
                    linked_run_id, fs_trace_path,
                    findings_count, total_tokens_paid, prompt_source, prompt_hash,
                    (SELECT t.plan_id FROM qa_tasks t
-                    WHERE t.mutation_hash = runs.mutation
+                    WHERE SUBSTR(t.mutation_hash, 1, 7) = runs.mutation
                       AND t.started_at IS NOT NULL
                       AND runs.started_at >= t.started_at
                       AND runs.started_at <= COALESCE(t.finished_at, datetime('now'))
@@ -618,7 +618,7 @@ class SQLiteTraceStore:
             clauses.append(
                 "EXISTS (SELECT 1 FROM qa_tasks t "
                 " WHERE t.lineage = ? "
-                "   AND t.mutation_hash = a.mutation "
+                "   AND SUBSTR(t.mutation_hash, 1, 7) = a.mutation "
                 "   AND t.started_at IS NOT NULL "
                 "   AND a.started_at >= t.started_at "
                 "   AND a.started_at <= COALESCE(t.finished_at, datetime('now')))"
@@ -887,7 +887,7 @@ class SQLiteTraceStore:
             clauses.append(
                 "EXISTS (SELECT 1 FROM qa_tasks t "
                 "WHERE t.plan_id = ? "
-                "  AND t.mutation_hash = runs.mutation "
+                "  AND SUBSTR(t.mutation_hash, 1, 7) = runs.mutation "
                 "  AND t.started_at IS NOT NULL "
                 "  AND runs.started_at >= t.started_at "
                 "  AND runs.started_at <= COALESCE(t.finished_at, datetime('now')))"

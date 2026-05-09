@@ -254,6 +254,17 @@ document.addEventListener('alpine:init', () => {
         },
         progressText(p) {
           const pr = p.progress || {};
+          const bk = pr.by_kind || {};
+          const a = bk.agent  || {};
+          const j = bk.judge  || {};
+          // If we have judge phantom rows, show "agents X/Y · judges A/B"
+          // — gives visibility for how the in-process judge tracks the
+          // agent. Otherwise fall back to single counter (legacy plans).
+          if (j && (j.total || 0) > 0) {
+            const aDone = (a.finished || 0) + (a.error || 0) + (a.cancelled || 0);
+            const jDone = (j.finished || 0) + (j.error || 0) + (j.cancelled || 0);
+            return ` agents ${aDone}/${a.total || 0} · judges ${jDone}/${j.total || 0}`;
+          }
           const done = (pr.finished || 0) + (pr.error || 0) + (pr.cancelled || 0);
           const total = pr.total || 0;
           return ` ${done}/${total}`;

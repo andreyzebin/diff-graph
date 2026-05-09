@@ -237,7 +237,7 @@ class WorkerSupervisor:
         with self.queue._lock, self.queue._conn() as c:
             row = c.execute(
                 """SELECT COUNT(*) AS n FROM qa_tasks
-                   WHERE state='queued' AND provider=?
+                   WHERE state='queued' AND provider=? AND kind='agent'
                      AND (not_before IS NULL OR not_before <= ?)""",
                 (pool.provider, datetime.now(timezone.utc).isoformat()),
             ).fetchone()

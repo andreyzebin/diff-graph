@@ -60,6 +60,9 @@ class TaskSpec:
     priority: int = 100              # lower = sooner
     payload: dict = field(default_factory=dict)
     not_before: Optional[str] = None  # ISO datetime; lease() honours this
+    kind: str = "agent"              # 'agent' | 'judge' (B-light phantom)
+    parent_task_id: Optional[int] = None
+    initial_state: str = "queued"    # 'queued' for normal, 'blocked' for judge phantom
 
 
 @dataclass
@@ -150,6 +153,15 @@ class TaskQueue:
                 # 10–15min; we cap each task's bench subprocess at this
                 # so a stuck LLM doesn't hold a slot indefinitely.
                 ("qa_worker_pools",       "task_timeout_seconds", "INTEGER NOT NULL DEFAULT 900"),
+                # B-light judge phantom task tracking. kind='agent'
+                # tasks are leased and run by workers; kind='judge'
+                # tasks are companions that ride along with their
+                # agent (same bench subprocess scores both) and are
+                # finished automatically when the agent finishes —
+                # surfaces "agents X/Y · judges A/B" progress in the
+                # UI without a bench-side refactor.
+                ("qa_tasks",              "kind",                 "TEXT NOT NULL DEFAULT 'agent'"),
+                ("qa_tasks",              "parent_task_id",       "INTEGER"),
             ]:
                 try:
                     c.execute(f"SELECT {col} FROM {table} LIMIT 0")
@@ -184,6 +196,8 @@ class TaskQueue:
                 CREATE TABLE IF NOT EXISTS qa_tasks (
                     id                INTEGER PRIMARY KEY AUTOINCREMENT,
                     state             TEXT NOT NULL DEFAULT 'queued',
+                    kind              TEXT NOT NULL DEFAULT 'agent',
+                    parent_task_id    INTEGER,
                     scenario_id       TEXT NOT NULL,
                     provider          TEXT NOT NULL,
                     attempt_n         INTEGER NOT NULL DEFAULT 1,
@@ -205,6 +219,8 @@ class TaskQueue:
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_provider ON qa_tasks(provider);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_plan     ON qa_tasks(plan_id);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_lease    ON qa_tasks(lease_expires_at);
+                CREATE INDEX IF NOT EXISTS idx_qa_tasks_kind     ON qa_tasks(kind, state);
+                CREATE INDEX IF NOT EXISTS idx_qa_tasks_parent   ON qa_tasks(parent_task_id);
 
                 CREATE TABLE IF NOT EXISTS qa_workers (
                     id                TEXT PRIMARY KEY,
@@ -289,15 +305,18 @@ class TaskQueue:
     # ── Task CRUD ─────────────────────────────────────────────────────────
 
     def enqueue(self, spec: TaskSpec) -> int:
-        """Insert a new task in state='queued'. Returns its id."""
+        """Insert a new task. Returns its id. Default state is 'queued';
+        kind='judge' phantom companions should be created with
+        initial_state='blocked' so lease() never picks them up."""
         with self._lock, self._conn() as c:
             cur = c.execute(
                 """INSERT INTO qa_tasks
-                   (state, scenario_id, provider, attempt_n, lineage,
-                    mutation_hash, plan_id, priority, payload, enqueued_at,
-                    not_before)
-                   VALUES ('queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (spec.scenario_id, spec.provider, spec.attempt_n,
+                   (state, kind, parent_task_id, scenario_id, provider,
+                    attempt_n, lineage, mutation_hash, plan_id, priority,
+                    payload, enqueued_at, not_before)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (spec.initial_state, spec.kind, spec.parent_task_id,
+                 spec.scenario_id, spec.provider, spec.attempt_n,
                  spec.lineage or "", spec.mutation_hash or "",
                  spec.plan_id, spec.priority,
                  json.dumps(spec.payload, ensure_ascii=False),
@@ -354,7 +373,7 @@ class TaskQueue:
         with self._lock, self._immediate() as c:
             row = c.execute(
                 """SELECT id FROM qa_tasks
-                   WHERE state='queued' AND provider=?
+                   WHERE state='queued' AND provider=? AND kind='agent'
                      AND (not_before IS NULL OR not_before <= ?)
                    ORDER BY priority ASC, enqueued_at ASC
                    LIMIT 1""",
@@ -417,6 +436,23 @@ class TaskQueue:
             c.commit()
             if cur.rowcount == 0:
                 return False
+            # Cascade to phantom judge: when an agent task terminates,
+            # its companion judge task (kind='judge', parent_task_id=us)
+            # was running in the same bench subprocess, so we mirror
+            # the agent's terminal state onto it. If agent succeeded
+            # → judge='finished'; otherwise judge='cancelled' (no
+            # judge artefact to grade against a failed agent).
+            judge_state = "finished" if state == "finished" else "cancelled"
+            c.execute(
+                """UPDATE qa_tasks
+                   SET state=?, finished_at=?, trace_run_id=?,
+                       error_class=?
+                   WHERE parent_task_id=? AND kind='judge'
+                     AND state IN ('blocked', 'queued')""",
+                (judge_state, _now().isoformat(), trace_run_id,
+                 error_class, task_id),
+            )
+            c.commit()
             # Look up plan_id of the just-finished task to drive the
             # plan-level auto-transition.
             plan_row = c.execute(
@@ -718,7 +754,8 @@ class PlanStore:
             for provider in spec.providers:
                 for scenario in spec.scenarios:
                     for attempt_n in range(1, max(1, spec.attempts_min) + 1):
-                        tid = self.queue.enqueue(TaskSpec(
+                        # Agent task — leased + run by a worker.
+                        agent_tid = self.queue.enqueue(TaskSpec(
                             scenario_id=scenario,
                             provider=provider,
                             attempt_n=attempt_n,
@@ -727,7 +764,25 @@ class PlanStore:
                             priority=spec.priority,
                             payload={"plan_name": spec.name} if spec.name else {},
                         ))
-                        task_ids.append(tid)
+                        task_ids.append(agent_tid)
+                        # Phantom judge companion — never leased; the
+                        # bench process scoring the agent IS the judge,
+                        # so finish() of the agent cascades the same
+                        # state onto this row. Adds visibility "agents
+                        # X/Y · judges A/B" without a bench refactor.
+                        judge_tid = self.queue.enqueue(TaskSpec(
+                            scenario_id=scenario,
+                            provider=provider,
+                            attempt_n=attempt_n,
+                            lineage=lineage,
+                            plan_id=plan_id,
+                            priority=spec.priority,
+                            kind="judge",
+                            parent_task_id=agent_tid,
+                            initial_state="blocked",
+                            payload={"plan_name": spec.name} if spec.name else {},
+                        ))
+                        task_ids.append(judge_tid)
         return plan_id, task_ids
 
     def get(self, plan_id: int) -> Optional[PlanRow]:
@@ -760,7 +815,7 @@ class PlanStore:
                   AND EXISTS (
                     SELECT 1 FROM qa_tasks t
                     WHERE t.plan_id = ?
-                      AND t.mutation_hash = r.mutation
+                      AND SUBSTR(t.mutation_hash, 1, 7) = r.mutation
                       AND t.started_at IS NOT NULL
                       AND r.started_at >= t.started_at
                       AND r.started_at <= COALESCE(t.finished_at, datetime('now'))
@@ -835,15 +890,29 @@ class PlanStore:
         return int(row["n"]) if row else 0
 
     def progress(self, plan_id: int) -> dict:
-        """Aggregate stats across the plan's tasks."""
+        """Aggregate stats across the plan's tasks. Top-level keys are
+        the union of states across both kinds (back-compat for callers
+        that just want overall counts); `by_kind` breaks out agents vs
+        phantom judges so the UI can show "agents X/Y · judges A/B".
+        """
         with self.queue._lock, self.queue._conn() as c:
             rows = c.execute(
-                """SELECT state, COUNT(*) AS n
-                   FROM qa_tasks WHERE plan_id=? GROUP BY state""",
+                """SELECT kind, state, COUNT(*) AS n
+                   FROM qa_tasks WHERE plan_id=?
+                   GROUP BY kind, state""",
                 (plan_id,),
             ).fetchall()
-        out = {r["state"]: int(r["n"]) for r in rows}
-        out["total"] = sum(out.values())
+        out: dict = {}
+        by_kind: dict[str, dict] = {}
+        for r in rows:
+            k = r["kind"] or "agent"
+            slot = by_kind.setdefault(k, {})
+            slot[r["state"]] = int(r["n"])
+            out[r["state"]] = out.get(r["state"], 0) + int(r["n"])
+        for slot in by_kind.values():
+            slot["total"] = sum(slot.values())
+        out["total"] = sum(v for v in out.values() if isinstance(v, int))
+        out["by_kind"] = by_kind
         return out
 
     def eta(self, plan_id: int) -> dict:
@@ -879,7 +948,8 @@ class PlanStore:
         with self.queue._lock, self.queue._conn() as c:
             tasks = c.execute(
                 """SELECT id, scenario_id, provider, state, started_at
-                   FROM qa_tasks WHERE plan_id=?""",
+                   FROM qa_tasks
+                   WHERE plan_id=? AND kind='agent'""",
                 (plan_id,),
             ).fetchall()
             if not tasks:
@@ -984,13 +1054,14 @@ class PlanStore:
         }
 
     def cancel(self, plan_id: int) -> int:
-        """Soft-cancel: mark plan + its queued tasks as cancelled.
-        Returns count of tasks cancelled."""
+        """Soft-cancel: mark plan + its queued tasks (incl. blocked
+        judge phantoms) as cancelled. Returns count of tasks cancelled."""
         with self.queue._lock, self.queue._conn() as c:
             c.execute("UPDATE qa_plans SET state='cancelled' WHERE id=?", (plan_id,))
             cur = c.execute(
                 """UPDATE qa_tasks SET state='cancelled', finished_at=?
-                   WHERE plan_id=? AND state IN ('queued', 'leased', 'running')""",
+                   WHERE plan_id=?
+                     AND state IN ('queued', 'leased', 'running', 'blocked')""",
                 (_now().isoformat(), plan_id),
             )
             c.commit()
