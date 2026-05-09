@@ -30,7 +30,7 @@ import shlex
 import sqlite3
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -118,7 +118,7 @@ class PoolStore:
                 (name or "", provider, int(target_workers), trigger,
                  int(max_idle_seconds), int(task_timeout_seconds),
                  bench_cmd or "",
-                 1 if enabled else 0, datetime.now().isoformat()),
+                 1 if enabled else 0, datetime.now(timezone.utc).isoformat()),
             )
             c.commit()
             return int(cur.lastrowid)
@@ -226,7 +226,7 @@ class WorkerSupervisor:
             with self.queue._lock, self.queue._conn() as c:
                 c.execute(
                     "UPDATE qa_worker_pools SET last_check_at=? WHERE id=?",
-                    (datetime.now().isoformat(), pool.id),
+                    (datetime.now(timezone.utc).isoformat(), pool.id),
                 )
                 c.commit()
 
@@ -239,7 +239,7 @@ class WorkerSupervisor:
                 """SELECT COUNT(*) AS n FROM qa_tasks
                    WHERE state='queued' AND provider=?
                      AND (not_before IS NULL OR not_before <= ?)""",
-                (pool.provider, datetime.now().isoformat()),
+                (pool.provider, datetime.now(timezone.utc).isoformat()),
             ).fetchone()
             queued = int(row["n"] or 0)
         if queued == 0:

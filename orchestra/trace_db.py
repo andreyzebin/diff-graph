@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -112,7 +112,7 @@ class TraceDBWriter:
     def _insert_run(self):
         self.conn.execute(
             "INSERT INTO runs (id, started_at, status, kind) VALUES (?, ?, ?, ?)",
-            (self.run_id, datetime.now().isoformat(), "running", self.kind),
+            (self.run_id, datetime.now(timezone.utc).isoformat(), "running", self.kind),
         )
         self.conn.commit()
 
@@ -267,7 +267,7 @@ class TraceDBWriter:
                 self.conn.execute(
                     "INSERT INTO events (run_id, agent_id, agent_name, timestamp, event_type, step, data_json) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (self.run_id, aid, aname, datetime.now().isoformat(), event_type, step,
+                    (self.run_id, aid, aname, datetime.now(timezone.utc).isoformat(), event_type, step,
                      json.dumps(data, default=str, ensure_ascii=False)),
                 )
                 self.conn.commit()
@@ -286,7 +286,7 @@ class TraceDBWriter:
             ).fetchone()
             if row and row[0]:
                 started = datetime.fromisoformat(row[0])
-                duration_ms = int((datetime.now() - started).total_seconds() * 1000)
+                duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
         except Exception:
             duration_ms = None
 
@@ -313,7 +313,7 @@ class TraceDBWriter:
                 "project=COALESCE(NULLIF(?, ''), project), "
                 "files_touched=COALESCE(NULLIF(?, '[]'), files_touched) "
                 "WHERE id=?",
-                (datetime.now().isoformat(), model, pr_url, diff_summary,
+                (datetime.now(timezone.utc).isoformat(), model, pr_url, diff_summary,
                  findings_count, total_tokens_paid,
                  prompt_source, prompt_hash, generation, prompt_hash,
                  duration_ms,

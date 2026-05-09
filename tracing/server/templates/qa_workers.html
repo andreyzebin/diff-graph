@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=428f09ab"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=e4771f7d"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -88,7 +88,7 @@ th { color: #8b949e; font-weight: normal; }
                 <span :class="p.enabled ? 'dot dot-idle' : 'dot dot-dead'"></span>
                 <span x-text="p.enabled ? 'enabled' : 'disabled'"></span>
               </td>
-              <td class="muted" x-text="(p.last_check_at || 'never').slice(0, 19)"></td>
+              <td class="muted" x-text="(p.last_check_at ? fmtLocal(p.last_check_at) : 'never')"></td>
               <td>
                 <button class="btn" @click="togglePool(p)" x-text="p.enabled ? 'disable' : 'enable'"></button>
                 <button class="btn btn-danger" @click="deletePool(p.id)">×</button>
@@ -146,7 +146,7 @@ th { color: #8b949e; font-weight: normal; }
               <td style="font-family: ui-monospace, monospace;" x-text="w.id"></td>
               <td x-text="w.provider || '(any)'"></td>
               <td class="tn" x-text="w.capacity"></td>
-              <td class="muted" x-text="(w.started_at || '').slice(0, 19)"></td>
+              <td class="muted" x-text="fmtLocal(w.started_at)"></td>
               <td class="muted" x-text="heartbeatLabel(w)"></td>
               <td>
                 <template x-if="w.current_task">
@@ -189,8 +189,8 @@ th { color: #8b949e; font-weight: normal; }
                 <a class="task-link" :href="`{{ base_path }}/qa/plans`"
                    x-text="t.plan_id ? `#${t.plan_id}` : '-'"></a>
               </td>
-              <td class="muted" x-text="(t.started_at || '').slice(11, 19)"></td>
-              <td class="muted" x-text="(t.lease_expires_at || '').slice(11, 19)"></td>
+              <td class="muted" x-text="fmtLocalTime(t.started_at)"></td>
+              <td class="muted" x-text="fmtLocalTime(t.lease_expires_at)"></td>
             </tr>
           </template>
         </tbody>

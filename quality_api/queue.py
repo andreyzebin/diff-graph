@@ -28,11 +28,18 @@ import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from orchestra.trace_db import DEFAULT_DB_PATH
+
+
+def _now() -> datetime:
+    """UTC-aware datetime — all timestamps stored in DB are UTC ISO
+    with `+00:00` offset; client renders to browser locale via
+    fmtLocal()."""
+    return datetime.now(timezone.utc)
 
 
 DEFAULT_LEASE_SECONDS = 60
@@ -273,7 +280,7 @@ class TaskQueue:
                  spec.branch or "", spec.mutation_hash or "",
                  spec.plan_id, spec.priority,
                  json.dumps(spec.payload, ensure_ascii=False),
-                 datetime.now().isoformat(),
+                 _now().isoformat(),
                  spec.not_before),
             )
             c.commit()
@@ -320,7 +327,7 @@ class TaskQueue:
         Ordering: by `priority` (asc), then `enqueued_at` (asc) — so
         sentinel scenarios with low priority value come first.
         """
-        now = datetime.now()
+        now = _now()
         expires = (now + timedelta(seconds=lease_seconds)).isoformat()
         now_iso = now.isoformat()
         with self._lock, self._immediate() as c:
@@ -351,7 +358,7 @@ class TaskQueue:
                   lease_seconds: int = DEFAULT_LEASE_SECONDS) -> bool:
         """Extend lease_expires_at. Returns False if the task was
         already reaped or finished, so the worker knows to stop."""
-        expires = (datetime.now() + timedelta(seconds=lease_seconds)).isoformat()
+        expires = (_now() + timedelta(seconds=lease_seconds)).isoformat()
         with self._lock, self._conn() as c:
             cur = c.execute(
                 """UPDATE qa_tasks
@@ -382,7 +389,7 @@ class TaskQueue:
                    SET state=?, finished_at=?, trace_run_id=?,
                        result_json=?, error_class=?
                    WHERE id=? AND lease_owner=?""",
-                (state, datetime.now().isoformat(), trace_run_id,
+                (state, _now().isoformat(), trace_run_id,
                  json.dumps(result, ensure_ascii=False) if result is not None else None,
                  error_class, task_id, worker_id),
             )
@@ -439,7 +446,7 @@ class TaskQueue:
                 """UPDATE qa_tasks
                    SET state='cancelled', finished_at=?
                    WHERE id=? AND state IN ('queued', 'leased', 'running')""",
-                (datetime.now().isoformat(), task_id),
+                (_now().isoformat(), task_id),
             )
             c.commit()
             return cur.rowcount > 0
@@ -453,7 +460,7 @@ class TaskQueue:
         Called at server startup (recover from kill -9 mid-run) and
         on demand via /qa/tasks/reap.
         """
-        cutoff = (datetime.now() - timedelta(seconds=grace_seconds)).isoformat()
+        cutoff = (_now() - timedelta(seconds=grace_seconds)).isoformat()
         with self._lock, self._conn() as c:
             cur = c.execute(
                 """UPDATE qa_tasks
@@ -473,7 +480,7 @@ class TaskQueue:
                         provider: str = "", capacity: int = 1,
                         pid: Optional[int] = None) -> str:
         wid = worker_id or str(uuid.uuid4())[:12]
-        now = datetime.now().isoformat()
+        now = _now().isoformat()
         with self._lock, self._conn() as c:
             c.execute(
                 """INSERT OR REPLACE INTO qa_workers
@@ -488,7 +495,7 @@ class TaskQueue:
         with self._lock, self._conn() as c:
             cur = c.execute(
                 "UPDATE qa_workers SET last_heartbeat=?, state='running' WHERE id=?",
-                (datetime.now().isoformat(), worker_id),
+                (_now().isoformat(), worker_id),
             )
             c.commit()
             return cur.rowcount > 0
@@ -498,7 +505,7 @@ class TaskQueue:
         with self._lock, self._conn() as c:
             cur = c.execute(
                 "UPDATE qa_workers SET state=?, last_heartbeat=? WHERE id=?",
-                (state, datetime.now().isoformat(), worker_id),
+                (state, _now().isoformat(), worker_id),
             )
             c.commit()
             return cur.rowcount > 0
@@ -516,7 +523,7 @@ class TaskQueue:
         auto-classify and auto-evict regardless of who's looking. Pass
         gc_terminal_after_seconds=0 to retain (no GC).
         """
-        now = datetime.now()
+        now = _now()
         stale_cutoff = (now - timedelta(seconds=stale_after_seconds)).isoformat()
         gc_cutoff = (now - timedelta(seconds=gc_terminal_after_seconds)).isoformat()
         with self._lock, self._conn() as c:
@@ -662,7 +669,7 @@ class PlanStore:
         if not spec.scenarios:
             raise ValueError("plan requires at least one scenario")
 
-        now = datetime.now().isoformat()
+        now = _now().isoformat()
         with self.queue._lock, self.queue._conn() as c:
             cur = c.execute(
                 """INSERT INTO qa_plans
@@ -773,7 +780,7 @@ class PlanStore:
             "based_on": {"history_runs": int, "fallback_default_s": 60}
           }
         """
-        now = datetime.now()
+        now = _now()
         with self.queue._lock, self.queue._conn() as c:
             tasks = c.execute(
                 """SELECT id, scenario_id, provider, state, started_at
@@ -889,7 +896,7 @@ class PlanStore:
             cur = c.execute(
                 """UPDATE qa_tasks SET state='cancelled', finished_at=?
                    WHERE plan_id=? AND state IN ('queued', 'leased', 'running')""",
-                (datetime.now().isoformat(), plan_id),
+                (_now().isoformat(), plan_id),
             )
             c.commit()
             return cur.rowcount

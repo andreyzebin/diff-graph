@@ -746,7 +746,9 @@ def worker_loop(
 
 
 def datetime_now() -> str:
-    """Compact timestamp for idle-loop logging."""
+    """Compact timestamp for idle-loop logging — local time on purpose
+    (this is console output for a human watching a worker, not data
+    that goes into the DB)."""
     from datetime import datetime
     return datetime.now().strftime("%H:%M:%S")
 

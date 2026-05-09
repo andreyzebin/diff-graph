@@ -591,7 +591,7 @@ async def api_qa_list_workers():
     UI polls every 5s, fleet stays tidy without manual cleanup.
     """
     import sqlite3
-    from datetime import datetime
+    from datetime import datetime, timezone
     from orchestra.trace_db import DEFAULT_DB_PATH
     workers = _qa_queue.list_workers()
     conn = sqlite3.connect(str(DEFAULT_DB_PATH))
@@ -606,7 +606,7 @@ async def api_qa_list_workers():
     by_owner: dict[str, dict] = {}
     for r in rows:
         by_owner[r["lease_owner"]] = dict(r)
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     out = []
     for w in workers:
         d = dict(w)
@@ -709,8 +709,8 @@ async def api_qa_cleanup_dead_workers():
     the UI calls this to keep the fleet table tidy."""
     import sqlite3
     from orchestra.trace_db import DEFAULT_DB_PATH
-    from datetime import datetime, timedelta
-    cutoff = (datetime.now() - timedelta(hours=1)).isoformat()
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     conn = sqlite3.connect(str(DEFAULT_DB_PATH))
     try:
         cur = conn.execute(

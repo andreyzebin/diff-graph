@@ -43,7 +43,7 @@ import json
 import sqlite3
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -266,7 +266,7 @@ class AutoPlanStore:
                  json.dumps(scenario_tags, ensure_ascii=False),
                  int(min_gap_seconds), pacing, int(pacing_window_seconds),
                  int(attempts_min), 1 if enabled else 0,
-                 mode, datetime.now().isoformat(),
+                 mode, datetime.now(timezone.utc).isoformat(),
                  "[]", "[]", 86400),
             )
             c.commit()
@@ -352,7 +352,7 @@ class AutoPlanStore:
             with self.queue._lock, self.queue._conn() as c:
                 c.execute(
                     "UPDATE qa_auto_plan_configs SET last_discover_at=? WHERE id=?",
-                    (datetime.now().isoformat(), cfg.id),
+                    (datetime.now(timezone.utc).isoformat(), cfg.id),
                 )
                 c.commit()
         return created
@@ -396,7 +396,7 @@ class AutoPlanStore:
             # Debounce: skip if there's a recent plan for THIS branch
             # within min_gap_seconds (regardless of sha).
             if cfg.min_gap_seconds > 0:
-                cutoff = (datetime.now() - timedelta(seconds=cfg.min_gap_seconds)).isoformat()
+                cutoff = (datetime.now(timezone.utc) - timedelta(seconds=cfg.min_gap_seconds)).isoformat()
                 if self._has_recent_plan(cfg.id, branch, cutoff):
                     continue
 
@@ -426,7 +426,7 @@ class AutoPlanStore:
                    (name, created_at, created_by, branches, providers,
                     scenarios, attempts_min, state, notes)
                    VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
-                (plan_name, datetime.now().isoformat(),
+                (plan_name, datetime.now(timezone.utc).isoformat(),
                  f"auto-plan/config-{cfg.id}",
                  json.dumps([branch]),
                  json.dumps(cfg.providers),
@@ -443,7 +443,7 @@ class AutoPlanStore:
             if cfg.pacing == "spread" and cfg.pacing_window_seconds > 0
             else 0
         )
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
 
         task_ids = []
         slot_idx = 0
@@ -498,7 +498,7 @@ class AutoPlanStore:
                    (config_id, branch, sha, plan_kind, plan_id, planned_at)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (config_id, branch, sha, kind, plan_id,
-                 datetime.now().isoformat()),
+                 datetime.now(timezone.utc).isoformat()),
             )
             c.commit()
 
