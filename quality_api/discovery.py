@@ -468,3 +468,61 @@ class AutoPlanStore:
                  datetime.now().isoformat()),
             )
             c.commit()
+
+
+# ── Server-side periodic discovery ──────────────────────────────────────────
+
+class DiscoverySupervisor:
+    """Background asyncio task that runs AutoPlanStore.discover() on a
+    timer. Mirror of pools.WorkerSupervisor — same lifecycle hooks,
+    same DB-as-truth contract.
+
+    Symmetric story:
+      pools     supervisor → spawns workers when queue has work
+      schedules supervisor → creates plans (which fill the queue) when
+                              new commits appear
+
+    Together they make the auto-plan loop run hands-free: a `git push`
+    that updates a watched branch produces a planned commit on the
+    next discovery tick, which spawns a worker on the next pool tick,
+    which leases tasks and runs the bench.
+    """
+
+    def __init__(self, store: AutoPlanStore, *, interval_seconds: int = 60):
+        self.store = store
+        self.interval = max(15, int(interval_seconds))
+        import asyncio
+        self._stop = asyncio.Event()
+        self._task = None
+
+    def start(self) -> None:
+        import asyncio
+        if self._task and not self._task.done():
+            return
+        self._task = asyncio.create_task(self._loop())
+
+    async def stop(self) -> None:
+        import asyncio
+        self._stop.set()
+        if self._task:
+            try:
+                await self._task
+            except Exception:
+                pass
+
+    async def _loop(self):
+        import asyncio, logging
+        log = logging.getLogger(__name__)
+        while not self._stop.is_set():
+            try:
+                created = await asyncio.to_thread(self.store.discover)
+                if created:
+                    log.info("discovery: created %d plan(s)", len(created))
+            except Exception:
+                log.exception("discovery tick failed")
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(), timeout=self.interval,
+                )
+            except asyncio.TimeoutError:
+                pass

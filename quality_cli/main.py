@@ -660,10 +660,19 @@ def worker_loop(
         result_state = "finished"
         error_class = None
         result_payload: dict = {}
+        # Pass the git commit SHA (when this task came from auto-plan)
+        # to diff-graph so its runs.mutation is keyed by commit instead
+        # of by prompt-content-hash. Without this, multiple plans on
+        # different commits with identical prompt content collapse to
+        # one mutation row in the analytics.
+        env = dict(os.environ)
+        if t.mutation_hash:
+            env["DIFFGRAPH_MUTATION_OVERRIDE"] = t.mutation_hash
         try:
             proc = subprocess.run(
                 ["bash", "-c", cmd],
                 capture_output=True, text=True,
+                env=env,
                 timeout=lease_seconds * 10,  # generous outer cap
             )
             result_payload = {

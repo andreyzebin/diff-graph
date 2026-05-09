@@ -395,7 +395,7 @@ from quality_api.queue import (
     TaskQueue, TaskSpec, task_to_dict,
     PlanStore, PlanSpec, plan_to_dict,
 )
-from quality_api.discovery import AutoPlanStore, config_to_dict
+from quality_api.discovery import AutoPlanStore, DiscoverySupervisor, config_to_dict
 from quality_api.pools import PoolStore, WorkerSupervisor, pool_to_dict
 
 
@@ -404,18 +404,21 @@ _qa_plans = PlanStore(_qa_queue)
 _qa_auto = AutoPlanStore(_qa_queue)
 _qa_pools = PoolStore(_qa_queue)
 _qa_supervisor = WorkerSupervisor(_qa_queue, _qa_pools, check_interval_seconds=20)
+_qa_discovery = DiscoverySupervisor(_qa_auto, interval_seconds=60)
 # Reap stale leases on server start so kill -9 mid-run doesn't strand tasks.
 _qa_queue.reap_stale_leases(grace_seconds=0)
 
 
 @app.on_event("startup")
-async def _start_qa_supervisor():
+async def _start_qa_supervisors():
     _qa_supervisor.start()
+    _qa_discovery.start()
 
 
 @app.on_event("shutdown")
-async def _stop_qa_supervisor():
+async def _stop_qa_supervisors():
     await _qa_supervisor.stop()
+    await _qa_discovery.stop()
 
 
 class TaskCreatePayload(BaseModel):
