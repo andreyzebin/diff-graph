@@ -34,9 +34,11 @@ th { color: #8b949e; font-weight: normal; }
 <body hx-boost="true" hx-ext="head-support">
 {% include "_qa_nav.html" %}
 
-<h1>QA · Plans</h1>
+<h1>QA · Plans
+  <span style="color:#8b949e; font-size:0.7em; font-weight:normal;">· auto-refresh every 5s</span>
+</h1>
 
-<div x-data="plansView" x-init="load()">
+<div x-data="plansView" x-init="load(); setInterval(() => load(), 5000)">
   <template x-if="plans.length === 0">
     <div class="empty">no plans yet — try <code>quality-cli plans create --providers=… --scenarios=…</code></div>
   </template>

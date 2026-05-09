@@ -79,7 +79,7 @@ th { color: #8b949e; font-weight: normal; }
   (config, branch, sha) is never planned twice.
 </p>
 
-<div x-data="autoPlan" x-init="load()">
+<div x-data="autoPlan" x-init="load(); setInterval(() => load(), 10000)">
 
   <div class="section">
     <div class="section-row">
