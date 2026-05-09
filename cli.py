@@ -284,7 +284,11 @@ def _run_with_dispatcher(
     if fs_dir is not None:
         from orchestra.trace_fs import TraceFSWriter
         fs_dir.mkdir(parents=True, exist_ok=True)
-        _trace_fs = TraceFSWriter(fs_dir)
+        # Pass the canonical SQLite run_id so run.json carries the
+        # cross-storage handle that quality-api / linked_run_id wiring
+        # depend on (5e.11). Without this, run.json's run_id is just
+        # the directory name and readers can't correlate to the DB row.
+        _trace_fs = TraceFSWriter(fs_dir, run_id=_trace_db.run_id)
 
     # Populate the run row's search-dimension columns up front (5e.11):
     # agent_name, genes, project, scenario_id/tags from env, fs_trace_path.

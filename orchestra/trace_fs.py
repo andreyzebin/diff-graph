@@ -58,14 +58,20 @@ class TraceFSWriter:
     both without conditional logic.
     """
 
-    def __init__(self, run_dir: str | Path):
+    def __init__(self, run_dir: str | Path, run_id: str = ""):
         # The caller passes the exact directory to write into. No implicit
         # `runs/<uuid>/` nesting — that's the caller's job (cli.py wraps
         # standalone invocations, benchmark dictates its own layout).
         self.run_dir = Path(run_dir).expanduser()
         (self.run_dir / "agents").mkdir(parents=True, exist_ok=True)
 
-        self.run_id = self.run_dir.name
+        # run_id is the canonical SQLite run id (from TraceDBWriter) so
+        # readers of run.json can correlate FS dump ↔ DB row. Falls back
+        # to the directory name for callers that don't pass it (older
+        # paths). Cross-storage linking (5e.10a / 5e.11) needs the real
+        # SQLite id; the bench's LLMJudge reads run.json to populate
+        # linked_run_id on the judge run.
+        self.run_id = run_id or self.run_dir.name
         self.started_at = datetime.now().isoformat()
         self._lock = threading.Lock()
         self._events_fp = open(self.run_dir / "events.jsonl", "a", encoding="utf-8")
