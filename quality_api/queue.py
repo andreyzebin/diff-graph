@@ -812,13 +812,14 @@ class PlanStore:
                 SELECT r.id, r.scenario_id, r.finished_at
                 FROM runs r
                 WHERE r.kind='judge' AND r.status='completed'
-                  AND EXISTS (
-                    SELECT 1 FROM qa_tasks t
+                  AND r.linked_run_id IN (
+                    -- agent runs that belong to this plan
+                    SELECT a.id FROM runs a JOIN qa_tasks t
+                      ON SUBSTR(t.mutation_hash, 1, 7) = a.mutation
+                     AND t.started_at IS NOT NULL
+                     AND a.started_at >= t.started_at
+                     AND a.started_at <= COALESCE(t.finished_at, datetime('now'))
                     WHERE t.plan_id = ?
-                      AND SUBSTR(t.mutation_hash, 1, 7) = r.mutation
-                      AND t.started_at IS NOT NULL
-                      AND r.started_at >= t.started_at
-                      AND r.started_at <= COALESCE(t.finished_at, datetime('now'))
                   )
                 ORDER BY r.finished_at DESC LIMIT 200
                 """,

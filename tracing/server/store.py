@@ -124,12 +124,22 @@ class SQLiteTraceStore:
                    generation, mutation, files_touched, jira_keys,
                    linked_run_id, fs_trace_path,
                    findings_count, total_tokens_paid, prompt_source, prompt_hash,
-                   (SELECT t.plan_id FROM qa_tasks t
-                    WHERE SUBSTR(t.mutation_hash, 1, 7) = runs.mutation
-                      AND t.started_at IS NOT NULL
-                      AND runs.started_at >= t.started_at
-                      AND runs.started_at <= COALESCE(t.finished_at, datetime('now'))
-                    ORDER BY t.id DESC LIMIT 1) AS plan_id
+                   COALESCE(
+                     (SELECT t.plan_id FROM qa_tasks t
+                      WHERE SUBSTR(t.mutation_hash, 1, 7) = runs.mutation
+                        AND t.started_at IS NOT NULL
+                        AND runs.started_at >= t.started_at
+                        AND runs.started_at <= COALESCE(t.finished_at, datetime('now'))
+                      ORDER BY t.id DESC LIMIT 1),
+                     -- judge fallback: inherit plan from linked agent
+                     (SELECT t.plan_id FROM qa_tasks t, runs a
+                      WHERE a.id = runs.linked_run_id
+                        AND SUBSTR(t.mutation_hash, 1, 7) = a.mutation
+                        AND t.started_at IS NOT NULL
+                        AND a.started_at >= t.started_at
+                        AND a.started_at <= COALESCE(t.finished_at, datetime('now'))
+                      ORDER BY t.id DESC LIMIT 1)
+                   ) AS plan_id
             FROM runs
             WHERE {where}
             ORDER BY {sort_col} {order}
@@ -877,21 +887,33 @@ class SQLiteTraceStore:
             params.append(f.scenario_tag)
 
         if f.plan_id is not None:
-            # Match runs that fall inside a task's time window for this
-            # plan. trace_run_id isn't yet populated on tasks, so we
-            # join indirectly. Match on `mutation` + a started_at window
-            # bounded by [task.started_at, task.finished_at OR now].
-            # This naturally handles multi-run-per-task (e.g. an
-            # interaction scenario that spawns dispatcher + investigator
-            # agent runs); both fall in the same window.
-            clauses.append(
-                "EXISTS (SELECT 1 FROM qa_tasks t "
-                "WHERE t.plan_id = ? "
-                "  AND SUBSTR(t.mutation_hash, 1, 7) = runs.mutation "
-                "  AND t.started_at IS NOT NULL "
-                "  AND runs.started_at >= t.started_at "
-                "  AND runs.started_at <= COALESCE(t.finished_at, datetime('now')))"
+            # Match runs that belong to this plan. Two paths:
+            #  (a) AGENT runs — runs.mutation matches some task's
+            #      mutation_hash (full-vs-short handled by SUBSTR), AND
+            #      runs.started_at falls inside the task's time window.
+            #  (b) JUDGE runs — they don't carry `mutation` reliably
+            #      (the bench's JudgeTraceWriter doesn't propagate
+            #      DIFFGRAPH_MUTATION_OVERRIDE) and timestamps are
+            #      naive local rather than UTC, so a window comparison
+            #      would falsely exclude them. Match indirectly:
+            #      judge.linked_run_id = some agent run that itself
+            #      matches path (a).
+            agent_match = (
+                "SUBSTR(t.mutation_hash, 1, 7) = {alias}.mutation "
+                "AND t.started_at IS NOT NULL "
+                "AND {alias}.started_at >= t.started_at "
+                "AND {alias}.started_at <= COALESCE(t.finished_at, datetime('now'))"
             )
+            clauses.append(
+                "(EXISTS (SELECT 1 FROM qa_tasks t "
+                "         WHERE t.plan_id = ? AND " +
+                agent_match.format(alias="runs") + ") "
+                " OR runs.linked_run_id IN ("
+                "      SELECT a.id FROM runs a JOIN qa_tasks t "
+                "      ON " + agent_match.format(alias="a") + " "
+                "      WHERE t.plan_id = ?))"
+            )
+            params.append(int(f.plan_id))
             params.append(int(f.plan_id))
 
         return " AND ".join(clauses), params
