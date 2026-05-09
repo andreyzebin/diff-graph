@@ -276,6 +276,9 @@ class TaskQueue:
         """Terminal transition. Idempotent — second call overwrites.
 
         state in {finished, error, cancelled}.
+
+        Side effect: if this was the last non-terminal task of a plan,
+        the plan auto-transitions running → done.
         """
         if state not in ("finished", "error", "cancelled"):
             raise ValueError(f"invalid finish state: {state}")
@@ -290,7 +293,42 @@ class TaskQueue:
                  error_class, task_id, worker_id),
             )
             c.commit()
-            return cur.rowcount > 0
+            if cur.rowcount == 0:
+                return False
+            # Look up plan_id of the just-finished task to drive the
+            # plan-level auto-transition.
+            plan_row = c.execute(
+                "SELECT plan_id FROM qa_tasks WHERE id=?", (task_id,)
+            ).fetchone()
+        plan_id = plan_row["plan_id"] if plan_row else None
+        if plan_id is not None:
+            self._maybe_finish_plan(int(plan_id))
+        return True
+
+    def _maybe_finish_plan(self, plan_id: int) -> bool:
+        """Transition plan running → done iff no non-terminal tasks
+        remain. Cancelled plans are left as-is. Returns True if the
+        plan was transitioned now.
+        """
+        with self._lock, self._conn() as c:
+            row = c.execute(
+                "SELECT state FROM qa_plans WHERE id=?", (plan_id,)
+            ).fetchone()
+            if not row or row["state"] != "running":
+                return False
+            non_terminal = c.execute(
+                """SELECT COUNT(*) AS n FROM qa_tasks
+                   WHERE plan_id=? AND state IN ('queued', 'leased', 'running')""",
+                (plan_id,),
+            ).fetchone()
+            if int(non_terminal["n"]) > 0:
+                return False
+            c.execute(
+                "UPDATE qa_plans SET state='done' WHERE id=? AND state='running'",
+                (plan_id,),
+            )
+            c.commit()
+            return True
 
     def cancel(self, task_id: int) -> bool:
         """Admin cancel — works on queued tasks too. Won't preempt a
