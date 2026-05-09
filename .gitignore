@@ -10,3 +10,6 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.server.pid
+logs/
+.claude/
