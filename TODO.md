@@ -1753,6 +1753,52 @@ Defer until we've burned through current backlog; this is a
 "how do we *systematically* improve quality" question, not a
 "what do we ship next" question.
 
+### 5e.15 CV-driven adaptive sampling — fewer reps where the signal is stable (TODO)
+
+**Idea.** Today every (scenario × provider) cell runs
+`attempts_min` times (currently 5) regardless of how noisy the
+underlying score actually is. Some scenarios produce near-
+identical scores across repeats (stable LLM behaviour, tight
+judge rubric); others swing widely (interaction scenarios with
+emergent reply phrasing). Wasting 5 reps on a scenario whose
+CV(score) is 2% is just budget that could go to a noisier
+scenario where we need 10 reps to pin down the mean.
+
+**What to compute.** Per (scenario_id, provider):
+- `cv_score`     = stddev(overall_score) / mean(overall_score)
+- `cv_duration`  = stddev(duration_ms)   / mean(duration_ms)
+- `n_runs`       = sample size backing the estimate
+- `discriminates`= does this scenario actually rank-order
+  mutations? (variance *between* mutations vs. variance
+  *within* one mutation — F-test-ish ratio)
+
+**How to use it.**
+- Stable + discriminating → drop reps to `max(2, attempts_min // 2)`
+- Noisy + discriminating  → bump reps to ceil(target_se² / σ²)
+- Stable + non-discriminating → drop the scenario from the
+  default tag-filtered set (it's not earning its budget)
+- Use median/p50 instead of mean for ETA on high-CV duration
+  scenarios (mean is biased by tail outliers; we already see
+  this with stuck DeepSeek runs)
+
+**Surface.**
+- `/api/search/aggregates/by_scenario` extended with cv_score,
+  cv_duration, n_runs columns
+- New page `/qa/scenarios` (or section on overview): scenario
+  table sorted by CV, with a "recommend N reps" suggestion
+  based on a target standard error
+- Schedule editor reads suggested reps when the user picks a
+  tag filter, instead of a fixed 5
+
+**Bootstrapping.** Need a minimum n (e.g. ≥ 10 runs/scenario)
+before recommending; until then default to attempts_min. As the
+fleet runs, recommendations auto-tighten.
+
+**Why later.** Want to first see flap analysis (per-attempt
+score storage exposed in UI — §5e.scoring follow-up) so we
+have actual data to compute CV from. Premature optimisation
+without the data is just guessing.
+
 ---
 
 ## 5b. Jira context — agent reads the ticket and follows links
