@@ -313,6 +313,14 @@ async def api_search_genes():
     return JSONResponse({"data": _store().list_genes()})
 
 
+@app.get("/api/search/dimensions")
+async def api_search_dimensions():
+    """Distinct values per filter dimension — UI dropdown source.
+    One call replaces N catalogue calls on the runs page load.
+    """
+    return JSONResponse({"data": _store().list_dimensions()})
+
+
 @app.get("/api/search/aggregates/by_provider")
 async def api_aggregate_by_provider(
     kind: Optional[str] = None,

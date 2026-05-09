@@ -243,6 +243,38 @@ class SQLiteTraceStore:
 
     # ── Aggregates ──────────────────────────────────────────────────────
 
+    def list_dimensions(self) -> dict:
+        """Distinct values for each filter dimension — feeds the
+        dropdowns on /qa/runs. One round-trip instead of six."""
+        out = {
+            "kind": [], "agent_name": [], "model": [],
+            "scenario_id": [], "generation": [], "project": [],
+            "scenario_tags": [], "genes": [], "status": [],
+        }
+        try:
+            with self._conn() as c:
+                # Scalar columns: SELECT DISTINCT
+                for col in ("kind", "agent_name", "model", "scenario_id",
+                            "generation", "project", "status"):
+                    rows = c.execute(
+                        f"SELECT DISTINCT {col} AS v FROM runs "
+                        f"WHERE {col} IS NOT NULL AND {col} != '' "
+                        f"ORDER BY v"
+                    ).fetchall()
+                    out[col] = [r["v"] for r in rows]
+                # JSON-array columns: json_each + DISTINCT
+                for col in ("scenario_tags", "genes"):
+                    rows = c.execute(
+                        f"SELECT DISTINCT json_each.value AS v "
+                        f"FROM runs, json_each(runs.{col}) "
+                        f"WHERE runs.{col} IS NOT NULL AND runs.{col} != '' "
+                        f"ORDER BY v"
+                    ).fetchall()
+                    out[col] = [r["v"] for r in rows]
+        except FileNotFoundError:
+            pass
+        return out
+
     def aggregate_by_provider(self, f: RunFilter | None = None) -> list[dict]:
         f = f or RunFilter(limit=10**9, offset=0)
         where, params = self._where_for_runs(f)

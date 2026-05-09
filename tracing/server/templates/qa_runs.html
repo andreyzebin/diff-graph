@@ -6,12 +6,12 @@
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
-body { padding: 20px; max-width: 1400px; margin: 0 auto; }
+body { padding: 20px; max-width: 1500px; margin: 0 auto; }
 .qa-nav { margin-bottom: 16px; font-size: 0.9em; }
 .qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
 .qa-nav a:hover { text-decoration: underline; }
 .filter-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 8px; margin: 12px 0; padding: 12px; background: #161b22;
   border: 1px solid #30363d; border-radius: 6px;
 }
@@ -20,7 +20,22 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
   background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
   padding: 4px 8px; border-radius: 4px; font-size: 0.9em;
 }
-.filter-grid input:focus, .filter-grid select:focus { outline: none; border-color: #58a6ff; }
+.filter-grid input:focus, .filter-grid select:focus,
+.filter-grid .multi:focus-within { outline: none; border-color: #58a6ff; }
+.multi {
+  background: #0d1117; border: 1px solid #30363d; border-radius: 4px;
+  padding: 3px; min-height: 26px; display: flex; flex-wrap: wrap; gap: 3px;
+  align-items: center;
+}
+.multi .chip {
+  background: #1f6feb33; color: #58a6ff; padding: 2px 6px;
+  border-radius: 3px; font-size: 0.8em; cursor: pointer;
+}
+.multi .chip::after { content: " ×"; opacity: 0.6; }
+.multi select {
+  border: 0; background: transparent; flex: 1; min-width: 80px;
+  font-size: 0.85em; padding: 2px;
+}
 .runs-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
 .runs-table th, .runs-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #30363d; }
 .runs-table th { color: #8b949e; font-weight: normal; cursor: pointer; }
@@ -34,6 +49,10 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
              color: #58a6ff; border-radius: 3px; font-size: 0.75em; }
 .tag-chip { display: inline-block; padding: 1px 6px; margin: 1px; background: #21262d;
             color: #8b949e; border-radius: 3px; font-size: 0.75em; }
+.linked-chip { display: inline-block; padding: 1px 6px; background: #d2a8ff22;
+               color: #d2a8ff; border-radius: 3px; font-size: 0.75em;
+               font-family: ui-monospace, monospace; text-decoration: none; }
+.linked-chip:hover { background: #d2a8ff44; }
 .meta { color: #8b949e; font-size: 0.85em; margin-bottom: 8px; }
 .empty { color: #8b949e; padding: 40px; text-align: center; }
 .btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
@@ -42,7 +61,6 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 .btn-primary { background: #1f6feb; border-color: #388bfd; color: white; }
 .btn-primary:hover { background: #388bfd; }
 .dur-cell { font-variant-numeric: tabular-nums; text-align: right; }
-.fs-link { color: #8b949e; font-size: 0.75em; }
 </style>
 </head>
 <body>
@@ -56,52 +74,116 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 
 <h1>QA · Runs</h1>
 
-<div x-data="runsView()" x-init="search()">
+<div x-data="runsView()" x-init="init()">
   <div class="filter-grid">
     <label>kind
       <select x-model="filters.kind" @change="search()">
         <option value="">any</option>
-        <option value="agent">agent</option>
-        <option value="judge">judge</option>
-        <option value="evaluator">evaluator</option>
+        <template x-for="v in dims.kind"><option :value="v" x-text="v"></option></template>
       </select>
     </label>
+
     <label>agent
-      <input x-model.lazy="filters.agent" placeholder="dispatcher · reviewer · …" @change="search()">
+      <select x-model="filters.agent" @change="search()">
+        <option value="">any</option>
+        <template x-for="v in dims.agent_name"><option :value="v" x-text="v"></option></template>
+      </select>
     </label>
+
     <label>model
-      <input x-model.lazy="filters.model" placeholder="deepseek-chat · …" @change="search()">
+      <select x-model="filters.model" @change="search()">
+        <option value="">any</option>
+        <template x-for="v in dims.model"><option :value="v" x-text="v"></option></template>
+      </select>
     </label>
+
     <label>scenario
-      <input x-model.lazy="filters.scenario" placeholder="DISP-002 · REV-001 · …" @change="search()">
+      <select x-model="filters.scenario" @change="search()">
+        <option value="">any</option>
+        <template x-for="v in dims.scenario_id"><option :value="v" x-text="v"></option></template>
+      </select>
     </label>
+
     <label>generation
-      <input x-model.lazy="filters.generation" placeholder="prompts · …" @change="search()">
+      <select x-model="filters.generation" @change="search()">
+        <option value="">any</option>
+        <template x-for="v in dims.generation"><option :value="v" x-text="v"></option></template>
+      </select>
     </label>
-    <label>mutation
-      <input x-model.lazy="filters.mutation" placeholder="hash prefix" @change="search()">
-    </label>
-    <label>gene (AND, comma-sep)
-      <input x-model.lazy="filters.gene" placeholder="diff_view_block,no_baked_existing_comments" @change="search()">
-    </label>
-    <label>without_gene (CSV)
-      <input x-model.lazy="filters.without_gene" placeholder="..." @change="search()">
-    </label>
+
     <label>project
-      <input x-model.lazy="filters.project" placeholder="SBLOOM" @change="search()">
+      <select x-model="filters.project" @change="search()">
+        <option value="">any</option>
+        <template x-for="v in dims.project"><option :value="v" x-text="v"></option></template>
+      </select>
     </label>
-    <label>file
+
+    <label>status
+      <select x-model="filters.status" @change="search()">
+        <option value="">any</option>
+        <template x-for="v in dims.status"><option :value="v" x-text="v"></option></template>
+      </select>
+    </label>
+
+    <label>mutation (prefix)
+      <input x-model.lazy="filters.mutation" placeholder="hash..." @change="search()">
+    </label>
+
+    <!-- Multi-selects: gene / without_gene / scenario_tag -->
+    <label>gene <span style="color:#8b949e;">(AND)</span>
+      <div class="multi">
+        <template x-for="g in filters.gene_arr" :key="g">
+          <span class="chip" x-text="g" @click="filters.gene_arr = filters.gene_arr.filter(x => x !== g); search();"></span>
+        </template>
+        <select @change="addToList('gene_arr', $event.target.value); $event.target.value=''">
+          <option value="">+ add</option>
+          <template x-for="v in dims.genes">
+            <option :value="v" x-text="v" :disabled="filters.gene_arr.includes(v)"></option>
+          </template>
+        </select>
+      </div>
+    </label>
+
+    <label>without_gene
+      <div class="multi">
+        <template x-for="g in filters.without_gene_arr" :key="g">
+          <span class="chip" x-text="g" @click="filters.without_gene_arr = filters.without_gene_arr.filter(x => x !== g); search();"></span>
+        </template>
+        <select @change="addToList('without_gene_arr', $event.target.value); $event.target.value=''">
+          <option value="">+ add</option>
+          <template x-for="v in dims.genes">
+            <option :value="v" x-text="v" :disabled="filters.without_gene_arr.includes(v)"></option>
+          </template>
+        </select>
+      </div>
+    </label>
+
+    <label>scenario_tag
+      <div class="multi">
+        <template x-for="t in filters.scenario_tag_arr" :key="t">
+          <span class="chip" x-text="t" @click="filters.scenario_tag_arr = filters.scenario_tag_arr.filter(x => x !== t); search();"></span>
+        </template>
+        <select @change="addToList('scenario_tag_arr', $event.target.value); $event.target.value=''">
+          <option value="">+ add</option>
+          <template x-for="v in dims.scenario_tags">
+            <option :value="v" x-text="v" :disabled="filters.scenario_tag_arr.includes(v)"></option>
+          </template>
+        </select>
+      </div>
+    </label>
+
+    <label>file (path in files_touched)
       <input x-model.lazy="filters.file" placeholder="src/Foo.java" @change="search()">
     </label>
+
     <label>jira
       <input x-model.lazy="filters.jira" placeholder="ORD-234" @change="search()">
     </label>
-    <label>scenario_tag
-      <input x-model.lazy="filters.scenario_tag" placeholder="tier:unit" @change="search()">
-    </label>
+
     <label>min duration (ms)
       <input type="number" x-model.lazy.number="filters.duration_gt_ms" placeholder="60000" @change="search()">
     </label>
+
     <label>limit
       <select x-model.number="filters.limit" @change="search()">
         <option>10</option><option>20</option><option selected>50</option>
@@ -129,8 +211,10 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
           <th>agent</th>
           <th>scenario</th>
           <th>model</th>
+          <th>generation</th>
           <th>mutation</th>
           <th class="dur-cell">dur ms</th>
+          <th>linked</th>
           <th>genes</th>
           <th>tags</th>
           <th>started</th>
@@ -146,8 +230,16 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
             <td x-text="r.agent_name || ''"></td>
             <td x-text="r.scenario_id || ''"></td>
             <td x-text="(r.model || '').slice(0,28)" :title="r.model"></td>
+            <td x-text="r.generation || ''" style="color: #d2a8ff;"></td>
             <td style="font-family: ui-monospace, monospace;" x-text="(r.mutation || '').slice(0,8)"></td>
             <td class="dur-cell" x-text="r.duration_ms || ''"></td>
+            <td>
+              <template x-if="r.linked_run_id">
+                <a class="linked-chip" :href="`{{ base_path }}/runs/${r.linked_run_id}`"
+                   :title="`open ${r.kind === 'agent' ? 'judge' : 'agent'} run ${r.linked_run_id}`"
+                   x-text="`↗ ${(r.kind === 'agent' ? 'judge' : 'agent')}`"></a>
+              </template>
+            </td>
             <td>
               <template x-for="g in (r.genes || []).slice(0, 3)">
                 <span class="gene-chip" x-text="g"></span>
@@ -181,22 +273,118 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 <script>
 function runsView() {
   return {
-    filters: {
-      kind: '', agent: '', model: '', scenario: '',
-      generation: '', mutation: '', gene: '', without_gene: '',
-      project: '', file: '', jira: '', scenario_tag: '',
-      duration_gt_ms: null,
-      limit: 50, offset: 0, sort: 'started_at', order: 'desc',
-    },
+    dims: { kind: [], agent_name: [], model: [], scenario_id: [],
+            generation: [], project: [], status: [],
+            scenario_tags: [], genes: [] },
+    filters: this.defaultFilters(),
     rows: [],
     total: 0,
     hasMore: false,
     meta: '',
-    async search() {
-      const qs = new URLSearchParams();
-      for (const [k, v] of Object.entries(this.filters)) {
-        if (v !== '' && v !== null && v !== undefined) qs.append(k === 'agent' ? 'agent' : k, v);
+    async init() {
+      // Fetch dropdown options + read URL params, then do first search.
+      await this.refreshDimensions();
+      this.applyUrlParams();
+      await this.search(/* skipUrlPush */ true);
+      // Keep dropdowns fresh — new mutations / scenarios / providers
+      // appear as the bench keeps producing runs.
+      setInterval(() => this.refreshDimensions(), 30_000);
+    },
+    async refreshDimensions() {
+      try {
+        const r = await fetch(`{{ base_path }}/api/search/dimensions`);
+        const j = await r.json();
+        if (j && j.data) this.dims = j.data;
+      } catch (e) { /* keep last known dims */ }
+    },
+    defaultFilters() {
+      return {
+        kind: '', agent: '', model: '', scenario: '',
+        generation: '', mutation: '', project: '', status: '',
+        gene_arr: [], without_gene_arr: [], scenario_tag_arr: [],
+        file: '', jira: '', duration_gt_ms: null,
+        limit: 50, offset: 0, sort: 'started_at', order: 'desc',
+      };
+    },
+    applyUrlParams() {
+      const sp = new URLSearchParams(window.location.search);
+      // Scalar filters: copy the URL param into the corresponding filter key.
+      const scalarMap = {
+        kind: 'kind', agent: 'agent', model: 'model',
+        scenario: 'scenario', generation: 'generation',
+        mutation: 'mutation', project: 'project', status: 'status',
+        file: 'file', jira: 'jira',
+        duration_gt_ms: 'duration_gt_ms',
+      };
+      for (const [param, key] of Object.entries(scalarMap)) {
+        const v = sp.get(param);
+        if (v !== null && v !== '') {
+          this.filters[key] = (key === 'duration_gt_ms') ? parseInt(v, 10) : v;
+        }
       }
+      // Multi-value: API uses comma-CSV `gene=a,b`; UI keeps array.
+      // ALSO accept `?gene=a&gene=b` repeats for nice URL semantics.
+      const collect = (param) => {
+        const all = sp.getAll(param);
+        const out = [];
+        for (const piece of all) {
+          piece.split(',').forEach(s => { const t = s.trim(); if (t) out.push(t); });
+        }
+        return out;
+      };
+      this.filters.gene_arr = collect('gene');
+      this.filters.without_gene_arr = collect('without_gene');
+      this.filters.scenario_tag_arr = collect('scenario_tag');
+      // limit/offset come from URL too if present.
+      const lim = sp.get('limit'); if (lim) this.filters.limit = parseInt(lim, 10);
+      const off = sp.get('offset'); if (off) this.filters.offset = parseInt(off, 10);
+    },
+    pushUrl() {
+      // Reflect filters into URL for shareable links / browser back.
+      const qs = new URLSearchParams();
+      const f = this.filters;
+      const scalarOut = { kind: f.kind, agent: f.agent, model: f.model,
+        scenario: f.scenario, generation: f.generation, mutation: f.mutation,
+        project: f.project, status: f.status, file: f.file, jira: f.jira,
+      };
+      for (const [k, v] of Object.entries(scalarOut)) {
+        if (v) qs.set(k, v);
+      }
+      if (f.duration_gt_ms) qs.set('duration_gt_ms', String(f.duration_gt_ms));
+      if (f.gene_arr.length)    qs.set('gene', f.gene_arr.join(','));
+      if (f.without_gene_arr.length) qs.set('without_gene', f.without_gene_arr.join(','));
+      if (f.scenario_tag_arr.length) qs.set('scenario_tag', f.scenario_tag_arr.join(','));
+      if (f.limit !== 50)  qs.set('limit', String(f.limit));
+      if (f.offset !== 0)  qs.set('offset', String(f.offset));
+      const url = window.location.pathname + (qs.toString() ? '?' + qs.toString() : '');
+      window.history.replaceState({}, '', url);
+    },
+    addToList(key, value) {
+      if (!value) return;
+      if (!this.filters[key].includes(value)) {
+        this.filters[key] = [...this.filters[key], value];
+        this.search();
+      }
+    },
+    async search(skipUrlPush) {
+      const qs = new URLSearchParams();
+      const f = this.filters;
+      // Scalars (use URL param names that match the API).
+      const scalarOut = { kind: f.kind, agent: f.agent, model: f.model,
+        scenario: f.scenario, generation: f.generation, mutation: f.mutation,
+        project: f.project, status: f.status, file: f.file, jira: f.jira,
+      };
+      for (const [k, v] of Object.entries(scalarOut)) {
+        if (v) qs.append(k, v);
+      }
+      if (f.duration_gt_ms) qs.append('duration_gt_ms', String(f.duration_gt_ms));
+      if (f.gene_arr.length) qs.append('gene', f.gene_arr.join(','));
+      if (f.without_gene_arr.length) qs.append('without_gene', f.without_gene_arr.join(','));
+      if (f.scenario_tag_arr.length) qs.append('scenario_tag', f.scenario_tag_arr.join(','));
+      qs.append('limit', String(f.limit));
+      qs.append('offset', String(f.offset));
+      qs.append('sort', f.sort);
+      qs.append('order', f.order);
       const url = `{{ base_path }}/api/search/runs?` + qs.toString();
       const t0 = performance.now();
       const r = await fetch(url);
@@ -205,15 +393,10 @@ function runsView() {
       this.total = (j.meta && j.meta.total) || 0;
       this.hasMore = (j.meta && j.meta.has_more) || false;
       this.meta = `${this.total} match · ${(performance.now() - t0).toFixed(0)}ms`;
+      if (!skipUrlPush) this.pushUrl();
     },
     reset() {
-      this.filters = {
-        kind: '', agent: '', model: '', scenario: '',
-        generation: '', mutation: '', gene: '', without_gene: '',
-        project: '', file: '', jira: '', scenario_tag: '',
-        duration_gt_ms: null,
-        limit: 50, offset: 0, sort: 'started_at', order: 'desc',
-      };
+      this.filters = this.defaultFilters();
       this.search();
     },
   };
