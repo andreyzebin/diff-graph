@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>QA · Runs</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="{{ base_path }}/static/trace.css">
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+body { padding: 20px; max-width: 1400px; margin: 0 auto; }
+.qa-nav { margin-bottom: 16px; font-size: 0.9em; }
+.qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
+.qa-nav a:hover { text-decoration: underline; }
+.filter-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px; margin: 12px 0; padding: 12px; background: #161b22;
+  border: 1px solid #30363d; border-radius: 6px;
+}
+.filter-grid label { display: flex; flex-direction: column; font-size: 0.8em; color: #8b949e; }
+.filter-grid input, .filter-grid select {
+  background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+  padding: 4px 8px; border-radius: 4px; font-size: 0.9em;
+}
+.filter-grid input:focus, .filter-grid select:focus { outline: none; border-color: #58a6ff; }
+.runs-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+.runs-table th, .runs-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #30363d; }
+.runs-table th { color: #8b949e; font-weight: normal; cursor: pointer; }
+.runs-table tr:hover { background: #161b22; }
+.run-link { color: #58a6ff; text-decoration: none; font-family: ui-monospace, monospace; }
+.run-link:hover { text-decoration: underline; }
+.kind-agent { color: #56d364; }
+.kind-judge { color: #d2a8ff; }
+.kind-evaluator { color: #c69026; }
+.gene-chip { display: inline-block; padding: 1px 6px; margin: 1px; background: #1f6feb33;
+             color: #58a6ff; border-radius: 3px; font-size: 0.75em; }
+.tag-chip { display: inline-block; padding: 1px 6px; margin: 1px; background: #21262d;
+            color: #8b949e; border-radius: 3px; font-size: 0.75em; }
+.meta { color: #8b949e; font-size: 0.85em; margin-bottom: 8px; }
+.empty { color: #8b949e; padding: 40px; text-align: center; }
+.btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+       padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
+.btn:hover { background: #30363d; }
+.btn-primary { background: #1f6feb; border-color: #388bfd; color: white; }
+.btn-primary:hover { background: #388bfd; }
+.dur-cell { font-variant-numeric: tabular-nums; text-align: right; }
+.fs-link { color: #8b949e; font-size: 0.75em; }
+</style>
+</head>
+<body>
+<div class="qa-nav">
+  <a href="{{ base_path }}/qa/">overview</a>
+  <a href="{{ base_path }}/qa/runs"><b>runs</b></a>
+  <a href="{{ base_path }}/qa/plans">plans</a>
+  <a href="{{ base_path }}/qa/genes">genes</a>
+  <a href="{{ base_path }}/">traces</a>
+</div>
+
+<h1>QA · Runs</h1>
+
+<div x-data="runsView()" x-init="search()">
+  <div class="filter-grid">
+    <label>kind
+      <select x-model="filters.kind" @change="search()">
+        <option value="">any</option>
+        <option value="agent">agent</option>
+        <option value="judge">judge</option>
+        <option value="evaluator">evaluator</option>
+      </select>
+    </label>
+    <label>agent
+      <input x-model.lazy="filters.agent" placeholder="dispatcher · reviewer · …" @change="search()">
+    </label>
+    <label>model
+      <input x-model.lazy="filters.model" placeholder="deepseek-chat · …" @change="search()">
+    </label>
+    <label>scenario
+      <input x-model.lazy="filters.scenario" placeholder="DISP-002 · REV-001 · …" @change="search()">
+    </label>
+    <label>generation
+      <input x-model.lazy="filters.generation" placeholder="prompts · …" @change="search()">
+    </label>
+    <label>mutation
+      <input x-model.lazy="filters.mutation" placeholder="hash prefix" @change="search()">
+    </label>
+    <label>gene (AND, comma-sep)
+      <input x-model.lazy="filters.gene" placeholder="diff_view_block,no_baked_existing_comments" @change="search()">
+    </label>
+    <label>without_gene (CSV)
+      <input x-model.lazy="filters.without_gene" placeholder="..." @change="search()">
+    </label>
+    <label>project
+      <input x-model.lazy="filters.project" placeholder="SBLOOM" @change="search()">
+    </label>
+    <label>file
+      <input x-model.lazy="filters.file" placeholder="src/Foo.java" @change="search()">
+    </label>
+    <label>jira
+      <input x-model.lazy="filters.jira" placeholder="ORD-234" @change="search()">
+    </label>
+    <label>scenario_tag
+      <input x-model.lazy="filters.scenario_tag" placeholder="tier:unit" @change="search()">
+    </label>
+    <label>min duration (ms)
+      <input type="number" x-model.lazy.number="filters.duration_gt_ms" placeholder="60000" @change="search()">
+    </label>
+    <label>limit
+      <select x-model.number="filters.limit" @change="search()">
+        <option>10</option><option>20</option><option selected>50</option>
+        <option>100</option><option>200</option>
+      </select>
+    </label>
+  </div>
+
+  <div style="margin: 8px 0;">
+    <button class="btn-primary btn" @click="search()">search</button>
+    <button class="btn" @click="reset()">reset</button>
+    <span class="meta" style="margin-left: 12px;" x-text="meta"></span>
+  </div>
+
+  <template x-if="rows.length === 0">
+    <div class="empty">no runs match — try dropping filters</div>
+  </template>
+
+  <template x-if="rows.length > 0">
+    <table class="runs-table">
+      <thead>
+        <tr>
+          <th>id</th>
+          <th>kind</th>
+          <th>agent</th>
+          <th>scenario</th>
+          <th>model</th>
+          <th>mutation</th>
+          <th class="dur-cell">dur ms</th>
+          <th>genes</th>
+          <th>tags</th>
+          <th>started</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template x-for="r in rows" :key="r.id">
+          <tr>
+            <td>
+              <a class="run-link" :href="`{{ base_path }}/runs/${r.id}`" x-text="(r.id || '').slice(0,12)"></a>
+            </td>
+            <td><span :class="`kind-${r.kind}`" x-text="r.kind"></span></td>
+            <td x-text="r.agent_name || ''"></td>
+            <td x-text="r.scenario_id || ''"></td>
+            <td x-text="(r.model || '').slice(0,28)" :title="r.model"></td>
+            <td style="font-family: ui-monospace, monospace;" x-text="(r.mutation || '').slice(0,8)"></td>
+            <td class="dur-cell" x-text="r.duration_ms || ''"></td>
+            <td>
+              <template x-for="g in (r.genes || []).slice(0, 3)">
+                <span class="gene-chip" x-text="g"></span>
+              </template>
+              <template x-if="(r.genes || []).length > 3">
+                <span class="meta" x-text="`+${r.genes.length - 3}`"></span>
+              </template>
+            </td>
+            <td>
+              <template x-for="t in (r.scenario_tags || []).slice(0, 3)">
+                <span class="tag-chip" x-text="t"></span>
+              </template>
+            </td>
+            <td class="meta" x-text="(r.started_at || '').slice(0, 19)"></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </template>
+
+  <div style="margin-top: 12px;">
+    <button class="btn" :disabled="filters.offset === 0"
+            @click="filters.offset = Math.max(0, filters.offset - filters.limit); search()">prev</button>
+    <button class="btn" :disabled="!hasMore"
+            @click="filters.offset += filters.limit; search()">next</button>
+    <span class="meta" style="margin-left: 12px;"
+          x-text="`offset=${filters.offset} · returned=${rows.length} · total=${total}`"></span>
+  </div>
+</div>
+
+<script>
+function runsView() {
+  return {
+    filters: {
+      kind: '', agent: '', model: '', scenario: '',
+      generation: '', mutation: '', gene: '', without_gene: '',
+      project: '', file: '', jira: '', scenario_tag: '',
+      duration_gt_ms: null,
+      limit: 50, offset: 0, sort: 'started_at', order: 'desc',
+    },
+    rows: [],
+    total: 0,
+    hasMore: false,
+    meta: '',
+    async search() {
+      const qs = new URLSearchParams();
+      for (const [k, v] of Object.entries(this.filters)) {
+        if (v !== '' && v !== null && v !== undefined) qs.append(k === 'agent' ? 'agent' : k, v);
+      }
+      const url = `{{ base_path }}/api/search/runs?` + qs.toString();
+      const t0 = performance.now();
+      const r = await fetch(url);
+      const j = await r.json();
+      this.rows = j.data || [];
+      this.total = (j.meta && j.meta.total) || 0;
+      this.hasMore = (j.meta && j.meta.has_more) || false;
+      this.meta = `${this.total} match · ${(performance.now() - t0).toFixed(0)}ms`;
+    },
+    reset() {
+      this.filters = {
+        kind: '', agent: '', model: '', scenario: '',
+        generation: '', mutation: '', gene: '', without_gene: '',
+        project: '', file: '', jira: '', scenario_tag: '',
+        duration_gt_ms: null,
+        limit: 50, offset: 0, sort: 'started_at', order: 'desc',
+      };
+      this.search();
+    },
+  };
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>QA · Genes</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="{{ base_path }}/static/trace.css">
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+body { padding: 20px; max-width: 1100px; margin: 0 auto; }
+.qa-nav { margin-bottom: 16px; font-size: 0.9em; }
+.qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
+.qa-nav a:hover { text-decoration: underline; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #30363d; }
+th { color: #8b949e; font-weight: normal; }
+.gene { color: #58a6ff; font-family: ui-monospace, monospace; text-decoration: none; }
+.gene:hover { text-decoration: underline; }
+.tn { font-variant-numeric: tabular-nums; text-align: right; }
+.bar-with { display: inline-block; background: #56d36433; height: 8px; vertical-align: middle; }
+.bar-without { display: inline-block; background: #30363d; height: 8px; vertical-align: middle; }
+.empty { color: #8b949e; padding: 40px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="qa-nav">
+  <a href="{{ base_path }}/qa/">overview</a>
+  <a href="{{ base_path }}/qa/runs">runs</a>
+  <a href="{{ base_path }}/qa/plans">plans</a>
+  <a href="{{ base_path }}/qa/genes"><b>genes</b></a>
+  <a href="{{ base_path }}/">traces</a>
+</div>
+
+<h1>QA · Genes</h1>
+<p style="color: #8b949e; font-size: 0.9em;">
+Auto-detected from prompt content at run start. Click a gene to filter runs.
+</p>
+
+<div x-data="genesView()" x-init="load()">
+  <template x-if="rows.length === 0">
+    <div class="empty">no genes detected yet</div>
+  </template>
+
+  <template x-if="rows.length > 0">
+    <table>
+      <thead><tr>
+        <th>gene</th><th class="tn">runs with</th><th class="tn">runs without</th>
+        <th>presence</th>
+      </tr></thead>
+      <tbody>
+        <template x-for="g in rows" :key="g.gene">
+          <tr>
+            <td><a class="gene" :href="`{{ base_path }}/qa/runs?gene=${g.gene}`" x-text="g.gene"></a></td>
+            <td class="tn" x-text="g.runs_with"></td>
+            <td class="tn" x-text="g.runs_without"></td>
+            <td>
+              <span class="bar-with" :style="`width: ${(g.runs_with / total * 200).toFixed(0)}px;`"></span><span class="bar-without" :style="`width: ${(g.runs_without / total * 200).toFixed(0)}px;`"></span>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </template>
+</div>
+
+<script>
+function genesView() {
+  return {
+    rows: [],
+    total: 1,
+    async load() {
+      const r = await (await fetch(`{{ base_path }}/api/search/aggregates/by_gene`)).json();
+      this.rows = r.data || [];
+      this.total = Math.max(1, ...this.rows.map(g => g.runs_with + g.runs_without));
+    },
+  };
+}
+</script>
+</body>
+</html>

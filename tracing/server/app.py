@@ -580,6 +580,28 @@ async def api_qa_list_plans(state: Optional[str] = None,
     })
 
 
+# ── HTML pages for the search/QA dimensions ─────────────────────────────────
+
+@app.get("/qa/", response_class=HTMLResponse)
+async def qa_dashboard(request: Request):
+    return templates.TemplateResponse(request, "qa_dashboard.html", {})
+
+
+@app.get("/qa/runs", response_class=HTMLResponse)
+async def qa_runs_page(request: Request):
+    return templates.TemplateResponse(request, "qa_runs.html", {})
+
+
+@app.get("/qa/plans", response_class=HTMLResponse)
+async def qa_plans_page(request: Request):
+    return templates.TemplateResponse(request, "qa_plans.html", {})
+
+
+@app.get("/qa/genes", response_class=HTMLResponse)
+async def qa_genes_page(request: Request):
+    return templates.TemplateResponse(request, "qa_genes.html", {})
+
+
 @app.get("/api/qa/plans/{plan_id}")
 async def api_qa_get_plan(plan_id: int):
     p = _qa_plans.get(plan_id)

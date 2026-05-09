@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>QA · Plans</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="{{ base_path }}/static/trace.css">
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+body { padding: 20px; max-width: 1400px; margin: 0 auto; }
+.qa-nav { margin-bottom: 16px; font-size: 0.9em; }
+.qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
+.qa-nav a:hover { text-decoration: underline; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #30363d; }
+th { color: #8b949e; font-weight: normal; }
+.state-running { color: #c69026; }
+.state-done { color: #56d364; }
+.state-cancelled { color: #f47067; }
+.bar { display: inline-flex; height: 14px; border-radius: 3px; overflow: hidden; min-width: 120px; }
+.bar div { height: 100%; }
+.bar .b-finished { background: #56d364; }
+.bar .b-running  { background: #c69026; }
+.bar .b-queued   { background: #30363d; }
+.bar .b-error    { background: #f47067; }
+.bar .b-cancelled { background: #6e7681; }
+.meta { color: #8b949e; font-size: 0.85em; }
+.empty { color: #8b949e; padding: 40px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="qa-nav">
+  <a href="{{ base_path }}/qa/">overview</a>
+  <a href="{{ base_path }}/qa/runs">runs</a>
+  <a href="{{ base_path }}/qa/plans"><b>plans</b></a>
+  <a href="{{ base_path }}/qa/genes">genes</a>
+  <a href="{{ base_path }}/">traces</a>
+</div>
+
+<h1>QA · Plans</h1>
+
+<div x-data="plansView()" x-init="load()">
+  <template x-if="plans.length === 0">
+    <div class="empty">no plans yet — try <code>quality-cli plans create --providers=… --scenarios=…</code></div>
+  </template>
+
+  <template x-if="plans.length > 0">
+    <table>
+      <thead><tr>
+        <th>id</th><th>name</th><th>state</th>
+        <th>providers</th><th>scenarios</th>
+        <th>progress</th><th>created</th>
+      </tr></thead>
+      <tbody>
+        <template x-for="p in plans" :key="p.id">
+          <tr>
+            <td x-text="`#${p.id}`"></td>
+            <td x-text="p.name || '(unnamed)'"></td>
+            <td><span :class="`state-${p.state}`" x-text="p.state"></span></td>
+            <td x-text="p.providers.join(', ')"></td>
+            <td x-text="p.scenarios.join(', ')"></td>
+            <td>
+              <div class="bar" :title="bartip(p)">
+                <template x-for="seg in bars(p)" :key="seg.k">
+                  <div :class="`b-${seg.k}`" :style="`flex: ${seg.n};`"></div>
+                </template>
+              </div>
+              <span class="meta" x-text="progressText(p)"></span>
+            </td>
+            <td class="meta" x-text="(p.created_at || '').slice(0, 19)"></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </template>
+</div>
+
+<script>
+function plansView() {
+  return {
+    plans: [],
+    async load() {
+      const r = await fetch(`{{ base_path }}/api/qa/plans?limit=50`);
+      const j = await r.json();
+      this.plans = j.data || [];
+    },
+    bars(p) {
+      const pr = p.progress || {};
+      const order = ['finished', 'running', 'queued', 'leased', 'error', 'cancelled'];
+      const segs = [];
+      for (const k of order) {
+        const n = pr[k] || 0;
+        if (n > 0) segs.push({k: k === 'leased' ? 'running' : k, n});
+      }
+      return segs.length ? segs : [{k: 'queued', n: 1}];
+    },
+    bartip(p) {
+      const pr = p.progress || {};
+      return Object.entries(pr).filter(([k]) => k !== 'total').map(([k,n]) => `${k}: ${n}`).join(' · ');
+    },
+    progressText(p) {
+      const pr = p.progress || {};
+      const done = (pr.finished || 0) + (pr.error || 0) + (pr.cancelled || 0);
+      const total = pr.total || 0;
+      return ` ${done}/${total}`;
+    },
+  };
+}
+</script>
+</body>
+</html>
