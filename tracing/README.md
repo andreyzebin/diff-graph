@@ -128,6 +128,8 @@ docker run -p 8080:8080 diffgraph
 
 ### Pages
 
+**Trace viewer:**
+
 | URL | Description |
 |---|---|
 | `/` | Runs list with search, auto-refresh every 3s |
@@ -135,11 +137,24 @@ docker run -p 8080:8080 diffgraph
 | `/runs/{id}/live` | Real-time event stream with color-coded agents |
 | `/runs/{id}/trace` | Split-pane: agent tree left, detail tabs right |
 
+**Quality API (HTMX + Alpine, shared body via hx-boost):**
+
+| URL | Description |
+|---|---|
+| `/qa/` | Overview dashboard: run counts, by provider, by scenario |
+| `/qa/auto-plan` | Schedule configs (CRUD): tag/scenario filter, cadence, pacing, mode |
+| `/qa/plans` | Plan list with state, progress bars, **cancel** for running plans, pagination |
+| `/qa/workers` | Worker pool config, fleet status, in-flight tasks |
+| `/qa/runs` | Filter chips (kind, model, scenario, mutation, project, tags, …) over all runs |
+| `/qa/mutations` | Per-mutation aggregates with hard/soft/methodology axes, ▶ fire on-demand schedules, pagination |
+
 ### API endpoints
+
+**Trace viewer:**
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/runs` | List runs as JSON |
+| `GET` | `/api/runs` | List runs as JSON (legacy 50-row endpoint) |
 | `GET` | `/api/runs/{id}/json` | Full trace data |
 | `GET` | `/api/runs/{id}/events` | All events (for live bulk load) |
 | `GET` | `/api/runs/{id}/step/{agent}/{step}/messages` | Full messages |
@@ -148,6 +163,32 @@ docker run -p 8080:8080 diffgraph
 | `GET` | `/api/metrics?hash=X` | Aggregate metrics for prompt hash |
 | `GET` | `/api/compare?a=X&b=Y` | Compare two prompt hashes |
 | `WS` | `/ws/live/{run_id}` | WebSocket event stream |
+
+**Search / aggregates:**
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/search/runs` | Filter runs by kind/model/scenario/mutation/project/tags, paginated |
+| `GET` | `/api/search/dimensions` | Distinct values for filter dropdowns (live-refreshed) |
+| `GET` | `/api/search/aggregates/by_provider` | Per-model run counts + avg duration |
+| `GET` | `/api/search/aggregates/by_scenario` | Per-scenario run counts + avg duration |
+| `GET` | `/api/search/aggregates/by_mutation` | Per-mutation aggregate (incl. discovered-but-not-run) |
+| `GET` | `/api/search/scoring/{mutation}` | Hard/soft/methodology axes + supporting metrics |
+| `GET` | `/api/search/scoring-compare?a=…&b=…` | Side-by-side scoring across two mutations |
+
+**Plans + queue + auto-plan + workers (Quality API):**
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/qa/plans` | Create a plan (fan-out across providers × scenarios × repeats) |
+| `GET` | `/api/qa/plans` | List plans, paginated, with `meta.total` |
+| `POST` | `/api/qa/plans/{id}/cancel` | Soft-cancel a plan (queued tasks → cancelled, in-flight finish) |
+| `GET` | `/api/qa/auto-plan/configs` | Schedule configs |
+| `POST` | `/api/qa/auto-plan/configs` | Create schedule (tags or explicit scenarios; auto / on_demand) |
+| `PUT/PATCH` | `/api/qa/auto-plan/configs/{id}` | Edit / toggle |
+| `POST` | `/api/qa/auto-plan/configs/{id}/fire-on` | Fire an on-demand schedule for a chosen mutation |
+| `GET` | `/api/qa/worker-pools` / `POST` / `PATCH` | Pool CRUD; supervisor keeps target alive while queue has work |
+| `GET` | `/api/qa/workers` | Fleet listing, self-healing (stale heartbeat → dead) |
 
 ### Reverse proxy
 

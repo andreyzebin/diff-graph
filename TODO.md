@@ -1478,12 +1478,9 @@ A. by RUN attributes:
    kind, agent_name, model, status, started_at, duration_ms,
    tokens, prompt_hash (mutation), prompt_source (generation)
 
-B. by EVOLUTIONARY identity (genes / mutations / generations):
+B. by EVOLUTIONARY identity (mutations / generations):
    ?generation=prompts-experimental
    ?mutation=abc1234                  # short hash
-   ?gene=diff_view_block              # AND when repeated
-   ?gene_any=phase_gating|bulk_post   # OR
-   ?without_gene=baked_existing_comments
 
 C. by WORK OBJECT (what was reviewed/touched):
    ?pr_url=https://...
@@ -1528,8 +1525,6 @@ GET /api/comments                     # search through agent's post_comments
 # Layer 3: catalogues / discovery
 GET /api/scenarios                    # all bench scenarios + run history per
 GET /api/scenarios/{id}               # drill: history + median per (provider, mutation)
-GET /api/genes                        # gene catalogue + runs/mutations counts
-GET /api/genes/{name}                 # one gene + perf delta with vs without
 GET /api/mutations                    # all known mutations
 GET /api/mutations/{hash}             # one mutation + manifest + parent links
 GET /api/work_objects                 # file/pr/jira/project/scenario keys touched
@@ -1539,7 +1534,6 @@ GET /api/work_objects/{type}/{key}/runs   # runs touching this object
 GET /api/aggregates/by_tool           # tool usage stats
 GET /api/aggregates/by_scenario       # per-scenario perf
 GET /api/aggregates/by_provider       # per-provider perf
-GET /api/aggregates/by_gene           # per-gene perf delta — substrate for evolution
 GET /api/regressions                  # baseline_hash vs candidate_hash
 GET /api/comparisons                  # arbitrary dimension cross-cut
 
@@ -1556,7 +1550,6 @@ runs (extends 5e.10a):
   agent_name      TEXT     -- root agent: dispatcher | reviewer | investigator | judge
   generation      TEXT     -- prompt source identifier (e.g. "prompts-experimental")
   mutation        TEXT     -- alias of prompt_hash; mutation hash
-  genes           TEXT     -- JSON array of gene names active in this mutation
   project         TEXT     -- bitbucket project, extracted from pr_url
   files_touched   TEXT     -- JSON array, extracted from diff_summary
   jira_keys       TEXT     -- JSON array, extracted from PR description + comments
@@ -1569,8 +1562,7 @@ runs (extends 5e.10a):
 mutations:                  -- new table
   hash            TEXT PK
   generation      TEXT
-  manifest        TEXT     -- JSON {gene: on/off, ...}; NULL for commit-based mutations
-  kind            TEXT     -- 'commit' | 'toggle'
+  kind            TEXT     -- 'commit' (toggle-driven mutations: deferred — see §5e.12)
   parent_a        TEXT
   parent_b        TEXT
   detected_at     DATETIME
@@ -1580,69 +1572,34 @@ INDEX idx_runs_kind_started   ON runs(kind, started_at DESC)
 INDEX idx_runs_mutation       ON runs(mutation)
 INDEX idx_runs_scenario       ON runs(scenario_id)
 INDEX idx_runs_project        ON runs(project)
--- Gene/file/jira queries use json_each:
---   SELECT … FROM runs, json_each(runs.genes) WHERE json_each.value = ?
+-- File/jira queries use json_each:
+--   SELECT … FROM runs, json_each(runs.files_touched) WHERE json_each.value = ?
 -- FTS5 on events.data_json — defer until perf shows it's needed.
 ```
 
-### 5e.12 Genes — auto-detected now, toggle-driven later
+### 5e.12 Genes — REMOVED 2026-05-09
 
-Genes are discrete features inside a mutation. Today: **auto-
-detected at compile time** from prompt content via marker
-patterns. Tomorrow: **explicit toggles** in a manifest, with
-prompts composed from base + gene patches. Both regimes share the
-same query API.
+Genes were planned as discrete features inside a mutation —
+auto-detected from prompt markers (Phase 1) with a future
+toggle-driven manifest (Phase 2) for combinatorial evolution.
 
-**Auto-detection (Phase 1, current proposal):**
+Phase 1 was implemented and rolled back: `orchestra/genes.py`,
+the `runs.genes` column writes, the `/api/search/genes` /
+`/api/aggregates/by_gene` endpoints, the `/qa/genes` page, the
+`gene` / `without_gene` filter chips on `/qa/runs`, and the
+`quality-cli genes` / `aggregates by-gene` subcommands all
+existed and were removed.
 
-```python
-# orchestra/genes.py
-GENES = {
-    "diff_view_block":            "## Diff view (how the file tools work)",
-    "agents_md_citation_rule":    "Cite the rule by name when it bears",
-    "severity_calibration_v2":    "follows consequence; verdict follows severity",
-    "comment_graph_tools":        "list_threads(start, n, sort)",
-    "no_baked_existing_comments": lambda agent: "existing_comments" not in agent.input_schema,
-    "open_closed_user_message":   "The tools above are **capabilities**",
-    # ...
-}
+**Why dropped:** the auto-detected catalogue grew faster than
+mutation × gene data accumulated, so it never reached the
+density needed to promote genes to first-class toggles.
+Mutation-level scoring (§5e.11.scoring) covered the immediate
+debugging need without needing per-gene attribution.
 
-# at compile time (orchestra/compiler.py):
-def detect_genes(prompts: AgentRegistry) -> list[str]:
-    out = []
-    for name, marker in GENES.items():
-        if callable(marker):
-            if any(marker(a) for a in prompts.values()):
-                out.append(name)
-        else:
-            if any(marker in (a.system_prompt + a.user_prompt) for a in prompts.values()):
-                out.append(name)
-    return sorted(out)
-```
-
-CLI passes `genes` to TraceDBWriter at run start. They land in
-`runs.genes` (frozen for that run; gene definitions are
-re-computed per future commit, but historical runs preserve their
-detected set).
-
-**Toggle-driven (Phase 2, forward direction):**
-
-When we move to composable prompts, mutation = manifest of
-`{gene: on/off}`. Compiler generates the prompts deterministically
-from base + applied gene patches. Search API doesn't change —
-`runs.genes` populated either by detection or by manifest keys
-where value=on. Evolution orchestrator (§5c.609) becomes
-combinatorial over toggles instead of LLM-as-merger.
-
-Defer until Phase 1 produces enough mutation × gene data to know
-which genes deserve to be promoted to first-class toggles.
-
-**Catalogue maintenance.** `orchestra/genes.py` is a flat dict.
-Adding a gene = one PR adding one entry + a marker in the prompt.
-CI assertion: every gene name referenced in scenarios/yaml or
-mutations table must exist in `GENES`. Removing a gene = needs
-migration script (or just freeze: old runs keep the detected set
-even if we drop the marker).
+**What remains:** the `runs.genes` schema column is kept (no
+migration), holding NULL on new rows. Old data preserved as-is.
+If gene-style attribution is wanted later, it can be re-added
+with a fresh design — the original code is in git history.
 
 ### 5e.13 Clients — web + CLI (human and agent-friendly)
 
@@ -1654,11 +1611,9 @@ remote, or behind a reverse-proxy.
 described in 5e.6, gains pages for the new dimensions:
 
 ```
-/qa/runs                    — list with filter chips (gene, mutation, project, …)
+/qa/runs                    — list with filter chips (mutation, project, scenario, …)
 /qa/runs/{id}               — drill, including ↗ FS path + ↗ linked judge/agent
 /qa/runs/{id}/files         — file-explorer over the FS trace tree
-/qa/genes                   — gene catalogue + perf deltas
-/qa/genes/{name}            — one gene's impact across mutations
 /qa/mutations               — mutation list + lineage tree (parent_a / parent_b)
 /qa/scenarios               — scenario catalogue
 /qa/work_objects/{type}     — pivot view by file / pr / jira / project
@@ -1673,7 +1628,7 @@ commands, two output flavours:
 ```
 quality-cli runs list                          # human: rich table, color
 quality-cli runs list --json                   # agent: structured JSON, stable schema
-quality-cli runs list --provider=qwen3-6 --gene=diff_view_block --since=24h
+quality-cli runs list --provider=qwen3-6 --scenario-tag=tier:unit --since=24h
 
 quality-cli runs get <id>                      # human: rich panel + step timeline
 quality-cli runs get <id> --json               # agent: full run JSON, all events inline
@@ -1687,7 +1642,6 @@ quality-cli search "PricingService.getCheapest" --in=findings --since=7d
 quality-cli search "..." --json
 
 quality-cli regressions --baseline=abc12 --candidate=def34
-quality-cli aggregates by-gene --scope=tier:unit
 quality-cli replay <run_id> --provider=qwen3-6   # re-run with same mutation, different provider
 
 # Plan / queue (covered by §5c-5e earlier):
@@ -1708,7 +1662,7 @@ quality-cli watch <plan_id>                     # WS live progress
 
 Default (`without --json`) is human mode: rich tables, panels,
 colors, friendly error messages, may include suggestions like
-*"try `quality-cli runs list --gene=…` to filter"*.
+*"try `quality-cli runs list --scenario-tag=…` to filter"*.
 
 This makes the CLI **dual-purpose**: a developer types commands;
 a debugging sub-agent (per §9) calls the same binary with `--json`
@@ -1731,16 +1685,16 @@ stdout. No special "agent API" needed.
   (`~/.diffgraph/traces.db`) is consumed by the server.
 
 **Effort, recalibrated.**
-- Phase 1 — schema additions + gene auto-detect + writer wiring:
-  ~1 day. Pure refactor, no new server.
+- Phase 1 — schema additions + writer wiring: ~1 day. Pure
+  refactor, no new server.
 - Phase 2 — minimal SQLite-backed quality-api (read-only:
-  `/api/runs`, `/api/runs/{id}`, `/api/tool_calls`, `/api/genes`):
+  `/api/runs`, `/api/runs/{id}`, `/api/tool_calls`):
   ~2-3 days. Boots pr-analytics as a FastAPI app for the first
   time.
 - Phase 3 — write endpoints + dashboards + CLI client (human
   mode): ~1 week.
 - Phase 4 — `--json` mode + agent-friendly invariants + minimal
-  web UI for runs/genes/mutations: ~1 week.
+  web UI for runs/mutations: ~1 week.
 - Phase 5 — workers + plans + lease/heartbeat: ~1 week.
 - Phase 6 — live WS + regressions UI + FS-only trace browser:
   ~1 week.

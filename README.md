@@ -515,7 +515,7 @@ docker/                      Dockerfile + entrypoint
 Two daemons ship with DiffGraph:
 
 - **Webhook router** — `python -m webhook --config webhook.toml` (default port `8000`)
-- **Trace server** — FastAPI UI over `~/.diffgraph/traces.db` (default port `8080`)
+- **Trace server** — FastAPI UI over `~/.diffgraph/traces.db` (default port `8080`). Hosts both the per-run trace viewer (`/`, `/runs/{id}`) and the **Quality API** (`/qa/*`) for scheduled cross-mutation evaluation: configurable schedules with tag-filtered scenarios, plan/queue with worker-pool supervisor, per-mutation scoring (hard skill / soft skill / methodology), on-demand fire from `/qa/mutations`, plan cancel.
 
 Systemd unit templates + install/reload helpers live under `scripts/`.
 
