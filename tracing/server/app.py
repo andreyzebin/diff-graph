@@ -556,7 +556,37 @@ async def api_qa_worker_heartbeat(worker_id: str):
 
 @app.get("/api/qa/workers")
 async def api_qa_list_workers():
-    return JSONResponse({"data": _qa_queue.list_workers()})
+    """Worker fleet + each worker's currently-leased task (if any)."""
+    import sqlite3
+    from orchestra.trace_db import DEFAULT_DB_PATH
+    from datetime import datetime
+    workers = _qa_queue.list_workers()
+    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT id, scenario_id, provider, plan_id, state, lease_owner,
+               started_at, lease_expires_at
+        FROM qa_tasks
+        WHERE state IN ('leased', 'running') AND lease_owner != ''
+    """).fetchall()
+    conn.close()
+    by_owner: dict[str, dict] = {}
+    for r in rows:
+        by_owner[r["lease_owner"]] = dict(r)
+    now = datetime.now()
+    out = []
+    for w in workers:
+        d = dict(w)
+        # Stale heartbeat → worker is dead even if state still says running.
+        try:
+            last = datetime.fromisoformat(w["last_heartbeat"])
+            d["heartbeat_age_s"] = int((now - last).total_seconds())
+        except Exception:
+            d["heartbeat_age_s"] = None
+        d["alive"] = d["heartbeat_age_s"] is not None and d["heartbeat_age_s"] < 90
+        d["current_task"] = by_owner.get(w["id"])
+        out.append(d)
+    return JSONResponse({"data": out})
 
 
 # ── Plans (group of tasks via cross-product) ───────────────────────────────
@@ -634,7 +664,15 @@ async def qa_genes_page(request: Request):
 
 @app.get("/qa/auto-plan", response_class=HTMLResponse)
 async def qa_auto_plan_page(request: Request):
-    return templates.TemplateResponse(request, "qa_auto_plan.html", {"active": "auto-plan"})
+    # `active="schedules"` matches the renamed nav tab; URL stays as
+    # /qa/auto-plan for back-compat (rename when more trigger types
+    # land beyond git-event).
+    return templates.TemplateResponse(request, "qa_auto_plan.html", {"active": "schedules"})
+
+
+@app.get("/qa/workers", response_class=HTMLResponse)
+async def qa_workers_page(request: Request):
+    return templates.TemplateResponse(request, "qa_workers.html", {"active": "workers"})
 
 
 @app.get("/qa/mutations", response_class=HTMLResponse)

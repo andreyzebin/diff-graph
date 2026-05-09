@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>QA · Workers</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="{{ base_path }}/static/trace.css">
+<script>window.QA_BASE_PATH = "{{ base_path }}";</script>
+<script defer src="{{ base_path }}/static/qa.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
+<script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
+<style>
+body { padding: 20px; max-width: 1400px; margin: 0 auto; }
+.qa-nav { margin-bottom: 16px; font-size: 0.9em; }
+.qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
+.qa-nav a:hover { text-decoration: underline; }
+.section { margin-top: 20px; padding: 12px; background: #161b22;
+           border: 1px solid #30363d; border-radius: 6px; }
+.section h2 { font-size: 0.95em; color: #c9d1d9; margin: 0 0 12px 0; font-weight: normal; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #30363d; }
+th { color: #8b949e; font-weight: normal; }
+.muted { color: #8b949e; font-size: 0.85em; }
+.empty { color: #8b949e; padding: 30px; text-align: center; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot-busy  { background: #c69026; box-shadow: 0 0 6px #c69026aa; }
+.dot-idle  { background: #56d364; }
+.dot-dead  { background: #6e7681; }
+.task-link { color: #58a6ff; text-decoration: none;
+             font-family: ui-monospace, monospace; }
+.task-link:hover { text-decoration: underline; }
+.tn { font-variant-numeric: tabular-nums; text-align: right; }
+.tag-chip { display: inline-block; padding: 1px 6px; background: #21262d;
+            color: #8b949e; border-radius: 3px; font-size: 0.75em; }
+.refresh-meta { float: right; }
+</style>
+</head>
+<body hx-boost="true" hx-ext="head-support">
+{% include "_qa_nav.html" %}
+
+<h1>QA · Workers
+  <span class="muted refresh-meta" x-data="{}" x-text="'· auto-refresh every 5s'"></span>
+</h1>
+
+<div x-data="workersView" x-init="load(); setInterval(() => load(), 5000)">
+
+  <div class="section">
+    <h2>fleet · <span x-text="`${workers.length} worker(s)`"></span>
+        · <span x-text="`${busyCount} busy · ${idleCount} idle · ${deadCount} dead`"></span></h2>
+
+    <template x-if="workers.length === 0">
+      <div class="empty">no workers registered yet — start one with
+        <code>quality-cli worker --provider=…</code>
+      </div>
+    </template>
+
+    <template x-if="workers.length > 0">
+      <table>
+        <thead><tr>
+          <th>state</th>
+          <th>id</th>
+          <th>provider</th>
+          <th class="tn">capacity</th>
+          <th>started</th>
+          <th>last heartbeat</th>
+          <th>current task</th>
+        </tr></thead>
+        <tbody>
+          <template x-for="w in workers" :key="w.id">
+            <tr>
+              <td>
+                <span class="dot" :class="dotClass(w)"></span>
+                <span x-text="stateLabel(w)"></span>
+              </td>
+              <td style="font-family: ui-monospace, monospace;" x-text="w.id"></td>
+              <td x-text="w.provider || '(any)'"></td>
+              <td class="tn" x-text="w.capacity"></td>
+              <td class="muted" x-text="(w.started_at || '').slice(0, 19)"></td>
+              <td class="muted" x-text="heartbeatLabel(w)"></td>
+              <td>
+                <template x-if="w.current_task">
+                  <span>
+                    <a class="task-link" :href="`{{ base_path }}/qa/plans`"
+                       x-text="`task #${w.current_task.id}`"></a>
+                    <span class="tag-chip" x-text="w.current_task.scenario_id"></span>
+                    <span class="muted" x-text="`state=${w.current_task.state} · plan=${w.current_task.plan_id || '-'}`"></span>
+                  </span>
+                </template>
+                <template x-if="!w.current_task">
+                  <span class="muted">— idle —</span>
+                </template>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </template>
+  </div>
+
+  <!-- In-flight tasks at-a-glance -->
+  <template x-if="leasedTasks.length > 0">
+    <div class="section">
+      <h2>in flight · <span x-text="`${leasedTasks.length} task(s)`"></span></h2>
+      <table>
+        <thead><tr>
+          <th>task</th><th>scenario</th><th>provider</th><th>worker</th>
+          <th>plan</th><th>started</th><th>lease ends</th>
+        </tr></thead>
+        <tbody>
+          <template x-for="t in leasedTasks" :key="t.id">
+            <tr>
+              <td x-text="`#${t.id}`"></td>
+              <td x-text="t.scenario_id"></td>
+              <td x-text="t.provider"></td>
+              <td style="font-family: ui-monospace, monospace;"
+                  x-text="(t.lease_owner || '').slice(0,12)"></td>
+              <td>
+                <a class="task-link" :href="`{{ base_path }}/qa/plans`"
+                   x-text="t.plan_id ? `#${t.plan_id}` : '-'"></a>
+              </td>
+              <td class="muted" x-text="(t.started_at || '').slice(11, 19)"></td>
+              <td class="muted" x-text="(t.lease_expires_at || '').slice(11, 19)"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </template>
+
+</div>
+</body>
+</html>

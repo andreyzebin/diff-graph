@@ -4,11 +4,12 @@
 <div class="qa-nav">
   {% set tabs = [
     ("overview",  "/qa/"),
-    ("runs",      "/qa/runs"),
+    ("schedules", "/qa/auto-plan"),
     ("plans",     "/qa/plans"),
+    ("workers",   "/qa/workers"),
+    ("runs",      "/qa/runs"),
     ("mutations", "/qa/mutations"),
     ("genes",     "/qa/genes"),
-    ("auto-plan", "/qa/auto-plan"),
   ] %}
   {% for label, href in tabs %}
     {% if label == active %}

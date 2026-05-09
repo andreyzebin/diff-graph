@@ -426,6 +426,39 @@ document.addEventListener('alpine:init', () => {
             this.createStatus = `error: ${(err.error && err.error.message) || r.status}`;
           }
         },
-      
+
+  }))
+
+  Alpine.data('workersView', () => ({
+    workers: [],
+    leasedTasks: [],
+    get busyCount() { return this.workers.filter(w => w.alive && w.current_task).length },
+    get idleCount() { return this.workers.filter(w => w.alive && !w.current_task).length },
+    get deadCount() { return this.workers.filter(w => !w.alive).length },
+    async load() {
+      const base = window.QA_BASE_PATH || '';
+      const r = await fetch(`${base}/api/qa/workers`);
+      this.workers = (await r.json()).data || [];
+      // In-flight task list = each worker's current task, deduped.
+      this.leasedTasks = this.workers
+        .map(w => w.current_task)
+        .filter(t => t);
+    },
+    dotClass(w) {
+      if (!w.alive) return 'dot-dead';
+      return w.current_task ? 'dot-busy' : 'dot-idle';
+    },
+    stateLabel(w) {
+      if (!w.alive) return 'dead';
+      return w.current_task ? 'busy' : 'idle';
+    },
+    heartbeatLabel(w) {
+      if (w.heartbeat_age_s === null) return '?';
+      const s = w.heartbeat_age_s;
+      if (s < 5) return 'just now';
+      if (s < 60) return `${s}s ago`;
+      if (s < 3600) return `${Math.floor(s/60)}m ago`;
+      return `${Math.floor(s/3600)}h ago`;
+    },
   }))
 })
