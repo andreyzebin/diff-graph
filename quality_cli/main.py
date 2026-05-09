@@ -703,34 +703,43 @@ def auto_add(
     repo: str = typer.Option(..., help="path to git repo to watch"),
     branch_pattern: str = typer.Option("master,feature/*",
         help="comma-separated globs"),
+    bench_repo: str = typer.Option("",
+        help="path to bench repo with benchmark/scenarios/*.yaml — required if using --tags"),
     providers: str = typer.Option(..., help="comma-separated"),
-    unit_scenarios: str = typer.Option(...,
-        help="comma-separated; sentinel set fired on every commit"),
-    full_scenarios: Optional[str] = typer.Option(None,
-        help="comma-separated; full matrix fired periodically"),
-    full_period_seconds: int = typer.Option(86400, help="seconds between full runs per branch"),
+    scenarios: Optional[str] = typer.Option(None,
+        help="explicit scenario ids (CSV); if set, --tags ignored"),
+    tags: Optional[str] = typer.Option(None,
+        help="scenario tags filter (CSV) — resolved at discover-time against --bench-repo"),
+    min_gap_seconds: int = typer.Option(0,
+        help="debounce per branch: at most one plan per branch per N seconds (0 = every commit)"),
+    pacing: str = typer.Option("aggressive",
+        help="'aggressive' (queue all immediately) or 'spread' (stagger over pacing-window-seconds)"),
+    pacing_window_seconds: int = typer.Option(0,
+        help="for pacing=spread: total seconds to stagger this plan's tasks over"),
     attempts_min: int = typer.Option(1),
     name: Optional[str] = typer.Option(None),
     enabled: bool = typer.Option(True),
 ):
     """Register a watched repo + branch pattern.
 
-    On every `auto-plan discover` run the planner looks at matching
-    branches' HEAD SHAs; for each new (branch, sha) pair it creates
-    a plan with the unit_scenarios cross-product and (if configured
-    and the branch hasn't had a recent full run) also a plan with
-    full_scenarios. Both kinds are tracked in qa_planned_commits so
-    the same triple is never planned twice.
+    Configs are open: each describes a filter (explicit scenarios OR
+    tag selector) + cadence (min_gap_seconds debounce per branch) +
+    pacing (aggressive vs spread). Multiple configs run in parallel —
+    typical setup is one config for sentinel-on-every-commit and
+    another for full-slice-once-a-day.
     """
     try:
         cid = _autostore().add_config(
             name=name or "",
             repo_path=repo,
             branch_pattern=branch_pattern,
+            bench_repo_path=bench_repo,
             providers=_split_csv(providers),
-            unit_scenarios=_split_csv(unit_scenarios),
-            full_scenarios=_split_csv(full_scenarios),
-            full_period_seconds=full_period_seconds,
+            scenarios=_split_csv(scenarios),
+            scenario_tags=_split_csv(tags),
+            min_gap_seconds=min_gap_seconds,
+            pacing=pacing,
+            pacing_window_seconds=pacing_window_seconds,
             attempts_min=attempts_min,
             enabled=enabled,
         )
@@ -741,12 +750,55 @@ def auto_add(
         _emit(config_to_dict(cfg))
         return
     _Out.console.print(f"[green]created config[/green] [cyan]#{cid}[/cyan] · {cfg.name or '(unnamed)'}")
-    _Out.console.print(f"  repo: {cfg.repo_path}")
+    _Out.console.print(f"  repo:     {cfg.repo_path}")
     _Out.console.print(f"  branches: {cfg.branch_pattern}")
-    _Out.console.print(f"  unit: {', '.join(cfg.unit_scenarios)}")
-    if cfg.full_scenarios:
-        _Out.console.print(f"  full: {', '.join(cfg.full_scenarios)}  every {cfg.full_period_seconds}s")
     _Out.console.print(f"  providers: {', '.join(cfg.providers)}")
+    if cfg.scenarios:
+        _Out.console.print(f"  scenarios: {', '.join(cfg.scenarios)}")
+    if cfg.scenario_tags:
+        _Out.console.print(f"  tags: {', '.join(cfg.scenario_tags)} · bench={cfg.bench_repo_path or '(unset)'}")
+    _Out.console.print(f"  cadence: min_gap={cfg.min_gap_seconds}s  pacing={cfg.pacing}"
+                       + (f" window={cfg.pacing_window_seconds}s" if cfg.pacing == "spread" else ""))
+
+
+@auto_app.command("edit")
+def auto_edit(
+    config_id: int = typer.Argument(...),
+    name: Optional[str] = typer.Option(None),
+    branch_pattern: Optional[str] = typer.Option(None),
+    bench_repo: Optional[str] = typer.Option(None),
+    providers: Optional[str] = typer.Option(None),
+    scenarios: Optional[str] = typer.Option(None),
+    tags: Optional[str] = typer.Option(None),
+    min_gap_seconds: Optional[int] = typer.Option(None),
+    pacing: Optional[str] = typer.Option(None),
+    pacing_window_seconds: Optional[int] = typer.Option(None),
+    attempts_min: Optional[int] = typer.Option(None),
+):
+    """Edit a config. Only fields you pass are touched."""
+    fields = {}
+    if name is not None: fields["name"] = name
+    if branch_pattern is not None: fields["branch_pattern"] = branch_pattern
+    if bench_repo is not None: fields["bench_repo_path"] = bench_repo
+    if providers is not None: fields["providers"] = _split_csv(providers)
+    if scenarios is not None: fields["scenarios"] = _split_csv(scenarios)
+    if tags is not None: fields["scenario_tags"] = _split_csv(tags)
+    if min_gap_seconds is not None: fields["min_gap_seconds"] = min_gap_seconds
+    if pacing is not None: fields["pacing"] = pacing
+    if pacing_window_seconds is not None: fields["pacing_window_seconds"] = pacing_window_seconds
+    if attempts_min is not None: fields["attempts_min"] = attempts_min
+    if not fields:
+        _emit_error("no_op", "no fields to update")
+    ok = _autostore().update_config(config_id, **fields)
+    if not ok:
+        _emit_error("not_found", f"config {config_id} not found")
+    cfg = _autostore().get_config(config_id)
+    if _Out.json_mode:
+        _emit(config_to_dict(cfg))
+        return
+    _Out.console.print(f"[green]updated config[/green] #{config_id}")
+    for k, v in fields.items():
+        _Out.console.print(f"  {k}: {v}")
 
 
 @auto_app.command("list")

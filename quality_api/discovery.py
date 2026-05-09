@@ -1,25 +1,40 @@
-"""Auto-plan discovery — git branches → QA plans.
+"""Auto-plan discovery — git branches → QA plans, open-config edition.
 
-Implements §5c "discover → plan → run" loop, materialised for git
-branches as generations and commit SHAs as mutations.
+Configs are now "open": each describes WHAT to run (filter by
+explicit scenario list and/or scenario tags) and HOW often / how
+aggressively. Multiple parallel configs coexist — typical setup
+is one config for sentinel-on-every-commit and another for
+full-slice-once-a-day, but the system doesn't enforce that
+shape.
 
-Crash-resilience invariants:
-- All state in SQLite (qa_auto_plan_configs + qa_planned_commits).
-- discover() is idempotent — two consecutive calls with the same
-  repo state produce zero new plans the second time. Backed by
-  qa_planned_commits (PRIMARY KEY on config_id × branch × sha ×
-  plan_kind).
-- A crash mid-discover() at worst leaves a planned-commits row
-  inserted but the corresponding plan row missing — easy to
-  reconcile on next call (we re-insert with INSERT OR IGNORE).
-- Two run policies per config:
-    * unit  — fired on every new commit. Cheap sentinel.
-    * full  — fired periodically (full_period_seconds) per branch
-      so we still see drift on branches that only get rare commits.
+Concepts (TODO §5e.11+):
+- generation     = git branch (e.g. master, feature/foo)
+- mutation       = commit SHA on that branch
+- config         = description of what to plan + cadence + pacing
+- planned_commit = idempotency ledger row, keyed by (config × branch
+                   × sha × kind=config_name)
 
-Generation = git branch (e.g. master, feature/foo).
-Mutation   = commit SHA on that branch.
-Plan kind  = 'unit' (sentinel matrix) or 'full' (whole matrix).
+Crash-resilience: all state in SQLite. discover() is idempotent —
+two consecutive calls with the same repo state and the same
+configs produce zero new plans the second time.
+
+Cadence:
+- min_gap_seconds=0   → fire on every new commit (default for unit)
+- min_gap_seconds=N   → debounce per branch — at most one plan per
+                        branch per N seconds (typical for full
+                        runs that are too expensive to run on every
+                        push). Implemented by checking the latest
+                        qa_planned_commits row for this (config,
+                        branch).
+
+Pacing:
+- aggressive          → all tasks enqueued with not_before=NULL,
+                        ready to lease immediately (default)
+- spread              → tasks staggered across pacing_window_seconds
+                        via not_before. e.g. 100 tasks / 3600s ⇒
+                        each task is delayed +36s from the previous
+                        within a single plan. The lease query honours
+                        not_before so workers naturally pace.
 """
 from __future__ import annotations
 
@@ -32,21 +47,24 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from .queue import PlanSpec, PlanStore, TaskQueue
+from .queue import PlanSpec, PlanStore, TaskQueue, TaskSpec
 
 
-# ── Config row helpers ──────────────────────────────────────────────────────
+# ── Config row ──────────────────────────────────────────────────────────────
 
 @dataclass
 class AutoPlanConfig:
     id: int
     name: str
-    repo_path: str
-    branch_pattern: str
+    repo_path: str                       # repo to watch (branches × HEAD shas)
+    branch_pattern: str                  # CSV of globs
+    bench_repo_path: str                 # where benchmark/scenarios/*.yaml lives
     providers: list[str]
-    unit_scenarios: list[str]
-    full_scenarios: list[str]
-    full_period_seconds: int
+    scenarios: list[str]                 # explicit scenario ids
+    scenario_tags: list[str]             # tag filter (resolved at discover-time)
+    min_gap_seconds: int                 # debounce per branch
+    pacing: str                          # 'aggressive' | 'spread'
+    pacing_window_seconds: int
     attempts_min: int
     enabled: bool
     created_at: str
@@ -56,20 +74,32 @@ class AutoPlanConfig:
 def _row_to_config(row: sqlite3.Row | None) -> Optional[AutoPlanConfig]:
     if row is None:
         return None
+
     def _arr(s):
         try:
             return json.loads(s) if s else []
         except Exception:
             return []
+
+    def _col(name, default=None):
+        try:
+            v = row[name]
+            return v if v is not None else default
+        except (KeyError, IndexError):
+            return default
+
     return AutoPlanConfig(
         id=int(row["id"]),
         name=row["name"] or "",
         repo_path=row["repo_path"],
         branch_pattern=row["branch_pattern"],
+        bench_repo_path=_col("bench_repo_path", "") or "",
         providers=_arr(row["providers"]),
-        unit_scenarios=_arr(row["unit_scenarios"]),
-        full_scenarios=_arr(row["full_scenarios"]),
-        full_period_seconds=int(row["full_period_seconds"] or 86400),
+        scenarios=_arr(_col("scenarios")),
+        scenario_tags=_arr(_col("scenario_tags")),
+        min_gap_seconds=int(_col("min_gap_seconds", 0) or 0),
+        pacing=(_col("pacing", "aggressive") or "aggressive"),
+        pacing_window_seconds=int(_col("pacing_window_seconds", 0) or 0),
         attempts_min=int(row["attempts_min"] or 1),
         enabled=bool(row["enabled"]),
         created_at=row["created_at"],
@@ -81,10 +111,13 @@ def config_to_dict(c: AutoPlanConfig) -> dict:
     return {
         "id": c.id, "name": c.name,
         "repo_path": c.repo_path, "branch_pattern": c.branch_pattern,
+        "bench_repo_path": c.bench_repo_path,
         "providers": c.providers,
-        "unit_scenarios": c.unit_scenarios,
-        "full_scenarios": c.full_scenarios,
-        "full_period_seconds": c.full_period_seconds,
+        "scenarios": c.scenarios,
+        "scenario_tags": c.scenario_tags,
+        "min_gap_seconds": c.min_gap_seconds,
+        "pacing": c.pacing,
+        "pacing_window_seconds": c.pacing_window_seconds,
         "attempts_min": c.attempts_min,
         "enabled": c.enabled,
         "created_at": c.created_at,
@@ -95,11 +128,6 @@ def config_to_dict(c: AutoPlanConfig) -> dict:
 # ── Git helpers ─────────────────────────────────────────────────────────────
 
 def git_list_branches(repo_path: str) -> list[tuple[str, str]]:
-    """Return [(branch, sha)] for all local branches in `repo_path`.
-
-    Uses `git for-each-ref` for stability — works whether refs are
-    packed or unpacked, doesn't need libgit2.
-    """
     p = Path(repo_path).expanduser()
     if not (p / ".git").exists() and not p.name == ".git":
         return []
@@ -113,71 +141,162 @@ def git_list_branches(repo_path: str) -> list[tuple[str, str]]:
         return []
     pairs = []
     for line in out.splitlines():
-        line = line.strip()
-        if not line or " " not in line:
+        if " " not in line:
             continue
-        branch, sha = line.split(" ", 1)
-        pairs.append((branch.strip(), sha.strip()))
+        b, sha = line.strip().split(" ", 1)
+        pairs.append((b.strip(), sha.strip()))
     return pairs
-
-
-def match_branch(branch: str, pattern: str) -> bool:
-    """Single pattern. CSV is exploded by the caller."""
-    return fnmatch.fnmatch(branch, pattern.strip())
 
 
 def match_any(branch: str, patterns_csv: str) -> bool:
     if not patterns_csv:
         return False
-    for p in patterns_csv.split(","):
-        p = p.strip()
-        if p and match_branch(branch, p):
-            return True
-    return False
+    return any(fnmatch.fnmatch(branch, p.strip()) for p in patterns_csv.split(",") if p.strip())
+
+
+# ── Scenario resolver ──────────────────────────────────────────────────────
+
+def scan_scenarios(bench_repo_path: str) -> list[dict]:
+    """Walk <bench_repo>/benchmark/scenarios/**/*.yaml and return
+    [{id, tags: [...]}, ...]. Used to resolve scenario_tags filters
+    at discover-time.
+
+    Best-effort: missing or malformed YAML is silently skipped.
+    """
+    if not bench_repo_path:
+        return []
+    root = Path(bench_repo_path).expanduser() / "benchmark" / "scenarios"
+    if not root.exists():
+        return []
+    try:
+        import yaml
+    except ImportError:
+        return []
+    out = []
+    for path in root.rglob("*.yaml"):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
+            sid = data.get("id")
+            tags = data.get("tags") or []
+            if sid:
+                out.append({"id": str(sid), "tags": [str(t) for t in tags],
+                            "path": str(path.relative_to(root))})
+        except Exception:
+            continue
+    return out
+
+
+def resolve_scenarios(cfg: AutoPlanConfig) -> list[str]:
+    """Compute the actual scenario id list this config matches right now.
+
+    - If `scenarios` is non-empty → use it verbatim (explicit list wins).
+    - Else if `scenario_tags` non-empty → match scenarios in
+      bench_repo whose tag set INTERSECTS the filter.
+    - Else → empty (no-op config; planner skips).
+
+    Tag intersect semantics: `scenario_tags = [tier:unit]` matches any
+    scenario whose `tags:` list contains `tier:unit`. Multiple tags
+    OR together (any match counts).
+    """
+    if cfg.scenarios:
+        return list(cfg.scenarios)
+    if not cfg.scenario_tags:
+        return []
+    catalogue = scan_scenarios(cfg.bench_repo_path)
+    wanted = set(cfg.scenario_tags)
+    return [s["id"] for s in catalogue if wanted & set(s.get("tags", []))]
 
 
 # ── Store ───────────────────────────────────────────────────────────────────
 
 class AutoPlanStore:
-    """CRUD over qa_auto_plan_configs + the crash-resilient discovery
-    loop that consults qa_planned_commits to avoid double-runs."""
-
     def __init__(self, queue: TaskQueue):
         self.queue = queue
         self.plans = PlanStore(queue)
+
+    # ── CRUD ──────────────────────────────────────────────────────────
 
     def add_config(self, *,
                    name: str = "",
                    repo_path: str,
                    branch_pattern: str,
+                   bench_repo_path: str = "",
                    providers: list[str],
-                   unit_scenarios: list[str],
-                   full_scenarios: list[str] | None = None,
-                   full_period_seconds: int = 86400,
+                   scenarios: list[str] | None = None,
+                   scenario_tags: list[str] | None = None,
+                   min_gap_seconds: int = 0,
+                   pacing: str = "aggressive",
+                   pacing_window_seconds: int = 0,
                    attempts_min: int = 1,
                    enabled: bool = True) -> int:
         if not providers:
             raise ValueError("providers required")
-        if not unit_scenarios:
-            raise ValueError("unit_scenarios required (at least sentinel set)")
+        scenarios = scenarios or []
+        scenario_tags = scenario_tags or []
+        if not scenarios and not scenario_tags:
+            raise ValueError("either scenarios or scenario_tags must be set")
+        if pacing not in ("aggressive", "spread"):
+            raise ValueError(f"pacing must be 'aggressive' or 'spread', got {pacing}")
         repo_path = str(Path(repo_path).expanduser().resolve())
+        if bench_repo_path:
+            bench_repo_path = str(Path(bench_repo_path).expanduser().resolve())
+
         with self.queue._lock, self.queue._conn() as c:
             cur = c.execute(
                 """INSERT INTO qa_auto_plan_configs
-                   (name, repo_path, branch_pattern, providers,
-                    unit_scenarios, full_scenarios, full_period_seconds,
-                    attempts_min, enabled, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (name or "", repo_path, branch_pattern,
+                   (name, repo_path, branch_pattern, bench_repo_path,
+                    providers, scenarios, scenario_tags,
+                    min_gap_seconds, pacing, pacing_window_seconds,
+                    attempts_min, enabled, created_at,
+                    -- legacy NOT-NULL columns: keep them satisfied with empty arrays.
+                    unit_scenarios, full_scenarios, full_period_seconds)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?)""",
+                (name or "", repo_path, branch_pattern, bench_repo_path,
                  json.dumps(providers, ensure_ascii=False),
-                 json.dumps(unit_scenarios, ensure_ascii=False),
-                 json.dumps(full_scenarios or [], ensure_ascii=False),
-                 int(full_period_seconds), int(attempts_min),
-                 1 if enabled else 0,
-                 datetime.now().isoformat()),
+                 json.dumps(scenarios, ensure_ascii=False),
+                 json.dumps(scenario_tags, ensure_ascii=False),
+                 int(min_gap_seconds), pacing, int(pacing_window_seconds),
+                 int(attempts_min), 1 if enabled else 0,
+                 datetime.now().isoformat(),
+                 "[]", "[]", 86400),
             )
             c.commit()
             return int(cur.lastrowid)
+
+    def update_config(self, config_id: int, **fields) -> bool:
+        """PATCH-style update. Only known columns are touched.
+        Pass JSON-serialisable values for list fields (providers /
+        scenarios / scenario_tags); the method serialises.
+        """
+        allowed = {
+            "name", "repo_path", "branch_pattern", "bench_repo_path",
+            "providers", "scenarios", "scenario_tags",
+            "min_gap_seconds", "pacing", "pacing_window_seconds",
+            "attempts_min", "enabled",
+        }
+        sets, params = [], []
+        for k, v in fields.items():
+            if k not in allowed or v is None:
+                continue
+            if k in ("providers", "scenarios", "scenario_tags"):
+                v = json.dumps(list(v), ensure_ascii=False)
+            elif k == "enabled":
+                v = 1 if v else 0
+            sets.append(f"{k}=?")
+            params.append(v)
+        if not sets:
+            return False
+        params.append(config_id)
+        with self.queue._lock, self.queue._conn() as c:
+            cur = c.execute(
+                f"UPDATE qa_auto_plan_configs SET {', '.join(sets)} WHERE id=?",
+                params,
+            )
+            c.commit()
+            return cur.rowcount > 0
 
     def list_configs(self, *, only_enabled: bool = False) -> list[AutoPlanConfig]:
         clause = "WHERE enabled=1" if only_enabled else ""
@@ -185,7 +304,7 @@ class AutoPlanStore:
             rows = c.execute(
                 f"SELECT * FROM qa_auto_plan_configs {clause} ORDER BY id"
             ).fetchall()
-        return [_row_to_config(r) for r in rows]
+        return [_row_to_config(r) for r in rows if _row_to_config(r) is not None]
 
     def get_config(self, config_id: int) -> Optional[AutoPlanConfig]:
         with self.queue._lock, self.queue._conn() as c:
@@ -195,30 +314,22 @@ class AutoPlanStore:
         return _row_to_config(row)
 
     def set_enabled(self, config_id: int, enabled: bool) -> bool:
-        with self.queue._lock, self.queue._conn() as c:
-            cur = c.execute(
-                "UPDATE qa_auto_plan_configs SET enabled=? WHERE id=?",
-                (1 if enabled else 0, config_id),
-            )
-            c.commit()
-            return cur.rowcount > 0
+        return self.update_config(config_id, enabled=enabled)
 
     def delete_config(self, config_id: int) -> bool:
         with self.queue._lock, self.queue._conn() as c:
-            cur = c.execute(
-                "DELETE FROM qa_auto_plan_configs WHERE id=?", (config_id,)
-            )
+            cur = c.execute("DELETE FROM qa_auto_plan_configs WHERE id=?", (config_id,))
             c.commit()
             return cur.rowcount > 0
 
-    # ── Discovery sweep ─────────────────────────────────────────────────
+    def resolve_config_scenarios(self, config_id: int) -> list[str]:
+        """Helper for the UI to preview which scenarios match right now."""
+        cfg = self.get_config(config_id)
+        return resolve_scenarios(cfg) if cfg else []
+
+    # ── Discovery ─────────────────────────────────────────────────────
 
     def discover(self, *, config_id: Optional[int] = None) -> list[dict]:
-        """Walk one or all enabled configs; create plans for unseen
-        (branch, sha, kind) triples. Returns list of created plan
-        descriptors: [{config_id, branch, sha, plan_kind, plan_id, task_count}].
-        Existing rows are skipped (idempotent).
-        """
         configs = (
             [self.get_config(config_id)] if config_id is not None
             else self.list_configs(only_enabled=True)
@@ -237,91 +348,111 @@ class AutoPlanStore:
         return created
 
     def _discover_one(self, cfg: AutoPlanConfig) -> list[dict]:
-        out = []
-        branches = git_list_branches(cfg.repo_path)
-        # Filter against the config's branch pattern (CSV of globs).
-        branches = [(b, sha) for (b, sha) in branches
+        out: list[dict] = []
+        scenarios = resolve_scenarios(cfg)
+        if not scenarios:
+            return out
+        branches = [(b, sha) for (b, sha) in git_list_branches(cfg.repo_path)
                     if match_any(b, cfg.branch_pattern)]
-        # ─── Unit kind: every new commit ───────────────────────────────
-        for branch, sha in branches:
-            if self._already_planned(cfg.id, branch, sha, "unit"):
-                continue
-            plan_id, task_ids = self._create_plan(cfg, branch, sha,
-                                                  scenarios=cfg.unit_scenarios,
-                                                  kind="unit")
-            self._record_planned(cfg.id, branch, sha, "unit", plan_id)
-            out.append({
-                "config_id": cfg.id, "branch": branch, "sha": sha,
-                "plan_kind": "unit", "plan_id": plan_id,
-                "task_count": len(task_ids),
-            })
 
-        # ─── Full kind: periodic per (branch, sha) ─────────────────────
-        if cfg.full_scenarios:
-            cutoff = (datetime.now() - timedelta(seconds=cfg.full_period_seconds)).isoformat()
-            for branch, sha in branches:
-                if self._already_planned(cfg.id, branch, sha, "full"):
+        for branch, sha in branches:
+            # Skip if this exact (config, branch, sha) was already planned —
+            # idempotent across crashes.
+            if self._already_planned(cfg.id, branch, sha):
+                continue
+            # Debounce: skip if there's a recent plan for THIS branch
+            # within min_gap_seconds (regardless of sha).
+            if cfg.min_gap_seconds > 0:
+                cutoff = (datetime.now() - timedelta(seconds=cfg.min_gap_seconds)).isoformat()
+                if self._has_recent_plan(cfg.id, branch, cutoff):
                     continue
-                # Only fire full if no recent full run on THIS branch
-                # (cheap protection against running full every minute).
-                if self._has_recent_full(cfg.id, branch, cutoff):
-                    continue
-                plan_id, task_ids = self._create_plan(cfg, branch, sha,
-                                                      scenarios=cfg.full_scenarios,
-                                                      kind="full")
-                self._record_planned(cfg.id, branch, sha, "full", plan_id)
-                out.append({
-                    "config_id": cfg.id, "branch": branch, "sha": sha,
-                    "plan_kind": "full", "plan_id": plan_id,
-                    "task_count": len(task_ids),
-                })
+
+            plan_id, task_ids = self._create_plan(cfg, branch, sha, scenarios)
+            self._record_planned(cfg.id, branch, sha, cfg.name or f"config-{cfg.id}", plan_id)
+            out.append({
+                "config_id": cfg.id, "config_name": cfg.name,
+                "branch": branch, "sha": sha,
+                "plan_id": plan_id, "task_count": len(task_ids),
+            })
         return out
 
     def _create_plan(self, cfg: AutoPlanConfig, branch: str, sha: str,
-                     scenarios: list[str], kind: str) -> tuple[int, list[int]]:
-        # Per-task payload carries the auto-plan provenance so a
-        # downstream worker can build a `--prompts file://<repo>@<sha>`
-        # URL or check out the right ref before invoking the bench.
-        plan_name = f"auto:{cfg.name or cfg.id}:{branch}@{sha[:7]}:{kind}"
-        spec = PlanSpec(
-            name=plan_name,
-            created_by=f"auto-plan/config-{cfg.id}/{kind}",
-            branches=[branch],
-            providers=cfg.providers,
-            scenarios=scenarios,
-            attempts_min=cfg.attempts_min,
-            priority=10 if kind == "unit" else 50,  # unit first
-            notes=f"repo={cfg.repo_path} kind={kind}",
-        )
-        plan_id, task_ids = self.plans.create(spec)
-        # Tag every task with mutation_hash = sha so /api/search/runs
-        # can join them.
+                     scenarios: list[str]) -> tuple[int, list[int]]:
+        """Fan out tasks for this (config, branch, sha) cell.
+
+        With pacing='spread', tasks within the cell are staggered
+        using not_before so workers don't blast through the LLM
+        endpoint all at once.
+        """
+        plan_name = f"auto:{cfg.name or cfg.id}:{branch}@{sha[:7]}"
+        # Build the spec without the cross-product defaults; we manage
+        # the fan-out manually here so we can apply pacing.
         with self.queue._lock, self.queue._conn() as c:
-            c.executemany(
-                "UPDATE qa_tasks SET mutation_hash=? WHERE id=?",
-                [(sha, tid) for tid in task_ids],
+            cur = c.execute(
+                """INSERT INTO qa_plans
+                   (name, created_at, created_by, branches, providers,
+                    scenarios, attempts_min, state, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
+                (plan_name, datetime.now().isoformat(),
+                 f"auto-plan/config-{cfg.id}",
+                 json.dumps([branch]),
+                 json.dumps(cfg.providers),
+                 json.dumps(scenarios),
+                 max(1, cfg.attempts_min),
+                 f"repo={cfg.repo_path}"),
             )
+            plan_id = int(cur.lastrowid)
             c.commit()
+
+        total_cells = len(cfg.providers) * len(scenarios) * max(1, cfg.attempts_min)
+        spread_step = (
+            cfg.pacing_window_seconds / max(1, total_cells)
+            if cfg.pacing == "spread" and cfg.pacing_window_seconds > 0
+            else 0
+        )
+        now = datetime.now()
+
+        task_ids = []
+        slot_idx = 0
+        for provider in cfg.providers:
+            for scenario in scenarios:
+                for attempt_n in range(1, max(1, cfg.attempts_min) + 1):
+                    not_before = None
+                    if spread_step > 0:
+                        not_before = (now + timedelta(seconds=spread_step * slot_idx)).isoformat()
+                    tid = self.queue.enqueue(TaskSpec(
+                        scenario_id=scenario,
+                        provider=provider,
+                        attempt_n=attempt_n,
+                        branch=branch,
+                        mutation_hash=sha,
+                        plan_id=plan_id,
+                        priority=100,
+                        payload={"plan_name": plan_name,
+                                 "config_id": cfg.id,
+                                 "config_name": cfg.name},
+                        not_before=not_before,
+                    ))
+                    task_ids.append(tid)
+                    slot_idx += 1
         return plan_id, task_ids
 
-    # ── Idempotency ledger ──────────────────────────────────────────────
+    # ── Idempotency ledger ────────────────────────────────────────────
 
-    def _already_planned(self, config_id: int, branch: str,
-                         sha: str, kind: str) -> bool:
+    def _already_planned(self, config_id: int, branch: str, sha: str) -> bool:
         with self.queue._lock, self.queue._conn() as c:
             row = c.execute(
                 """SELECT 1 FROM qa_planned_commits
-                   WHERE config_id=? AND branch=? AND sha=? AND plan_kind=?""",
-                (config_id, branch, sha, kind),
+                   WHERE config_id=? AND branch=? AND sha=?""",
+                (config_id, branch, sha),
             ).fetchone()
         return row is not None
 
-    def _has_recent_full(self, config_id: int, branch: str, since_iso: str) -> bool:
+    def _has_recent_plan(self, config_id: int, branch: str, since_iso: str) -> bool:
         with self.queue._lock, self.queue._conn() as c:
             row = c.execute(
                 """SELECT 1 FROM qa_planned_commits
-                   WHERE config_id=? AND branch=? AND plan_kind='full'
-                     AND planned_at >= ?""",
+                   WHERE config_id=? AND branch=? AND planned_at >= ?""",
                 (config_id, branch, since_iso),
             ).fetchone()
         return row is not None
@@ -329,7 +460,6 @@ class AutoPlanStore:
     def _record_planned(self, config_id: int, branch: str,
                         sha: str, kind: str, plan_id: int) -> None:
         with self.queue._lock, self.queue._conn() as c:
-            # INSERT OR IGNORE — concurrent discoveries don't double-insert.
             c.execute(
                 """INSERT OR IGNORE INTO qa_planned_commits
                    (config_id, branch, sha, plan_kind, plan_id, planned_at)

@@ -14,7 +14,8 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
            border: 1px solid #30363d; border-radius: 6px; }
 .section h2 { font-size: 0.95em; color: #c9d1d9; margin: 0 0 12px 0; font-weight: normal; }
 table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
-th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #30363d; }
+th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #30363d;
+         vertical-align: top; }
 th { color: #8b949e; font-weight: normal; }
 .btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
        padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
@@ -24,7 +25,7 @@ th { color: #8b949e; font-weight: normal; }
 .btn-danger { background: #b62324; border-color: #da3633; color: white; }
 .btn-danger:hover { background: #da3633; }
 .form-grid { display: grid; grid-template-columns: 200px 1fr; gap: 8px 14px;
-             align-items: center; max-width: 700px; }
+             align-items: center; max-width: 800px; }
 .form-grid label { color: #8b949e; font-size: 0.85em; }
 .form-grid input, .form-grid select, .form-grid textarea {
   background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
@@ -35,9 +36,18 @@ th { color: #8b949e; font-weight: normal; }
 .empty { color: #8b949e; padding: 30px; text-align: center; }
 .bulb-on { color: #56d364; }
 .bulb-off { color: #6e7681; }
-.created-list { max-height: 400px; overflow-y: auto; }
-.kind-unit { color: #58a6ff; }
-.kind-full { color: #d2a8ff; }
+.tag-chip { display: inline-block; padding: 1px 6px; margin: 1px; background: #21262d;
+            color: #8b949e; border-radius: 3px; font-size: 0.75em; }
+.scen-chip { display: inline-block; padding: 1px 6px; margin: 1px; background: #1f6feb33;
+             color: #58a6ff; border-radius: 3px; font-size: 0.75em;
+             font-family: ui-monospace, monospace; }
+.config-row { background: #0d1117; padding: 10px; border-radius: 4px; margin-bottom: 8px; }
+.config-row.editing { border: 1px solid #58a6ff; }
+.kv { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; font-size: 0.85em; }
+.kv .k { color: #8b949e; }
+.section-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+}
 </style>
 </head>
 <body>
@@ -53,108 +63,166 @@ th { color: #8b949e; font-weight: normal; }
 
 <h1>QA · Auto-plan</h1>
 <p class="muted">
-Watch git branches; on each new commit auto-create QA plans.
-Idempotent: same (branch, sha) is never planned twice.
+  Multiple parallel configs. Each describes WHAT to run (explicit
+  scenarios OR tag filter), HOW often (debounce per branch), and HOW
+  aggressively (immediate vs spread over time). Idempotent — same
+  (config, branch, sha) is never planned twice.
 </p>
 
 <div x-data="autoPlan()" x-init="load()">
 
-  <!-- Configs list -->
   <div class="section">
-    <h2>configs</h2>
+    <div class="section-row">
+      <h2>configs <span class="muted" x-text="`(${configs.length})`"></span></h2>
+      <div>
+        <button class="btn-primary btn" @click="discoverAll()">discover now</button>
+        <span class="muted" style="margin-left: 8px;" x-text="discoverStatus"></span>
+      </div>
+    </div>
+
     <template x-if="configs.length === 0">
       <div class="empty">no configs yet — fill the form below</div>
     </template>
-    <template x-if="configs.length > 0">
-      <table>
-        <thead><tr>
-          <th>id</th><th>name</th><th>repo</th><th>branches</th>
-          <th>unit / full</th><th>providers</th>
-          <th>state</th><th>last discover</th><th></th>
-        </tr></thead>
-        <tbody>
-          <template x-for="c in configs" :key="c.id">
-            <tr>
-              <td x-text="`#${c.id}`"></td>
-              <td x-text="c.name || '(unnamed)'"></td>
-              <td class="muted" :title="c.repo_path" x-text="c.repo_path.slice(-32)"></td>
-              <td x-text="c.branch_pattern"></td>
-              <td>
-                <span class="kind-unit" x-text="c.unit_scenarios.length"></span>
-                /
-                <span class="kind-full" x-text="c.full_scenarios.length"></span>
-              </td>
-              <td x-text="c.providers.join(', ')"></td>
-              <td>
+
+    <template x-for="c in configs" :key="c.id">
+      <div class="config-row" :class="editingId === c.id ? 'editing' : ''">
+        <template x-if="editingId !== c.id">
+          <div>
+            <div class="section-row">
+              <div>
+                <strong x-text="`#${c.id}  ${c.name || '(unnamed)'}`"></strong>
                 <span :class="c.enabled ? 'bulb-on' : 'bulb-off'"
-                      x-text="c.enabled ? '● enabled' : '○ disabled'"></span>
-              </td>
-              <td class="muted" x-text="(c.last_discover_at || '').slice(0, 19)"></td>
-              <td>
+                      x-text="c.enabled ? ' ● enabled' : ' ○ disabled'"
+                      style="margin-left:8px;"></span>
+              </div>
+              <div>
+                <button class="btn" @click="startEdit(c)">edit</button>
                 <button class="btn" @click="toggle(c)" x-text="c.enabled ? 'disable' : 'enable'"></button>
                 <button class="btn btn-danger" @click="del(c.id)">×</button>
-              </td>
+              </div>
+            </div>
+            <div class="kv" style="margin-top:8px;">
+              <span class="k">repo</span><span class="muted" x-text="c.repo_path"></span>
+              <span class="k">branches</span><span x-text="c.branch_pattern"></span>
+              <span class="k">providers</span><span x-text="c.providers.join(', ')"></span>
+              <template x-if="c.scenarios && c.scenarios.length > 0">
+                <span class="k">scenarios</span>
+              </template>
+              <template x-if="c.scenarios && c.scenarios.length > 0">
+                <span><template x-for="s in c.scenarios"><span class="scen-chip" x-text="s"></span></template></span>
+              </template>
+              <template x-if="c.scenario_tags && c.scenario_tags.length > 0">
+                <span class="k">tags filter</span>
+              </template>
+              <template x-if="c.scenario_tags && c.scenario_tags.length > 0">
+                <span>
+                  <template x-for="t in c.scenario_tags"><span class="tag-chip" x-text="t"></span></template>
+                  <span class="muted" x-text="`· bench=${c.bench_repo_path || '(unset)'}`"></span>
+                </span>
+              </template>
+              <span class="k">cadence</span>
+              <span x-text="`min gap ${c.min_gap_seconds}s · pacing ${c.pacing}${c.pacing === 'spread' ? ' window ' + c.pacing_window_seconds + 's' : ''}`"></span>
+              <span class="k">last discover</span>
+              <span class="muted" x-text="c.last_discover_at || '(never)'"></span>
+            </div>
+          </div>
+        </template>
+
+        <template x-if="editingId === c.id">
+          <div>
+            <strong x-text="`editing #${c.id}`"></strong>
+            <div class="form-grid" style="margin-top: 10px;">
+              <label>name</label><input x-model="editForm.name">
+              <label>branch pattern</label><input x-model="editForm.branch_pattern">
+              <label>bench repo path</label>
+              <input x-model="editForm.bench_repo_path" placeholder="(needed for tag filter)">
+              <label>providers (CSV)</label><input x-model="editForm.providers">
+              <label>scenarios (CSV)</label>
+              <input x-model="editForm.scenarios" placeholder="explicit IDs; takes precedence over tags">
+              <label>scenario tags (CSV)</label>
+              <input x-model="editForm.scenario_tags" placeholder="tier:unit,scenario_type:agent_unit">
+              <label>min gap (s)</label><input type="number" x-model.number="editForm.min_gap_seconds">
+              <label>pacing</label>
+              <select x-model="editForm.pacing">
+                <option value="aggressive">aggressive (immediate)</option>
+                <option value="spread">spread (stagger via not_before)</option>
+              </select>
+              <label>pacing window (s)</label>
+              <input type="number" x-model.number="editForm.pacing_window_seconds"
+                     :disabled="editForm.pacing !== 'spread'">
+              <label>attempts_min</label><input type="number" x-model.number="editForm.attempts_min">
+            </div>
+            <div style="margin-top: 10px;">
+              <button class="btn-primary btn" @click="saveEdit(c.id)">save</button>
+              <button class="btn" @click="editingId = null">cancel</button>
+              <span class="muted" style="margin-left: 8px;" x-text="editStatus"></span>
+            </div>
+          </div>
+        </template>
+      </div>
+    </template>
+  </div>
+
+  <template x-if="lastCreated.length > 0">
+    <div class="section">
+      <h2>just planned <span class="muted" x-text="`(${lastCreated.length})`"></span></h2>
+      <table>
+        <thead><tr>
+          <th>plan</th><th>config</th><th>branch</th><th>sha</th><th>tasks</th>
+        </tr></thead>
+        <tbody>
+          <template x-for="p in lastCreated" :key="p.plan_id">
+            <tr>
+              <td><a class="run-link" :href="`{{ base_path }}/qa/plans`" x-text="`#${p.plan_id}`"></a></td>
+              <td x-text="p.config_name || `#${p.config_id}`"></td>
+              <td x-text="p.branch"></td>
+              <td style="font-family: ui-monospace, monospace;" x-text="p.sha.slice(0, 7)"></td>
+              <td x-text="p.task_count"></td>
             </tr>
           </template>
         </tbody>
       </table>
-    </template>
-
-    <div style="margin-top: 12px;">
-      <button class="btn-primary btn" @click="discoverAll()">discover now</button>
-      <span class="muted" style="margin-left: 12px;" x-text="discoverStatus"></span>
-    </div>
-  </div>
-
-  <!-- Recently created plans (last discover sweep) -->
-  <template x-if="lastCreated.length > 0">
-    <div class="section">
-      <h2>just planned <span class="muted" x-text="`(${lastCreated.length})`"></span></h2>
-      <div class="created-list">
-        <table>
-          <thead><tr>
-            <th>plan</th><th>kind</th><th>branch</th><th>sha</th><th>tasks</th>
-          </tr></thead>
-          <tbody>
-            <template x-for="p in lastCreated" :key="`${p.plan_id}-${p.plan_kind}`">
-              <tr>
-                <td><a class="run-link" :href="`{{ base_path }}/qa/plans`" x-text="`#${p.plan_id}`"></a></td>
-                <td><span :class="`kind-${p.plan_kind}`" x-text="p.plan_kind"></span></td>
-                <td x-text="p.branch"></td>
-                <td style="font-family: ui-monospace, monospace;" x-text="p.sha.slice(0, 7)"></td>
-                <td x-text="p.task_count"></td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
-      </div>
     </div>
   </template>
 
-  <!-- Add new config -->
   <div class="section">
     <h2>add config</h2>
     <div class="form-grid">
       <label>name</label>
-      <input x-model="form.name" placeholder="diff-graph">
+      <input x-model="form.name" placeholder="diff-graph-unit / diff-graph-full / …">
 
       <label>repo path</label>
-      <input x-model="form.repo_path" placeholder="/home/andrey/repos/diff-graph">
+      <input x-model="form.repo_path">
 
       <label>branch pattern</label>
       <input x-model="form.branch_pattern" placeholder="master,feature/*">
 
+      <label>bench repo path</label>
+      <input x-model="form.bench_repo_path"
+             placeholder="(only needed if you use scenario tags)">
+
       <label>providers (CSV)</label>
       <input x-model="form.providers" placeholder="deepseek,qwen3-6">
 
-      <label>unit scenarios (every commit)</label>
-      <input x-model="form.unit_scenarios" placeholder="DISP-002,INV-001">
+      <label>scenarios (CSV)</label>
+      <input x-model="form.scenarios" placeholder="explicit IDs; if set, tags ignored">
 
-      <label>full scenarios (periodic)</label>
-      <input x-model="form.full_scenarios" placeholder="DISP-001,DISP-002,INV-001,REV-001,REV-002">
+      <label>scenario tags (CSV)</label>
+      <input x-model="form.scenario_tags"
+             placeholder="tier:unit  /  tier:integration  /  scenario_type:agent_unit">
 
-      <label>full period (s)</label>
-      <input type="number" x-model.number="form.full_period_seconds">
+      <label>min gap (s)</label>
+      <input type="number" x-model.number="form.min_gap_seconds" placeholder="0 = every commit">
+
+      <label>pacing</label>
+      <select x-model="form.pacing">
+        <option value="aggressive">aggressive (immediate)</option>
+        <option value="spread">spread (stagger via not_before)</option>
+      </select>
+
+      <label>pacing window (s)</label>
+      <input type="number" x-model.number="form.pacing_window_seconds"
+             :disabled="form.pacing !== 'spread'">
 
       <label>attempts_min</label>
       <input type="number" x-model.number="form.attempts_min">
@@ -174,14 +242,19 @@ function autoPlan() {
     lastCreated: [],
     discoverStatus: '',
     createStatus: '',
+    editStatus: '',
+    editingId: null,
+    editForm: {},
     form: {
-      name: '',
-      repo_path: '/home/andrey/repos/diff-graph',
+      name: '', repo_path: '/home/andrey/repos/diff-graph',
       branch_pattern: 'master,feature/*',
+      bench_repo_path: '/home/andrey/repos/code-review-benchmarks',
       providers: 'deepseek',
-      unit_scenarios: 'DISP-002,INV-001',
-      full_scenarios: 'DISP-001,DISP-002,INV-001,REV-001,REV-002',
-      full_period_seconds: 86400,
+      scenarios: '',
+      scenario_tags: 'tier:unit',
+      min_gap_seconds: 0,
+      pacing: 'aggressive',
+      pacing_window_seconds: 0,
       attempts_min: 1,
     },
     async load() {
@@ -196,9 +269,53 @@ function autoPlan() {
       this.discoverStatus = `created ${(j.meta && j.meta.created_count) || 0} plan(s)`;
       await this.load();
     },
+    startEdit(c) {
+      this.editingId = c.id;
+      this.editForm = {
+        name: c.name,
+        branch_pattern: c.branch_pattern,
+        bench_repo_path: c.bench_repo_path,
+        providers: c.providers.join(','),
+        scenarios: (c.scenarios || []).join(','),
+        scenario_tags: (c.scenario_tags || []).join(','),
+        min_gap_seconds: c.min_gap_seconds,
+        pacing: c.pacing,
+        pacing_window_seconds: c.pacing_window_seconds,
+        attempts_min: c.attempts_min,
+      };
+      this.editStatus = '';
+    },
+    async saveEdit(id) {
+      this.editStatus = 'saving...';
+      const csv = (s) => s.split(',').map(x => x.trim()).filter(Boolean);
+      const payload = {
+        name: this.editForm.name,
+        branch_pattern: this.editForm.branch_pattern,
+        bench_repo_path: this.editForm.bench_repo_path,
+        providers: csv(this.editForm.providers),
+        scenarios: csv(this.editForm.scenarios),
+        scenario_tags: csv(this.editForm.scenario_tags),
+        min_gap_seconds: this.editForm.min_gap_seconds,
+        pacing: this.editForm.pacing,
+        pacing_window_seconds: this.editForm.pacing_window_seconds,
+        attempts_min: this.editForm.attempts_min,
+      };
+      const r = await fetch(`{{ base_path }}/api/qa/auto-plan/configs/${id}`, {
+        method: 'PUT', headers: {'content-type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      if (r.ok) {
+        this.editStatus = 'saved';
+        this.editingId = null;
+        await this.load();
+      } else {
+        const err = await r.json();
+        this.editStatus = `error: ${(err.error && err.error.message) || r.status}`;
+      }
+    },
     async toggle(c) {
-      const url = `{{ base_path }}/api/qa/auto-plan/configs/${c.id}?enabled=${!c.enabled}`;
-      await fetch(url, {method: 'PATCH'});
+      await fetch(`{{ base_path }}/api/qa/auto-plan/configs/${c.id}?enabled=${!c.enabled}`,
+                  {method: 'PATCH'});
       await this.load();
     },
     async del(id) {
@@ -213,10 +330,13 @@ function autoPlan() {
         name: this.form.name,
         repo_path: this.form.repo_path,
         branch_pattern: this.form.branch_pattern,
+        bench_repo_path: this.form.bench_repo_path,
         providers: csv(this.form.providers),
-        unit_scenarios: csv(this.form.unit_scenarios),
-        full_scenarios: csv(this.form.full_scenarios),
-        full_period_seconds: this.form.full_period_seconds,
+        scenarios: csv(this.form.scenarios),
+        scenario_tags: csv(this.form.scenario_tags),
+        min_gap_seconds: this.form.min_gap_seconds,
+        pacing: this.form.pacing,
+        pacing_window_seconds: this.form.pacing_window_seconds,
         attempts_min: this.form.attempts_min,
         enabled: true,
       };

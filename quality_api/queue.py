@@ -52,6 +52,7 @@ class TaskSpec:
     plan_id: Optional[int] = None
     priority: int = 100              # lower = sooner
     payload: dict = field(default_factory=dict)
+    not_before: Optional[str] = None  # ISO datetime; lease() honours this
 
 
 @dataclass
@@ -116,15 +117,34 @@ class TaskQueue:
     def _ensure_schema(self) -> None:
         with self._lock, self._conn() as c:
             # Idempotent column additions for existing DBs.
-            try:
-                c.execute("SELECT promote_ready FROM qa_plans LIMIT 0")
-            except sqlite3.OperationalError:
+            for table, col, decl in [
+                ("qa_plans",              "promote_ready", "INTEGER NOT NULL DEFAULT 0"),
+                ("qa_tasks",              "not_before",    "TEXT"),  # spread pacing
+                # New shape for auto-plan configs (open scenario filter +
+                # debounce + pacing). Old unit_scenarios/full_scenarios
+                # columns are left in place for back-compat with existing
+                # rows; new code reads scenarios/scenario_tags first.
+                ("qa_auto_plan_configs",  "scenarios",            "TEXT"),
+                ("qa_auto_plan_configs",  "scenario_tags",        "TEXT"),
+                ("qa_auto_plan_configs",  "bench_repo_path",      "TEXT"),
+                ("qa_auto_plan_configs",  "min_gap_seconds",      "INTEGER NOT NULL DEFAULT 0"),
+                ("qa_auto_plan_configs",  "pacing",               "TEXT NOT NULL DEFAULT 'aggressive'"),
+                ("qa_auto_plan_configs",  "pacing_window_seconds","INTEGER NOT NULL DEFAULT 0"),
+            ]:
                 try:
-                    c.execute("ALTER TABLE qa_plans ADD COLUMN promote_ready INTEGER NOT NULL DEFAULT 0")
-                    c.execute("CREATE INDEX IF NOT EXISTS idx_qa_plans_promote ON qa_plans(promote_ready)")
-                    c.commit()
+                    c.execute(f"SELECT {col} FROM {table} LIMIT 0")
                 except sqlite3.OperationalError:
-                    pass  # table doesn't exist yet — created below
+                    try:
+                        c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                    except sqlite3.OperationalError:
+                        # table doesn't exist yet — will be created by the
+                        # CREATE TABLE block below.
+                        pass
+            try:
+                c.execute("CREATE INDEX IF NOT EXISTS idx_qa_plans_promote ON qa_plans(promote_ready)")
+                c.execute("CREATE INDEX IF NOT EXISTS idx_qa_tasks_not_before ON qa_tasks(not_before)")
+            except sqlite3.OperationalError:
+                pass
             c.executescript("""
                 CREATE TABLE IF NOT EXISTS qa_tasks (
                     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -219,13 +239,15 @@ class TaskQueue:
             cur = c.execute(
                 """INSERT INTO qa_tasks
                    (state, scenario_id, provider, attempt_n, branch,
-                    mutation_hash, plan_id, priority, payload, enqueued_at)
-                   VALUES ('queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    mutation_hash, plan_id, priority, payload, enqueued_at,
+                    not_before)
+                   VALUES ('queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (spec.scenario_id, spec.provider, spec.attempt_n,
                  spec.branch or "", spec.mutation_hash or "",
                  spec.plan_id, spec.priority,
                  json.dumps(spec.payload, ensure_ascii=False),
-                 datetime.now().isoformat()),
+                 datetime.now().isoformat(),
+                 spec.not_before),
             )
             c.commit()
             return int(cur.lastrowid)
@@ -273,13 +295,15 @@ class TaskQueue:
         """
         now = datetime.now()
         expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+        now_iso = now.isoformat()
         with self._lock, self._immediate() as c:
             row = c.execute(
                 """SELECT id FROM qa_tasks
                    WHERE state='queued' AND provider=?
+                     AND (not_before IS NULL OR not_before <= ?)
                    ORDER BY priority ASC, enqueued_at ASC
                    LIMIT 1""",
-                (provider,),
+                (provider, now_iso),
             ).fetchone()
             if not row:
                 return None

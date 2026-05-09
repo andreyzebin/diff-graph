@@ -665,12 +665,31 @@ class AutoPlanCreatePayload(BaseModel):
     name: str = ""
     repo_path: str
     branch_pattern: str
+    bench_repo_path: str = ""
     providers: list[str]
-    unit_scenarios: list[str]
-    full_scenarios: list[str] = []
-    full_period_seconds: int = 86400
+    scenarios: list[str] = []          # explicit ids
+    scenario_tags: list[str] = []      # tag filter (resolved at discover-time)
+    min_gap_seconds: int = 0           # debounce per branch (0 = every commit)
+    pacing: str = "aggressive"         # 'aggressive' | 'spread'
+    pacing_window_seconds: int = 0
     attempts_min: int = 1
     enabled: bool = True
+
+
+class AutoPlanUpdatePayload(BaseModel):
+    # All fields optional — PATCH semantics. None = leave alone.
+    name: Optional[str] = None
+    repo_path: Optional[str] = None
+    branch_pattern: Optional[str] = None
+    bench_repo_path: Optional[str] = None
+    providers: Optional[list[str]] = None
+    scenarios: Optional[list[str]] = None
+    scenario_tags: Optional[list[str]] = None
+    min_gap_seconds: Optional[int] = None
+    pacing: Optional[str] = None
+    pacing_window_seconds: Optional[int] = None
+    attempts_min: Optional[int] = None
+    enabled: Optional[bool] = None
 
 
 @app.post("/api/qa/auto-plan/configs")
@@ -679,10 +698,13 @@ async def api_qa_auto_create(p: AutoPlanCreatePayload):
         cid = _qa_auto.add_config(
             name=p.name, repo_path=p.repo_path,
             branch_pattern=p.branch_pattern,
+            bench_repo_path=p.bench_repo_path,
             providers=p.providers,
-            unit_scenarios=p.unit_scenarios,
-            full_scenarios=p.full_scenarios,
-            full_period_seconds=p.full_period_seconds,
+            scenarios=p.scenarios,
+            scenario_tags=p.scenario_tags,
+            min_gap_seconds=p.min_gap_seconds,
+            pacing=p.pacing,
+            pacing_window_seconds=p.pacing_window_seconds,
             attempts_min=p.attempts_min,
             enabled=p.enabled,
         )
@@ -710,6 +732,7 @@ async def api_qa_auto_get(config_id: int):
 
 @app.patch("/api/qa/auto-plan/configs/{config_id}")
 async def api_qa_auto_patch(config_id: int, enabled: Optional[bool] = None):
+    """Quick toggle endpoint — enable/disable via query param."""
     if enabled is None:
         return JSONResponse({"error": {"code": "no_op", "message": "nothing to update"}},
                              status_code=400)
@@ -719,6 +742,46 @@ async def api_qa_auto_patch(config_id: int, enabled: Optional[bool] = None):
                                        "message": f"config {config_id} not found"}},
                              status_code=404)
     return JSONResponse({"data": {"ok": True}})
+
+
+@app.put("/api/qa/auto-plan/configs/{config_id}")
+async def api_qa_auto_update(config_id: int, p: AutoPlanUpdatePayload):
+    """Full edit. Pass any subset of fields; missing ones stay untouched."""
+    fields = {k: v for k, v in p.model_dump().items() if v is not None}
+    if not fields:
+        return JSONResponse({"error": {"code": "no_op",
+                                       "message": "nothing to update"}},
+                             status_code=400)
+    ok = _qa_auto.update_config(config_id, **fields)
+    if not ok:
+        return JSONResponse({"error": {"code": "not_found",
+                                       "message": f"config {config_id} not found"}},
+                             status_code=404)
+    cfg = _qa_auto.get_config(config_id)
+    return JSONResponse({"data": config_to_dict(cfg)})
+
+
+@app.get("/api/qa/auto-plan/configs/{config_id}/preview-scenarios")
+async def api_qa_auto_preview_scenarios(config_id: int):
+    """Resolve scenario_tags filter against the configured bench repo
+    right now. UI uses this to show "filter currently matches N
+    scenarios: [...]" before saving / discovering."""
+    cfg = _qa_auto.get_config(config_id)
+    if not cfg:
+        return JSONResponse({"error": {"code": "not_found",
+                                       "message": f"config {config_id} not found"}},
+                             status_code=404)
+    return JSONResponse({"data": _qa_auto.resolve_config_scenarios(config_id)})
+
+
+@app.get("/api/qa/scenarios-catalog")
+async def api_qa_scenarios_catalog(bench_repo_path: str):
+    """List all scenarios in a bench repo with their tags.
+    Pure helper for the UI's tag-filter form — query string passes
+    the bench path so the UI doesn't need to know it ahead of time.
+    """
+    from quality_api.discovery import scan_scenarios
+    return JSONResponse({"data": scan_scenarios(bench_repo_path)})
 
 
 @app.delete("/api/qa/auto-plan/configs/{config_id}")
