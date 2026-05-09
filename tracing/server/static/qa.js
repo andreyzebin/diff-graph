@@ -222,44 +222,94 @@ document.addEventListener('alpine:init', () => {
       
   }))
 
+  // Format engineering-assessment axis (0..1) as a coloured bar with
+  // numeric label. Used by /qa/mutations.
+  function _axisBarHTML(scoring, axis) {
+    if (!scoring || !scoring.axes) return '<span class="axis-na">—</span>';
+    const v = scoring.axes[axis];
+    if (v === null || v === undefined) return '<span class="axis-na">—</span>';
+    const pct = Math.round(v * 100);
+    const cls = v >= 0.85 ? 'axis-good' : (v >= 0.6 ? 'axis-mid' : 'axis-bad');
+    return `<span class="axis-bar"><div class="${cls}" style="width:${pct}%"></div></span>` +
+           `<span style="font-variant-numeric:tabular-nums;">${pct}%</span>`;
+  }
+  function _passRate(scoring) {
+    if (!scoring || !scoring.overall || scoring.overall.pass_rate === undefined) return '—';
+    const r = scoring.overall.pass_rate;
+    return r === null ? '—' : `${Math.round(r * 100)}%`;
+  }
+
   Alpine.data('mutationsView', () => ({
-    
-        mutations: [],
-        promote: [],
-        selected: [],
-        comparison: null,
-        async load() {
-          const get = async (path) => (await (await fetch(`${window.QA_BASE_PATH || ''}${path}`)).json()).data || [];
-          this.mutations = await get('/api/search/aggregates/by_mutation');
-          this.promote = await get('/api/qa/promote-ready');
-        },
-        toggleSelect(mut) {
-          if (this.selected.includes(mut)) {
-            this.selected = this.selected.filter(m => m !== mut);
-          } else {
-            if (this.selected.length >= 2) this.selected.shift();
-            this.selected.push(mut);
-          }
-        },
-        async loadCompare() {
-          if (this.selected.length !== 2) return;
-          const [a, b] = this.selected;
-          const r = await fetch(`${window.QA_BASE_PATH || ''}/api/search/compare?a=${a}&b=${b}`);
-          this.comparison = (await r.json()).data;
-        },
-        deltaClass(a, b) {
-          if (!a || !b) return 'delta-zero';
-          const d = (b || 0) - (a || 0);
-          if (Math.abs(d) < 50) return 'delta-zero';
-          return d > 0 ? 'delta-neg' : 'delta-pos';      // negative dur change = faster = good
-        },
-        deltaText(a, b) {
-          if (!a && !b) return '';
-          if (!a || !b) return '?';
-          const d = Math.round((b || 0) - (a || 0));
-          return d > 0 ? `+${d}` : String(d);
-        },
-      
+    mutations: [],
+    promote: [],
+    selected: [],
+    comparison: null,
+    scoringCompare: null,
+    scoring: {},                                  // mutation hash → scoring blob
+    async load() {
+      const get = async (path) => (await (await fetch(`${window.QA_BASE_PATH || ''}${path}`)).json()).data || [];
+      this.mutations = await get('/api/search/aggregates/by_mutation');
+      this.promote = await get('/api/qa/promote-ready');
+      // Load scoring for each mutation in parallel.
+      const base = window.QA_BASE_PATH || '';
+      const tasks = this.mutations.map(async (m) => {
+        try {
+          const r = await fetch(`${base}/api/search/scoring/${m.mutation}`);
+          const j = await r.json();
+          this.scoring[m.mutation] = j.data;
+        } catch (e) { /* skip */ }
+      });
+      await Promise.all(tasks);
+    },
+    toggleSelect(mut) {
+      if (this.selected.includes(mut)) {
+        this.selected = this.selected.filter(m => m !== mut);
+      } else {
+        if (this.selected.length >= 2) this.selected.shift();
+        this.selected.push(mut);
+      }
+    },
+    async loadCompare() {
+      if (this.selected.length !== 2) return;
+      const [a, b] = this.selected;
+      const base = window.QA_BASE_PATH || '';
+      const [cmp, score] = await Promise.all([
+        fetch(`${base}/api/search/compare?a=${a}&b=${b}`).then(r => r.json()),
+        fetch(`${base}/api/search/scoring-compare?a=${a}&b=${b}`).then(r => r.json()),
+      ]);
+      this.comparison = cmp.data;
+      this.scoringCompare = score.data;
+    },
+    axisBar(scoring, axis)   { return _axisBarHTML(scoring, axis); },
+    passRate(scoring)        { return _passRate(scoring); },
+    axisDelta(axis) {
+      const a = this.scoringCompare && this.scoringCompare.a.axes[axis];
+      const b = this.scoringCompare && this.scoringCompare.b.axes[axis];
+      if (a === null || b === null || a === undefined || b === undefined) return '—';
+      const d = b - a;
+      if (Math.abs(d) < 0.005) return '0';
+      return (d > 0 ? '+' : '') + (d * 100).toFixed(1) + 'pp';
+    },
+    axisDeltaClass(axis) {
+      const a = this.scoringCompare && this.scoringCompare.a.axes[axis];
+      const b = this.scoringCompare && this.scoringCompare.b.axes[axis];
+      if (a === null || b === null || a === undefined || b === undefined) return 'delta-zero';
+      const d = b - a;
+      if (Math.abs(d) < 0.005) return 'delta-zero';
+      return d > 0 ? 'delta-pos' : 'delta-neg';
+    },
+    deltaClass(a, b) {
+      if (!a || !b) return 'delta-zero';
+      const d = (b || 0) - (a || 0);
+      if (Math.abs(d) < 50) return 'delta-zero';
+      return d > 0 ? 'delta-neg' : 'delta-pos';
+    },
+    deltaText(a, b) {
+      if (!a && !b) return '';
+      if (!a || !b) return '?';
+      const d = Math.round((b || 0) - (a || 0));
+      return d > 0 ? `+${d}` : String(d);
+    },
   }))
 
   Alpine.data('genesView', () => ({

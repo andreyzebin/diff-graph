@@ -352,6 +352,26 @@ async def api_compare_mutations(a: str, b: str):
     return JSONResponse({"data": _store().compare_mutations(a, b)})
 
 
+@app.get("/api/search/scoring/{mutation}")
+async def api_mutation_scoring(mutation: str):
+    """Engineering-assessment-style scoring for one mutation. Returns
+    {overall, axes:{hard_skill, soft_skill, methodology}, by_cell,
+    by_warning_kind}.
+    """
+    return JSONResponse({"data": _store().mutation_scoring(mutation)})
+
+
+@app.get("/api/search/scoring-compare")
+async def api_scoring_compare(a: str, b: str):
+    """Side-by-side scoring of two mutations along assessment axes."""
+    return JSONResponse({
+        "data": {
+            "a": _store().mutation_scoring(a),
+            "b": _store().mutation_scoring(b),
+        },
+    })
+
+
 @app.get("/api/search/aggregates/by_mutation")
 async def api_aggregate_by_mutation(
     generation: Optional[str] = None,

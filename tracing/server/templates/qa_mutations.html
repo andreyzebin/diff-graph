@@ -43,6 +43,15 @@ th { color: #8b949e; font-weight: normal; }
 .delta-zero { color: #8b949e; }
 .promote { color: #56d364; font-size: 0.75em; padding: 1px 6px;
            background: #56d36422; border-radius: 3px; }
+.axis-bar { display: inline-block; width: 40px; height: 8px; vertical-align: middle;
+            margin: 0 4px; background: #21262d; border-radius: 2px; overflow: hidden; }
+.axis-bar > div { height: 100%; }
+.axis-good { background: #56d364; }
+.axis-mid  { background: #c69026; }
+.axis-bad  { background: #f47067; }
+.axis-na   { color: #6e7681; font-size: 0.85em; }
+.axes-grid { display: grid; grid-template-columns: 90px 80px 90px; gap: 4px 12px; font-size: 0.85em; }
+.axes-grid .label { color: #8b949e; }
 </style>
 </head>
 <body hx-boost="true" hx-ext="head-support">
@@ -104,8 +113,11 @@ th { color: #8b949e; font-weight: normal; }
       <table>
         <thead><tr>
           <th>pick</th><th>mutation</th><th>generation</th>
-          <th class="tn">runs</th><th class="tn">avg dur ms</th>
-          <th class="tn">completed</th><th>last seen</th>
+          <th class="tn">runs</th>
+          <th>hard</th><th>soft</th><th>method</th>
+          <th class="tn">pass%</th>
+          <th class="tn">avg dur ms</th>
+          <th>last seen</th>
         </tr></thead>
         <tbody>
           <template x-for="m in mutations" :key="m.mutation">
@@ -122,8 +134,11 @@ th { color: #8b949e; font-weight: normal; }
               <td><a class="gen run-link" :href="`{{ base_path }}/qa/runs?generation=${m.generation}`"
                      x-text="m.generation"></a></td>
               <td class="tn" x-text="m.runs"></td>
+              <td><span x-html="axisBar(scoring[m.mutation], 'hard_skill')"></span></td>
+              <td><span x-html="axisBar(scoring[m.mutation], 'soft_skill')"></span></td>
+              <td><span x-html="axisBar(scoring[m.mutation], 'methodology')"></span></td>
+              <td class="tn" x-text="passRate(scoring[m.mutation])"></td>
               <td class="tn" x-text="Math.round(m.avg_duration_ms || 0)"></td>
-              <td class="tn" x-text="m.completed"></td>
               <td style="color:#8b949e;" x-text="(m.last_seen || '').slice(0,19)"></td>
             </tr>
           </template>
@@ -132,10 +147,54 @@ th { color: #8b949e; font-weight: normal; }
     </template>
   </div>
 
-  <!-- Comparison cells -->
+  <!-- Engineering-assessment axes side-by-side -->
+  <template x-if="scoringCompare">
+    <div class="section">
+      <h2>assessment axes ·
+        <span class="mut" x-text="(scoringCompare.a.mutation || '').slice(0,8)"></span>
+        vs
+        <span class="mut" x-text="(scoringCompare.b.mutation || '').slice(0,8)"></span>
+      </h2>
+      <table class="compare-cells">
+        <thead><tr>
+          <th>axis</th><th>A</th><th>B</th><th>Δ</th>
+        </tr></thead>
+        <tbody>
+          <template x-for="ax in ['hard_skill','soft_skill','methodology']" :key="ax">
+            <tr>
+              <td x-text="ax.replace('_', ' ')"></td>
+              <td x-html="axisBar(scoringCompare.a, ax)"></td>
+              <td x-html="axisBar(scoringCompare.b, ax)"></td>
+              <td class="tn" :class="axisDeltaClass(ax)" x-text="axisDelta(ax)"></td>
+            </tr>
+          </template>
+          <tr>
+            <td>pass rate</td>
+            <td class="tn" x-text="passRate(scoringCompare.a)"></td>
+            <td class="tn" x-text="passRate(scoringCompare.b)"></td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>warnings/run</td>
+            <td class="tn" x-text="(scoringCompare.a.overall.warnings_per_run ?? 0).toFixed(2)"></td>
+            <td class="tn" x-text="(scoringCompare.b.overall.warnings_per_run ?? 0).toFixed(2)"></td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>false positives/run</td>
+            <td class="tn" x-text="(scoringCompare.a.overall.fp_per_run ?? 0).toFixed(2)"></td>
+            <td class="tn" x-text="(scoringCompare.b.overall.fp_per_run ?? 0).toFixed(2)"></td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </template>
+
+  <!-- Comparison cells (per-scenario × provider) -->
   <template x-if="comparison">
     <div class="section">
-      <h2>compare ·
+      <h2>per (scenario × provider) ·
         <span class="mut" x-text="(comparison.a.mutation || '').slice(0,8)"></span>
         →
         <span class="mut" x-text="(comparison.b.mutation || '').slice(0,8)"></span>

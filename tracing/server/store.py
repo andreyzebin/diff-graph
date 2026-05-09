@@ -407,6 +407,177 @@ class SQLiteTraceStore:
                 "cells": [dict(r) for r in rows]}
 
 
+    def mutation_scoring(self, mutation: str) -> dict:
+        """Engineering-assessment-style scoring for one mutation.
+
+        Walks every agent run with mutation=<m>, finds its linked
+        judge run, parses the judge's agent_llm_response event for
+        rich data (overall_score, required_comments, false_positives,
+        agent_warnings, status_change_verdict, must_mention, …) and
+        aggregates per-axis.
+
+        Axes (mapping judge fields → engineering assessment dimensions):
+          hard_skill   — correctness:  mean(overall_score adjusted for
+                          recall + precision + status verdict).
+          soft_skill   — communication: only computed for runs that
+                          had `reply`-style assertions (interaction
+                          scenarios); else null.
+          methodology  — process quality: 1 - normalised agent_warnings
+                          rate.
+          status_ok_rate, found_rate, fp_rate — supporting metrics.
+
+        by_cell: per (scenario, provider) cell of the same axes,
+        used by the comparison view.
+        by_warning_kind: histogram of agent_warning kinds.
+        """
+        out = {
+            "mutation": mutation,
+            "overall": {"runs": 0},
+            "axes": {"hard_skill": None, "soft_skill": None, "methodology": None},
+            "by_cell": [],
+            "by_warning_kind": {},
+        }
+        if not mutation:
+            return out
+        try:
+            with self._conn() as c:
+                # All agent runs for this mutation, with their linked judge.
+                pairs = c.execute("""
+                    SELECT a.id AS agent_id, a.scenario_id, a.model,
+                           a.linked_run_id AS judge_id
+                    FROM runs a
+                    WHERE a.kind='agent' AND a.mutation=?
+                """, (mutation,)).fetchall()
+                if not pairs:
+                    return out
+
+                # For each judge run, parse its agent_llm_response payload
+                # to extract the rich verdict data.
+                judge_data: dict[str, dict] = {}
+                judge_ids = [p["judge_id"] for p in pairs if p["judge_id"]]
+                if judge_ids:
+                    placeholders = ",".join("?" for _ in judge_ids)
+                    rows = c.execute(
+                        f"""SELECT run_id, data_json FROM events
+                            WHERE event_type='agent_llm_response'
+                              AND run_id IN ({placeholders})""",
+                        judge_ids,
+                    ).fetchall()
+                    for r in rows:
+                        try:
+                            d = json.loads(r["data_json"])
+                            inner = d.get("data") or d.get("content") or {}
+                            if isinstance(inner, str):
+                                inner = json.loads(inner)
+                            if isinstance(inner, dict):
+                                judge_data[r["run_id"]] = inner
+                        except Exception:
+                            pass
+        except Exception:
+            return out
+
+        # Aggregate
+        cells: dict[tuple, list[dict]] = {}
+        warning_hist: dict[str, int] = {}
+        scores, found_rates, fp_counts, warnings_count = [], [], [], []
+        status_ok = 0; status_total = 0
+        soft_scores: list[float] = []
+        for p in pairs:
+            j = judge_data.get(p["judge_id"]) if p["judge_id"] else None
+            if not j:
+                continue
+            score = float(j.get("overall_score") or 0)
+            scores.append(score)
+
+            req = j.get("required_comments") or []
+            if req:
+                found = sum(1 for r in req if r.get("found"))
+                found_rates.append(found / max(1, len(req)))
+
+            fps = j.get("false_positives") or []
+            fp_counts.append(len(fps))
+
+            warnings = j.get("agent_warnings") or []
+            warnings_count.append(len(warnings))
+            for w in warnings:
+                kind = (w.get("kind") or "other") if isinstance(w, dict) else "other"
+                warning_hist[kind] = warning_hist.get(kind, 0) + 1
+
+            sv = j.get("status_change_verdict")
+            if sv is not None and sv != "":
+                status_total += 1
+                if str(sv).lower() == "ok":
+                    status_ok += 1
+
+            # Soft-skill signal: if the judge ran reply-mode (must_mention
+            # is present) compute a 0..1 score from it.
+            mm = j.get("must_mention") or []
+            ma_ok = j.get("must_address_satisfied")
+            forb = j.get("forbidden_present") or []
+            if mm:
+                mm_match_rate = (
+                    sum(1 for r in mm if r.get("matched")) / max(1, len(mm))
+                )
+                forb_violation = sum(1 for r in forb if not r.get("reasoning", "").lower().startswith("no"))
+                forb_rate = forb_violation / max(1, len(forb)) if forb else 0
+                soft = mm_match_rate * (1.0 if ma_ok else 0.5) * (1 - forb_rate)
+                soft_scores.append(max(0.0, min(1.0, soft)))
+
+            cell_key = (p["scenario_id"] or "", p["model"] or "")
+            cells.setdefault(cell_key, []).append({
+                "score": score,
+                "found_rate": found_rates[-1] if req else None,
+                "fp": len(fps),
+                "warnings": len(warnings),
+                "soft_score": soft_scores[-1] if (mm and soft_scores) else None,
+            })
+
+        n = len(scores)
+        if n == 0:
+            return out
+
+        def _mean(xs):
+            xs = [x for x in xs if x is not None]
+            return (sum(xs) / len(xs)) if xs else None
+
+        # Engineering-assessment axes.
+        # hard_skill = mean(score) with mild penalty for false positives,
+        # already implicit in the judge's score so we just use it.
+        hard = _mean(scores)
+        # methodology penalty: 1.0 - clamp(mean_warnings / 3, 0, 1).
+        avg_warn = _mean(warnings_count)
+        methodology = max(0.0, 1.0 - (avg_warn / 3.0)) if avg_warn is not None else None
+        soft = _mean(soft_scores) if soft_scores else None
+
+        out["overall"] = {
+            "runs": n,
+            "pass_rate": sum(1 for s in scores if s >= 0.7) / n,
+            "mean_score": _mean(scores),
+            "median_score": sorted(scores)[n // 2] if n else None,
+            "found_rate": _mean(found_rates),
+            "fp_per_run": _mean(fp_counts),
+            "warnings_per_run": _mean(warnings_count),
+            "status_ok_rate": (status_ok / status_total) if status_total else None,
+        }
+        out["axes"] = {
+            "hard_skill": round(hard, 3) if hard is not None else None,
+            "soft_skill": round(soft, 3) if soft is not None else None,
+            "methodology": round(methodology, 3) if methodology is not None else None,
+        }
+        out["by_warning_kind"] = warning_hist
+        out["by_cell"] = [
+            {
+                "scenario": k[0], "provider": k[1],
+                "runs": len(v),
+                "mean_score": _mean([x["score"] for x in v]),
+                "found_rate": _mean([x["found_rate"] for x in v]),
+                "fp_per_run": _mean([x["fp"] for x in v]),
+                "warnings_per_run": _mean([x["warnings"] for x in v]),
+            }
+            for k, v in sorted(cells.items())
+        ]
+        return out
+
     def aggregate_by_mutation(self, f: RunFilter | None = None) -> list[dict]:
         """One row per mutation hash — runs count, duration percentiles,
         link to generation. Substrate for "is mutation B better than A"
