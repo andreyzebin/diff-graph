@@ -8,6 +8,16 @@
 // Replaces the inline <script>function NAME(){return{…}}</script>
 // blocks that used to live inside each qa_*.html body.
 
+// HTMX glue: when hx-boost swaps the <body>, Alpine's original
+// MutationObserver was attached to the OLD body which gets removed.
+// The new body's x-data attributes are never auto-initialised.
+// Re-init the swapped subtree manually after each swap.
+document.addEventListener('htmx:afterSettle', (e) => {
+  if (window.Alpine && e.detail && e.detail.elt) {
+    try { window.Alpine.initTree(e.detail.elt); } catch (err) { /* ignore */ }
+  }
+});
+
 document.addEventListener('alpine:init', () => {
 
   Alpine.data('dash', () => ({
