@@ -475,30 +475,6 @@ document.addEventListener('alpine:init', () => {
       };
       embed('#chart-trend', trendSpec);
 
-      // (2) Box plot per scenario — distribution across all selected
-      // lineages. Color by lineage when multiple selected so you can
-      // see "lineage A is tighter than B on this scenario".
-      if (!this.scenario) {
-        const boxSpec = {
-          ...dark,
-          width: 'container', height: 280,
-          mark: {type: 'boxplot', extent: 1.5, size: 18},
-          data: {values: data},
-          encoding: {
-            x: {field: 'scenario', type: 'nominal', title: 'scenario',
-                axis: {labelAngle: -30}},
-            y: {field: 'score', type: 'quantitative', title: 'overall_score',
-                scale: {domain: [0, 1]}},
-            color: this.lineages.length > 1
-              ? {field: 'mutation_short', type: 'nominal', title: 'mutation'}
-              : {value: '#58a6ff'},
-            xOffset: this.lineages.length > 1
-              ? {field: 'mutation_short'} : undefined,
-          },
-        };
-        embed('#chart-box', boxSpec);
-      }
-
       // (3) Per-attempt timeline — when ONE scenario is picked.
       // Every dot = one judge verdict in chronological order. Same
       // lineage tints with one colour; mutations are visible as

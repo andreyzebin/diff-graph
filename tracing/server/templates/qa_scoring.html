@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=d5ac6fef"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=1936fb72"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -111,18 +111,6 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
       lineage. Sloping = quality drift (look at what changed). Flat =
       stable. Multiple lineages selected = lines for each, color-coded
       by scenario.
-    </div>
-  </div>
-
-  <!-- (2) Box plot per scenario — shown when no specific scenario picked. -->
-  <div class="section" x-show="rows.length > 0 && !scenario">
-    <h2>distribution per scenario · score</h2>
-    <div id="chart-box" class="chart-frame"></div>
-    <div class="legend-note">
-      Wide box / long whiskers = scenario is noisy (single attempt
-      can't be trusted). Tight box = stable. With multiple lineages
-      selected, each scenario shows side-by-side boxes per mutation
-      so you can compare distributions.
     </div>
   </div>
 
