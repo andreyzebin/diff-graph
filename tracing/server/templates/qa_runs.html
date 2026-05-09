@@ -276,7 +276,15 @@ function runsView() {
     dims: { kind: [], agent_name: [], model: [], scenario_id: [],
             generation: [], project: [], status: [],
             scenario_tags: [], genes: [] },
-    filters: this.defaultFilters(),
+    // Inline initialiser — calling this.defaultFilters() in the
+    // object literal would fail (this is undefined at that point).
+    filters: {
+      kind: '', agent: '', model: '', scenario: '',
+      generation: '', mutation: '', project: '', status: '',
+      gene_arr: [], without_gene_arr: [], scenario_tag_arr: [],
+      file: '', jira: '', duration_gt_ms: null,
+      limit: 50, offset: 0, sort: 'started_at', order: 'desc',
+    },
     rows: [],
     total: 0,
     hasMore: false,
