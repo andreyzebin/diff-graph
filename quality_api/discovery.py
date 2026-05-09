@@ -363,22 +363,27 @@ class AutoPlanStore:
         return created
 
     def fire_on(self, config_id: int, *, lineage: str, sha: str) -> Optional[dict]:
-        """Manually fire an on_demand config against a specific (lineage, sha).
+        """Manually fire a config against a specific (lineage, sha).
 
-        Idempotent via qa_planned_commits — same (config × lineage × sha)
-        produces no duplicate plan.
+        For `auto` mode: idempotent via qa_planned_commits so a discovery
+        loop doesn't re-plan an already-processed commit.
+        For `on_demand` mode: always proceeds. The user clicked ▶ fire
+        deliberately — they want another sample (e.g. to grow the
+        scoring dataset). The ledger entry is upserted via INSERT OR
+        REPLACE so the latest plan_id is the one recorded.
         """
         cfg = self.get_config(config_id)
         if cfg is None or not cfg.enabled:
             return None
-        if self._already_planned(config_id, lineage, sha):
+        if cfg.mode != "on_demand" and self._already_planned(config_id, lineage, sha):
             return None
         scenarios = resolve_scenarios(cfg)
         if not scenarios:
             return None
         plan_id, task_ids = self._create_plan(cfg, lineage, sha, scenarios)
         self._record_planned(config_id, lineage, sha,
-                             cfg.name or f"config-{config_id}", plan_id)
+                             cfg.name or f"config-{config_id}", plan_id,
+                             upsert=(cfg.mode == "on_demand"))
         return {
             "config_id": config_id, "config_name": cfg.name,
             "lineage": lineage, "sha": sha,
@@ -498,12 +503,14 @@ class AutoPlanStore:
         return row is not None
 
     def _record_planned(self, config_id: int, lineage: str,
-                        sha: str, kind: str, plan_id: int) -> None:
+                        sha: str, kind: str, plan_id: int,
+                        *, upsert: bool = False) -> None:
+        verb = "INSERT OR REPLACE" if upsert else "INSERT OR IGNORE"
         with self.queue._lock, self.queue._conn() as c:
             c.execute(
-                """INSERT OR IGNORE INTO qa_planned_commits
-                   (config_id, lineage, sha, plan_kind, plan_id, planned_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                f"""{verb} INTO qa_planned_commits
+                    (config_id, lineage, sha, plan_kind, plan_id, planned_at)
+                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (config_id, lineage, sha, kind, plan_id,
                  datetime.now(timezone.utc).isoformat()),
             )
