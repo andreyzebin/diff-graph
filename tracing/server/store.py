@@ -579,31 +579,86 @@ class SQLiteTraceStore:
         return out
 
     def aggregate_by_mutation(self, f: RunFilter | None = None) -> list[dict]:
-        """One row per mutation hash — runs count, duration percentiles,
-        link to generation. Substrate for "is mutation B better than A"
-        comparisons (§5e.11)."""
+        """One row per mutation hash, UNION'd from two sources:
+
+        1. `runs` — rich aggregate (runs count, durations, etc.)
+           for mutations that have at least one run.
+        2. `qa_planned_commits` — mutations that have been DISCOVERED
+           and PLANNED by a schedule supervisor but may not have any
+           runs yet. Surfaces them in the UI immediately so the
+           operator sees "new commit detected" before any worker
+           picks up the work.
+
+        Match key is the short SHA (first 7 chars) since runs.mutation
+        is short-formatted while qa_planned_commits.sha is full-length.
+        """
         f = f or RunFilter(limit=10**9, offset=0)
         where, params = self._where_for_runs(f)
-        q = f"""
-            SELECT mutation,
-                   MIN(generation)                         AS generation,
-                   COUNT(*)                                AS runs,
-                   AVG(duration_ms)                        AS avg_duration_ms,
-                   SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
-                   SUM(CASE WHEN status='error' THEN 1 ELSE 0 END)     AS errored,
-                   MIN(started_at)                         AS first_seen,
-                   MAX(started_at)                         AS last_seen
-            FROM runs
-            WHERE {where} AND mutation IS NOT NULL AND mutation != ''
-            GROUP BY mutation
-            ORDER BY last_seen DESC
-        """
         try:
             with self._conn() as c:
-                rows = c.execute(q, params).fetchall()
+                # Source A: rich aggregate from runs.
+                rows = c.execute(f"""
+                    SELECT mutation AS sha7,
+                           MIN(generation)                            AS generation,
+                           COUNT(*)                                   AS runs,
+                           AVG(duration_ms)                           AS avg_duration_ms,
+                           SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+                           SUM(CASE WHEN status='error' THEN 1 ELSE 0 END)     AS errored,
+                           MIN(started_at)                            AS first_seen,
+                           MAX(started_at)                            AS last_seen
+                    FROM runs
+                    WHERE {where} AND mutation IS NOT NULL AND mutation != ''
+                    GROUP BY mutation
+                """, params).fetchall()
+                by_sha7 = {r["sha7"]: dict(r) for r in rows}
+
+                # Source B: discovered-but-maybe-no-runs from
+                # qa_planned_commits. Use SUBSTR to short-key match.
+                # branches surfaces here so we can display
+                # "discovered on master" before any run exists.
+                planned = c.execute("""
+                    SELECT SUBSTR(sha, 1, 7)                       AS sha7,
+                           sha                                     AS full_sha,
+                           GROUP_CONCAT(DISTINCT branch)           AS branches,
+                           MIN(planned_at)                         AS first_planned,
+                           MAX(planned_at)                         AS last_planned,
+                           COUNT(DISTINCT plan_id)                 AS plans
+                    FROM qa_planned_commits
+                    GROUP BY SUBSTR(sha, 1, 7)
+                """).fetchall()
         except FileNotFoundError:
             return []
-        return [dict(r) for r in rows]
+        # Merge: planned-only rows get default/null run-derived fields.
+        for p in planned:
+            sha7 = p["sha7"]
+            row = by_sha7.get(sha7)
+            if row is None:
+                # discovered but no runs yet
+                row = {
+                    "sha7": sha7,
+                    "generation": None,
+                    "runs": 0,
+                    "avg_duration_ms": None,
+                    "completed": 0, "errored": 0,
+                    "first_seen": p["first_planned"],
+                    "last_seen": p["last_planned"],
+                }
+                by_sha7[sha7] = row
+            row["full_sha"] = p["full_sha"]
+            row["branches"] = p["branches"]
+            row["plans"] = p["plans"]
+            row["first_planned"] = p["first_planned"]
+            row["last_planned"] = p["last_planned"]
+
+        # Output: rename sha7 → mutation for back-compat with the
+        # existing UI which reads `mutation`.
+        out = []
+        for r in by_sha7.values():
+            r["mutation"] = r.pop("sha7")
+            out.append(r)
+        out.sort(key=lambda r: (r.get("last_seen") or r.get("last_planned") or ""),
+                 reverse=True)
+        return out
 
     def aggregate_by_gene(self, f: RunFilter | None = None) -> list[dict]:
         """For each gene present in any run, count runs WITH and runs WITHOUT.

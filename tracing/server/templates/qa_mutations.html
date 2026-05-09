@@ -86,12 +86,12 @@ th { color: #8b949e; font-weight: normal; }
       <div class="muted" style="margin-bottom:8px;" x-text="fireStatus"></div>
       <table>
         <thead><tr>
-          <th>pick</th><th>mutation</th><th>generation</th>
+          <th>pick</th><th>mutation</th><th>branches</th>
           <th class="tn">runs</th>
           <th>hard</th><th>soft</th><th>method</th>
           <th class="tn">pass%</th>
           <th class="tn">avg dur ms</th>
-          <th>last seen</th>
+          <th>last activity</th>
           <th></th>
         </tr></thead>
         <tbody>
@@ -106,15 +106,15 @@ th { color: #8b949e; font-weight: normal; }
                 <a class="mut run-link" :href="`{{ base_path }}/qa/runs?mutation=${m.mutation}`"
                    x-text="m.mutation"></a>
               </td>
-              <td><a class="gen run-link" :href="`{{ base_path }}/qa/runs?generation=${m.generation}`"
-                     x-text="m.generation"></a></td>
+              <td x-text="m.branches || '—'" :title="m.full_sha || ''"></td>
               <td class="tn" x-text="m.runs"></td>
               <td><span x-html="axisBar(scoring[m.mutation], 'hard_skill')"></span></td>
               <td><span x-html="axisBar(scoring[m.mutation], 'soft_skill')"></span></td>
               <td><span x-html="axisBar(scoring[m.mutation], 'methodology')"></span></td>
               <td class="tn" x-text="passRate(scoring[m.mutation])"></td>
               <td class="tn" x-text="Math.round(m.avg_duration_ms || 0)"></td>
-              <td style="color:#8b949e;" x-text="(m.last_seen || '').slice(0,19)"></td>
+              <td style="color:#8b949e;"
+                  x-text="((m.last_seen || m.last_planned) || '').slice(0,19)"></td>
               <td>
                 <template x-if="onDemandConfigs.length > 0">
                   <span @click.stop>
