@@ -63,6 +63,10 @@ class RunFilter:
     # By relationship
     linked_run: Optional[str] = None
 
+    # By scheduling: runs that were spawned by tasks belonging to this
+    # plan_id (joined via qa_tasks on (mutation_hash, scenario_id)).
+    plan_id: Optional[int] = None
+
     # Pagination & sort
     limit: int = 50
     offset: int = 0
@@ -119,7 +123,13 @@ class SQLiteTraceStore:
                    pr_url, project, scenario_id, scenario_tags,
                    generation, mutation, files_touched, jira_keys,
                    linked_run_id, fs_trace_path,
-                   findings_count, total_tokens_paid, prompt_source, prompt_hash
+                   findings_count, total_tokens_paid, prompt_source, prompt_hash,
+                   (SELECT t.plan_id FROM qa_tasks t
+                    WHERE t.mutation_hash = runs.mutation
+                      AND t.started_at IS NOT NULL
+                      AND runs.started_at >= t.started_at
+                      AND runs.started_at <= COALESCE(t.finished_at, datetime('now'))
+                    ORDER BY t.id DESC LIMIT 1) AS plan_id
             FROM runs
             WHERE {where}
             ORDER BY {sort_col} {order}
@@ -717,5 +727,23 @@ class SQLiteTraceStore:
                 "WHERE json_each.value = ?)"
             )
             params.append(f.scenario_tag)
+
+        if f.plan_id is not None:
+            # Match runs that fall inside a task's time window for this
+            # plan. trace_run_id isn't yet populated on tasks, so we
+            # join indirectly. Match on `mutation` + a started_at window
+            # bounded by [task.started_at, task.finished_at OR now].
+            # This naturally handles multi-run-per-task (e.g. an
+            # interaction scenario that spawns dispatcher + investigator
+            # agent runs); both fall in the same window.
+            clauses.append(
+                "EXISTS (SELECT 1 FROM qa_tasks t "
+                "WHERE t.plan_id = ? "
+                "  AND t.mutation_hash = runs.mutation "
+                "  AND t.started_at IS NOT NULL "
+                "  AND runs.started_at >= t.started_at "
+                "  AND runs.started_at <= COALESCE(t.finished_at, datetime('now')))"
+            )
+            params.append(int(f.plan_id))
 
         return " AND ".join(clauses), params

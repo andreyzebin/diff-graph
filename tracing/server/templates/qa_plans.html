@@ -70,7 +70,11 @@ th { color: #8b949e; font-weight: normal; }
       <tbody>
         <template x-for="p in plans" :key="p.id">
           <tr>
-            <td x-text="`#${p.id}`"></td>
+            <td>
+              <a class="run-link" :href="`{{ base_path }}/qa/runs?plan=${p.id}`"
+                 x-text="`#${p.id}`"
+                 :title="'show all runs from this plan'"></a>
+            </td>
             <td x-text="p.name || '(unnamed)'"></td>
             <td><span :class="`state-${p.state}`" x-text="p.state"></span></td>
             <td x-text="p.providers.join(', ')"></td>

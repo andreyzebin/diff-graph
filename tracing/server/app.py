@@ -232,6 +232,8 @@ async def api_search_runs(
     scenario_tag: Optional[str] = None,
     # relationship
     linked_run: Optional[str] = None,
+    # scheduling — show only runs from this plan (joined via qa_tasks)
+    plan: Optional[int] = None,
     # pagination & sort
     limit: int = 50,
     offset: int = 0,
@@ -251,6 +253,7 @@ async def api_search_runs(
         pr_url=pr_url, project=project, file=file, jira=jira,
         scenario_id=scenario, scenario_tag=scenario_tag,
         linked_run=linked_run,
+        plan_id=plan,
         limit=max(1, min(500, int(limit))),
         offset=max(0, int(offset)),
         sort=sort, order=order,

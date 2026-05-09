@@ -125,6 +125,11 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
       <input x-model.lazy="filters.mutation" placeholder="hash..." @change="search()">
     </label>
 
+    <label>plan
+      <input type="number" x-model.lazy.number="filters.plan"
+             placeholder="13" @change="search()" style="width: 70px;">
+    </label>
+
     <!-- Multi-selects: scenario_tag -->
     <label>scenario_tag
       <div class="multi">
@@ -181,6 +186,7 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
           <th>model</th>
           <th>generation</th>
           <th>mutation</th>
+          <th>plan</th>
           <th class="dur-cell">dur ms</th>
           <th>linked</th>
           <th>tags</th>
@@ -199,6 +205,13 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
             <td x-text="(r.model || '').slice(0,28)" :title="r.model"></td>
             <td x-text="r.generation || ''" style="color: #d2a8ff;"></td>
             <td style="font-family: ui-monospace, monospace;" x-text="(r.mutation || '').slice(0,8)"></td>
+            <td>
+              <template x-if="r.plan_id">
+                <a class="run-link" :href="`{{ base_path }}/qa/plans?highlight=${r.plan_id}`"
+                   x-text="`#${r.plan_id}`"
+                   :title="`filter to this plan: /qa/runs?plan=${r.plan_id}`"></a>
+              </template>
+            </td>
             <td class="dur-cell" x-text="r.duration_ms || ''"></td>
             <td>
               <template x-if="r.linked_run_id">
