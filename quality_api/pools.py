@@ -47,6 +47,7 @@ class PoolConfig:
     target_workers: int
     trigger: str
     max_idle_seconds: int
+    task_timeout_seconds: int
     bench_cmd: str
     enabled: bool
     created_at: str
@@ -69,6 +70,7 @@ def _row_to_pool(row) -> Optional[PoolConfig]:
         target_workers=int(row["target_workers"] or 1),
         trigger=row["trigger"] or "live_queue",
         max_idle_seconds=int(row["max_idle_seconds"] or 120),
+        task_timeout_seconds=int(_col("task_timeout_seconds", 900) or 900),
         bench_cmd=_col("bench_cmd", "") or "",
         enabled=bool(row["enabled"]),
         created_at=row["created_at"],
@@ -80,7 +82,9 @@ def pool_to_dict(p: PoolConfig) -> dict:
     return {
         "id": p.id, "name": p.name, "provider": p.provider,
         "target_workers": p.target_workers, "trigger": p.trigger,
-        "max_idle_seconds": p.max_idle_seconds, "bench_cmd": p.bench_cmd,
+        "max_idle_seconds": p.max_idle_seconds,
+        "task_timeout_seconds": p.task_timeout_seconds,
+        "bench_cmd": p.bench_cmd,
         "enabled": p.enabled, "created_at": p.created_at,
         "last_check_at": p.last_check_at,
     }
@@ -95,6 +99,7 @@ class PoolStore:
     def add(self, *, name: str, provider: str, target_workers: int = 1,
             trigger: str = "live_queue",
             max_idle_seconds: int = 120,
+            task_timeout_seconds: int = 900,
             bench_cmd: str = "",
             enabled: bool = True) -> int:
         if not provider:
@@ -107,10 +112,12 @@ class PoolStore:
             cur = c.execute(
                 """INSERT INTO qa_worker_pools
                    (name, provider, target_workers, trigger,
-                    max_idle_seconds, bench_cmd, enabled, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    max_idle_seconds, task_timeout_seconds,
+                    bench_cmd, enabled, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (name or "", provider, int(target_workers), trigger,
-                 int(max_idle_seconds), bench_cmd or "",
+                 int(max_idle_seconds), int(task_timeout_seconds),
+                 bench_cmd or "",
                  1 if enabled else 0, datetime.now().isoformat()),
             )
             c.commit()
@@ -118,7 +125,8 @@ class PoolStore:
 
     def update(self, pool_id: int, **fields) -> bool:
         allowed = {"name", "provider", "target_workers", "trigger",
-                   "max_idle_seconds", "bench_cmd", "enabled"}
+                   "max_idle_seconds", "task_timeout_seconds",
+                   "bench_cmd", "enabled"}
         sets, params = [], []
         for k, v in fields.items():
             if k not in allowed or v is None:
@@ -260,6 +268,7 @@ class WorkerSupervisor:
             f"{QUALITY_CLI_PATH} --json worker "
             f"--provider={shlex.quote(pool.provider)} "
             f"--max-idle-seconds={pool.max_idle_seconds} "
+            f"--task-timeout-seconds={pool.task_timeout_seconds} "
             f"--max-tasks=0 "
             f"--bench-cmd={shlex.quote(bench_cmd)}"
         )

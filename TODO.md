@@ -1703,6 +1703,56 @@ Whole thing 4-5 weeks. Phases ship independently. Phase 1+2 is
 the smallest useful chunk (better-than-grep over historical
 traces) and is what I'm starting with.
 
+### 5e.14 Isolated agent unit tests — the cheap, plentiful tier (TODO)
+
+**Idea.** Today's bench is integration-style: spin up the full
+dispatcher → reviewer/investigator pipeline against a real PR
+fixture, judge the end-to-end output. Each scenario costs minutes
+and tens of thousands of LLM tokens. We can only run a few
+hundred of them per release cycle.
+
+**What's missing.** A second tier where each test exercises ONE
+agent in isolation, with synthetic ancestors/peers stubbed out.
+For example, an investigator-only scenario: hand-crafted root
+LSP context + a single `concern.json` from a fake reviewer +
+expected outputs for `read_outline` / `read_file` of specific
+refs. The agent runs once, the judge checks just *that* agent's
+artefacts, not the whole pipeline.
+
+**Why this unlocks scale.** Isolated tests are:
+- 5–20× cheaper per run (one agent, smaller context, fewer
+  tool calls, no orchestration overhead)
+- can be authored by hand in minutes from a real prod trace
+  ("here's the failure I saw in prod, freeze the inputs that
+  led the investigator there, freeze the bad behaviour, write
+  the assertion")
+- easy to run on every commit without overloading the LLM,
+  letting us catch regressions early instead of every-few-days
+
+**Pipeline thinking.** Real prod failures → curated isolated
+fixtures (per-agent, not per-pipeline) → run on every push as
+the cheap unit tier → integration tier still runs nightly /
+on-demand for cross-agent regressions. Coverage grows fastest
+where we have data: investigator failures from prod feed the
+investigator-only tier, dispatcher misroutes feed dispatcher-
+only, reviewer false positives feed reviewer-only.
+
+**Open design questions.**
+- Fixture format for "fake ancestors" — JSON in scenario yaml
+  vs separate files in scenarios/fixtures/?
+- Stubbing strategy — are tool calls intercepted (ToolMocks
+  pattern) or does the agent see a pre-cooked tools registry?
+- Judge alignment — can the same judge handle both isolated
+  and integration outputs, or do we need a thinner per-axis
+  judge for unit-tier?
+- Capture flow — what's the UX for "promote a real prod trace
+  to a unit fixture"? Probably a CLI command that takes a run
+  id + agent name and emits a yaml skeleton.
+
+Defer until we've burned through current backlog; this is a
+"how do we *systematically* improve quality" question, not a
+"what do we ship next" question.
+
 ---
 
 ## 5b. Jira context — agent reads the ticket and follows links

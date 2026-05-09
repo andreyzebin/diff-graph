@@ -609,6 +609,10 @@ def worker_loop(
         help="exit after N consecutive seconds of empty queue (0 = forever). "
              "Used by the server supervisor to spin workers down when the "
              "queue dries up. Set to 120 for typical pool-managed workers."),
+    task_timeout_seconds: int = typer.Option(900,
+        help="hard cap on a single bench subprocess (seconds). "
+             "Beyond this we kill the LLM and mark the task as error so "
+             "a stuck provider doesn't hold the slot indefinitely."),
 ):
     """Long-running worker: lease task → run bench → finish.
 
@@ -702,7 +706,7 @@ def worker_loop(
                 ["bash", "-c", cmd],
                 capture_output=True, text=True,
                 env=env,
-                timeout=lease_seconds * 10,  # generous outer cap
+                timeout=task_timeout_seconds,
             )
             result_payload = {
                 "exit_code": proc.returncode,

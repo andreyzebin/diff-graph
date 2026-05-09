@@ -133,6 +133,10 @@ class TaskQueue:
                 # mode: 'auto' fires on new commits via DiscoverySupervisor;
                 # 'on_demand' is hand-fired from UI/CLI per (branch, sha).
                 ("qa_auto_plan_configs",  "mode",                 "TEXT NOT NULL DEFAULT 'auto'"),
+                # Per-pool subprocess timeout — DeepSeek runs can take
+                # 10–15min; we cap each task's bench subprocess at this
+                # so a stuck LLM doesn't hold a slot indefinitely.
+                ("qa_worker_pools",       "task_timeout_seconds", "INTEGER NOT NULL DEFAULT 900"),
             ]:
                 try:
                     c.execute(f"SELECT {col} FROM {table} LIMIT 0")
@@ -212,6 +216,7 @@ class TaskQueue:
                     -- 'live_queue' = spawn while queue non-empty for this provider
                     -- (future: 'cron', 'always_on')
                     max_idle_seconds INTEGER NOT NULL DEFAULT 120,
+                    task_timeout_seconds INTEGER NOT NULL DEFAULT 900,
                     bench_cmd       TEXT,           -- override worker --bench-cmd template
                     enabled         INTEGER NOT NULL DEFAULT 1,
                     created_at      TEXT NOT NULL,
@@ -516,6 +521,29 @@ class TaskQueue:
         gc_cutoff = (now - timedelta(seconds=gc_terminal_after_seconds)).isoformat()
         with self._lock, self._conn() as c:
             try:
+                # Trace-as-heartbeat: a worker whose current task has a
+                # run that emitted ANY event within the stale window is
+                # alive — even if the heartbeat thread itself is wedged
+                # (SQLite contention, GIL stall, …). This is a defense
+                # in depth on top of the dedicated heartbeat thread.
+                # We resurrect such workers by bumping last_heartbeat.
+                c.execute(
+                    """UPDATE qa_workers
+                       SET last_heartbeat = ?
+                       WHERE state='running' AND last_heartbeat < ?
+                         AND id IN (
+                           SELECT t.lease_owner
+                           FROM qa_tasks t
+                           JOIN runs r
+                             ON r.scenario_id = t.scenario_id
+                            AND r.mutation = t.mutation_hash
+                           JOIN events e ON e.run_id = r.id
+                           WHERE t.state IN ('leased', 'running')
+                             AND t.lease_owner IS NOT NULL
+                             AND e.timestamp > ?
+                         )""",
+                    (now.isoformat(), stale_cutoff, stale_cutoff),
+                )
                 c.execute(
                     "UPDATE qa_workers SET state='dead' "
                     "WHERE state='running' AND last_heartbeat < ?",

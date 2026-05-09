@@ -643,6 +643,7 @@ class PoolCreatePayload(BaseModel):
     target_workers: int = 1
     trigger: str = "live_queue"
     max_idle_seconds: int = 120
+    task_timeout_seconds: int = 900
     bench_cmd: str = ""
     enabled: bool = True
 
@@ -653,6 +654,7 @@ class PoolUpdatePayload(BaseModel):
     target_workers: Optional[int] = None
     trigger: Optional[str] = None
     max_idle_seconds: Optional[int] = None
+    task_timeout_seconds: Optional[int] = None
     bench_cmd: Optional[str] = None
     enabled: Optional[bool] = None
 
@@ -663,7 +665,9 @@ async def api_qa_pool_create(p: PoolCreatePayload):
         pid = _qa_pools.add(
             name=p.name, provider=p.provider,
             target_workers=p.target_workers, trigger=p.trigger,
-            max_idle_seconds=p.max_idle_seconds, bench_cmd=p.bench_cmd,
+            max_idle_seconds=p.max_idle_seconds,
+            task_timeout_seconds=p.task_timeout_seconds,
+            bench_cmd=p.bench_cmd,
             enabled=p.enabled,
         )
     except ValueError as e:
