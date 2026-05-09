@@ -117,18 +117,50 @@ class TraceDBWriter:
         self.conn.commit()
 
     def set_prompt_info(self, prompt_source: str, prompt_hash: str):
-        """Set prompt source/hash early (before run finishes)."""
+        """Set prompt source/hash early (before run finishes).
+
+        mutation is COALESCE'd so calls to `override_mutation()` (e.g.
+        DIFFGRAPH_MUTATION_OVERRIDE for git-commit-level tracking)
+        survive regardless of order. Calling order is:
+          - set_prompt_info first  → mutation=prompt_hash
+          - override_mutation later → mutation=git_sha
+          OR
+          - override_mutation first → mutation=git_sha
+          - set_prompt_info later  → mutation stays git_sha (COALESCE)
+          OR
+          - finish_run last → mutation untouched if already set.
+        """
         with self._lock:
-            # Mirror prompt_source → generation, prompt_hash → mutation
-            # so the search-API columns are populated alongside the
-            # existing dashboard columns.
             generation = self._derive_generation(prompt_source)
             self.conn.execute(
                 "UPDATE runs SET prompt_source=?, prompt_hash=?, "
-                "generation=?, mutation=? WHERE id=?",
+                "generation=COALESCE(generation, ?), "
+                "mutation=COALESCE(mutation, ?) "
+                "WHERE id=?",
                 (prompt_source, prompt_hash, generation, prompt_hash, self.run_id),
             )
             self.conn.commit()
+
+    def override_mutation(self, value: str) -> None:
+        """Replace the mutation column on this run with `value` (e.g.
+        a git commit SHA). Caller authoritative — overwrites any
+        prior mutation.
+
+        Used by quality-cli worker to tag agent runs with the auto-
+        plan task's commit hash so analytics can group by commit
+        rather than by prompt-content-hash.
+        """
+        if not value:
+            return
+        try:
+            with self._lock:
+                self.conn.execute(
+                    "UPDATE runs SET mutation=? WHERE id=?",
+                    (value[:7], self.run_id),
+                )
+                self.conn.commit()
+        except Exception:
+            pass
 
     @staticmethod
     def _derive_generation(prompt_source: str) -> str:
@@ -269,13 +301,18 @@ class TraceDBWriter:
 
         generation = self._derive_generation(prompt_source)
         with self._lock:
+            # mutation is set once at run-start (set_prompt_info) and may
+            # be overridden by callers (e.g. DIFFGRAPH_MUTATION_OVERRIDE
+            # for git-commit-level QA tracking). Use `COALESCE(existing,
+            # incoming)` so finish_run only writes a value when none
+            # exists — never undoes an override.
             self.conn.execute(
                 "UPDATE runs SET finished_at=?, model=?, pr_url=?, diff_summary=?, "
                 "findings_count=?, total_tokens_paid=?, status='completed', "
                 "prompt_source=COALESCE(NULLIF(?, ''), prompt_source), "
                 "prompt_hash=COALESCE(NULLIF(?, ''), prompt_hash), "
                 "generation=COALESCE(NULLIF(?, ''), generation), "
-                "mutation=COALESCE(NULLIF(?, ''), mutation), "
+                "mutation=COALESCE(mutation, NULLIF(?, '')), "
                 "duration_ms=?, "
                 "project=COALESCE(NULLIF(?, ''), project), "
                 "files_touched=COALESCE(NULLIF(?, '[]'), files_touched) "

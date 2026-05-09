@@ -317,17 +317,7 @@ def _run_with_dispatcher(
     # content hash for content-level analytics.
     _mutation_override = os.environ.get("DIFFGRAPH_MUTATION_OVERRIDE", "").strip()
     if _mutation_override:
-        # set_search_metadata also accepts mutation via the helper added
-        # below for symmetry.
-        try:
-            with _trace_db._lock:
-                _trace_db.conn.execute(
-                    "UPDATE runs SET mutation=? WHERE id=?",
-                    (_mutation_override[:7], _trace_db.run_id),
-                )
-                _trace_db.conn.commit()
-        except Exception:
-            pass
+        _trace_db.override_mutation(_mutation_override)
 
     event_handler = _make_event_handler(effective_model)
 
