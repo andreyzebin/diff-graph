@@ -1150,9 +1150,9 @@ async def api_qa_list_scenarios():
     entries = list_scenarios()
     return JSONResponse({
         "data": [
-            {"id": e.id, "rel_path": e.rel_path, "tier": e.tier,
+            {"id": e.id, "rel_path": e.rel_path,
              "agent": e.agent, "tags": e.tags, "title": e.title,
-             "is_unit_fixture": e.is_unit_fixture}
+             "has_bench_cmd": bool(e.bench_cmd)}
             for e in entries
         ],
         "meta": {"total": len(entries)},

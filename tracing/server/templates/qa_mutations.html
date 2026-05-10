@@ -108,7 +108,7 @@ th { color: #8b949e; font-weight: normal; }
   <div class="muted" x-show="fireStatus" x-text="fireStatus" style="padding:0 12px 8px;"></div>
 
   <!-- Anonymous-fire modal: pick scenarios from /api/qa/scenarios,
-       optionally filter by tier/agent, click fire. -->
+       optionally filter by agent/tag, click fire. -->
   <div class="modal-backdrop" x-show="anonModal.open" x-cloak
        @click.self="anonModal.open = false"
        style="position:fixed; inset:0; background:#000a; display:flex;
@@ -120,23 +120,24 @@ th { color: #8b949e; font-weight: normal; }
         <span x-text="selected.length"></span> mutation(s)</h3>
 
       <div style="display:flex; gap:12px; margin-bottom:10px; align-items:center;">
-        <label>tier
-          <select x-model="anonModal.tierFilter">
-            <option value="">all</option>
-            <option value="unit">unit</option>
-            <option value="integration">integration</option>
-          </select>
-        </label>
         <label>agent
           <select x-model="anonModal.agentFilter">
             <option value="">all</option>
-            <option value="dispatcher">dispatcher</option>
-            <option value="reviewer">reviewer</option>
-            <option value="investigator">investigator</option>
+            <template x-for="a in [...new Set(allScenarios.map(s => s.agent).filter(Boolean))].sort()" :key="a">
+              <option :value="a" x-text="a"></option>
+            </template>
+          </select>
+        </label>
+        <label>tag
+          <select x-model="anonModal.tagFilter">
+            <option value="">all</option>
+            <template x-for="t in [...new Set(allScenarios.flatMap(s => s.tags || []))].sort()" :key="t">
+              <option :value="t" x-text="t"></option>
+            </template>
           </select>
         </label>
         <label style="flex:1;">search
-          <input type="text" x-model="anonModal.q" placeholder="id substring"
+          <input type="text" x-model="anonModal.q" placeholder="id / path / tag substring"
                  style="background:#0d1117; border:1px solid #30363d; color:#c9d1d9;
                         padding:3px 6px; border-radius:3px; width:100%;">
         </label>
@@ -151,7 +152,7 @@ th { color: #8b949e; font-weight: normal; }
                   border-radius:3px; margin-bottom:10px;">
         <table style="width:100%; font-size:0.85em;">
           <thead style="position:sticky; top:0; background:#0d1117;">
-            <tr><th></th><th>id</th><th>tier</th><th>agent</th><th>path</th></tr>
+            <tr><th></th><th>id</th><th>agent</th><th>tags</th><th>path</th></tr>
           </thead>
           <tbody>
             <template x-for="s in filteredScenarios()" :key="s.id + s.rel_path">
@@ -160,8 +161,12 @@ th { color: #8b949e; font-weight: normal; }
                            :checked="anonModal.picked.includes(s.id)"
                            @change="toggleScenario(s.id)"></td>
                 <td x-text="s.id"></td>
-                <td x-text="s.tier"></td>
                 <td x-text="s.agent || '—'"></td>
+                <td>
+                  <template x-for="t in (s.tags || [])">
+                    <span class="tag-chip" x-text="t"></span>
+                  </template>
+                </td>
                 <td class="muted" x-text="s.rel_path"></td>
               </tr>
             </template>

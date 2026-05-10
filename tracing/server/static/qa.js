@@ -536,8 +536,8 @@ document.addEventListener('alpine:init', () => {
     anonModal: {                                  // anonymous-fire modal state
       open: false,
       picked: [],                                  // list of scenario ids checked
-      tierFilter: '',
       agentFilter: '',
+      tagFilter: '',
       q: '',
       provider: 'deepseek',
       firing: false,
@@ -621,9 +621,10 @@ document.addEventListener('alpine:init', () => {
       const m = this.anonModal;
       const q = (m.q || '').trim().toLowerCase();
       return this.allScenarios.filter(s =>
-        (!m.tierFilter || s.tier === m.tierFilter) &&
         (!m.agentFilter || s.agent === m.agentFilter) &&
-        (!q || (s.id + s.rel_path).toLowerCase().includes(q))
+        (!m.tagFilter   || (s.tags || []).includes(m.tagFilter)) &&
+        (!q || (s.id + s.rel_path + ' ' + (s.tags||[]).join(' '))
+                .toLowerCase().includes(q))
       );
     },
     async bulkFireAnonymous() {
@@ -863,8 +864,8 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('scenariosView', () => ({
     all: [],
     picked: [],
-    tierFilter: '',
     agentFilter: '',
+    tagFilter: '',
     q: '',
     fireStatus: '',
     recentMutations: [],          // from /api/search/aggregates/by_mutation
@@ -891,12 +892,19 @@ document.addEventListener('alpine:init', () => {
       const m = this.fireModal;
       return m.shaMode === 'custom' ? m.shaCustom : m.shaPicked;
     },
+    get agentOptions() {
+      return [...new Set(this.all.map(s => s.agent).filter(Boolean))].sort();
+    },
+    get tagOptions() {
+      return [...new Set(this.all.flatMap(s => s.tags || []))].sort();
+    },
     filtered() {
       const q = (this.q || '').trim().toLowerCase();
       return this.all.filter(s =>
-        (!this.tierFilter || s.tier === this.tierFilter) &&
         (!this.agentFilter || s.agent === this.agentFilter) &&
-        (!q || (s.id + ' ' + s.rel_path).toLowerCase().includes(q))
+        (!this.tagFilter   || (s.tags || []).includes(this.tagFilter)) &&
+        (!q || (s.id + ' ' + s.rel_path + ' ' + (s.tags || []).join(' '))
+                .toLowerCase().includes(q))
       );
     },
     toggle(sid) {

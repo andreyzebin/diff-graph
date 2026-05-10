@@ -27,11 +27,11 @@ class ScenarioEntry:
     id: str
     path: str               # absolute path to the yaml
     rel_path: str           # relative to scenarios/ dir
-    tier: str = ""          # 'unit' | 'integration' | '' (from scenario_tags tier:X)
-    agent: str = ""         # dispatcher | reviewer | investigator | '' (from path)
+    agent: str = ""         # dispatcher | reviewer | investigator | '' (from yaml.agent)
     tags: list[str] = field(default_factory=list)
     title: str = ""
-    is_unit_fixture: bool = False   # has `repo:` block → run via bench run-unit
+    bench_cmd: str = ""     # per-fixture cmd override (yaml.bench_cmd). Empty
+                            # falls through to the worker pool's default cmd.
 
 
 def _bench_root() -> Optional[Path]:
@@ -50,31 +50,14 @@ def _bench_root() -> Optional[Path]:
     return None
 
 
-def _classify_path(rel: str) -> str:
-    """`unit/reviewer/REV-U-001.yaml` → 'reviewer'.
-    `agents/reviewer/REV-001.yaml` → 'reviewer'.
-    `java/SCEN-009.yaml` → '' (no agent layer)."""
-    parts = rel.split(os.sep)
-    for token in ("reviewer", "investigator", "dispatcher"):
-        if token in parts:
-            return token
-    return ""
-
-
-def _classify_tier(parts: list[str], tags: list[str]) -> str:
-    if any(t == "tier:unit" or t.startswith("tier:unit") for t in tags):
-        return "unit"
-    if any(t == "tier:integration" or t.startswith("tier:integration") for t in tags):
-        return "integration"
-    if "unit" in parts:
-        return "unit"
-    if "agents" in parts:
-        return "unit"     # bench's agent-isolation scenarios live under agents/
-    return "integration"
-
-
 def list_scenarios() -> list[ScenarioEntry]:
-    """Recursive scan of <bench>/benchmark/scenarios/. Skips drafts/."""
+    """Recursive scan of <bench>/benchmark/scenarios/. Skips drafts/.
+
+    Yaml is the source of truth: `id`, `agent`, `tags`, `bench_cmd`
+    all come from the file. No path-based classification — "tier"
+    is just a tag (e.g. `tier:unit`) like any other, no special
+    handling in code.
+    """
     root = _bench_root()
     if root is None:
         return []
@@ -82,32 +65,25 @@ def list_scenarios() -> list[ScenarioEntry]:
     out: list[ScenarioEntry] = []
     for p in sorted(scenarios_dir.rglob("*.yaml")):
         rel = p.relative_to(scenarios_dir)
-        rel_parts = rel.parts
-        if "drafts" in rel_parts or "fixtures" in rel_parts:
+        if "drafts" in rel.parts or "fixtures" in rel.parts:
             continue
         try:
             text = p.read_text(encoding="utf-8")
-            # Accept multi-doc yaml — we just want the first doc.
+            # Multi-doc yaml: take first non-empty.
             doc = next((d for d in yaml.safe_load_all(text) if d), None) or {}
         except Exception as e:
             log.warning("scenario load failed: %s: %s", p, e)
             continue
         if not isinstance(doc, dict):
             continue
-        sid = str(doc.get("id") or p.stem)
-        tags = list(doc.get("tags") or [])
-        agent = str(doc.get("agent") or "") or _classify_path(str(rel))
-        tier = _classify_tier(list(rel_parts), [str(t) for t in tags])
-        is_unit = ("repo" in doc) and isinstance(doc.get("repo"), dict)
         out.append(ScenarioEntry(
-            id=sid,
+            id=str(doc.get("id") or p.stem),
             path=str(p),
             rel_path=str(rel),
-            tier=tier,
-            agent=agent,
-            tags=[str(t) for t in tags],
+            agent=str(doc.get("agent") or ""),
+            tags=[str(t) for t in (doc.get("tags") or [])],
             title=str(doc.get("name") or doc.get("title") or ""),
-            is_unit_fixture=is_unit,
+            bench_cmd=str(doc.get("bench_cmd") or "").strip(),
         ))
     return out
 
@@ -127,23 +103,7 @@ def find_scenario(scenario_id: str) -> Optional[ScenarioEntry]:
 
 
 def build_bench_cmd(entry: ScenarioEntry, *, scenario_id: str) -> str:
-    """Per-scenario bench_cmd. Unit fixtures use `bench run-unit
-    <yaml-path>` (the runner handles temp clone + fake PR /
-    spawn-block / sink). Integration scenarios fall back to the
-    pool's bench_cmd template (caller's responsibility).
-
-    Matches DEFAULT_BENCH_CMD's shell prelude: `source .env` loads
-    DEEPSEEK_API_KEY / NO_PROXY / certs / etc.; `unset ALL_PROXY
-    all_proxy` strips the SOCKS proxy URL that httpx can't parse
-    (httpx wants `socks5://`, not bare `socks://`)."""
-    if not entry.is_unit_fixture:
-        return ""
-    root = _bench_root()
-    if root is None:
-        return ""
-    return (
-        f"cd {root} && source .env "
-        f"&& unset ALL_PROXY all_proxy "
-        f"&& .venv/bin/python -m benchmark.cli run-unit "
-        f"{entry.path} --provider={{provider}}"
-    )
+    """Return whatever bench_cmd template the fixture's yaml
+    declares — empty means "use the worker pool's default cmd".
+    No code-side logic about tiers; the yaml decides."""
+    return entry.bench_cmd or ""

@@ -37,9 +37,6 @@ th { color: #8b949e; font-weight: normal; }
 .tag-chip { display: inline-block; padding: 1px 6px; margin: 0 2px 0 0;
             background: #21262d; color: #8b949e; border-radius: 3px;
             font-size: 0.75em; }
-.tier-unit         { color: #56d364; }
-.tier-integration  { color: #d2a8ff; }
-.unit-fix-badge    { color: #d29922; font-size: 0.75em; }
 input[type="text"] { background: #0d1117; border: 1px solid #30363d;
                      color: #c9d1d9; padding: 3px 6px; border-radius: 3px; }
 select { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
@@ -61,23 +58,24 @@ select { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
 <div x-data="scenariosView" x-init="load()">
 
   <div class="bar">
-    <label>tier
-      <select x-model="tierFilter">
-        <option value="">all</option>
-        <option value="unit">unit</option>
-        <option value="integration">integration</option>
-      </select>
-    </label>
     <label>agent
       <select x-model="agentFilter">
         <option value="">all</option>
-        <option value="dispatcher">dispatcher</option>
-        <option value="reviewer">reviewer</option>
-        <option value="investigator">investigator</option>
+        <template x-for="a in agentOptions" :key="a">
+          <option :value="a" x-text="a"></option>
+        </template>
+      </select>
+    </label>
+    <label>tag
+      <select x-model="tagFilter">
+        <option value="">all</option>
+        <template x-for="t in tagOptions" :key="t">
+          <option :value="t" x-text="t"></option>
+        </template>
       </select>
     </label>
     <label style="flex:1;">search
-      <input type="text" x-model="q" placeholder="id or path substring"
+      <input type="text" x-model="q" placeholder="id / path / tag substring"
              style="width: 100%;">
     </label>
 
@@ -95,10 +93,10 @@ select { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
       <tr>
         <th></th>
         <th>id</th>
-        <th>tier</th>
         <th>agent</th>
-        <th>path</th>
         <th>tags</th>
+        <th>path</th>
+        <th></th>
       </tr>
     </thead>
     <tbody>
@@ -108,17 +106,16 @@ select { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
           <td><input type="checkbox" :checked="picked.includes(s.id)"
                      @click.stop="toggle(s.id)"></td>
           <td class="mut" x-text="s.id"></td>
+          <td x-text="s.agent || '—'"></td>
           <td>
-            <span :class="`tier-${s.tier}`" x-text="s.tier"></span>
-            <template x-if="s.is_unit_fixture">
-              <span class="unit-fix-badge" title="bench run-unit fixture">★ unit-fix</span>
+            <template x-for="t in (s.tags || [])">
+              <span class="tag-chip" x-text="t"></span>
             </template>
           </td>
-          <td x-text="s.agent || '—'"></td>
           <td class="muted" x-text="s.rel_path"></td>
           <td>
-            <template x-for="t in (s.tags || []).slice(0, 4)">
-              <span class="tag-chip" x-text="t"></span>
+            <template x-if="s.has_bench_cmd">
+              <span class="muted" title="custom bench_cmd in yaml">★</span>
             </template>
           </td>
         </tr>
