@@ -229,7 +229,44 @@ class SQLiteTraceStore:
                           CAST(strftime('%s','now') AS INTEGER) * 1000000000)
                  - start_ns) / 1000000 AS INTEGER
               )                                                     AS duration_ms,
-              span_id, trace_id
+              span_id, trace_id,
+              -- Running summary: count children of this agent.<name>
+              -- span (or this cli.run / worker.task fallback). Tools
+              -- + LLM calls are direct children — sub-agents have
+              -- their own spans and are NOT counted here (they
+              -- become their own row). MAX(diffgraph.step) is the
+              -- ReAct iteration count for ReAct agents.
+              (SELECT COUNT(*) FROM otel_spans c
+               WHERE c.parent_span_id = otel_spans.span_id
+                 AND c.name LIKE 'tool.%')                          AS tool_count,
+              (SELECT COUNT(*) FROM otel_spans c
+               WHERE c.parent_span_id = otel_spans.span_id
+                 AND c.name = 'llm.request')                        AS llm_count,
+              (SELECT MAX(CAST(json_extract(c.attributes,
+                                            '$."diffgraph.step"') AS INTEGER))
+               FROM otel_spans c
+               WHERE c.parent_span_id = otel_spans.span_id
+                 AND c.name = 'llm.request')                        AS step_count,
+              (SELECT COALESCE(SUM(CAST(json_extract(c.attributes,
+                                  '$."llm.tokens_in"') AS INTEGER)), 0)
+               FROM otel_spans c
+               WHERE c.parent_span_id = otel_spans.span_id
+                 AND c.name = 'llm.request')                        AS tokens_in,
+              (SELECT COALESCE(SUM(CAST(json_extract(c.attributes,
+                                  '$."llm.tokens_out"') AS INTEGER)), 0)
+               FROM otel_spans c
+               WHERE c.parent_span_id = otel_spans.span_id
+                 AND c.name = 'llm.request')                        AS tokens_out,
+              (SELECT COALESCE(SUM(CAST(json_extract(c.attributes,
+                                  '$."llm.tokens_cached"') AS INTEGER)), 0)
+               FROM otel_spans c
+               WHERE c.parent_span_id = otel_spans.span_id
+                 AND c.name = 'llm.request')                        AS tokens_cached,
+              (SELECT COALESCE(SUM(CAST(json_extract(c.attributes,
+                                  '$."llm.tokens_in_uncached"') AS INTEGER)), 0)
+               FROM otel_spans c
+               WHERE c.parent_span_id = otel_spans.span_id
+                 AND c.name = 'llm.request')                        AS tokens_in_uncached
             FROM otel_spans
             WHERE {where}
             ORDER BY start_ns {order}

@@ -334,7 +334,7 @@ class Agent:
                     stream=False,
                 )
             if _llm_ctx is not None:
-                with _llm_ctx:
+                with _llm_ctx as _llm_span:
                     _stash_req({"model": self.llm_params.get("model", self.model),
                                 "messages": messages,
                                 "params": dict(self.llm_params)})
@@ -342,6 +342,7 @@ class Agent:
                     content = (response.choices[0].message.content or "").strip()
                     output = _try_parse_json(content)
                     _stash_res({"content": content, "output_parsed": output})
+                    _stamp_usage(_llm_span, response)
             else:
                 response = _llm_call_with_retry(_do_call)
                 content = (response.choices[0].message.content or "").strip()
@@ -454,7 +455,7 @@ class Agent:
 
             try:
                 if _llm_ctx is not None:
-                    with _llm_ctx:
+                    with _llm_ctx as _llm_span:
                         _stash_req({"model": step_model,
                                     "messages": messages,
                                     "tools": current_tools_schema,
@@ -464,6 +465,7 @@ class Agent:
                             tool_choice=step_tool_choice, on_token=_on_token,
                             **step_params,
                         )
+                        _stamp_usage(_llm_span, response)
                 else:
                     response = stream_llm(
                         self.llm, step_model, messages, current_tools_schema,
@@ -1166,3 +1168,25 @@ def _extract_cached(usage: Any) -> int:
         if cached:
             return cached
     return getattr(usage, "prompt_cache_hit_tokens", 0) or 0
+
+
+def _stamp_usage(span: Any, response: Any) -> None:
+    """Stamp prompt/completion/cached token counts on the open
+    llm.request span so /qa/traces can aggregate per-row tokens
+    without parsing FS payloads. No-op if usage is missing or the
+    span doesn't accept attributes (defensive — tracing must never
+    crash the agent loop)."""
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is None or span is None:
+            return
+        tin = int(getattr(usage, "prompt_tokens", 0) or 0)
+        tout = int(getattr(usage, "completion_tokens", 0) or 0)
+        tcache = int(_extract_cached(usage) or 0)
+        span.set_attribute("llm.tokens_in", tin)
+        span.set_attribute("llm.tokens_out", tout)
+        span.set_attribute("llm.tokens_cached", tcache)
+        # Convenience: tokens_in_no_cache = prompt_tokens - cached
+        span.set_attribute("llm.tokens_in_uncached", max(0, tin - tcache))
+    except Exception:
+        pass

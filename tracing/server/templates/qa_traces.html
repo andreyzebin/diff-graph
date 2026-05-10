@@ -53,6 +53,11 @@ tr.row-failed     { background: #ff000010; }
 tr.row-running    { background: #d2992211; }
 .tag-chip { display: inline-block; padding: 1px 6px; margin: 1px; background: #21262d;
             color: #8b949e; border-radius: 3px; font-size: 0.75em; }
+.summary-cell { white-space: nowrap; }
+.summary-chip { display: inline-block; padding: 1px 5px; margin: 0 2px 0 0;
+                background: #1f242c; color: #8b949e; border-radius: 3px;
+                font-size: 0.75em; font-family: ui-monospace, monospace; }
+.token-chip { background: #1f2a1f; color: #7ee787; }
 .linked-chip { display: inline-block; padding: 1px 6px; background: #d2a8ff22;
                color: #d2a8ff; border-radius: 3px; font-size: 0.75em;
                font-family: ui-monospace, monospace; text-decoration: none; }
@@ -198,6 +203,7 @@ tr.row-running    { background: #d2992211; }
           <th>plan</th>
           <th>task</th>
           <th class="dur-cell">dur ms</th>
+          <th>summary</th>
           <th>tags</th>
           <th>started</th>
         </tr>
@@ -259,6 +265,29 @@ tr.row-running    { background: #d2992211; }
               </template>
             </td>
             <td class="dur-cell" x-text="r.duration_ms || ''"></td>
+            <td class="summary-cell">
+              <template x-if="r.llm_count">
+                <span class="summary-chip" :title="'LLM calls'"
+                      x-text="`llm:${r.llm_count}`"></span>
+              </template>
+              <template x-if="r.step_count">
+                <span class="summary-chip" :title="'ReAct steps'"
+                      x-text="`steps:${r.step_count}`"></span>
+              </template>
+              <template x-if="r.tool_count">
+                <span class="summary-chip" :title="'tool calls'"
+                      x-text="`tools:${r.tool_count}`"></span>
+              </template>
+              <template x-if="r.tokens_in">
+                <span class="summary-chip token-chip"
+                      :title="`prompt tokens (cached: ${r.tokens_cached || 0})`"
+                      x-text="`in:${(r.tokens_in_uncached || r.tokens_in)}${r.tokens_cached ? '+'+r.tokens_cached+'c' : ''}`"></span>
+              </template>
+              <template x-if="r.tokens_out">
+                <span class="summary-chip token-chip" :title="'completion tokens'"
+                      x-text="`out:${r.tokens_out}`"></span>
+              </template>
+            </td>
             <td>
               <template x-for="t in (r.scenario_tags || []).slice(0, 3)">
                 <span class="tag-chip" x-text="t"></span>
