@@ -130,17 +130,20 @@ def build_bench_cmd(entry: ScenarioEntry, *, scenario_id: str) -> str:
     """Per-scenario bench_cmd. Unit fixtures use `bench run-unit
     <yaml-path>` (the runner handles temp clone + fake PR /
     spawn-block / sink). Integration scenarios fall back to the
-    pool's bench_cmd template (caller's responsibility)."""
+    pool's bench_cmd template (caller's responsibility).
+
+    Matches DEFAULT_BENCH_CMD's shell prelude: `source .env` loads
+    DEEPSEEK_API_KEY / NO_PROXY / certs / etc.; `unset ALL_PROXY
+    all_proxy` strips the SOCKS proxy URL that httpx can't parse
+    (httpx wants `socks5://`, not bare `socks://`)."""
     if not entry.is_unit_fixture:
         return ""
     root = _bench_root()
     if root is None:
         return ""
-    # The yaml path goes verbatim — bench run-unit accepts absolute.
-    # Provider, scenario, lineage, mutation are formatted by the
-    # worker via .format(); keep `{provider}` as a placeholder.
     return (
-        f"cd {root} && source .env && "
-        f".venv/bin/python -m benchmark.cli run-unit "
+        f"cd {root} && source .env "
+        f"&& unset ALL_PROXY all_proxy "
+        f"&& .venv/bin/python -m benchmark.cli run-unit "
         f"{entry.path} --provider={{provider}}"
     )
