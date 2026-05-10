@@ -275,11 +275,22 @@ class SQLiteTraceStore:
         domain dims live in attributes JSON; time funnel uses
         the dedicated start_ns column (idx_otel_spans_start)."""
         clauses: list[str] = [
-            # `cli.run` is the root span that EVERY cli.py invocation
-            # opens at the very first line of run() — captures even
-            # crashes during arg parsing / setup, before any agent.*
-            # span has a chance to open. One row per invocation.
-            "name = 'cli.run'",
+            # Rows are sub-agents (agent.<name>) — that's the
+            # natural scope: dispatcher / reviewer / investigator-1 /
+            # … each get their own row. cli.run surfaces ONLY as a
+            # fallback when the cli.py invocation crashed BEFORE any
+            # agent.<name> span had a chance to open (e.g. a config
+            # / proxy / arg-parsing crash). For those, the cli.run
+            # row is the only evidence the invocation happened — we
+            # show it so /qa/traces has no trace gaps.
+            """(
+                name LIKE 'agent.%'
+                OR (name = 'cli.run' AND NOT EXISTS (
+                    SELECT 1 FROM otel_spans s2
+                    WHERE s2.trace_id = otel_spans.trace_id
+                      AND s2.name LIKE 'agent.%'
+                ))
+            )""",
             # in-flight spans (end_ns NULL) DO surface — _SyncSQLiteProcessor
             # writes them at on_start so /qa/traces shows the run the
             # moment it spins up. status='running' for those rows.
