@@ -214,75 +214,57 @@ class SQLiteTraceStore:
         where, params = self._where_for_runs(f)
         sort_col = self._safe_sort_col(f.sort)
         order = "DESC" if (f.order or "desc").lower() == "desc" else "ASC"
-        # Sub-agent timestamps are derived from MIN/MAX events.timestamp
-        # for that (run_id, agent_id) group. fmtLocal in the UI handles
-        # naive vs UTC strings — we don't normalize here.
-        # Two-step query for speed: first resolve which runs match the
-        # (potentially expensive EXISTS-on-qa_tasks) WHERE, then JOIN
-        # events only against that pool. SQLite isn't smart enough to
-        # push the WHERE through a JOIN-with-events automatically,
-        # so without this it evaluates the EXISTS per event row.
+        sub_sort = ("MIN(e.timestamp)" if sort_col == "started_at"
+                    else f"runs.{sort_col}")
+        # MATERIALIZED CTE forces SQLite to compute the runs filter
+        # FIRST (uses idx_runs_started + qa_tasks.trace_run_id) and
+        # only then JOINs events against the resulting (small) set.
+        # Without it the planner picks a 3M-event scan for the outer
+        # loop. plan_id / task_id come from the direct trace_run_id
+        # FK; for judge rows the lookup follows linked_run_id (=
+        # the agent's run id, which IS the trace_run_id stamped at
+        # lease time).
+        q = f"""
+            WITH runs AS MATERIALIZED (
+              SELECT * FROM runs WHERE {where}
+            )
+            SELECT runs.id            AS session_id,
+                   e.agent_id         AS agent_id,
+                   e.agent_name       AS agent_name,
+                   runs.kind, runs.model, runs.status,
+                   runs.pr_url, runs.project, runs.scenario_id, runs.scenario_tags,
+                   runs.generation, runs.mutation, runs.files_touched, runs.jira_keys,
+                   runs.linked_run_id, runs.fs_trace_path,
+                   CASE WHEN runs.kind='judge' THEN runs.linked_run_id
+                        ELSE runs.id END AS scenario_run_id,
+                   runs.findings_count, runs.total_tokens_paid,
+                   runs.prompt_source, runs.prompt_hash,
+                   MIN(e.timestamp)   AS started_at,
+                   MAX(e.timestamp)   AS finished_at,
+                   COUNT(e.id)        AS events_count,
+                   COALESCE(
+                     (SELECT t.plan_id FROM qa_tasks t
+                      WHERE t.trace_run_id = runs.id LIMIT 1),
+                     (SELECT t.plan_id FROM qa_tasks t
+                      WHERE t.trace_run_id = runs.linked_run_id LIMIT 1)
+                   ) AS plan_id,
+                   COALESCE(
+                     (SELECT t.id FROM qa_tasks t
+                      WHERE t.trace_run_id = runs.id LIMIT 1),
+                     (SELECT t.id FROM qa_tasks t
+                      WHERE t.trace_run_id = runs.linked_run_id LIMIT 1)
+                   ) AS task_id
+            FROM runs JOIN events e ON e.run_id = runs.id
+            WHERE e.agent_id IS NOT NULL AND e.agent_id != ''
+            GROUP BY runs.id, e.agent_id, e.agent_name
+            ORDER BY {sub_sort} {order}
+            LIMIT ? OFFSET ?
+        """
         try:
             with self._conn() as c:
-                # Bound the run-id pool: with no filters, the JOIN
-                # against `events` (3M+ rows) blows up otherwise. We
-                # pull the most recent N runs and let the consumer
-                # paginate inside that window. ~10x the page size is
-                # plenty for "browse latest" workflows; explicit
-                # filters (plan/task/session) take a different SQL
-                # path and aren't capped this way.
-                pool_cap = max(200, min(2000, f.limit * 10))
-                ids_rows = c.execute(
-                    f"""SELECT id FROM runs WHERE {where}
-                        ORDER BY started_at DESC LIMIT ?""",
-                    [*params, pool_cap],
+                rows = c.execute(
+                    q, [*params, f.limit, f.offset],
                 ).fetchall()
-                ids = [r[0] for r in ids_rows]
-                if not ids:
-                    return []
-                placeholders = ",".join("?" for _ in ids)
-                sub_sort = ("MIN(e.timestamp)" if sort_col == "started_at"
-                            else f"runs.{sort_col}")
-                # plan_id / task_id come from the direct trace_run_id
-                # foreign key in qa_tasks (worker pre-stamps it at
-                # lease time). For judge runs, the same lookup goes
-                # through linked_run_id (= the agent's run id, which
-                # IS the trace_run_id of that task).
-                q = f"""
-                    SELECT runs.id            AS session_id,
-                           e.agent_id         AS agent_id,
-                           e.agent_name       AS agent_name,
-                           runs.kind, runs.model, runs.status,
-                           runs.pr_url, runs.project, runs.scenario_id, runs.scenario_tags,
-                           runs.generation, runs.mutation, runs.files_touched, runs.jira_keys,
-                           runs.linked_run_id, runs.fs_trace_path,
-                           CASE WHEN runs.kind='judge' THEN runs.linked_run_id
-                                ELSE runs.id END AS scenario_run_id,
-                           runs.findings_count, runs.total_tokens_paid,
-                           runs.prompt_source, runs.prompt_hash,
-                           MIN(e.timestamp)   AS started_at,
-                           MAX(e.timestamp)   AS finished_at,
-                           COUNT(e.id)        AS events_count,
-                           COALESCE(
-                             (SELECT t.plan_id FROM qa_tasks t
-                              WHERE t.trace_run_id = runs.id LIMIT 1),
-                             (SELECT t.plan_id FROM qa_tasks t
-                              WHERE t.trace_run_id = runs.linked_run_id LIMIT 1)
-                           ) AS plan_id,
-                           COALESCE(
-                             (SELECT t.id FROM qa_tasks t
-                              WHERE t.trace_run_id = runs.id LIMIT 1),
-                             (SELECT t.id FROM qa_tasks t
-                              WHERE t.trace_run_id = runs.linked_run_id LIMIT 1)
-                           ) AS task_id
-                    FROM runs JOIN events e ON e.run_id = runs.id
-                    WHERE runs.id IN ({placeholders})
-                      AND e.agent_id IS NOT NULL AND e.agent_id != ''
-                    GROUP BY runs.id, e.agent_id, e.agent_name
-                    ORDER BY {sub_sort} {order}
-                    LIMIT ? OFFSET ?
-                """
-                rows = c.execute(q, ids + [f.limit, f.offset]).fetchall()
         except FileNotFoundError:
             return []
         out = []
@@ -320,26 +302,19 @@ class SQLiteTraceStore:
     def count_sub_runs(self, f: RunFilter) -> int:
         f = self._apply_default_window(f)
         where, params = self._where_for_runs(f)
+        q = f"""
+            WITH runs AS MATERIALIZED (
+              SELECT id FROM runs WHERE {where}
+            )
+            SELECT COUNT(*) FROM (
+              SELECT 1 FROM runs JOIN events e ON e.run_id = runs.id
+              WHERE e.agent_id IS NOT NULL AND e.agent_id != ''
+              GROUP BY runs.id, e.agent_id, e.agent_name
+            )
+        """
         try:
             with self._conn() as c:
-                pool_cap = max(200, min(2000, f.limit * 10))
-                ids = [r[0] for r in c.execute(
-                    f"""SELECT id FROM runs WHERE {where}
-                        ORDER BY started_at DESC LIMIT ?""",
-                    [*params, pool_cap],
-                ).fetchall()]
-                if not ids:
-                    return 0
-                placeholders = ",".join("?" for _ in ids)
-                row = c.execute(
-                    f"""SELECT COUNT(*) FROM (
-                          SELECT 1 FROM events e
-                          WHERE e.run_id IN ({placeholders})
-                            AND e.agent_id IS NOT NULL AND e.agent_id != ''
-                          GROUP BY e.run_id, e.agent_id, e.agent_name
-                        )""",
-                    ids,
-                ).fetchone()
+                row = c.execute(q, params).fetchone()
                 return int(row[0]) if row else 0
         except FileNotFoundError:
             return 0
