@@ -1820,6 +1820,158 @@ score storage exposed in UI — §5e.scoring follow-up) so we
 have actual data to compute CV from. Premature optimisation
 without the data is just guessing.
 
+### 5e.16 Test plan structure — five-axis scoring + tier split (TODO)
+
+**Idea.** The current `diff-graph-unit-tier` schedule is a single
+flat matrix: one config × one provider × all scenarios with
+`tier:unit`. This collapses three orthogonal questions ("does the
+agent reason correctly?", "is it efficient?", "does it survive
+adverse inputs?") into a single avg_score. We want a stratified
+plan whose layers fire on different triggers and emit different
+metrics.
+
+**Five scoring axes.** §5c proposed two (hard skill +
+collaboration). Refining to five:
+
+1. **hard skills** — output correctness on a known answer.
+   - `recall = required_found / required_total`
+   - `precision = 1 - false_positives / total_findings`
+   - `severity_calibration` — found-finding severity matches expected
+   - `verdict_match` — APPROVED/NEEDS_WORK matches expected
+   - Source: judge.findings vs scenario.expected_output (already
+     computed — this is what `score_scenario` returns today)
+
+2. **methodology** — *reasoning* quality (independent of output).
+   - count of `agent_warnings` per kind: `wrong-location`,
+     `contradicts-codebase`, `methodology-gap`, `surface-acceptance`,
+     `wrong-reasoning`, `interface-violation`, `other`
+   - Each kind weighted (e.g. `wrong-location` heavier than `other`)
+   - `methodology_score = 1 - weighted_warnings / max_weighted_warnings`
+   - Why a separate axis: an agent can produce the right comments
+     for the wrong reasons (lucky guess on a public dataset). hard
+     skill says ✓, methodology says ✗ — and the agent will fail on
+     close-but-different inputs. Methodology is the better predictor
+     of generalisation.
+   - Source: judge.agent_warnings (already produced today, just not
+     aggregated as a separate axis).
+
+3. **soft skills / collaboration** — interaction quality.
+   - `thread_focus` — answer landed in the right thread context
+   - `must_address` — explicit answer, not hedge
+   - `forbidden_off_topic_rate`
+   - `incremental_awareness` — for prior-round scenarios
+   - Source: existing reply judge signals on SCEN-200..205 series.
+
+4. **efficiency** — cost per useful unit. New axis enabled by
+   §5e.10's per-span token stamping (committed e16f9e3).
+   - `tokens_per_finding = tokens_in_uncached / max(1, findings_kept)`
+   - `tools_per_step = total_tool_calls / react_steps`
+   - `cache_hit_rate = tokens_cached / tokens_in_total`
+   - `duration_per_complexity_unit` (need a complexity proxy:
+     diff size in changed lines? scenario.expected_output.required_count?)
+   - Source: SUM(llm.tokens_*) and COUNT(tool.*) across the agent's
+     own children spans (already aggregated in /qa/traces row).
+
+5. **resilience** — graceful behavior on hostile/adverse inputs. New
+   axis. Requires a new tier of scenarios (`tier:chaos`) that
+   *intentionally* break things:
+   - rate-limit injection (mock LLM returns 429 mid-stream)
+   - DNS / Bitbucket 5xx mid-fetch
+   - malformed PR (binary diff, gigantic file > context window,
+     submodule, encoding bom)
+   - runaway context: 50k-line diff, 30 files
+   - timeout boundary: scenario where the budget is just barely
+     enough — does the agent stop or run-away?
+   Pass criteria are *behavioural*: did the agent fail-fast with a
+   clean error, or did it loop / hang / OOM?
+   - Source: scenario.expected_output gets new fields like
+     `expected_terminal_state: error`, `expected_error_class: timeout`,
+     `expected_findings_count_max: 0` (no false positives under
+     truncation) — judge compares.
+
+**Tier split — five schedules.**
+
+| schedule | trigger | scenarios | budget | success metric |
+|---|---|---|---|---|
+| **tier:smoke** | every commit, fail loud | sentinel set: DISP-001/002, REV-001/002, INV-001, SCEN-204b (≈6 scenarios that historically pass ≥80% of the time) | <2 min total | binary: any non-pass = page someone |
+| **tier:unit** | every commit | per-agent isolated tests (§5e.14): investigator-only, dispatcher-only, reviewer-only with mocked tool registries / fake parents | <5 min total | hard + methodology |
+| **tier:integration** | nightly + on merge candidate | current full-pipeline bench (REV-*, SCEN-200..305) | 30-60 min | hard + methodology + soft + efficiency |
+| **tier:chaos** | weekly | resilience scenarios with injected failures | 10-20 min | resilience only (other axes don't apply — agent is *supposed* to fail-fast) |
+| **tier:hard** (opt-in) | on-demand via `fire-on` | high-cost: huge PRs, multi-file refactors, deep /investigate chains | hours | hard + efficiency at the limit |
+
+Smoke is the gatekeeper: 6 trusted scenarios that broadly cover
+"can dispatcher route?", "can reviewer review?", "can investigator
+answer a question?", "can interaction work in a multi-thread PR?".
+If any of those break, no point running anything else.
+
+**Sentinel candidates** (high historical pass rate over last 30
+plans, as of 2026-05-10):
+- DISP-001 24/27 (89%) — dispatcher receives /review, spawns reviewer
+- DISP-002 24/27 (89%) — cross-thread greeting → /help
+- REV-001  24/27 (89%) — basic reviewer with concerns
+- REV-002  24/27 (89%) — reviewer consolidation
+- INV-001  22/27 (81%) — investigator focused-question
+- SCEN-204b 11/12 (92%) — multi-thread interaction
+
+Other current scenarios (SCEN-009/010/011 java review, SCEN-300+
+incremental, SCEN-200/201/202/203 interaction) currently sit at
+0–25% pass rate locally — those are *not* sentinels until we know
+why they fail (env, fixtures, data) so we don't bake flake into
+the smoke tier.
+
+**Storage (extends §5c agent_qa_runs).** Add five-axis columns:
+
+```sql
+ALTER TABLE agent_qa_runs ADD COLUMN
+  -- methodology axis
+  meth_warnings_count INTEGER,
+  meth_warnings_by_kind TEXT,    -- JSON: {wrong-location: N, ...}
+  meth_score REAL,
+  -- efficiency axis
+  ef_tokens_in_uncached INTEGER,
+  ef_tokens_out INTEGER,
+  ef_cache_hit_rate REAL,
+  ef_tokens_per_finding REAL,
+  ef_tools_per_step REAL,
+  ef_score REAL,                 -- normalised vs scenario baseline
+  -- resilience axis (only set for tier:chaos)
+  res_terminal_state TEXT,
+  res_expected_terminal_state TEXT,
+  res_score REAL;
+```
+
+Per-tier `deploy_ready` decision:
+- smoke: 100% pass required
+- unit:  hard ≥ 0.8 AND methodology ≥ 0.7
+- integration: hard ≥ 0.7 AND methodology ≥ 0.7 AND soft ≥ 0.7
+- chaos: resilience ≥ 0.9
+- hard: efficiency-aware (cost regression > 20% blocks)
+
+**Discovery sweep changes.** `qa_auto_plan_configs` already supports
+`scenario_tags` filter. Need 5 configs (one per tier) instead of one,
+each with its own scenario_tag and its own pacing. Smoke's
+`pacing=aggressive`; chaos's `pacing=spread` over a long window
+(LLM rate-limit mocks need staggering).
+
+**Implementation order.**
+1. **§5e.14 first** (isolated unit tests). Without it the unit-tier
+   has nothing distinct from integration. (~1 week)
+2. **methodology axis aggregator** — reads judge.agent_warnings,
+   normalises to a 0..1 score. Plumb into agent_qa_runs +
+   /qa/scoring + /qa/mutations. No new spans needed. (~2 days)
+3. **efficiency axis aggregator** — reads from otel_spans subqueries
+   (already aggregated for /qa/traces row in commit e16f9e3).
+   Just normalise vs scenario baseline + plumb. (~2 days)
+4. **smoke tier** — new schedule with 6 sentinel scenarios, runs
+   every commit, alerts on non-pass via webhook. (~1 day)
+5. **chaos tier scaffolding** — ToolMocks extended with
+   `inject_failure: rate_limit | dns_error | timeout | malformed_input`,
+   first 3-5 scenarios authored. Resilience axis evaluator. (~1 week)
+
+Defer chaos tier until smoke + methodology + efficiency are landed —
+those are immediately useful with current scenarios; chaos needs
+new fixtures + judge changes.
+
 ---
 
 ## 5b. Jira context — agent reads the ticket and follows links
