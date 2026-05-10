@@ -66,6 +66,9 @@ class RunFilter:
     # By scheduling: runs that were spawned by tasks belonging to this
     # plan_id (joined via qa_tasks on (mutation_hash, scenario_id)).
     plan_id: Optional[int] = None
+    # Narrow further to a specific task (one scenario × attempt within
+    # a plan). Joined via qa_tasks.id with the same time-window logic.
+    task_id: Optional[int] = None
 
     # Pagination & sort
     limit: int = 50
@@ -885,6 +888,28 @@ class SQLiteTraceStore:
                 "WHERE json_each.value = ?)"
             )
             params.append(f.scenario_tag)
+
+        if f.task_id is not None:
+            # Narrow to one task: same shape as plan_id but pinned to a
+            # single row in qa_tasks. Judges still match indirectly via
+            # linked_run_id pointing to an agent that matches.
+            task_match = (
+                "SUBSTR(t.mutation_hash, 1, 7) = {alias}.mutation "
+                "AND t.started_at IS NOT NULL "
+                "AND {alias}.started_at >= t.started_at "
+                "AND {alias}.started_at <= COALESCE(t.finished_at, datetime('now'))"
+            )
+            clauses.append(
+                "(EXISTS (SELECT 1 FROM qa_tasks t "
+                "         WHERE t.id = ? AND " +
+                task_match.format(alias="runs") + ") "
+                " OR runs.linked_run_id IN ("
+                "      SELECT a.id FROM runs a JOIN qa_tasks t "
+                "      ON " + task_match.format(alias="a") + " "
+                "      WHERE t.id = ?))"
+            )
+            params.append(int(f.task_id))
+            params.append(int(f.task_id))
 
         if f.plan_id is not None:
             # Match runs that belong to this plan. Two paths:

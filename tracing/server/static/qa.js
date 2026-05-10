@@ -84,7 +84,7 @@ document.addEventListener('alpine:init', () => {
         filters: {
           kind: '', agent: '', model: '', scenario: '',
           generation: '', mutation: '', project: '', status: '',
-          plan: '',
+          plan: '', task: '',
           scenario_tag_arr: [],
           file: '', jira: '', duration_gt_ms: null,
           limit: 50, offset: 0, sort: 'started_at', order: 'desc',
@@ -125,7 +125,7 @@ document.addEventListener('alpine:init', () => {
             kind: 'kind', agent: 'agent', model: 'model',
             scenario: 'scenario', generation: 'generation',
             mutation: 'mutation', project: 'project', status: 'status',
-            plan: 'plan',
+            plan: 'plan', task: 'task',
             file: 'file', jira: 'jira',
             duration_gt_ms: 'duration_gt_ms',
           };
@@ -156,7 +156,7 @@ document.addEventListener('alpine:init', () => {
           const f = this.filters;
           const scalarOut = { kind: f.kind, agent: f.agent, model: f.model,
             scenario: f.scenario, generation: f.generation, mutation: f.mutation,
-            project: f.project, status: f.status, plan: f.plan,
+            project: f.project, status: f.status, plan: f.plan, task: f.task,
             file: f.file, jira: f.jira,
           };
           for (const [k, v] of Object.entries(scalarOut)) {
@@ -182,7 +182,7 @@ document.addEventListener('alpine:init', () => {
           // Scalars (use URL param names that match the API).
           const scalarOut = { kind: f.kind, agent: f.agent, model: f.model,
             scenario: f.scenario, generation: f.generation, mutation: f.mutation,
-            project: f.project, status: f.status, plan: f.plan,
+            project: f.project, status: f.status, plan: f.plan, task: f.task,
             file: f.file, jira: f.jira,
           };
           for (const [k, v] of Object.entries(scalarOut)) {
