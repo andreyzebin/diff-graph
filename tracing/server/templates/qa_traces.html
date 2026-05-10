@@ -72,13 +72,6 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 
 <div x-data="runsView" x-init="init(); setInterval(() => search(true), 5000)">
   <div class="filter-grid">
-    <label>kind
-      <select x-model="filters.kind" @change="search()">
-        <option value="">any</option>
-        <template x-for="v in dims.kind"><option :value="v" x-text="v"></option></template>
-      </select>
-    </label>
-
     <label>agent
       <select x-model="filters.agent" @change="search()">
         <option value="">any</option>
@@ -194,7 +187,6 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
           <th>session</th>
           <th>scen_run</th>
           <th>agent_id</th>
-          <th>kind</th>
           <th>agent</th>
           <th>scenario</th>
           <th>model</th>
@@ -203,7 +195,6 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
           <th>plan</th>
           <th>task</th>
           <th class="dur-cell">dur ms</th>
-          <th>linked</th>
           <th>tags</th>
           <th>started</th>
         </tr>
@@ -232,7 +223,6 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
                  :title="'open trace for this agent'"
                  x-text="(r.agent_id || '').slice(0,8) || '—'"></a>
             </td>
-            <td><span :class="`kind-${r.kind}`" x-text="r.kind"></span></td>
             <td x-text="r.agent_name || ''"></td>
             <td x-text="r.scenario_id || ''"></td>
             <td x-text="(r.model || '').slice(0,28)" :title="r.model"></td>
@@ -255,13 +245,6 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
               </template>
             </td>
             <td class="dur-cell" x-text="r.duration_ms || ''"></td>
-            <td>
-              <template x-if="r.linked_run_id">
-                <a class="linked-chip" :href="`{{ base_path }}/runs/${r.linked_run_id}`"
-                   :title="`open ${r.kind === 'agent' ? 'judge' : 'agent'} run ${r.linked_run_id}`"
-                   x-text="`↗ ${(r.kind === 'agent' ? 'judge' : 'agent')}`"></a>
-              </template>
-            </td>
             <td>
               <template x-for="t in (r.scenario_tags || []).slice(0, 3)">
                 <span class="tag-chip" x-text="t"></span>

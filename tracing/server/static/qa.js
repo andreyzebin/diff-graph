@@ -45,20 +45,18 @@ document.addEventListener('alpine:init', () => {
 
   Alpine.data('dash', () => ({
     
-        totalRuns: '…', agentRuns: '…', judgeRuns: '…',
+        totalRuns: '…',
         mutations: '…', scenarios: '…',
         byProvider: [], byScenario: [],
         async load() {
           const get = async (path) => (await (await fetch(`${window.QA_BASE_PATH || ''}${path}`)).json()).data;
-    
+
           // counts via /api/search/runs?limit=1 — we just need meta.total
           const fetchCount = async (extra = '') => {
             const r = await (await fetch(`${window.QA_BASE_PATH || ''}/api/search/runs?limit=1${extra}`)).json();
             return (r.meta && r.meta.total) || 0;
           };
           this.totalRuns = await fetchCount();
-          this.agentRuns = await fetchCount('&kind=agent');
-          this.judgeRuns = await fetchCount('&kind=judge');
     
           this.byProvider = await get('/api/search/aggregates/by_provider');
           this.byScenario = await get('/api/search/aggregates/by_scenario');
@@ -76,13 +74,13 @@ document.addEventListener('alpine:init', () => {
 
   Alpine.data('runsView', () => ({
     
-        dims: { kind: [], agent_name: [], model: [], scenario_id: [],
+        dims: { agent_name: [], model: [], scenario_id: [],
                 generation: [], project: [], status: [],
                 scenario_tags: [] },
         // Inline initialiser — calling this.defaultFilters() in the
         // object literal would fail (this is undefined at that point).
         filters: {
-          kind: '', agent: '', model: '', scenario: '',
+          agent: '', model: '', scenario: '',
           generation: '', mutation: '', project: '', status: '',
           plan: '', task: '', session: '', scenario_run: '',
           window: '24h',  // time-window default: last 24h (Jaeger convention)
@@ -112,7 +110,7 @@ document.addEventListener('alpine:init', () => {
         },
         defaultFilters() {
           return {
-            kind: '', agent: '', model: '', scenario: '',
+            agent: '', model: '', scenario: '',
             generation: '', mutation: '', project: '', status: '',
             scenario_tag_arr: [],
             file: '', jira: '', duration_gt_ms: null,
@@ -123,7 +121,7 @@ document.addEventListener('alpine:init', () => {
           const sp = new URLSearchParams(window.location.search);
           // Scalar filters: copy the URL param into the corresponding filter key.
           const scalarMap = {
-            kind: 'kind', agent: 'agent', model: 'model',
+            agent: 'agent', model: 'model',
             scenario: 'scenario', generation: 'generation',
             mutation: 'mutation', project: 'project', status: 'status',
             plan: 'plan', task: 'task', session: 'session',
@@ -156,7 +154,7 @@ document.addEventListener('alpine:init', () => {
           // Reflect filters into URL for shareable links / browser back.
           const qs = new URLSearchParams();
           const f = this.filters;
-          const scalarOut = { kind: f.kind, agent: f.agent, model: f.model,
+          const scalarOut = { agent: f.agent, model: f.model,
             scenario: f.scenario, generation: f.generation, mutation: f.mutation,
             project: f.project, status: f.status, plan: f.plan, task: f.task,
             session: f.session, scenario_run: f.scenario_run,
@@ -183,7 +181,7 @@ document.addEventListener('alpine:init', () => {
           const qs = new URLSearchParams();
           const f = this.filters;
           // Scalars (use URL param names that match the API).
-          const scalarOut = { kind: f.kind, agent: f.agent, model: f.model,
+          const scalarOut = { agent: f.agent, model: f.model,
             scenario: f.scenario, generation: f.generation, mutation: f.mutation,
             project: f.project, status: f.status, plan: f.plan, task: f.task,
             session: f.session, scenario_run: f.scenario_run,

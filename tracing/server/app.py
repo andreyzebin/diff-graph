@@ -429,7 +429,6 @@ def _split_csv(v: Optional[str]) -> list[str]:
 @app.get("/api/search/runs")
 async def api_search_runs(
     # run attributes
-    kind: Optional[str] = None,
     agent: Optional[str] = None,
     model: Optional[str] = None,
     status: Optional[str] = None,
@@ -466,7 +465,7 @@ async def api_search_runs(
     §5e.13) and the agent-friendly stdout contract are stable.
     """
     f = RunFilter(
-        kind=kind, agent_name=agent, model=model, status=status,
+        agent_name=agent, model=model, status=status,
         since=since, until=until,
         duration_gt_ms=duration_gt_ms, tokens_gt=tokens_gt,
         generation=generation, mutation=mutation,
@@ -499,7 +498,6 @@ async def api_search_sub_runs(
     # Same filter set as /api/search/runs — applies to the parent
     # runs row; the view then flattens each session into one row
     # per sub-agent (run_id × agent_id × agent_name).
-    kind: Optional[str] = None,
     agent: Optional[str] = None,
     model: Optional[str] = None,
     status: Optional[str] = None,
@@ -532,7 +530,7 @@ async def api_search_sub_runs(
     just with plan/task columns NULL since they aren't tied to a
     qa_tasks row."""
     f = RunFilter(
-        kind=kind, agent_name=agent, model=model, status=status,
+        agent_name=agent, model=model, status=status,
         since=since, until=until,
         duration_gt_ms=duration_gt_ms, tokens_gt=tokens_gt,
         generation=generation, mutation=mutation,
@@ -599,12 +597,10 @@ async def api_search_dimensions():
 
 @app.get("/api/search/aggregates/by_provider")
 async def api_aggregate_by_provider(
-    kind: Optional[str] = None,
     since: Optional[str] = None,
     until: Optional[str] = None,
 ):
-    f = RunFilter(kind=kind, since=since, until=until,
-                  limit=10**9, offset=0)
+    f = RunFilter(since=since, until=until, limit=10**9, offset=0)
     return JSONResponse({"data": _store().aggregate_by_provider(f)})
 
 

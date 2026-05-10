@@ -39,7 +39,6 @@ from orchestra.trace_db import DEFAULT_DB_PATH
 class RunFilter:
     """All filters for the /api/runs list endpoint. Every field is optional."""
     # By run attributes
-    kind: Optional[str] = None
     agent_name: Optional[str] = None
     model: Optional[str] = None
     status: Optional[str] = None
@@ -209,8 +208,6 @@ class SQLiteTraceStore:
               json_extract(attributes, '$."diffgraph.run_id"')      AS session_id,
               json_extract(attributes, '$."diffgraph.agent_id"')    AS agent_id,
               json_extract(attributes, '$."diffgraph.agent_name"')  AS agent_name,
-              CASE WHEN json_extract(attributes, '$."diffgraph.agent_name"')='judge'
-                   THEN 'judge' ELSE 'agent' END                    AS kind,
               json_extract(attributes, '$."diffgraph.model"')       AS model,
               json_extract(attributes, '$."diffgraph.scenario_id"') AS scenario_id,
               json_extract(attributes, '$."diffgraph.mutation"')    AS mutation,
@@ -319,16 +316,6 @@ class SQLiteTraceStore:
             )
             params.append(f.mutation)
             params.append(f.mutation + "%")
-        if f.kind:
-            # Derived from agent_name; only 'judge' vs 'agent' make sense.
-            if f.kind == "judge":
-                clauses.append(
-                    "json_extract(attributes, '$.\"diffgraph.agent_name\"') = 'judge'"
-                )
-            else:
-                clauses.append(
-                    "json_extract(attributes, '$.\"diffgraph.agent_name\"') != 'judge'"
-                )
         if f.status == "failed":
             clauses.append("status_code = 'ERROR'")
         elif f.status == "completed":
@@ -433,7 +420,7 @@ class SQLiteTraceStore:
         """Distinct values for each filter dimension — feeds the
         dropdowns on /qa/runs. One round-trip instead of six."""
         out = {
-            "kind": [], "agent_name": [], "model": [],
+            "agent_name": [], "model": [],
             "scenario_id": [], "generation": [], "project": [],
             "scenario_tags": [], "status": [],
             "lineage": [],
@@ -441,7 +428,7 @@ class SQLiteTraceStore:
         try:
             with self._conn() as c:
                 # Scalar columns: SELECT DISTINCT
-                for col in ("kind", "agent_name", "model", "scenario_id",
+                for col in ("agent_name", "model", "scenario_id",
                             "generation", "project", "status"):
                     rows = c.execute(
                         f"SELECT DISTINCT {col} AS v FROM runs "
@@ -1031,7 +1018,6 @@ class SQLiteTraceStore:
                 clauses.append(f"{col} = ?")
                 params.append(val)
 
-        eq("kind", f.kind)
         eq("runs.id", f.session_id)         # qualified — disambiguates in JOIN events
         eq("agent_name", f.agent_name)
         if f.scenario_run_id:
