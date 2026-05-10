@@ -349,6 +349,22 @@ class Agent:
         except Exception as exc:
             log.warning("single-shot agent '%s' failed: %s", self.config.name, exc)
             output = None
+            # Mark the surrounding agent.<name> span as ERROR so
+            # /qa/traces shows ✗ failed instead of ✓ completed. The
+            # exception is swallowed for callers (we still return an
+            # AgentResult), but observability has to surface it —
+            # judges that 401/timeout otherwise look indistinguishable
+            # from successful no-op runs.
+            try:
+                from opentelemetry import trace as _otel_trace
+                from opentelemetry.trace import StatusCode, Status as _Status
+                _cur = _otel_trace.get_current_span()
+                if _cur is not None:
+                    _cur.record_exception(exc)
+                    _cur.set_status(_Status(StatusCode.ERROR,
+                                             f"{type(exc).__name__}: {exc}"[:300]))
+            except Exception:
+                pass
 
         return AgentResult(
             agent_id=self.agent_id,
@@ -459,6 +475,19 @@ class Agent:
                           self.config.name, step, type(exc).__name__, exc)
                 log.debug("LLM params: model=%s url=%s", step_model,
                           getattr(self.llm, '_base_url', getattr(self.llm, 'base_url', '?')))
+                # Surface the LLM error on the agent.<name> span so
+                # /qa/traces shows ✗ failed (otherwise the agent ends
+                # quietly with no findings and looks like 'completed').
+                try:
+                    from opentelemetry import trace as _otel_trace
+                    from opentelemetry.trace import StatusCode, Status as _Status
+                    _cur = _otel_trace.get_current_span()
+                    if _cur is not None:
+                        _cur.record_exception(exc)
+                        _cur.set_status(_Status(StatusCode.ERROR,
+                                                 f"{type(exc).__name__}: {exc}"[:300]))
+                except Exception:
+                    pass
                 break
 
             # Update budget

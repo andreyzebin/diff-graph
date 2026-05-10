@@ -218,6 +218,7 @@ class SQLiteTraceStore:
               CASE WHEN end_ns IS NULL    THEN 'running'
                    WHEN status_code='ERROR' THEN 'failed'
                    ELSE 'completed' END                             AS status,
+              status_message                                        AS error_message,
               datetime(start_ns / 1000000000.0, 'unixepoch')        AS started_at,
               CASE WHEN end_ns IS NOT NULL
                    THEN datetime(end_ns / 1000000000.0, 'unixepoch')

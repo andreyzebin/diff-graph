@@ -46,9 +46,11 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 .runs-table tr:hover { background: #161b22; }
 .run-link { color: #58a6ff; text-decoration: none; font-family: ui-monospace, monospace; }
 .run-link:hover { text-decoration: underline; }
-.kind-agent { color: #56d364; }
-.kind-judge { color: #d2a8ff; }
-.kind-evaluator { color: #c69026; }
+.status-completed { color: #56d364; }
+.status-failed    { color: #f85149; font-weight: bold; }
+.status-running   { color: #d29922; }
+tr.row-failed     { background: #ff000010; }
+tr.row-running    { background: #d2992211; }
 .tag-chip { display: inline-block; padding: 1px 6px; margin: 1px; background: #21262d;
             color: #8b949e; border-radius: 3px; font-size: 0.75em; }
 .linked-chip { display: inline-block; padding: 1px 6px; background: #d2a8ff22;
@@ -184,6 +186,7 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
     <table class="runs-table">
       <thead>
         <tr>
+          <th>status</th>
           <th>session</th>
           <th>scen_run</th>
           <th>agent_id</th>
@@ -201,7 +204,18 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
       </thead>
       <tbody>
         <template x-for="r in rows" :key="`${r.session_id || r.id}|${r.agent_id || ''}`">
-          <tr>
+          <tr :class="`row-${r.status || ''}`">
+            <td>
+              <span :class="`status-${r.status || ''}`"
+                    :title="r.error_message || r.status || ''"
+                    x-text="r.status === 'failed' ? '✗ failed' : (r.status === 'running' ? '⟳ running' : '✓')"></span>
+              <template x-if="r.status === 'failed' && (r.span_id || r.trace_id)">
+                <a class="run-link" style="margin-left:6px;font-size:0.8em;"
+                   :href="`{{ base_path }}/runs/${r.session_id || r.id}/trace?agent=${r.agent_id || ''}`"
+                   :title="r.error_message || 'open span detail (request/response/exception)'"
+                   x-text="'response →'"></a>
+              </template>
+            </td>
             <td>
               <a class="run-link"
                  :href="`{{ base_path }}/qa/traces?session=${r.session_id || r.id}`"

@@ -72,6 +72,7 @@ def _expand_config(obj):
 
 def _make_llm_client(llm_cfg: dict):
     from openai import OpenAI
+    import httpx
     kwargs: dict = {"api_key": llm_cfg.get("api_key") or "no-key"}
     api_url = llm_cfg.get("api_url", "").strip()
     if api_url:
@@ -85,12 +86,16 @@ def _make_llm_client(llm_cfg: dict):
     if ca_bundle:
         ca_bundle = os.path.expanduser(ca_bundle)
     no_ssl = os.environ.get("GIT_SSL_NO_VERIFY") == "1"  # set by --no-verify-ssl
-    if no_ssl:
-        import httpx
-        kwargs["http_client"] = httpx.Client(verify=False, timeout=timeout)
-    elif ca_bundle:
-        import httpx
-        kwargs["http_client"] = httpx.Client(verify=ca_bundle, timeout=timeout)
+
+    # LLM traffic always bypasses HTTP/HTTPS/ALL_PROXY env vars
+    # (`trust_env=False`). The user's local proxy chain intercepts
+    # api.deepseek.com et al. with a self-signed cert, breaking
+    # judge.evaluate() with CERTIFICATE_VERIFY_FAILED. The proxy is
+    # for browsers / git, not for outbound LLM calls.
+    verify = (False if no_ssl else (ca_bundle or True))
+    kwargs["http_client"] = httpx.Client(
+        verify=verify, timeout=timeout, trust_env=False,
+    )
     return OpenAI(**kwargs)
 
 
