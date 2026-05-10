@@ -583,10 +583,19 @@ def run(
         },
     )
     _root_span = _root_cm.__enter__()
-    # Stamp domain dims from env up front so even an early crash row
-    # in /qa/traces is correctly grouped under its plan/task/scenario.
+    # Per-invocation session id derived from cli.run span_id (= the
+    # cli request id semantically). Each cli.py process gets its
+    # own — bench's pattern of running agent+judge as siblings under
+    # one worker task no longer collapses them into the same
+    # session_id in /qa/traces. Overriding the env so any downstream
+    # code that reads DIFFGRAPH_TRACE_RUN_ID (TraceDBWriter,
+    # _run_with_dispatcher) picks up the same value.
+    _session_id = format(_root_span.get_span_context().span_id, '016x')[:12]
+    os.environ["DIFFGRAPH_TRACE_RUN_ID"] = _session_id
+    # Stamp domain dims up front so even an early crash row in
+    # /qa/traces is correctly grouped under its plan/task/scenario.
     set_domain_attrs(
-        run_id=os.environ.get("DIFFGRAPH_TRACE_RUN_ID", ""),
+        run_id=_session_id,
         plan_id=os.environ.get("DIFFGRAPH_PLAN_ID", ""),
         task_id=os.environ.get("DIFFGRAPH_TASK_ID", ""),
         scenario_id=os.environ.get("DIFFGRAPH_SCENARIO_ID", ""),
