@@ -465,7 +465,7 @@ class AutoPlanStore:
                     not_before = None
                     if spread_step > 0:
                         not_before = (now + timedelta(seconds=spread_step * slot_idx)).isoformat()
-                    tid = self.queue.enqueue(TaskSpec(
+                    agent_tid = self.queue.enqueue(TaskSpec(
                         scenario_id=scenario,
                         provider=provider,
                         attempt_n=attempt_n,
@@ -478,7 +478,31 @@ class AutoPlanStore:
                                  "config_name": cfg.name},
                         not_before=not_before,
                     ))
-                    task_ids.append(tid)
+                    task_ids.append(agent_tid)
+                    # Phantom judge companion paired with the agent.
+                    # Same scenario/provider/attempt — never leased
+                    # (initial_state='blocked'); the bench process that
+                    # runs the agent ALSO runs the LLM judge call (per
+                    # runner/run.py: agent → judge.evaluate sequentially
+                    # in one async). queue.finish() cascades the agent's
+                    # terminal state onto this row so the UI's "agents
+                    # X/Y · judges A/B" counters move in lockstep.
+                    judge_tid = self.queue.enqueue(TaskSpec(
+                        scenario_id=scenario,
+                        provider=provider,
+                        attempt_n=attempt_n,
+                        lineage=lineage,
+                        mutation_hash=sha,
+                        plan_id=plan_id,
+                        priority=100,
+                        kind="judge",
+                        parent_task_id=agent_tid,
+                        initial_state="blocked",
+                        payload={"plan_name": plan_name,
+                                 "config_id": cfg.id,
+                                 "config_name": cfg.name},
+                    ))
+                    task_ids.append(judge_tid)
                     slot_idx += 1
         return plan_id, task_ids
 
