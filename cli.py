@@ -89,6 +89,24 @@ def _print_trigger_summary(agent_cfg: dict, console) -> None:
 
 
 def _make_llm_client(judge_cfg: dict):
+    # Phase 2.C: judge.backend = 'orchestra' delegates the LLM call
+    # to diff-graph's CLI, so judge runs share the same OTel/SQLite
+    # observability stack as the agents they grade — no separate
+    # judge tracing code path. backend='legacy' keeps the in-process
+    # LLM client (default).
+    backend = (judge_cfg.get("backend") or "legacy").lower()
+    if backend == "orchestra":
+        from runner.orchestra_judge import SubprocessLLMClient
+        return SubprocessLLMClient(
+            diffgraph_repo=_expand_env(
+                judge_cfg.get("diffgraph_repo", "/home/andrey/repos/diff-graph")),
+            agent=judge_cfg.get("agent", "judge.raw"),
+            prompts_subdir=judge_cfg.get("prompts_subdir",
+                                          "diffgraph/prompts/judges/"),
+            timeout=judge_cfg.get("timeout", 600),
+            model=judge_cfg.get("model", ""),
+            stream_output=judge_cfg.get("output", "log") == "stream",
+        )
     from runner.judge import AnthropicLLMClient, OpenAILLMClient
     model = judge_cfg.get("model", "claude-opus-4-6")
     temperature = judge_cfg.get("temperature", 0)
