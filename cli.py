@@ -111,12 +111,16 @@ def _run_with_dispatcher(
     tool_mocks: Any = None,
     invocations_out: Optional[str] = None,
     user_message_override: Optional[str] = None,
+    output: Optional[str] = None,
 ) -> None:
     """
     Run any agent with lazy repo init.
 
-    Repo clone + diff happen lazily only when a domain tool is first called.
-    For /help or plain questions, no clone happens at all.
+    Repo clone + diff happen lazily only when a domain tool is first
+    called — empty `pr_url` is fine when the agent (e.g. judge.raw)
+    doesn't use repo tools at all. PR-side helpers (get_pr_info,
+    get_pr_comments, _publish_to_pr) are wrapped in try/except or
+    short-circuit on empty pr_url.
     """
     from diffgraph.bitbucket import (
         get_comment_thread, reply_to_pr_comment, get_pr_info,
@@ -432,6 +436,22 @@ def _run_with_dispatcher(
         from diffgraph.orchestrator import _parse_findings
         findings = _parse_findings(raw)
 
+    # SINGLE-mode agents (judge.*, etc.) put their verdict in the
+    # result dict and don't produce a `findings` array — write the
+    # whole result. ReAct agents have findings — write those.
+    if output:
+        if isinstance(result, dict) and result.get("findings") is None:
+            payload = result
+            label = "Output"
+        else:
+            payload = [f.to_dict() for f in findings]
+            label = f"Findings ({len(findings)} findings)"
+        Path(output).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        console.print(f"[green]{label} written to {output}[/green]")
+
     _trace_db.finish_run(
         model=effective_model,
         pr_url=pr_url,
@@ -654,10 +674,12 @@ def run(
         elif pr_url:
             agent_name = "reviewer"
 
-    # ── Agent mode: run any agent with lazy clone ─────────────────────────
-    if agent_name and pr_url:
-        # Webhook auto-triggers (pr:opened, repo:refs_changed) substitute
-        # `{comment_id}` with "" — accept that as "no comment context".
+    # ── Agent mode: run any agent (PR-bound or prompt-only) ───────────────
+    # pr_url / repo / message / comment_id are all OPTIONAL inputs the
+    # agent's prompt opts into via tool references. cli.py just plumbs
+    # whatever was passed; the agent fails organically when it tries
+    # to use a tool whose required data is absent.
+    if agent_name:
         cid_int: int = 0
         if comment_id:
             try:
@@ -665,15 +687,8 @@ def run(
             except (TypeError, ValueError):
                 cid_int = 0
 
-        # Build data from CLI flags + extra --data pairs
-        agent_data = dict(extra_data)
-        if message is not None:
-            agent_data["message"] = message
-        if cid_int:
-            agent_data["comment_id"] = str(cid_int)
-
         _run_with_dispatcher(
-            pr_url=pr_url,
+            pr_url=pr_url or "",
             message=message or "",
             comment_id=cid_int,
             llm_cfg=llm_cfg,
@@ -689,6 +704,7 @@ def run(
             tool_mocks=tool_mocks_obj,
             invocations_out=invocations_out,
             user_message_override=user_message_override,
+            output=output,
         )
         raise typer.Exit(0)
 
