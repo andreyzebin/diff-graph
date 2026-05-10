@@ -1737,17 +1737,111 @@ where we have data: investigator failures from prod feed the
 investigator-only tier, dispatcher misroutes feed dispatcher-
 only, reviewer false positives feed reviewer-only.
 
+**Per-agent test spec — what good behaviour looks like.** This
+isn't "run the agent, see if it finishes". The unit tier asserts
+specific agent-shaped properties, decoupled from each other:
+
+**investigator.<scenario>** — focus & root-cause stability.
+- Input: a concrete `concern.json` (e.g. "the new method may
+  NPE on null input"), a frozen repo+ref pair, optional prior
+  investigation context.
+- Expected behaviour: the agent goes AT THIS CONCERN, not
+  drifts. Tool usage stays within the concern's call/data graph;
+  it doesn't `read_outline` of unrelated subsystems just because
+  they look interesting.
+- Assertions:
+  - `findings[0]` identifies the concern's root cause (location +
+    short reason matches expected).
+  - Tool-call breadth: ratio of files/symbols touched outside the
+    concern's graph is bounded (`off_graph_tool_rate < 0.2`).
+  - Tolerance: incidental findings *on the path* are OK as long
+    as they don't require a separate investigation in another
+    direction. Encoded as: `expected_incidental_findings: true`
+    + `expected_tangent_investigations: 0` (i.e. no extra
+    `spawn_investigator` for unrelated branches).
+  - Stability: same fixture × N attempts produces consistent
+    root-cause text (token-set Jaccard over normalized spans).
+- Failure modes the unit catches: gets distracted, runs the
+  budget down on tangents, returns no answer, oscillates between
+  files.
+
+**reviewer.<scenario>** — two distinct unit shapes:
+
+A) **reviewer.concerns** — generates concerns oriented by
+project context.
+- Input: a PR fixture (diff + minimal repo state + AGENTS.md
+  hints + prior-round comment thread).
+- Expected behaviour: concerns reflect:
+  - project type / tech stack (Java enterprise, Python CLI,
+    JS library — concerns differ by archetype)
+  - frameworks/libraries visible in the diff (e.g. JPA → check
+    transactional boundaries; React hooks → check effect deps)
+  - existing discussion threads (don't re-flag what was
+    already discussed and accepted)
+- Assertions:
+  - Concern kinds match the scenario's
+    `expected.concern_kinds_set` (intersection ≥ N).
+  - `incremental_awareness`: prior-round threads acknowledged
+    rather than re-flagged (existing signal from §5c).
+  - No "off-archetype" concerns: e.g. transactional-boundary
+    flagged on a non-JPA file.
+
+B) **reviewer.consolidation** — summarizes pre-investigated
+findings together with thread context.
+- Input: a list of resolved findings (already investigated, with
+  evidence + severity) + the PR's full thread state.
+- Expected behaviour: produces a coherent summary that integrates
+  BOTH channels — the new findings AND the existing discussion —
+  without dropping either or duplicating.
+- Assertions:
+  - Coverage: summary mentions every finding (id-anchored,
+    measured via embedding/keyword cover).
+  - Thread integration: every "must_address" thread item has a
+    corresponding response or explicit acknowledgement in the
+    consolidation output.
+  - Length-vs-content: token economy — `summary_tokens / (n_findings + n_threads)` stays under a budget (don't pad).
+
+**dispatcher.<scenario>** — routing choice on a frozen request.
+- Input: a `(message, comment_id, thread_state)` triple, frozen
+  PR meta.
+- Expected behaviour: spawns the *correct* downstream agent
+  (reviewer / investigator / nothing-aka-/help) given the
+  message intent.
+- Assertions:
+  - Single `spawn_agent` call with `agent_name == expected`.
+  - No re-prompting for clarification on unambiguous requests
+    (`/review` doesn't trigger a clarifying question — it routes).
+  - `forbidden_no_op`: dispatcher never returns "I'll review this"
+    without actually spawning a reviewer.
+
+**Why these as the foundation.** They're tight, mechanical, fast
+(one agent, ~1-3 LLM calls, mocked tools), and they directly
+encode the value statements: "investigator stays on task",
+"reviewer is project-aware and integrates discussion",
+"dispatcher routes without ceremony". When any of these breaks,
+the failure is *localized* — we know which agent's prompt or
+tool surface regressed, not "the pipeline produced a worse
+verdict".
+
 **Open design questions.**
 - Fixture format for "fake ancestors" — JSON in scenario yaml
   vs separate files in scenarios/fixtures/?
 - Stubbing strategy — are tool calls intercepted (ToolMocks
   pattern) or does the agent see a pre-cooked tools registry?
+  Lean toward ToolMocks: it already exists, and unit tests
+  benefit from "this tool returns this canned value" semantics
+  more than they need a fully-rebuilt registry.
 - Judge alignment — can the same judge handle both isolated
   and integration outputs, or do we need a thinner per-axis
-  judge for unit-tier?
+  judge for unit-tier? Probably: unit-tier judge is simpler
+  (no PR context, no diff, just "did the agent's output match
+  these field-level expectations") — closer to a JSON-schema
+  validator than to today's LLM judge.
 - Capture flow — what's the UX for "promote a real prod trace
   to a unit fixture"? Probably a CLI command that takes a run
   id + agent name and emits a yaml skeleton.
+- Per-agent stability metric (Jaccard over normalized findings,
+  embedding-based?) — needs prototyping.
 
 Defer until we've burned through current backlog; this is a
 "how do we *systematically* improve quality" question, not a
