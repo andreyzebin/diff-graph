@@ -1,0 +1,34 @@
+id: INV-U-001-cancel-npe
+agent: investigator
+tags: [tier:unit, agent:investigator, isolation]
+
+# Per-fixture worker cmd. Falls back to the pool's default if
+# empty. {provider} is a worker-side placeholder; the rest is
+# verbatim. This is the only place that knows "this fixture runs
+# via bench run-unit"; no tier-based dispatch in code.
+bench_cmd: >
+  cd /home/andrey/repos/code-review-benchmarks && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmark.cli run-unit
+       benchmark/scenarios/unit/investigator/INV-U-001-cancel-npe.yaml
+       --provider={provider}
+
+# References real branches in the local orderflow repo. The runner
+# `git clone --local --no-hardlinks` orderflow into a tempdir, checks
+# out the source branch, resolves the (base, source) SHA pair, and
+# invokes diff-graph cli.py against that — all locally. No GitHub /
+# Bitbucket calls (avoids API quota / account bans for fixture runs).
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: hotfix/ORD-287-cancel-npe
+
+agent_data:
+  focus: |
+    The hotfix wraps `order.getItems()` in a null guard inside
+    `cancelOrder()`. Investigate whether this is the right level
+    to fix the issue, or whether the null `items` itself indicates
+    a deeper problem (mapping configuration, persistence layer)
+    that the guard would silently hide.
+
+# Stage 2+: spawn_policy, budget, expected.rubric.

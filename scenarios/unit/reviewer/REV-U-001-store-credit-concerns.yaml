@@ -1,5 +1,16 @@
 id: REV-U-001-store-credit-concerns
 agent: reviewer
+tags: [tier:unit, agent:reviewer, isolation, concerns-only]
+
+# Per-fixture worker cmd. {provider} is filled by the worker.
+# No tier-based dispatch in code — this yaml field is the single
+# source of truth for "how to run this fixture".
+bench_cmd: >
+  cd /home/andrey/repos/code-review-benchmarks && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmark.cli run-unit
+       benchmark/scenarios/unit/reviewer/REV-U-001-store-credit-concerns.yaml
+       --provider={provider}
 
 # Reviewer in concerns-only mode against the store-credit feature
 # branch. The user-message override (see user_message_from) tells
