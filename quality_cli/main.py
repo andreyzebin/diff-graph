@@ -994,16 +994,6 @@ def worker_loop(
         # different commits with identical prompt content collapse to
         # one mutation row in the analytics.
         env = dict(os.environ)
-        # LLM / Bitbucket / scenario PR endpoints all live on direct
-        # routes; the user's local proxy chain (HTTP_PROXY / HTTPS_PROXY
-        # / ALL_PROXY → http://127.0.0.1:* + a self-signed CA on the
-        # MITM box) breaks api.deepseek.com calls with
-        # CERTIFICATE_VERIFY_FAILED. Strip proxy vars from the bench
-        # env so EVERYTHING the subprocess does (agent cli.py, judge
-        # cli.py, bench's own LLM/Bitbucket calls) goes straight out.
-        for _v in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-                   "http_proxy", "https_proxy", "all_proxy"):
-            env.pop(_v, None)
         if t.mutation_hash:
             env["DIFFGRAPH_MUTATION_OVERRIDE"] = t.mutation_hash
         # Pre-generate the diff-graph run_id and stamp it onto qa_tasks
