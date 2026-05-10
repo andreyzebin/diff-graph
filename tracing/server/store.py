@@ -215,10 +215,19 @@ class SQLiteTraceStore:
               CAST(json_extract(attributes, '$."diffgraph.plan_id"') AS INTEGER) AS plan_id,
               CAST(json_extract(attributes, '$."diffgraph.task_id"') AS INTEGER) AS task_id,
               json_extract(attributes, '$."diffgraph.run_id"')      AS scenario_run_id,
-              CASE WHEN status_code='ERROR' THEN 'failed' ELSE 'completed' END AS status,
+              CASE WHEN end_ns IS NULL    THEN 'running'
+                   WHEN status_code='ERROR' THEN 'failed'
+                   ELSE 'completed' END                             AS status,
               datetime(start_ns / 1000000000.0, 'unixepoch')        AS started_at,
-              datetime(end_ns   / 1000000000.0, 'unixepoch')        AS finished_at,
-              CAST((COALESCE(end_ns, start_ns) - start_ns) / 1000000 AS INTEGER) AS duration_ms,
+              CASE WHEN end_ns IS NOT NULL
+                   THEN datetime(end_ns / 1000000000.0, 'unixepoch')
+                   ELSE NULL END                                    AS finished_at,
+              -- Live duration for in-flight spans: now - start.
+              CAST(
+                (COALESCE(end_ns,
+                          CAST(strftime('%s','now') AS INTEGER) * 1000000000)
+                 - start_ns) / 1000000 AS INTEGER
+              )                                                     AS duration_ms,
               span_id, trace_id
             FROM otel_spans
             WHERE {where}
@@ -266,7 +275,9 @@ class SQLiteTraceStore:
         the dedicated start_ns column (idx_otel_spans_start)."""
         clauses: list[str] = [
             "name LIKE 'agent.%'",      # idx_otel_spans_name_start
-            "end_ns IS NOT NULL",       # exclude in-flight spans
+            # in-flight spans (end_ns NULL) DO surface — _SyncSQLiteProcessor
+            # writes them at on_start so /qa/traces shows the agent the
+            # moment it spins up. status='running' for those rows.
         ]
         params: list[Any] = []
 

@@ -45,6 +45,7 @@ from typing import Optional, Sequence
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider, ReadableSpan
+from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor, SpanExporter, SpanExportResult,
 )
@@ -175,6 +176,46 @@ class SQLiteSpanExporter(SpanExporter):
         return True
 
 
+# ── Sync span processor ────────────────────────────────────────────────────
+
+class _SyncSQLiteProcessor(SpanProcessor):
+    """Write spans to SQLite at BOTH on_start and on_end, synchronously.
+
+    BatchSpanProcessor buffers up to 5s and only fires on_end — so an
+    agent that runs for 30s is invisible in /qa/traces for the first
+    5s after it starts. We trade throughput for live visibility: each
+    span is one INSERT OR REPLACE (span_id is PRIMARY KEY → on_end
+    overwrites the on_start row with the final state).
+
+    on_start row has end_ns=NULL → list_sub_runs renders it as
+    `running`; on_end completes it with status + finished_at.
+    """
+
+    def __init__(self, exporter: SpanExporter):
+        self._exporter = exporter
+
+    def on_start(self, span, parent_context=None) -> None:
+        try:
+            self._exporter.export([span])
+        except Exception:
+            pass
+
+    def on_end(self, span) -> None:
+        try:
+            self._exporter.export([span])
+        except Exception:
+            pass
+
+    def shutdown(self) -> None:
+        try:
+            self._exporter.shutdown()
+        except Exception:
+            pass
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return True
+
+
 # ── Setup / propagation ─────────────────────────────────────────────────────
 
 def setup_tracing(service_name: str = "diffgraph",
@@ -193,8 +234,12 @@ def setup_tracing(service_name: str = "diffgraph",
             return trace.get_tracer(service_name)
         resource = Resource.create({"service.name": service_name})
         provider = TracerProvider(resource=resource)
+        # Sync SQLite writer (on_start + on_end) so in-flight spans
+        # are visible in /qa/traces immediately. The FS exporter
+        # below stays batched — it stashes large LLM payloads and
+        # those don't need real-time visibility.
         provider.add_span_processor(
-            BatchSpanProcessor(SQLiteSpanExporter(db_path)),
+            _SyncSQLiteProcessor(SQLiteSpanExporter(db_path)),
         )
         if fs_root:
             from .otel_fs import FSSpanExporter
