@@ -143,35 +143,15 @@ class SQLiteTraceStore:
                    findings_count, total_tokens_paid, prompt_source, prompt_hash,
                    COALESCE(
                      (SELECT t.plan_id FROM qa_tasks t
-                      WHERE SUBSTR(t.mutation_hash, 1, 7) = runs.mutation
-                        AND t.started_at IS NOT NULL
-                        AND runs.started_at >= t.started_at
-                        AND runs.started_at <= COALESCE(t.finished_at, datetime('now'))
-                      ORDER BY t.id DESC LIMIT 1),
-                     -- judge fallback: inherit plan from linked agent
-                     (SELECT t.plan_id FROM qa_tasks t, runs a
-                      WHERE a.id = runs.linked_run_id
-                        AND SUBSTR(t.mutation_hash, 1, 7) = a.mutation
-                        AND t.started_at IS NOT NULL
-                        AND a.started_at >= t.started_at
-                        AND a.started_at <= COALESCE(t.finished_at, datetime('now'))
-                      ORDER BY t.id DESC LIMIT 1)
+                      WHERE t.trace_run_id = runs.id LIMIT 1),
+                     (SELECT t.plan_id FROM qa_tasks t
+                      WHERE t.trace_run_id = runs.linked_run_id LIMIT 1)
                    ) AS plan_id,
                    COALESCE(
                      (SELECT t.id FROM qa_tasks t
-                      WHERE SUBSTR(t.mutation_hash, 1, 7) = runs.mutation
-                        AND t.started_at IS NOT NULL
-                        AND runs.started_at >= t.started_at
-                        AND runs.started_at <= COALESCE(t.finished_at, datetime('now'))
-                      ORDER BY t.id DESC LIMIT 1),
-                     -- judge fallback: inherit task from linked agent
-                     (SELECT t.id FROM qa_tasks t, runs a
-                      WHERE a.id = runs.linked_run_id
-                        AND SUBSTR(t.mutation_hash, 1, 7) = a.mutation
-                        AND t.started_at IS NOT NULL
-                        AND a.started_at >= t.started_at
-                        AND a.started_at <= COALESCE(t.finished_at, datetime('now'))
-                      ORDER BY t.id DESC LIMIT 1)
+                      WHERE t.trace_run_id = runs.id LIMIT 1),
+                     (SELECT t.id FROM qa_tasks t
+                      WHERE t.trace_run_id = runs.linked_run_id LIMIT 1)
                    ) AS task_id
             FROM runs
             WHERE {where}
@@ -201,64 +181,63 @@ class SQLiteTraceStore:
         # Sub-agent timestamps are derived from MIN/MAX events.timestamp
         # for that (run_id, agent_id) group. fmtLocal in the UI handles
         # naive vs UTC strings — we don't normalize here.
-        # Sort column on runs vs derived: only `started_at` is meaningful;
-        # default to MIN(events.timestamp) DESC.
-        sub_sort = "MIN(e.timestamp)" if sort_col == "started_at" else f"runs.{sort_col}"
-        q = f"""
-            SELECT runs.id            AS session_id,
-                   e.agent_id         AS agent_id,
-                   e.agent_name       AS agent_name,
-                   runs.kind, runs.model, runs.status,
-                   runs.pr_url, runs.project, runs.scenario_id, runs.scenario_tags,
-                   runs.generation, runs.mutation, runs.files_touched, runs.jira_keys,
-                   runs.linked_run_id, runs.fs_trace_path,
-                   CASE WHEN runs.kind='judge' THEN runs.linked_run_id
-                        ELSE runs.id END AS scenario_run_id,
-                   runs.findings_count, runs.total_tokens_paid,
-                   runs.prompt_source, runs.prompt_hash,
-                   MIN(e.timestamp)   AS started_at,
-                   MAX(e.timestamp)   AS finished_at,
-                   COUNT(e.id)        AS events_count,
-                   COALESCE(
-                     (SELECT t.plan_id FROM qa_tasks t
-                      WHERE SUBSTR(t.mutation_hash, 1, 7) = runs.mutation
-                        AND t.started_at IS NOT NULL
-                        AND runs.started_at >= t.started_at
-                        AND runs.started_at <= COALESCE(t.finished_at, datetime('now'))
-                      ORDER BY t.id DESC LIMIT 1),
-                     (SELECT t.plan_id FROM qa_tasks t, runs a
-                      WHERE a.id = runs.linked_run_id
-                        AND SUBSTR(t.mutation_hash, 1, 7) = a.mutation
-                        AND t.started_at IS NOT NULL
-                        AND a.started_at >= t.started_at
-                        AND a.started_at <= COALESCE(t.finished_at, datetime('now'))
-                      ORDER BY t.id DESC LIMIT 1)
-                   ) AS plan_id,
-                   COALESCE(
-                     (SELECT t.id FROM qa_tasks t
-                      WHERE SUBSTR(t.mutation_hash, 1, 7) = runs.mutation
-                        AND t.started_at IS NOT NULL
-                        AND runs.started_at >= t.started_at
-                        AND runs.started_at <= COALESCE(t.finished_at, datetime('now'))
-                      ORDER BY t.id DESC LIMIT 1),
-                     (SELECT t.id FROM qa_tasks t, runs a
-                      WHERE a.id = runs.linked_run_id
-                        AND SUBSTR(t.mutation_hash, 1, 7) = a.mutation
-                        AND t.started_at IS NOT NULL
-                        AND a.started_at >= t.started_at
-                        AND a.started_at <= COALESCE(t.finished_at, datetime('now'))
-                      ORDER BY t.id DESC LIMIT 1)
-                   ) AS task_id
-            FROM runs JOIN events e ON e.run_id = runs.id
-            WHERE {where} AND e.agent_id IS NOT NULL AND e.agent_id != ''
-            GROUP BY runs.id, e.agent_id, e.agent_name
-            ORDER BY {sub_sort} {order}
-            LIMIT ? OFFSET ?
-        """
-        params.extend([f.limit, f.offset])
+        # Two-step query for speed: first resolve which runs match the
+        # (potentially expensive EXISTS-on-qa_tasks) WHERE, then JOIN
+        # events only against that pool. SQLite isn't smart enough to
+        # push the WHERE through a JOIN-with-events automatically,
+        # so without this it evaluates the EXISTS per event row.
         try:
             with self._conn() as c:
-                rows = c.execute(q, params).fetchall()
+                ids_rows = c.execute(
+                    f"SELECT id FROM runs WHERE {where}",
+                    params,
+                ).fetchall()
+                ids = [r[0] for r in ids_rows]
+                if not ids:
+                    return []
+                placeholders = ",".join("?" for _ in ids)
+                sub_sort = ("MIN(e.timestamp)" if sort_col == "started_at"
+                            else f"runs.{sort_col}")
+                # plan_id / task_id come from the direct trace_run_id
+                # foreign key in qa_tasks (worker pre-stamps it at
+                # lease time). For judge runs, the same lookup goes
+                # through linked_run_id (= the agent's run id, which
+                # IS the trace_run_id of that task).
+                q = f"""
+                    SELECT runs.id            AS session_id,
+                           e.agent_id         AS agent_id,
+                           e.agent_name       AS agent_name,
+                           runs.kind, runs.model, runs.status,
+                           runs.pr_url, runs.project, runs.scenario_id, runs.scenario_tags,
+                           runs.generation, runs.mutation, runs.files_touched, runs.jira_keys,
+                           runs.linked_run_id, runs.fs_trace_path,
+                           CASE WHEN runs.kind='judge' THEN runs.linked_run_id
+                                ELSE runs.id END AS scenario_run_id,
+                           runs.findings_count, runs.total_tokens_paid,
+                           runs.prompt_source, runs.prompt_hash,
+                           MIN(e.timestamp)   AS started_at,
+                           MAX(e.timestamp)   AS finished_at,
+                           COUNT(e.id)        AS events_count,
+                           COALESCE(
+                             (SELECT t.plan_id FROM qa_tasks t
+                              WHERE t.trace_run_id = runs.id LIMIT 1),
+                             (SELECT t.plan_id FROM qa_tasks t
+                              WHERE t.trace_run_id = runs.linked_run_id LIMIT 1)
+                           ) AS plan_id,
+                           COALESCE(
+                             (SELECT t.id FROM qa_tasks t
+                              WHERE t.trace_run_id = runs.id LIMIT 1),
+                             (SELECT t.id FROM qa_tasks t
+                              WHERE t.trace_run_id = runs.linked_run_id LIMIT 1)
+                           ) AS task_id
+                    FROM runs JOIN events e ON e.run_id = runs.id
+                    WHERE runs.id IN ({placeholders})
+                      AND e.agent_id IS NOT NULL AND e.agent_id != ''
+                    GROUP BY runs.id, e.agent_id, e.agent_name
+                    ORDER BY {sub_sort} {order}
+                    LIMIT ? OFFSET ?
+                """
+                rows = c.execute(q, ids + [f.limit, f.offset]).fetchall()
         except FileNotFoundError:
             return []
         out = []
@@ -295,16 +274,24 @@ class SQLiteTraceStore:
 
     def count_sub_runs(self, f: RunFilter) -> int:
         where, params = self._where_for_runs(f)
-        q = f"""
-            SELECT COUNT(*) FROM (
-              SELECT 1 FROM runs JOIN events e ON e.run_id = runs.id
-              WHERE {where} AND e.agent_id IS NOT NULL AND e.agent_id != ''
-              GROUP BY runs.id, e.agent_id, e.agent_name
-            )
-        """
         try:
             with self._conn() as c:
-                return int(c.execute(q, params).fetchone()[0])
+                ids = [r[0] for r in c.execute(
+                    f"SELECT id FROM runs WHERE {where}", params,
+                ).fetchall()]
+                if not ids:
+                    return 0
+                placeholders = ",".join("?" for _ in ids)
+                row = c.execute(
+                    f"""SELECT COUNT(*) FROM (
+                          SELECT 1 FROM events e
+                          WHERE e.run_id IN ({placeholders})
+                            AND e.agent_id IS NOT NULL AND e.agent_id != ''
+                          GROUP BY e.run_id, e.agent_id, e.agent_name
+                        )""",
+                    ids,
+                ).fetchone()
+                return int(row[0]) if row else 0
         except FileNotFoundError:
             return 0
 
@@ -1048,53 +1035,27 @@ class SQLiteTraceStore:
             params.append(f.scenario_tag)
 
         if f.task_id is not None:
-            # Narrow to one task: same shape as plan_id but pinned to a
-            # single row in qa_tasks. Judges still match indirectly via
-            # linked_run_id pointing to an agent that matches.
-            task_match = (
-                "SUBSTR(t.mutation_hash, 1, 7) = {alias}.mutation "
-                "AND t.started_at IS NOT NULL "
-                "AND {alias}.started_at >= t.started_at "
-                "AND {alias}.started_at <= COALESCE(t.finished_at, datetime('now'))"
-            )
+            # Direct foreign-key join via qa_tasks.trace_run_id. The
+            # worker stamps the run id at lease time, so the agent run
+            # of the task matches by id; the companion judge run
+            # matches via linked_run_id pointing back at the agent.
             clauses.append(
-                "(EXISTS (SELECT 1 FROM qa_tasks t "
-                "         WHERE t.id = ? AND " +
-                task_match.format(alias="runs") + ") "
+                "(runs.id IN (SELECT trace_run_id FROM qa_tasks "
+                "             WHERE id = ? AND trace_run_id IS NOT NULL) "
                 " OR runs.linked_run_id IN ("
-                "      SELECT a.id FROM runs a JOIN qa_tasks t "
-                "      ON " + task_match.format(alias="a") + " "
-                "      WHERE t.id = ?))"
+                "      SELECT trace_run_id FROM qa_tasks "
+                "      WHERE id = ? AND trace_run_id IS NOT NULL))"
             )
             params.append(int(f.task_id))
             params.append(int(f.task_id))
 
         if f.plan_id is not None:
-            # Match runs that belong to this plan. Two paths:
-            #  (a) AGENT runs — runs.mutation matches some task's
-            #      mutation_hash (full-vs-short handled by SUBSTR), AND
-            #      runs.started_at falls inside the task's time window.
-            #  (b) JUDGE runs — they don't carry `mutation` reliably
-            #      (the bench's JudgeTraceWriter doesn't propagate
-            #      DIFFGRAPH_MUTATION_OVERRIDE) and timestamps are
-            #      naive local rather than UTC, so a window comparison
-            #      would falsely exclude them. Match indirectly:
-            #      judge.linked_run_id = some agent run that itself
-            #      matches path (a).
-            agent_match = (
-                "SUBSTR(t.mutation_hash, 1, 7) = {alias}.mutation "
-                "AND t.started_at IS NOT NULL "
-                "AND {alias}.started_at >= t.started_at "
-                "AND {alias}.started_at <= COALESCE(t.finished_at, datetime('now'))"
-            )
             clauses.append(
-                "(EXISTS (SELECT 1 FROM qa_tasks t "
-                "         WHERE t.plan_id = ? AND " +
-                agent_match.format(alias="runs") + ") "
+                "(runs.id IN (SELECT trace_run_id FROM qa_tasks "
+                "             WHERE plan_id = ? AND trace_run_id IS NOT NULL) "
                 " OR runs.linked_run_id IN ("
-                "      SELECT a.id FROM runs a JOIN qa_tasks t "
-                "      ON " + agent_match.format(alias="a") + " "
-                "      WHERE t.plan_id = ?))"
+                "      SELECT trace_run_id FROM qa_tasks "
+                "      WHERE plan_id = ? AND trace_run_id IS NOT NULL))"
             )
             params.append(int(f.plan_id))
             params.append(int(f.plan_id))

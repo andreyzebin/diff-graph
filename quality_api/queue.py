@@ -220,6 +220,11 @@ class TaskQueue:
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_plan     ON qa_tasks(plan_id);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_lease    ON qa_tasks(lease_expires_at);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_kind     ON qa_tasks(kind, state);
+                -- Direct (qa_tasks → runs) link via trace_run_id is the
+                -- canonical join — no more mutation+time-window guessing.
+                CREATE INDEX IF NOT EXISTS idx_qa_tasks_trace_run ON qa_tasks(trace_run_id);
+                -- Speed up sub-agent GROUP BY in /api/search/sub_runs.
+                CREATE INDEX IF NOT EXISTS idx_events_run_agent  ON events(run_id, agent_id);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_parent   ON qa_tasks(parent_task_id);
 
                 CREATE TABLE IF NOT EXISTS qa_workers (
@@ -494,6 +499,160 @@ class TaskQueue:
             )
             c.commit()
             return True
+
+    def set_task_trace_run_id(self, task_id: int, trace_run_id: str) -> bool:
+        """Stamp a task with its diff-graph run_id at lease time.
+
+        Called by the worker right before spawning the bench process,
+        so the (qa_tasks → runs) link is in the DB before the agent
+        even emits its first event. Live observation can then show
+        "task #N is run X" in real time, without time-window guessing.
+        """
+        with self._lock, self._conn() as c:
+            cur = c.execute(
+                "UPDATE qa_tasks SET trace_run_id=? WHERE id=?",
+                (trace_run_id, task_id),
+            )
+            c.commit()
+            return cur.rowcount > 0
+
+    def find_agent_run_for_task(self, *, mutation_hash: str,
+                                started_at: str,
+                                finished_at: Optional[str] = None,
+                                scenario_id: Optional[str] = None) -> Optional[str]:
+        """Find the diff-graph agent run spawned by a finishing task.
+
+        The worker calls this right after subprocess.run completes and
+        passes the result as trace_run_id to finish() — that becomes
+        the authoritative qa_tasks → runs link, no more brittle
+        mutation+time-window guessing on read.
+
+        Strategy: among agent runs with a matching short mutation
+        AND started_at falling inside the task's window, pick the
+        latest by started_at (= the one the worker just kicked off).
+        Optionally filter by scenario_id when the bench tagged it
+        (unit-tier scenarios — interaction/java leave it NULL).
+        """
+        if not mutation_hash:
+            return None
+        short = mutation_hash[:7]
+        clauses = [
+            "kind='agent'",
+            "mutation = ?",
+            "started_at >= ?",
+        ]
+        params: list = [short, started_at]
+        if finished_at:
+            clauses.append("started_at <= ?")
+            params.append(finished_at)
+        if scenario_id:
+            clauses.append("scenario_id = ?")
+            params.append(scenario_id)
+        with self._lock, self._conn() as c:
+            row = c.execute(
+                f"SELECT id FROM runs WHERE {' AND '.join(clauses)} "
+                f"ORDER BY started_at DESC LIMIT 1",
+                params,
+            ).fetchone()
+        return row["id"] if row else None
+
+    def backfill_trace_run_id(self, *, plan_id: Optional[int] = None,
+                              limit: int = 1000) -> int:
+        """Populate qa_tasks.trace_run_id for tasks where it's NULL.
+
+        Used to upgrade pre-fix data once. Walk tasks in time order;
+        for each task without a trace_run_id, find the matching agent
+        run via find_agent_run_for_task and store it. Returns the
+        number of rows updated.
+        """
+        clauses = ["trace_run_id IS NULL", "started_at IS NOT NULL"]
+        params: list = []
+        if plan_id is not None:
+            clauses.append("plan_id = ?")
+            params.append(int(plan_id))
+        params.append(int(limit))
+        with self._lock, self._conn() as c:
+            tasks = c.execute(
+                f"""SELECT id, mutation_hash, started_at, finished_at,
+                          scenario_id, kind, parent_task_id
+                   FROM qa_tasks
+                   WHERE {' AND '.join(clauses)} AND kind='agent'
+                   ORDER BY id ASC LIMIT ?""",
+                params,
+            ).fetchall()
+        # Each agent run can only belong to ONE task. When two tasks
+        # have overlapping windows (parallel workers, back-to-back
+        # scenarios), the unconstrained `find_agent_run_for_task`
+        # would happily assign the same run to both. Track claims:
+        # a run already taken by an earlier task is excluded from
+        # subsequent matches.
+        with self._lock, self._conn() as c:
+            already_taken = {r[0] for r in c.execute(
+                "SELECT trace_run_id FROM qa_tasks WHERE trace_run_id IS NOT NULL"
+            ).fetchall()}
+        claimed: set[str] = set(already_taken)
+        updated = 0
+        for t in tasks:
+            run_id = self._find_agent_run_for_task_excluding(
+                mutation_hash=t["mutation_hash"] or "",
+                started_at=t["started_at"],
+                finished_at=t["finished_at"],
+                scenario_id=t["scenario_id"],
+                exclude=claimed,
+            )
+            if not run_id:
+                continue
+            claimed.add(run_id)
+            with self._lock, self._conn() as c:
+                c.execute(
+                    "UPDATE qa_tasks SET trace_run_id=? WHERE id=?",
+                    (run_id, t["id"]),
+                )
+                judge_row = c.execute(
+                    "SELECT id FROM runs WHERE linked_run_id=? LIMIT 1",
+                    (run_id,),
+                ).fetchone()
+                if judge_row and judge_row["id"] not in claimed:
+                    c.execute(
+                        """UPDATE qa_tasks SET trace_run_id=?
+                           WHERE parent_task_id=? AND kind='judge'""",
+                        (judge_row["id"], t["id"]),
+                    )
+                    claimed.add(judge_row["id"])
+                c.commit()
+            updated += 1
+        return updated
+
+    def _find_agent_run_for_task_excluding(self, *, mutation_hash: str,
+                                            started_at: str,
+                                            finished_at: Optional[str],
+                                            scenario_id: Optional[str],
+                                            exclude: set[str]) -> Optional[str]:
+        """Like find_agent_run_for_task but skips ids already taken
+        by other tasks. Picks the EARLIEST agent run after task start
+        — backfill walks tasks in chronological order, so this gives
+        each task the run it most likely spawned."""
+        if not mutation_hash:
+            return None
+        short = mutation_hash[:7]
+        clauses = ["kind='agent'", "mutation = ?", "started_at >= ?"]
+        params: list = [short, started_at]
+        if finished_at:
+            clauses.append("started_at <= ?")
+            params.append(finished_at)
+        if scenario_id:
+            clauses.append("scenario_id = ?")
+            params.append(scenario_id)
+        with self._lock, self._conn() as c:
+            rows = c.execute(
+                f"SELECT id FROM runs WHERE {' AND '.join(clauses)} "
+                f"ORDER BY started_at ASC LIMIT 100",
+                params,
+            ).fetchall()
+        for r in rows:
+            if r["id"] not in exclude:
+                return r["id"]
+        return None
 
     def cancel(self, task_id: int) -> bool:
         """Admin cancel — works on queued tasks too. Won't preempt a

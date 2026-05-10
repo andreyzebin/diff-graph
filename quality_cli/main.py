@@ -701,6 +701,19 @@ def worker_loop(
         env = dict(os.environ)
         if t.mutation_hash:
             env["DIFFGRAPH_MUTATION_OVERRIDE"] = t.mutation_hash
+        # Pre-generate the diff-graph run_id and stamp it onto qa_tasks
+        # NOW (before the bench subprocess starts). Diff-graph reads
+        # the same id from env and uses it as its run_id, so /qa/runs
+        # can show "task #N → run X" the moment the agent starts
+        # emitting events — no waiting for finish, no mutation+window
+        # guessing, no cross-task bleed when scenarios overlap in time.
+        import uuid as _uuid
+        pre_run_id = str(_uuid.uuid4())[:12]
+        env["DIFFGRAPH_TRACE_RUN_ID"] = pre_run_id
+        try:
+            q.set_task_trace_run_id(t.id, pre_run_id)
+        except Exception:
+            pass
         # Force bench to write judge artefacts to disk + trace DB. Without
         # this env var bench's session_dir stays None and the judge runs
         # the LLM call but never writes a `kind=judge` row, so /qa/plans

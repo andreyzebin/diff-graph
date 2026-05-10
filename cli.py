@@ -249,7 +249,13 @@ def _run_with_dispatcher(
     console.print(f"[dim]  {agent_name}: {preview}[/dim]")
 
     from orchestra.trace_db import TraceDBWriter
-    _trace_db = TraceDBWriter()
+    # The worker (quality_cli) pre-generates a UUID and pre-records it
+    # as qa_tasks.trace_run_id BEFORE spawning us, so the live UI can
+    # show "this task → this run" the moment the agent starts emitting.
+    # Without the override, we'd write to a fresh local UUID and the
+    # worker's pre-recorded id would dangle.
+    _pre_run_id = os.environ.get("DIFFGRAPH_TRACE_RUN_ID", "").strip()
+    _trace_db = TraceDBWriter(run_id=_pre_run_id)
 
     # Build the dg footer + author prefix decorators up front so the
     # post_comment tool can apply them when the reviewer publishes
@@ -724,7 +730,8 @@ def run(
     from orchestra.trace import TraceCollector
     from orchestra.trace_db import TraceDBWriter
     _trace_collector = TraceCollector()
-    _trace_db = TraceDBWriter()
+    _pre_run_id = os.environ.get("DIFFGRAPH_TRACE_RUN_ID", "").strip()
+    _trace_db = TraceDBWriter(run_id=_pre_run_id)
 
     def _capture_event(event: str, **kw):
         if event == "orchestrator_root_agent":
