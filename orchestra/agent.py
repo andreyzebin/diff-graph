@@ -302,16 +302,45 @@ class Agent:
 
     def _run_single(self) -> AgentResult:
         messages = self._build_messages()
+        # Same observable wrapper as ReAct agents — judges and other
+        # single-shot agents get the trace decomposition for free
+        # (one `llm.request` span per agent.run, payloads on disk).
+        try:
+            from .otel import observe as _observe
+            from .otel_fs import (stash_request as _stash_req,
+                                   stash_response as _stash_res)
+            _llm_ctx = _observe("llm.request", {
+                "llm.model": self.llm_params.get("model", self.model),
+                "llm.message_count": len(messages),
+                "diffgraph.agent_id":   self.agent_id,
+                "diffgraph.agent_name": self.config.name,
+                "diffgraph.mode":       "single",
+            })
+        except Exception:
+            _llm_ctx = None
+            _stash_req = _stash_res = lambda *a, **kw: None
         try:
             from .streaming import _llm_call_with_retry
-            response = _llm_call_with_retry(lambda: self.llm.chat.completions.create(
-                model=self.llm_params.get("model", self.model),
-                messages=messages,
-                temperature=self.llm_params.get("temperature", 0),
-                stream=False,
-            ))
-            content = (response.choices[0].message.content or "").strip()
-            output = _try_parse_json(content)
+            def _do_call():
+                return self.llm.chat.completions.create(
+                    model=self.llm_params.get("model", self.model),
+                    messages=messages,
+                    temperature=self.llm_params.get("temperature", 0),
+                    stream=False,
+                )
+            if _llm_ctx is not None:
+                with _llm_ctx:
+                    _stash_req({"model": self.llm_params.get("model", self.model),
+                                "messages": messages,
+                                "params": dict(self.llm_params)})
+                    response = _llm_call_with_retry(_do_call)
+                    content = (response.choices[0].message.content or "").strip()
+                    output = _try_parse_json(content)
+                    _stash_res({"content": content, "output_parsed": output})
+            else:
+                response = _llm_call_with_retry(_do_call)
+                content = (response.choices[0].message.content or "").strip()
+                output = _try_parse_json(content)
         except Exception as exc:
             log.warning("single-shot agent '%s' failed: %s", self.config.name, exc)
             output = None
