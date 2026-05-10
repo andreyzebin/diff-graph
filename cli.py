@@ -755,6 +755,24 @@ async def _run_async(
     json_path = store.save_run(run_id, results, agent_url=agent_url, tags=tags)
     console.print(f"Saved   : {json_path}")
 
+    # Surface infrastructure errors as a non-zero exit code. verdict=='error'
+    # means the scenario crashed BEFORE the agent could produce output —
+    # network/DNS, Bitbucket auth, judge subprocess failure, etc. — distinct
+    # from verdict=='fail' (agent ran, judge marked it failed). Without this
+    # exit, bench reports "0/1 passed" with code 0 and the worker can't
+    # tell infra failure from a legit zero-pass run.
+    errored = [r for r in results if r.verdict == "error"]
+    if errored:
+        msg = "; ".join(
+            f"{r.scenario_id}: {(r.error or r.judge_summary or '').splitlines()[0][:160]}"
+            for r in errored[:3]
+        )
+        console.print(
+            f"[red]bench failed: {len(errored)}/{len(results)} scenario(s) "
+            f"errored before producing output — {msg}[/red]"
+        )
+        raise typer.Exit(1)
+
     if compare_with:
         prev_results = None
         if compare_with == "last":
