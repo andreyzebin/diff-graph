@@ -279,7 +279,6 @@ def _run_with_dispatcher(
     #   --trace-dir <base>  /  DIFFGRAPH_TRACE_DIR=<base>
     #                                     — standalone: write into a fresh
     #                                       <base>/runs/<run-id>/ subdir
-    _trace_fs = None
     fs_path = os.environ.get("DIFFGRAPH_TRACE_PATH")
     fs_target = trace_dir or os.environ.get("DIFFGRAPH_TRACE_DIR")
     fs_dir = None
@@ -288,13 +287,24 @@ def _run_with_dispatcher(
     elif fs_target:
         fs_dir = Path(fs_target).expanduser() / "runs" / _trace_db.run_id
     if fs_dir is not None:
-        from orchestra.trace_fs import TraceFSWriter
         fs_dir.mkdir(parents=True, exist_ok=True)
-        # Pass the canonical SQLite run_id so run.json carries the
-        # cross-storage handle that quality-api / linked_run_id wiring
-        # depend on (5e.11). Without this, run.json's run_id is just
-        # the directory name and readers can't correlate to the DB row.
-        _trace_fs = TraceFSWriter(fs_dir, run_id=_trace_db.run_id)
+        # Phase 2: drop the bespoke TraceFSWriter — OTel FSSpanExporter
+        # (wired by setup_tracing(fs_root=fs_dir) below) writes the
+        # full span tree + payloads under fs_dir/spans.jsonl and
+        # fs_dir/payloads/<span_id>.{req,res}.json. We still need to
+        # leave a tiny `run.json` at the dir root so bench's
+        # JudgeTraceWriter can late-bind linked_run_id by reading it
+        # (cross-repo contract — see runner/judge.py:441). Minimal
+        # shape: just the run_id our DB tracks.
+        try:
+            (fs_dir / "run.json").write_text(
+                json.dumps({"run_id": _trace_db.run_id,
+                             "kind": "agent"},
+                            ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
     # Populate the run row's search-dimension columns up front (5e.11):
     # agent_name, project, scenario_id/tags from env, fs_trace_path.
@@ -360,8 +370,6 @@ def _run_with_dispatcher(
 
     def _trace_writer(event: str, **kw):
         _trace_db.on_event(event, **kw)
-        if _trace_fs:
-            _trace_fs.on_event(event, **kw)
         if invocations_out:
             _record_invocation(event, **kw)
 
@@ -414,15 +422,25 @@ def _run_with_dispatcher(
             console.print(f"[dim]  invocations: {out_path} ({len(invocations)} call(s))[/dim]")
         except Exception as exc:
             console.print(f"[red]failed to write --invocations-out {invocations_out}: {exc}[/red]")
-    if _trace_fs:
-        _trace_fs.finish_run(
-            model=effective_model, pr_url=pr_url,
-            findings_count=len(findings),
-            prompt_source=str(prompt_source), prompt_hash=mutation,
-            agent_name=agent_name,
-        )
-        _trace_fs.close()
-        console.print(f"[dim]  trace-fs: {_trace_fs.run_dir}[/dim]")
+    if fs_dir is not None:
+        # OTel FSSpanExporter has been writing under fs_dir all run.
+        # Finalise run.json with totals so bench's late-bind can pick
+        # them up too (model/findings/prompt-info — same shape the
+        # old TraceFSWriter used to emit).
+        try:
+            (fs_dir / "run.json").write_text(json.dumps({
+                "run_id": _trace_db.run_id,
+                "kind": "agent",
+                "agent_name": agent_name,
+                "model": effective_model,
+                "pr_url": pr_url or "",
+                "findings_count": len(findings),
+                "prompt_source": str(prompt_source) if prompt_source else "",
+                "prompt_hash": mutation if mutation != "unknown" else "",
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            console.print(f"[dim]  trace-fs: {fs_dir}[/dim]")
+        except Exception as exc:
+            console.print(f"[dim]  failed to finalise run.json: {exc}[/dim]")
 
     if findings:
         _print_findings(findings)
