@@ -71,15 +71,114 @@ th { color: #8b949e; font-weight: normal; }
 
 <div x-data="mutationsView" x-init="load(); setInterval(() => load(), 10000)">
 
-  <!-- Compare bar -->
-  <div class="compare-bar" x-show="selected.length > 0">
-    selected: <span class="mut" x-text="(selected[0] || '').slice(0,8)"></span>
-    <template x-if="selected.length === 2">
-      <span> · vs · <span class="mut" x-text="(selected[1] || '').slice(0,8)"></span></span>
-    </template>
+  <!-- Action bar appears once 1+ mutations are picked. Lets you
+       (a) compare exactly 2, (b) fire a saved on_demand schedule
+       against every selected mutation, or (c) fire an anonymous
+       schedule by picking scenarios on the fly. -->
+  <div class="compare-bar" x-show="selected.length > 0"
+       style="gap:8px; flex-wrap:wrap; padding:8px 12px;">
+    <span><b x-text="selected.length"></b> mutation(s) selected</span>
+
     <button class="btn-primary btn" :disabled="selected.length !== 2"
             @click="loadCompare()">compare</button>
-    <button class="btn" @click="selected = []; comparison = null">clear</button>
+
+    <span class="muted" style="margin-left:12px;">·</span>
+
+    <template x-if="onDemandConfigs.length > 0">
+      <span style="display:inline-flex; gap:4px; align-items:center;">
+        <select x-model="bulkFireConfigId"
+                style="background:#0d1117; border:1px solid #30363d;
+                       color:#c9d1d9; padding:3px 6px; border-radius:3px;
+                       font-size:0.85em;">
+          <template x-for="cfg in onDemandConfigs" :key="cfg.id">
+            <option :value="cfg.id" x-text="cfg.name || `config #${cfg.id}`"></option>
+          </template>
+        </select>
+        <button class="btn" @click="bulkFireSchedule()">▶ fire schedule</button>
+      </span>
+    </template>
+
+    <button class="btn" @click="openAnonModal()">▶ fire anonymous…</button>
+
+    <span style="margin-left:auto;">
+      <button class="btn" @click="selected = []; comparison = null">clear</button>
+    </span>
+  </div>
+  <div class="muted" x-show="fireStatus" x-text="fireStatus" style="padding:0 12px 8px;"></div>
+
+  <!-- Anonymous-fire modal: pick scenarios from /api/qa/scenarios,
+       optionally filter by tier/agent, click fire. -->
+  <div class="modal-backdrop" x-show="anonModal.open" x-cloak
+       @click.self="anonModal.open = false"
+       style="position:fixed; inset:0; background:#000a; display:flex;
+              align-items:center; justify-content:center; z-index:100;">
+    <div style="background:#0d1117; border:1px solid #30363d; border-radius:6px;
+                padding:18px; max-width:800px; width:90%; max-height:80vh;
+                overflow:auto;">
+      <h3 style="margin-top:0;">Fire anonymous schedule on
+        <span x-text="selected.length"></span> mutation(s)</h3>
+
+      <div style="display:flex; gap:12px; margin-bottom:10px; align-items:center;">
+        <label>tier
+          <select x-model="anonModal.tierFilter">
+            <option value="">all</option>
+            <option value="unit">unit</option>
+            <option value="integration">integration</option>
+          </select>
+        </label>
+        <label>agent
+          <select x-model="anonModal.agentFilter">
+            <option value="">all</option>
+            <option value="dispatcher">dispatcher</option>
+            <option value="reviewer">reviewer</option>
+            <option value="investigator">investigator</option>
+          </select>
+        </label>
+        <label style="flex:1;">search
+          <input type="text" x-model="anonModal.q" placeholder="id substring"
+                 style="background:#0d1117; border:1px solid #30363d; color:#c9d1d9;
+                        padding:3px 6px; border-radius:3px; width:100%;">
+        </label>
+        <label>provider
+          <input type="text" x-model="anonModal.provider"
+                 style="background:#0d1117; border:1px solid #30363d; color:#c9d1d9;
+                        padding:3px 6px; border-radius:3px; width:120px;">
+        </label>
+      </div>
+
+      <div style="max-height:300px; overflow:auto; border:1px solid #30363d;
+                  border-radius:3px; margin-bottom:10px;">
+        <table style="width:100%; font-size:0.85em;">
+          <thead style="position:sticky; top:0; background:#0d1117;">
+            <tr><th></th><th>id</th><th>tier</th><th>agent</th><th>path</th></tr>
+          </thead>
+          <tbody>
+            <template x-for="s in filteredScenarios()" :key="s.id + s.rel_path">
+              <tr>
+                <td><input type="checkbox" :value="s.id"
+                           :checked="anonModal.picked.includes(s.id)"
+                           @change="toggleScenario(s.id)"></td>
+                <td x-text="s.id"></td>
+                <td x-text="s.tier"></td>
+                <td x-text="s.agent || '—'"></td>
+                <td class="muted" x-text="s.rel_path"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <span class="muted" style="margin-right:auto;"
+              x-text="`${anonModal.picked.length} scenario(s) × ${selected.length} mutation(s) = ${anonModal.picked.length * selected.length} plan(s)`"></span>
+        <button class="btn" @click="anonModal.open = false">cancel</button>
+        <button class="btn-primary btn"
+                :disabled="anonModal.picked.length === 0 || anonModal.firing"
+                @click="bulkFireAnonymous()">
+          <span x-text="anonModal.firing ? 'firing…' : 'fire'"></span>
+        </button>
+      </div>
+    </div>
   </div>
 
   <!-- Mutations list -->
@@ -104,7 +203,6 @@ th { color: #8b949e; font-weight: normal; }
           <th class="tn">pass%</th>
           <th class="tn">avg dur ms</th>
           <th>last activity</th>
-          <th></th>
         </tr></thead>
         <tbody>
           <template x-for="m in mutations" :key="m.mutation">
@@ -127,25 +225,6 @@ th { color: #8b949e; font-weight: normal; }
               <td class="tn" x-text="Math.round(m.avg_duration_ms || 0)"></td>
               <td style="color:#8b949e;"
                   x-text="fmtLocal(m.last_seen || m.last_planned)"></td>
-              <td>
-                <template x-if="onDemandConfigs.length > 0">
-                  <span @click.stop>
-                    <select :id="`fire-${m.mutation}`"
-                            style="background:#0d1117; border:1px solid #30363d;
-                                   color:#c9d1d9; padding:3px 6px; border-radius:3px;
-                                   font-size:0.8em;">
-                      <template x-for="cfg in onDemandConfigs" :key="cfg.id">
-                        <option :value="cfg.id" x-text="cfg.name || `config #${cfg.id}`"></option>
-                      </template>
-                    </select>
-                    <button class="btn"
-                            @click.stop="fireSchedule(m.mutation, $event)">▶ fire</button>
-                  </span>
-                </template>
-                <template x-if="onDemandConfigs.length === 0">
-                  <span class="muted" style="font-size:0.75em;">no on_demand schedules</span>
-                </template>
-              </td>
             </tr>
           </template>
         </tbody>

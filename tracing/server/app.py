@@ -1194,6 +1194,12 @@ async def qa_plans_page(request: Request):
     return templates.TemplateResponse(request, "qa_plans.html", {"active": "plans"})
 
 
+@app.get("/qa/scenarios", response_class=HTMLResponse)
+async def qa_scenarios_page(request: Request):
+    return templates.TemplateResponse(request, "qa_scenarios.html",
+                                       {"active": "scenarios"})
+
+
 @app.get("/qa/auto-plan", response_class=HTMLResponse)
 async def qa_auto_plan_page(request: Request):
     # `active="schedules"` matches the renamed nav tab; URL stays as

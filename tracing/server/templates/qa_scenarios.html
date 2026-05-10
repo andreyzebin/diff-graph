@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>QA · Scenarios</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="{{ base_path }}/static/trace.css">
+<script>window.QA_BASE_PATH = "{{ base_path }}";</script>
+<script defer src="{{ base_path }}/static/qa.js?v=fd003966"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+body { padding: 20px; max-width: 1400px; margin: 0 auto; }
+.qa-nav { margin-bottom: 16px; font-size: 0.9em; }
+.qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
+.qa-nav a:hover { text-decoration: underline; }
+.section { margin-top: 20px; padding: 12px; background: #161b22;
+           border: 1px solid #30363d; border-radius: 6px; }
+.section h2 { font-size: 0.95em; color: #c9d1d9; margin: 0 0 12px 0; font-weight: normal; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #30363d; }
+th { color: #8b949e; font-weight: normal; }
+.row-checkbox { cursor: pointer; }
+.row-checkbox.selected { background: #1f6feb33; }
+.btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+       padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
+.btn:hover { background: #30363d; }
+.btn-primary { background: #1f6feb; border-color: #388bfd; color: white; }
+.btn-primary:hover { background: #388bfd; }
+.btn-primary:disabled { background: #1f2937; color: #6e7681; cursor: not-allowed; }
+.bar { position: sticky; top: 0; z-index: 10; background: #0d1117;
+       border: 1px solid #30363d; border-radius: 6px;
+       padding: 10px; margin: 10px 0; display: flex; gap: 8px;
+       flex-wrap: wrap; align-items: center; }
+.muted { color: #8b949e; }
+.tag-chip { display: inline-block; padding: 1px 6px; margin: 0 2px 0 0;
+            background: #21262d; color: #8b949e; border-radius: 3px;
+            font-size: 0.75em; }
+.tier-unit         { color: #56d364; }
+.tier-integration  { color: #d2a8ff; }
+.unit-fix-badge    { color: #d29922; font-size: 0.75em; }
+input[type="text"] { background: #0d1117; border: 1px solid #30363d;
+                     color: #c9d1d9; padding: 3px 6px; border-radius: 3px; }
+select { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+         padding: 3px 6px; border-radius: 3px; }
+</style>
+</head>
+<body>
+{% include "_qa_nav.html" %}
+
+<h1>QA · Scenarios</h1>
+<p class="muted" style="font-size: 0.9em;">
+  Every scenario yaml discovered under <code>benchmark/scenarios/</code>.
+  Multiselect rows to fire them as an anonymous plan on a specific
+  diff-graph commit. Unit-fixtures (marked) are routed via
+  <code>bench run-unit</code>; integration scenarios go through the
+  pool's default cmd.
+</p>
+
+<div x-data="scenariosView" x-init="load()">
+
+  <div class="bar">
+    <label>tier
+      <select x-model="tierFilter">
+        <option value="">all</option>
+        <option value="unit">unit</option>
+        <option value="integration">integration</option>
+      </select>
+    </label>
+    <label>agent
+      <select x-model="agentFilter">
+        <option value="">all</option>
+        <option value="dispatcher">dispatcher</option>
+        <option value="reviewer">reviewer</option>
+        <option value="investigator">investigator</option>
+      </select>
+    </label>
+    <label style="flex:1;">search
+      <input type="text" x-model="q" placeholder="id or path substring"
+             style="width: 100%;">
+    </label>
+
+    <span class="muted" style="margin-left:8px;">
+      <b x-text="picked.length"></b> picked · <b x-text="filtered().length"></b> visible
+    </span>
+    <button class="btn" :disabled="picked.length === 0" @click="picked = []">clear</button>
+    <button class="btn-primary btn" :disabled="picked.length === 0"
+            @click="openFireModal()">▶ fire on commit…</button>
+  </div>
+  <div class="muted" x-show="fireStatus" x-text="fireStatus" style="padding:0 12px 8px;"></div>
+
+  <table>
+    <thead>
+      <tr>
+        <th></th>
+        <th>id</th>
+        <th>tier</th>
+        <th>agent</th>
+        <th>path</th>
+        <th>tags</th>
+      </tr>
+    </thead>
+    <tbody>
+      <template x-for="s in filtered()" :key="s.id + s.rel_path">
+        <tr :class="picked.includes(s.id) ? 'row-checkbox selected' : 'row-checkbox'"
+            @click="toggle(s.id)">
+          <td><input type="checkbox" :checked="picked.includes(s.id)"
+                     @click.stop="toggle(s.id)"></td>
+          <td class="mut" x-text="s.id"></td>
+          <td>
+            <span :class="`tier-${s.tier}`" x-text="s.tier"></span>
+            <template x-if="s.is_unit_fixture">
+              <span class="unit-fix-badge" title="bench run-unit fixture">★ unit-fix</span>
+            </template>
+          </td>
+          <td x-text="s.agent || '—'"></td>
+          <td class="muted" x-text="s.rel_path"></td>
+          <td>
+            <template x-for="t in (s.tags || []).slice(0, 4)">
+              <span class="tag-chip" x-text="t"></span>
+            </template>
+          </td>
+        </tr>
+      </template>
+    </tbody>
+  </table>
+
+  <!-- Fire modal -->
+  <div x-show="fireModal.open" x-cloak
+       @click.self="fireModal.open = false"
+       style="position:fixed; inset:0; background:#000a; display:flex;
+              align-items:center; justify-content:center; z-index:100;">
+    <div style="background:#0d1117; border:1px solid #30363d; border-radius:6px;
+                padding:18px; max-width:600px; width:90%;">
+      <h3 style="margin-top:0;">Fire <span x-text="picked.length"></span>
+        scenario(s) anonymously</h3>
+
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <label>diff-graph commit SHA (mutation)
+          <input type="text" x-model="fireModal.sha" style="width:100%;"
+                 placeholder="e.g. e27a652c9f16 or full sha">
+        </label>
+        <label>lineage
+          <input type="text" x-model="fireModal.lineage" style="width:100%;">
+        </label>
+        <label>provider
+          <input type="text" x-model="fireModal.provider" style="width:100%;">
+        </label>
+        <label>plan name (optional)
+          <input type="text" x-model="fireModal.name" style="width:100%;"
+                 placeholder="leave empty for auto-name">
+        </label>
+      </div>
+
+      <div style="margin-top:12px; padding:8px; background:#161b22;
+                  border-radius:4px; font-size:0.85em;">
+        <div class="muted">selected scenarios:</div>
+        <div x-text="picked.join(', ')" style="word-break:break-all;"></div>
+      </div>
+
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
+        <button class="btn" @click="fireModal.open = false">cancel</button>
+        <button class="btn-primary btn"
+                :disabled="!fireModal.sha || fireModal.firing"
+                @click="fireNow()">
+          <span x-text="fireModal.firing ? 'firing…' : 'fire'"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -529,8 +529,19 @@ document.addEventListener('alpine:init', () => {
     comparison: null,
     scoringCompare: null,
     scoring: {},                                  // mutation hash → scoring blob
-    onDemandConfigs: [],                          // schedules with mode=on_demand for "fire" dropdown
+    onDemandConfigs: [],                          // schedules with mode=on_demand
+    bulkFireConfigId: null,                       // currently-picked schedule for bulk fire
     fireStatus: '',
+    allScenarios: [],                             // /api/qa/scenarios cache (for anonymous fire)
+    anonModal: {                                  // anonymous-fire modal state
+      open: false,
+      picked: [],                                  // list of scenario ids checked
+      tierFilter: '',
+      agentFilter: '',
+      q: '',
+      provider: 'deepseek',
+      firing: false,
+    },
     page: 1,
     pageSize: 50,
     total: 0,
@@ -557,6 +568,9 @@ document.addEventListener('alpine:init', () => {
       const allConfigsR = await (await fetch(`${base}/api/qa/auto-plan/configs`)).json();
       const allConfigs = allConfigsR.data || [];
       this.onDemandConfigs = allConfigs.filter(c => c.mode === 'on_demand' && c.enabled);
+      if (this.onDemandConfigs.length && this.bulkFireConfigId === null) {
+        this.bulkFireConfigId = this.onDemandConfigs[0].id;
+      }
       // Load scoring for each mutation in parallel.
       const tasks = this.mutations.map(async (m) => {
         try {
@@ -567,29 +581,84 @@ document.addEventListener('alpine:init', () => {
       });
       await Promise.all(tasks);
     },
-    async fireSchedule(mutation, event) {
-      // Picks the schedule selected in the row's <select> dropdown.
-      const select = event.currentTarget.parentElement.querySelector('select');
-      const configId = parseInt(select.value, 10);
-      if (!configId) return;
+    async bulkFireSchedule() {
+      // Fire the picked schedule on every selected mutation.
+      const configId = parseInt(this.bulkFireConfigId, 10);
+      if (!configId || !this.selected.length) return;
       const base = window.QA_BASE_PATH || '';
-      const r = await fetch(`${base}/api/qa/auto-plan/configs/${configId}/fire-on`, {
-        method: 'POST', headers: {'content-type': 'application/json'},
-        body: JSON.stringify({lineage: 'master', sha: mutation}),
-      });
-      const j = await r.json();
-      if (j.error) {
-        this.fireStatus = `${mutation.slice(0,7)}: ${j.error.message}`;
+      const cfg = this.onDemandConfigs.find(c => c.id === configId);
+      const results = [];
+      for (const mut of this.selected) {
+        const r = await fetch(`${base}/api/qa/auto-plan/configs/${configId}/fire-on`, {
+          method: 'POST', headers: {'content-type': 'application/json'},
+          body: JSON.stringify({lineage: 'master', sha: mut}),
+        });
+        const j = await r.json();
+        if (j.error) {
+          results.push(`${mut.slice(0,7)}: ${j.error.message}`);
+        } else {
+          results.push(`${mut.slice(0,7)} → plan #${j.data.plan_id}`);
+        }
+      }
+      this.fireStatus = `"${cfg?.name || configId}" × ${this.selected.length}: ${results.join(' · ')}`;
+    },
+    async openAnonModal() {
+      if (!this.allScenarios.length) {
+        const base = window.QA_BASE_PATH || '';
+        const r = await (await fetch(`${base}/api/qa/scenarios`)).json();
+        this.allScenarios = r.data || [];
+      }
+      this.anonModal.open = true;
+    },
+    toggleScenario(sid) {
+      if (this.anonModal.picked.includes(sid)) {
+        this.anonModal.picked = this.anonModal.picked.filter(x => x !== sid);
       } else {
-        const cfg = this.onDemandConfigs.find(c => c.id === configId);
-        this.fireStatus = `${mutation.slice(0,7)} → "${cfg.name}": plan #${j.data.plan_id} (${j.data.task_count} tasks)`;
+        this.anonModal.picked = [...this.anonModal.picked, sid];
+      }
+    },
+    filteredScenarios() {
+      const m = this.anonModal;
+      const q = (m.q || '').trim().toLowerCase();
+      return this.allScenarios.filter(s =>
+        (!m.tierFilter || s.tier === m.tierFilter) &&
+        (!m.agentFilter || s.agent === m.agentFilter) &&
+        (!q || (s.id + s.rel_path).toLowerCase().includes(q))
+      );
+    },
+    async bulkFireAnonymous() {
+      const m = this.anonModal;
+      if (!m.picked.length || !this.selected.length) return;
+      m.firing = true;
+      try {
+        const base = window.QA_BASE_PATH || '';
+        const results = [];
+        for (const mut of this.selected) {
+          const r = await fetch(`${base}/api/qa/fire-anonymous`, {
+            method: 'POST', headers: {'content-type': 'application/json'},
+            body: JSON.stringify({
+              scenarios: m.picked, sha: mut,
+              lineage: 'master', provider: m.provider || 'deepseek',
+            }),
+          });
+          const j = await r.json();
+          if (j.error) {
+            results.push(`${mut.slice(0,7)}: ${j.error.message}`);
+          } else {
+            results.push(`${mut.slice(0,7)} → plan #${j.data.id}`);
+          }
+        }
+        this.fireStatus = `anon × ${this.selected.length} mutation(s) × ${m.picked.length} scenario(s): ${results.join(' · ')}`;
+        m.open = false;
+      } finally {
+        m.firing = false;
       }
     },
     toggleSelect(mut) {
       if (this.selected.includes(mut)) {
         this.selected = this.selected.filter(m => m !== mut);
       } else {
-        if (this.selected.length >= 2) this.selected.shift();
+        // Allow many — compare button still requires exactly 2.
         this.selected.push(mut);
       }
     },
@@ -789,6 +858,76 @@ document.addEventListener('alpine:init', () => {
           }
         },
 
+  }))
+
+  Alpine.data('scenariosView', () => ({
+    all: [],
+    picked: [],
+    tierFilter: '',
+    agentFilter: '',
+    q: '',
+    fireStatus: '',
+    fireModal: {
+      open: false,
+      sha: '',
+      lineage: 'master',
+      provider: 'deepseek',
+      name: '',
+      firing: false,
+    },
+    async load() {
+      const base = window.QA_BASE_PATH || '';
+      const r = await (await fetch(`${base}/api/qa/scenarios`)).json();
+      this.all = r.data || [];
+    },
+    filtered() {
+      const q = (this.q || '').trim().toLowerCase();
+      return this.all.filter(s =>
+        (!this.tierFilter || s.tier === this.tierFilter) &&
+        (!this.agentFilter || s.agent === this.agentFilter) &&
+        (!q || (s.id + ' ' + s.rel_path).toLowerCase().includes(q))
+      );
+    },
+    toggle(sid) {
+      if (this.picked.includes(sid)) {
+        this.picked = this.picked.filter(x => x !== sid);
+      } else {
+        this.picked = [...this.picked, sid];
+      }
+    },
+    openFireModal() {
+      this.fireModal.open = true;
+      // Try to default-fill SHA from query string ?sha=...
+      const sp = new URLSearchParams(window.location.search);
+      const sha = sp.get('sha');
+      if (sha) this.fireModal.sha = sha;
+    },
+    async fireNow() {
+      const m = this.fireModal;
+      if (!this.picked.length || !m.sha) return;
+      m.firing = true;
+      try {
+        const base = window.QA_BASE_PATH || '';
+        const r = await fetch(`${base}/api/qa/fire-anonymous`, {
+          method: 'POST', headers: {'content-type': 'application/json'},
+          body: JSON.stringify({
+            scenarios: this.picked, sha: m.sha,
+            lineage: m.lineage || 'master',
+            provider: m.provider || 'deepseek',
+            name: m.name || '',
+          }),
+        });
+        const j = await r.json();
+        if (j.error) {
+          this.fireStatus = `error: ${j.error.message}`;
+        } else {
+          this.fireStatus = `plan #${j.data.id} created · ${this.picked.length} scenario(s) on ${m.sha.slice(0,7)}`;
+          m.open = false;
+        }
+      } finally {
+        m.firing = false;
+      }
+    },
   }))
 
   Alpine.data('workersView', () => ({
