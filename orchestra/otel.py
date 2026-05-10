@@ -169,8 +169,10 @@ class SQLiteSpanExporter(SpanExporter):
 # ── Setup / propagation ─────────────────────────────────────────────────────
 
 def setup_tracing(service_name: str = "diffgraph",
-                  db_path: str | Path = _DEFAULT_DB) -> trace.Tracer:
-    """Initialise the global TracerProvider with the SQLite exporter.
+                  db_path: str | Path = _DEFAULT_DB,
+                  fs_root: Optional[str | Path] = None) -> trace.Tracer:
+    """Initialise the global TracerProvider with the SQLite exporter
+    (and optionally the filesystem exporter when `fs_root` is set).
 
     Idempotent — calling more than once in one process is a no-op
     after the first. Reads `TRACEPARENT` from env to inherit the
@@ -185,6 +187,11 @@ def setup_tracing(service_name: str = "diffgraph",
         provider.add_span_processor(
             BatchSpanProcessor(SQLiteSpanExporter(db_path)),
         )
+        if fs_root:
+            from .otel_fs import FSSpanExporter
+            provider.add_span_processor(
+                BatchSpanProcessor(FSSpanExporter(fs_root)),
+            )
         trace.set_tracer_provider(provider)
         _TRACER_PROVIDER = provider
 
@@ -204,6 +211,49 @@ def setup_tracing(service_name: str = "diffgraph",
         otel_ctx.attach(ctx)
 
     return trace.get_tracer(service_name)
+
+
+# ── Single observable wrapper ──────────────────────────────────────────────
+# One context manager used for BOTH llm calls and tool calls, so the
+# trace shape is identical and each writer never has to remember the
+# OTel API surface or how to record exceptions. Inside the with-block
+# call stash_request(...) and stash_response(...) from otel_fs to
+# attach the full payloads (LLM messages / tool args / tool results)
+# — the FSSpanExporter persists them next to the span.
+from contextlib import contextmanager
+
+
+@contextmanager
+def observe(name: str, attributes: Optional[dict] = None,
+            service: str = "diffgraph"):
+    """Open a span around an observable operation.
+
+    Use for any unit of work whose payload an AI debugger may want
+    to drill into — LLM calls, tool calls, etc. Records exceptions
+    as ERROR status before re-raising so the trace shows red.
+
+    Example::
+
+        from orchestra.otel import observe
+        from orchestra.otel_fs import stash_request, stash_response
+
+        with observe("llm.request", {"llm.model": model}):
+            stash_request({"messages": messages, "tools": tools})
+            response = stream_llm(...)
+            stash_response({"content": response.content})
+    """
+    from opentelemetry.trace import StatusCode, Status as _Status
+    tracer = trace.get_tracer(service)
+    with tracer.start_as_current_span(name, attributes=attributes or {}) as span:
+        try:
+            yield span
+        except Exception as exc:
+            try:
+                span.record_exception(exc)
+                span.set_status(_Status(StatusCode.ERROR, type(exc).__name__))
+            except Exception:
+                pass
+            raise
 
 
 def current_traceparent() -> str:

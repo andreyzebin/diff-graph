@@ -216,14 +216,39 @@ class Agent:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def run(self) -> AgentResult:
-        """Main entry point."""
+        """Main entry point. Wrapped in one OTel span — same shape
+        for root agent (called from cli.py) and spawned children
+        (called from spawn_agent), so the trace tree is uniform.
+        """
         self.event_bus.emit(EventType.AGENT_STARTED,
                            agent_id=self.agent_id, agent_name=self.config.name,
                            parent_id=self.parent_id, depth=self.depth)
-
-        if self.config.mode == AgentMode.SINGLE:
-            return self._run_single()
-        return self._run_react()
+        try:
+            from opentelemetry import trace as _otel_trace
+            _tracer = _otel_trace.get_tracer("diffgraph-agent")
+            _span_cm = _tracer.start_as_current_span(
+                f"agent.{self.config.name}",
+                attributes={
+                    "diffgraph.agent_id":   self.agent_id,
+                    "diffgraph.agent_name": self.config.name,
+                    "diffgraph.depth":      self.depth,
+                    "diffgraph.parent_id":  self.parent_id or "",
+                    "diffgraph.mode":       self.config.mode.name,
+                },
+            )
+        except Exception:
+            _span_cm = None
+        try:
+            if _span_cm is not None:
+                with _span_cm:
+                    if self.config.mode == AgentMode.SINGLE:
+                        return self._run_single()
+                    return self._run_react()
+            if self.config.mode == AgentMode.SINGLE:
+                return self._run_single()
+            return self._run_react()
+        except Exception:
+            raise
 
     def get_status(self) -> dict:
         """Return current status for observe_agents."""
@@ -358,12 +383,43 @@ class Agent:
                                tools=current_tools_schema,
                                llm_params={"model": step_model, **step_params})
 
+            # Single observable wrapper: same shape for LLM and tool
+            # calls. Stashes full request body for the AI debugger
+            # to drill into via the span_id-keyed payload file.
             try:
-                response = stream_llm(
-                    self.llm, step_model, messages, current_tools_schema,
-                    tool_choice=step_tool_choice, on_token=_on_token,
-                    **step_params,
-                )
+                from orchestra.otel import observe as _observe
+                from orchestra.otel_fs import stash_request as _stash_req
+                from orchestra.otel_fs import stash_response as _stash_res
+                _llm_ctx = _observe("llm.request", {
+                    "llm.model": step_model,
+                    "llm.message_count": len(messages),
+                    "llm.tools_count": len(current_tools_schema or []),
+                    "diffgraph.agent_id": self.agent_id,
+                    "diffgraph.agent_name": self.config.name,
+                    "diffgraph.step": step,
+                })
+            except Exception:
+                _llm_ctx = None
+                _stash_req = _stash_res = lambda *a, **kw: None
+
+            try:
+                if _llm_ctx is not None:
+                    with _llm_ctx:
+                        _stash_req({"model": step_model,
+                                    "messages": messages,
+                                    "tools": current_tools_schema,
+                                    "params": step_params})
+                        response = stream_llm(
+                            self.llm, step_model, messages, current_tools_schema,
+                            tool_choice=step_tool_choice, on_token=_on_token,
+                            **step_params,
+                        )
+                else:
+                    response = stream_llm(
+                        self.llm, step_model, messages, current_tools_schema,
+                        tool_choice=step_tool_choice, on_token=_on_token,
+                        **step_params,
+                    )
             except Exception as exc:
                 log.error("agent '%s' step %d LLM call failed: %s: %s",
                           self.config.name, step, type(exc).__name__, exc)
@@ -405,6 +461,15 @@ class Agent:
                                       "completion_tokens": tok_out,
                                       "cached_tokens": tok_cached,
                                       "paid": paid})
+            try:
+                _stash_res({"content": msg.content or "",
+                            "tool_calls": resp_tool_calls,
+                            "usage": {"prompt_tokens": tok_in,
+                                      "completion_tokens": tok_out,
+                                      "cached_tokens": tok_cached,
+                                      "paid": paid}})
+            except Exception:
+                pass
 
             # Classify tool calls
             tool_names = []
@@ -507,9 +572,40 @@ class Agent:
                                    tool=tc.function.name,
                                    tool_call_id=tc.id,
                                    args=tc_args)
-                content = self._handle_tool_call(tc, dispatch_results, step)
-                # Tool API boundary — response side. Full content (sanitised).
-                clean_content = _sanitize_tool_content(content)
+                # Same observable wrapper used for LLM calls — keeps
+                # the trace shape uniform; AI debugger drills into
+                # tool spans the exact same way it drills into LLM
+                # spans (span_id → payload files).
+                try:
+                    from orchestra.otel import observe as _observe
+                    from orchestra.otel_fs import (
+                        stash_request as _stash_req,
+                        stash_response as _stash_res,
+                    )
+                    _tool_ctx = _observe(f"tool.{tc.function.name}", {
+                        "tool.name":         tc.function.name,
+                        "tool.call_id":      tc.id,
+                        "diffgraph.agent_id": self.agent_id,
+                        "diffgraph.agent_name": self.config.name,
+                        "diffgraph.step":     step,
+                        "diffgraph.seq":      tool_seq,
+                    })
+                except Exception:
+                    _tool_ctx = None
+                    _stash_req = _stash_res = lambda *a, **kw: None
+
+                if _tool_ctx is not None:
+                    with _tool_ctx:
+                        _stash_req({"name": tc.function.name,
+                                    "args": tc_args,
+                                    "tool_call_id": tc.id})
+                        content = self._handle_tool_call(tc, dispatch_results, step)
+                        clean_content = _sanitize_tool_content(content)
+                        _stash_res({"content": clean_content,
+                                    "content_len": len(clean_content)})
+                else:
+                    content = self._handle_tool_call(tc, dispatch_results, step)
+                    clean_content = _sanitize_tool_content(content)
                 self.event_bus.emit(EventType.AGENT_TOOL_RESPONSE,
                                    agent_id=self.agent_id, agent_name=self.config.name,
                                    step=step, seq=tool_seq,
@@ -809,22 +905,9 @@ class Agent:
 
         wait = args.get("wait", True)
         if wait:
-            # OTel span around the child agent's lifetime so the
-            # session decomposes into dispatcher → reviewer →
-            # investigator-N spans automatically.
-            try:
-                from opentelemetry import trace as _otel_trace
-                _t = _otel_trace.get_tracer("diffgraph-cli")
-                _cm = _t.start_as_current_span(f"agent.{agent_name}")
-            except Exception:
-                _cm = None  # OTel not configured — silent no-op
-            if _cm is not None:
-                with _cm as _span:
-                    _span.set_attribute("diffgraph.agent_id", child.agent_id)
-                    _span.set_attribute("diffgraph.agent_name", agent_name)
-                    result = child.run()
-            else:
-                result = child.run()
+            # No span here — Agent.run() emits its own. Same path
+            # for root and spawned children, no duplication.
+            result = child.run()
             with self._children_lock:
                 self._children_results[child.agent_id] = result
             if child.budget_state:
