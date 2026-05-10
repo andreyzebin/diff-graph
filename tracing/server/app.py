@@ -127,6 +127,144 @@ async def api_run_json(run_id: str):
     return JSONResponse(content=trace_data)
 
 
+# ── OpenTelemetry-shaped read API (Phase 0) ───────────────────────────────
+# Renders our existing runs + events tables as OTLP-JSON without
+# touching the writers. Each sub-agent (run_id × agent_id) becomes
+# one Span; events become Span events. trace_id and span_id are
+# derived deterministically from our internal ids via SHA-256 truncate
+# so the same input always maps to the same hex id (16 bytes for
+# trace_id, 8 bytes for span_id — per OTLP spec).
+
+def _otel_trace_id(run_id: str) -> str:
+    """16-byte hex (32 chars) — OTLP requires fixed length."""
+    import hashlib
+    return hashlib.sha256(run_id.encode()).hexdigest()[:32]
+
+
+def _otel_span_id(span_key: str) -> str:
+    """8-byte hex (16 chars)."""
+    import hashlib
+    return hashlib.sha256(span_key.encode()).hexdigest()[:16]
+
+
+def _to_unix_nanos(iso: str) -> int:
+    """ISO8601 (naive or aware) → unix nanoseconds. OTLP wants ints."""
+    from datetime import datetime, timezone as _tz
+    if not iso:
+        return 0
+    try:
+        d = datetime.fromisoformat(iso)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=_tz.utc)
+        return int(d.timestamp() * 1_000_000_000)
+    except Exception:
+        return 0
+
+
+@app.get("/api/otel/traces/{run_id}")
+async def api_otel_trace(run_id: str):
+    """OTLP-JSON projection of one session.
+
+    The session's run_id maps to a 16-byte trace_id; each
+    (run_id × agent_id) inside maps to an 8-byte span_id. All
+    sub-agent spans are children of the session's root span (= the
+    runs row's own span; no inter-agent parent tracking yet — that
+    needs writer-side instrumentation, Phase 1).
+
+    Compatible with anything that ingests OTLP-JSON: pass to a
+    Tempo/Jaeger collector via `curl -X POST -d @file.json`, or
+    consume programmatically.
+    """
+    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        run = conn.execute(
+            "SELECT * FROM runs WHERE id=?", (run_id,)
+        ).fetchone()
+        if run is None:
+            return JSONResponse({"error": {"code": "not_found",
+                                            "message": run_id}},
+                                 status_code=404)
+        sub_rows = conn.execute(
+            """SELECT agent_id, agent_name,
+                      MIN(timestamp) AS started_at,
+                      MAX(timestamp) AS finished_at,
+                      COUNT(*) AS event_count
+               FROM events WHERE run_id=? AND agent_id IS NOT NULL
+                              AND agent_id != ''
+               GROUP BY agent_id, agent_name
+               ORDER BY MIN(timestamp)""",
+            (run_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    trace_id = _otel_trace_id(run_id)
+    root_span_id = _otel_span_id(run_id)
+
+    spans = []
+    # Root span — the session itself (one CLI invocation / webhook
+    # request / etc.). Wraps all sub-agent spans.
+    spans.append({
+        "traceId": trace_id,
+        "spanId": root_span_id,
+        "name": (run["agent_name"] or run["kind"] or "session"),
+        "kind": 1,  # SPAN_KIND_INTERNAL
+        "startTimeUnixNano": _to_unix_nanos(run["started_at"]),
+        "endTimeUnixNano": _to_unix_nanos(run["finished_at"]),
+        "attributes": [
+            {"key": "diffgraph.run_id", "value": {"stringValue": run["id"]}},
+            {"key": "diffgraph.kind",   "value": {"stringValue": run["kind"] or ""}},
+            {"key": "diffgraph.model",  "value": {"stringValue": run["model"] or ""}},
+            {"key": "diffgraph.scenario_id",
+             "value": {"stringValue": run["scenario_id"] or ""}},
+            {"key": "diffgraph.mutation",
+             "value": {"stringValue": run["mutation"] or ""}},
+            {"key": "diffgraph.generation",
+             "value": {"stringValue": run["generation"] or ""}},
+            {"key": "diffgraph.linked_run_id",
+             "value": {"stringValue": run["linked_run_id"] or ""}},
+        ],
+        "status": {"code": 1 if run["status"] == "completed" else 2},
+    })
+    for r in sub_rows:
+        agent_span_key = f"{run_id}:{r['agent_id']}:{r['agent_name']}"
+        spans.append({
+            "traceId": trace_id,
+            "spanId": _otel_span_id(agent_span_key),
+            "parentSpanId": root_span_id,
+            "name": r["agent_name"] or "agent",
+            "kind": 1,
+            "startTimeUnixNano": _to_unix_nanos(r["started_at"]),
+            "endTimeUnixNano": _to_unix_nanos(r["finished_at"]),
+            "attributes": [
+                {"key": "diffgraph.agent_id",
+                 "value": {"stringValue": r["agent_id"]}},
+                {"key": "diffgraph.agent_name",
+                 "value": {"stringValue": r["agent_name"] or ""}},
+                {"key": "diffgraph.event_count",
+                 "value": {"intValue": str(r["event_count"])}},
+            ],
+            "status": {"code": 1},
+        })
+    return JSONResponse({
+        "resourceSpans": [{
+            "resource": {
+                "attributes": [
+                    {"key": "service.name",
+                     "value": {"stringValue": "diffgraph"}},
+                    {"key": "service.version",
+                     "value": {"stringValue": "0.1"}},
+                ],
+            },
+            "scopeSpans": [{
+                "scope": {"name": "diffgraph.agents", "version": "0.1"},
+                "spans": spans,
+            }],
+        }],
+    })
+
+
 @app.get("/api/runs/{run_id}/step/{agent_id}/{step}/messages")
 async def api_step_messages(run_id: str, agent_id: str, step: int):
     """Full messages array for a specific step (for [⧉] on-demand loading)."""
