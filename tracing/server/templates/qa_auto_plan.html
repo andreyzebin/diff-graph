@@ -157,7 +157,9 @@ th { color: #8b949e; font-weight: normal; }
                       <template x-for="h in history[c.id]" :key="`${h.plan_id}`">
                         <tr>
                           <td>
-                            <a class="run-link" :href="`{{ base_path }}/qa/plans`"
+                            <a class="run-link"
+                               :href="`{{ base_path }}/qa/runs?plan=${h.plan_id}`"
+                               :title="'show all runs from this plan'"
                                x-text="`#${h.plan_id}`"></a>
                           </td>
                           <td x-text="h.lineage"></td>
