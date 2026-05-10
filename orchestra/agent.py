@@ -809,7 +809,22 @@ class Agent:
 
         wait = args.get("wait", True)
         if wait:
-            result = child.run()
+            # OTel span around the child agent's lifetime so the
+            # session decomposes into dispatcher → reviewer →
+            # investigator-N spans automatically.
+            try:
+                from opentelemetry import trace as _otel_trace
+                _t = _otel_trace.get_tracer("diffgraph-cli")
+                _cm = _t.start_as_current_span(f"agent.{agent_name}")
+            except Exception:
+                _cm = None  # OTel not configured — silent no-op
+            if _cm is not None:
+                with _cm as _span:
+                    _span.set_attribute("diffgraph.agent_id", child.agent_id)
+                    _span.set_attribute("diffgraph.agent_name", agent_name)
+                    result = child.run()
+            else:
+                result = child.run()
             with self._children_lock:
                 self._children_results[child.agent_id] = result
             if child.budget_state:

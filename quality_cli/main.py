@@ -1009,6 +1009,29 @@ def worker_loop(
             q.set_task_trace_run_id(t.id, pre_run_id)
         except Exception:
             pass
+        # OTel span around this task's bench subprocess. Inject the
+        # W3C TraceContext into env so the bench → diff-graph chain
+        # joins ONE distributed trace.
+        try:
+            from orchestra.otel import setup_tracing, current_traceparent
+            _otel_tracer = setup_tracing("diffgraph-worker")
+            _bench_span_cm = _otel_tracer.start_as_current_span(
+                f"worker.task#{t.id}",
+                attributes={
+                    "qa.task_id": t.id,
+                    "qa.scenario_id": t.scenario_id or "",
+                    "qa.provider": t.provider or "",
+                    "qa.lineage": t.lineage or "",
+                    "qa.mutation_hash": t.mutation_hash or "",
+                    "qa.attempt_n": t.attempt_n or 1,
+                    "diffgraph.run_id": pre_run_id,
+                },
+            )
+            _bench_span = _bench_span_cm.__enter__()
+            env["TRACEPARENT"] = current_traceparent()
+        except Exception:
+            _bench_span_cm = None
+            _bench_span = None
         # Force bench to write judge artefacts to disk + trace DB. Without
         # this env var bench's session_dir stays None and the judge runs
         # the LLM call but never writes a `kind=judge` row, so /qa/plans
@@ -1042,6 +1065,20 @@ def worker_loop(
 
         hb_stop.set()
         hb_thread.join(timeout=1)
+
+        # Close the worker's OTel span; mark error status if the
+        # subprocess failed/timed-out so the trace shows red.
+        if _bench_span_cm is not None and _bench_span is not None:
+            try:
+                if result_state == "error":
+                    from opentelemetry.trace import StatusCode, Status
+                    _bench_span.set_status(
+                        Status(StatusCode.ERROR, error_class or "")
+                    )
+                _bench_span.set_attribute("qa.result_state", result_state)
+                _bench_span_cm.__exit__(None, None, None)
+            except Exception:
+                pass
 
         ok = q.finish(t.id, worker_id=wid, state=result_state,
                       result=result_payload, error_class=error_class)

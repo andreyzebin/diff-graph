@@ -365,21 +365,37 @@ def _run_with_dispatcher(
         if invocations_out:
             _record_invocation(event, **kw)
 
-    result = run_agent(
-        agent_name=agent_name,
-        data=data,
-        llm=llm_client,
-        model=effective_model,
-        tool_registry=tool_registry,
-        on_event=_on_event,
-        trace_writer=_trace_writer,
-        prompt_resource=prompts,
-        tool_choice=llm_cfg.get("tool_choice", ""),
-        stream=llm_cfg.get("stream"),
-        extra_body=llm_cfg.get("extra_body"),
-        tool_mocks=tool_mocks,
-        user_message_override=user_message_override,
-    )
+    # OTel root span for this CLI invocation. Inherits an upstream
+    # trace context from $TRACEPARENT (worker → bench → cli chain)
+    # so the whole distributed run shows as ONE trace in /api/otel.
+    # Root agent and spawned sub-agents share the same span shape
+    # (`agent.<name>`) so the trace tree is uniform regardless of
+    # where the agent was invoked from.
+    from orchestra.otel import setup_tracing
+    _otel_tracer = setup_tracing("diffgraph-cli")
+    with _otel_tracer.start_as_current_span(f"agent.{agent_name}") as _otel_span:
+        _otel_span.set_attribute("diffgraph.run_id", _trace_db.run_id)
+        _otel_span.set_attribute("diffgraph.agent_name", agent_name)
+        _otel_span.set_attribute("diffgraph.model", effective_model or "")
+        if _scenario_id_env:
+            _otel_span.set_attribute("diffgraph.scenario_id", _scenario_id_env)
+        if _mutation_override:
+            _otel_span.set_attribute("diffgraph.mutation", _mutation_override)
+        result = run_agent(
+            agent_name=agent_name,
+            data=data,
+            llm=llm_client,
+            model=effective_model,
+            tool_registry=tool_registry,
+            on_event=_on_event,
+            trace_writer=_trace_writer,
+            prompt_resource=prompts,
+            tool_choice=llm_cfg.get("tool_choice", ""),
+            stream=llm_cfg.get("stream"),
+            extra_body=llm_cfg.get("extra_body"),
+            tool_mocks=tool_mocks,
+            user_message_override=user_message_override,
+        )
 
     # ── Post-run: post replies, findings, cleanup ─────────────────────────
     review_ctx = ctx.review_context
