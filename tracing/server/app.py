@@ -494,19 +494,6 @@ async def api_search_runs(
     })
 
 
-@app.post("/api/qa/maintenance/backfill-trace-run-ids")
-async def api_backfill_trace_run_ids(plan: Optional[int] = None,
-                                     limit: int = 5000):
-    """Self-heal: stamp trace_run_id on qa_tasks rows that pre-date
-    the lease-time stamping fix. Safe to run anytime — claim-tracked
-    so the same agent run can't bind to two tasks. Optional `plan=N`
-    narrows to one plan's tasks only.
-
-    Useful when /qa/traces?plan=X comes up empty for an old plan."""
-    n = _qa_queue.backfill_trace_run_id(plan_id=plan, limit=limit)
-    return JSONResponse({"data": {"backfilled": n}})
-
-
 @app.get("/api/search/sub_runs")
 async def api_search_sub_runs(
     # Same filter set as /api/search/runs — applies to the parent
