@@ -981,10 +981,18 @@ def worker_loop(
         hb_thread = threading.Thread(target=_hb, daemon=True)
         hb_thread.start()
 
-        # Build + run bench command.
-        cmd = bench_cmd.format(scenario=t.scenario_id, provider=t.provider,
-                               lineage=t.lineage, mutation=t.mutation_hash,
-                               attempt=t.attempt_n)
+        # Build + run bench command. Per-task override wins over pool
+        # default: scheduler (auto-plan or fire-anonymous) can set
+        # `payload.bench_cmd` for tasks that need a different runner
+        # (e.g. unit-tier fixtures use `bench run-unit <yaml>` instead
+        # of the integration scenario cmd). Worker stays agnostic about
+        # tiers — it just runs whatever cmd template was assigned.
+        task_cmd_tmpl = (t.payload or {}).get("bench_cmd") or bench_cmd
+        cmd = task_cmd_tmpl.format(
+            scenario=t.scenario_id, provider=t.provider,
+            lineage=t.lineage, mutation=t.mutation_hash,
+            attempt=t.attempt_n,
+        )
         result_state = "finished"
         error_class = None
         result_payload: dict = {}

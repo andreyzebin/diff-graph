@@ -1075,6 +1075,90 @@ async def api_qa_create_plan(p: PlanCreatePayload):
                         status_code=201)
 
 
+class FireAnonymousPayload(BaseModel):
+    """Body for POST /api/qa/fire-anonymous — one-shot run of N
+    scenarios on a (lineage, sha) without creating a saved schedule.
+    """
+    scenarios: list[str]                 # scenario ids
+    lineage: str = "master"
+    sha: str
+    provider: str = "deepseek"
+    name: str = ""
+    attempts_min: int = 1
+
+
+@app.post("/api/qa/fire-anonymous")
+async def api_qa_fire_anonymous(p: FireAnonymousPayload):
+    """Fire an anonymous schedule = a one-off plan over a list of
+    scenario ids on a specific (lineage, sha). Per-scenario bench_cmd
+    is auto-detected from the fixture yaml: unit-tier scenarios
+    (yaml has `repo:`) get `bench run-unit <path>`; integration
+    scenarios fall through to the worker pool's default cmd.
+    """
+    from quality_api.scenarios_index import find_scenario, build_bench_cmd
+    if not p.scenarios:
+        return JSONResponse({"error": {"code": "no_scenarios",
+                                       "message": "scenarios list is empty"}},
+                             status_code=400)
+    if not p.sha:
+        return JSONResponse({"error": {"code": "no_sha",
+                                       "message": "sha (mutation) is required"}},
+                             status_code=400)
+    resolved: list[dict] = []
+    missing: list[str] = []
+    for sid in p.scenarios:
+        try:
+            entry = find_scenario(sid)
+        except ValueError as exc:
+            return JSONResponse({"error": {"code": "ambiguous_scenario",
+                                           "message": str(exc)}},
+                                 status_code=400)
+        if entry is None:
+            missing.append(sid)
+            continue
+        resolved.append({"id": entry.id,
+                         "bench_cmd": build_bench_cmd(entry, scenario_id=sid)})
+    if missing:
+        return JSONResponse({"error": {"code": "scenario_not_found",
+                                       "message": f"unknown scenario(s): {', '.join(missing)}"}},
+                             status_code=404)
+    name = p.name or f"anon:{resolved[0]['id']}:{p.lineage}@{p.sha[:7]}"
+    try:
+        plan_id, task_ids = _qa_plans.create_anonymous(
+            name=name, scenarios=resolved,
+            lineage=p.lineage, mutation_hash=p.sha,
+            provider=p.provider, attempts_min=p.attempts_min,
+            notes=f"anonymous fire-and-forget, {len(resolved)} scenario(s)",
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": {"code": "invalid_plan",
+                                       "message": str(exc)}},
+                             status_code=400)
+    plan = _qa_plans.get(plan_id)
+    return JSONResponse({"data": plan_to_dict(plan,
+                                              progress=_qa_plans.progress(plan_id)),
+                         "meta": {"task_ids": task_ids,
+                                  "resolved_scenarios": [r["id"] for r in resolved]}},
+                        status_code=201)
+
+
+@app.get("/api/qa/scenarios")
+async def api_qa_list_scenarios():
+    """Recursive listing of bench's scenarios/. Drives the UI
+    `/qa/scenarios` page — multiselect + fire-on-commit."""
+    from quality_api.scenarios_index import list_scenarios
+    entries = list_scenarios()
+    return JSONResponse({
+        "data": [
+            {"id": e.id, "rel_path": e.rel_path, "tier": e.tier,
+             "agent": e.agent, "tags": e.tags, "title": e.title,
+             "is_unit_fixture": e.is_unit_fixture}
+            for e in entries
+        ],
+        "meta": {"total": len(entries)},
+    })
+
+
 @app.get("/api/qa/plans")
 async def api_qa_list_plans(state: Optional[str] = None,
                             limit: int = 50, offset: int = 0):

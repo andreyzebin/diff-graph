@@ -745,6 +745,76 @@ class PlanStore:
     def __init__(self, queue: TaskQueue):
         self.queue = queue
 
+    def create_anonymous(self, *, name: str, scenarios: list[dict],
+                          lineage: str, mutation_hash: str,
+                          provider: str, attempts_min: int = 1,
+                          priority: int = 100,
+                          notes: str = "") -> tuple[int, list[int]]:
+        """One-shot plan over a heterogeneous list of scenarios.
+
+        `scenarios` is a list of dicts: {id, bench_cmd?} — per-scenario
+        runner override goes into the task's payload. Used by
+        /api/qa/fire-anonymous so unit-tier and integration scenarios
+        can co-exist in a single plan and the worker dispatches each
+        with the right cmd template.
+
+        Phantom judge companion is still created for each agent task
+        (matches auto-fire behaviour). Returns (plan_id, [task_ids]).
+        """
+        if not scenarios:
+            raise ValueError("anonymous plan requires at least one scenario")
+        if not provider:
+            raise ValueError("anonymous plan requires a provider")
+        scenario_ids = [str(s["id"]) for s in scenarios if s.get("id")]
+        with self.queue._lock, self.queue._conn() as c:
+            cur = c.execute(
+                """INSERT INTO qa_plans
+                   (name, created_at, created_by, lineages, providers,
+                    scenarios, attempts_min, state, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
+                (name or "", _now().isoformat(), "anonymous",
+                 json.dumps([lineage] if lineage else []),
+                 json.dumps([provider]),
+                 json.dumps(scenario_ids),
+                 max(1, attempts_min), notes or ""),
+            )
+            plan_id = int(cur.lastrowid)
+            c.commit()
+        task_ids: list[int] = []
+        for s in scenarios:
+            scen_id = str(s.get("id") or "")
+            bench_cmd = str(s.get("bench_cmd") or "")
+            payload_base: dict = {"plan_name": name} if name else {}
+            if bench_cmd:
+                payload_base["bench_cmd"] = bench_cmd
+            for attempt_n in range(1, max(1, attempts_min) + 1):
+                agent_tid = self.queue.enqueue(TaskSpec(
+                    scenario_id=scen_id,
+                    provider=provider,
+                    attempt_n=attempt_n,
+                    lineage=lineage or "",
+                    mutation_hash=mutation_hash or "",
+                    plan_id=plan_id,
+                    priority=priority,
+                    payload=dict(payload_base),
+                ))
+                task_ids.append(agent_tid)
+                judge_tid = self.queue.enqueue(TaskSpec(
+                    scenario_id=scen_id,
+                    provider=provider,
+                    attempt_n=attempt_n,
+                    lineage=lineage or "",
+                    mutation_hash=mutation_hash or "",
+                    plan_id=plan_id,
+                    priority=priority,
+                    kind="judge",
+                    parent_task_id=agent_tid,
+                    initial_state="blocked",
+                    payload=dict(payload_base),
+                ))
+                task_ids.append(judge_tid)
+        return plan_id, task_ids
+
     def create(self, spec: PlanSpec) -> tuple[int, list[int]]:
         """Insert plan + fan-out into qa_tasks. Returns (plan_id, [task_ids]).
 
