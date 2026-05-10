@@ -373,27 +373,40 @@ def _run_with_dispatcher(
         if invocations_out:
             _record_invocation(event, **kw)
 
-    # OTel: just initialise the tracer + FS exporter (if a trace dir
-    # is set). The actual `agent.<name>` span is emitted by Agent.run
-    # itself — same code path for root and spawned children, so the
-    # trace tree is uniform without duplicating instrumentation.
+    # OTel: thin session wrap so `/api/otel/traces/<run_id>` can find
+    # this trace (run_id stored as a span attribute that the indexer
+    # reads). The agent-level spans (`agent.<name>`) are emitted by
+    # Agent.run itself — root and spawned children share that path,
+    # nothing duplicated. The session span only adds context (run_id,
+    # scenario_id, mutation) that doesn't make sense at agent level.
     from orchestra.otel import setup_tracing
-    setup_tracing("diffgraph-cli", fs_root=str(fs_dir) if fs_dir else None)
-    result = run_agent(
-        agent_name=agent_name,
-        data=data,
-        llm=llm_client,
-        model=effective_model,
-        tool_registry=tool_registry,
-        on_event=_on_event,
-        trace_writer=_trace_writer,
-        prompt_resource=prompts,
-        tool_choice=llm_cfg.get("tool_choice", ""),
-        stream=llm_cfg.get("stream"),
-        extra_body=llm_cfg.get("extra_body"),
-        tool_mocks=tool_mocks,
-        user_message_override=user_message_override,
+    _otel_tracer = setup_tracing(
+        "diffgraph-cli",
+        fs_root=str(fs_dir) if fs_dir else None,
     )
+    with _otel_tracer.start_as_current_span("cli.session") as _otel_session:
+        _otel_session.set_attribute("diffgraph.run_id", _trace_db.run_id)
+        if effective_model:
+            _otel_session.set_attribute("diffgraph.model", effective_model)
+        if _scenario_id_env:
+            _otel_session.set_attribute("diffgraph.scenario_id", _scenario_id_env)
+        if _mutation_override:
+            _otel_session.set_attribute("diffgraph.mutation", _mutation_override)
+        result = run_agent(
+            agent_name=agent_name,
+            data=data,
+            llm=llm_client,
+            model=effective_model,
+            tool_registry=tool_registry,
+            on_event=_on_event,
+            trace_writer=_trace_writer,
+            prompt_resource=prompts,
+            tool_choice=llm_cfg.get("tool_choice", ""),
+            stream=llm_cfg.get("stream"),
+            extra_body=llm_cfg.get("extra_body"),
+            tool_mocks=tool_mocks,
+            user_message_override=user_message_override,
+        )
 
     # ── Post-run: post replies, findings, cleanup ─────────────────────────
     review_ctx = ctx.review_context

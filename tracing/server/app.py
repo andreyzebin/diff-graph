@@ -161,15 +161,31 @@ def _to_unix_nanos(iso: str) -> int:
         return 0
 
 
+def _otlp_attr_list(attrs: dict) -> list:
+    """Render an attributes dict as the OTLP `attributes` array."""
+    out = []
+    for k, v in (attrs or {}).items():
+        if isinstance(v, bool):
+            out.append({"key": k, "value": {"boolValue": v}})
+        elif isinstance(v, int):
+            out.append({"key": k, "value": {"intValue": str(v)}})
+        elif isinstance(v, float):
+            out.append({"key": k, "value": {"doubleValue": v}})
+        else:
+            out.append({"key": k, "value": {"stringValue": str(v)}})
+    return out
+
+
 @app.get("/api/otel/traces/{run_id}")
 async def api_otel_trace(run_id: str):
     """OTLP-JSON projection of one session.
 
-    The session's run_id maps to a 16-byte trace_id; each
-    (run_id × agent_id) inside maps to an 8-byte span_id. All
-    sub-agent spans are children of the session's root span (= the
-    runs row's own span; no inter-agent parent tracking yet — that
-    needs writer-side instrumentation, Phase 1).
+    Reads from the `otel_spans` table populated by the
+    SQLiteSpanExporter (Phase 1). Looks up the trace by the
+    `diffgraph.run_id` attribute on the cli.session span — that's
+    the index key set by cli.py. If no real OTel data exists yet
+    (pre-instrumentation session), falls back to the synthesised
+    shape derived from `runs` + `events` so old data stays viewable.
 
     Compatible with anything that ingests OTLP-JSON: pass to a
     Tempo/Jaeger collector via `curl -X POST -d @file.json`, or
@@ -178,6 +194,69 @@ async def api_otel_trace(run_id: str):
     conn = sqlite3.connect(str(DEFAULT_DB_PATH))
     conn.row_factory = sqlite3.Row
     try:
+        # Real-OTel path: find the cli.session span whose
+        # diffgraph.run_id attribute matches; pull its trace_id and
+        # return ALL spans of that trace.
+        try:
+            row = conn.execute(
+                """SELECT trace_id FROM otel_spans
+                   WHERE name = 'cli.session'
+                     AND json_extract(attributes, '$."diffgraph.run_id"') = ?
+                   ORDER BY start_ns DESC LIMIT 1""",
+                (run_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            row = None  # otel_spans table doesn't exist yet
+        if row:
+            trace_id = row["trace_id"]
+            spans_rows = conn.execute(
+                """SELECT span_id, parent_span_id, name, kind,
+                          service_name, start_ns, end_ns,
+                          status_code, attributes
+                   FROM otel_spans WHERE trace_id = ?
+                   ORDER BY start_ns ASC""",
+                (trace_id,),
+            ).fetchall()
+            spans_by_service: dict = {}
+            for s in spans_rows:
+                try:
+                    attrs = json.loads(s["attributes"] or "{}")
+                except Exception:
+                    attrs = {}
+                rec = {
+                    "traceId": trace_id,
+                    "spanId": s["span_id"],
+                    "name": s["name"],
+                    "kind": s["kind"] or 1,
+                    "startTimeUnixNano": int(s["start_ns"] or 0),
+                    "endTimeUnixNano": int(s["end_ns"] or 0),
+                    "attributes": _otlp_attr_list(attrs),
+                    "status": {"code": (
+                        1 if (s["status_code"] or "OK") in ("OK", "UNSET")
+                        else 2)},
+                }
+                if s["parent_span_id"]:
+                    rec["parentSpanId"] = s["parent_span_id"]
+                spans_by_service.setdefault(
+                    s["service_name"] or "diffgraph", []).append(rec)
+            return JSONResponse({
+                "resourceSpans": [
+                    {
+                        "resource": {"attributes": [
+                            {"key": "service.name",
+                             "value": {"stringValue": svc}},
+                        ]},
+                        "scopeSpans": [{
+                            "scope": {"name": "diffgraph.agents"},
+                            "spans": spans,
+                        }],
+                    }
+                    for svc, spans in spans_by_service.items()
+                ],
+            })
+
+        # Fallback: derive a coarse OTLP shape from runs + events
+        # (Phase 0 path). Used only for pre-instrumentation runs.
         run = conn.execute(
             "SELECT * FROM runs WHERE id=?", (run_id,)
         ).fetchone()
