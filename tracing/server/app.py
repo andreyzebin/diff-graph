@@ -302,6 +302,7 @@ async def api_search_sub_runs(
     plan: Optional[int] = None,
     task: Optional[int] = None,
     session: Optional[str] = None,
+    scenario_run: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     sort: str = "started_at",
