@@ -841,10 +841,20 @@ def run(
     )
 
     if output:
+        # For SINGLE-mode agents (e.g. judge.*), `result` IS the parsed
+        # JSON payload — write it as-is. For ReAct review agents,
+        # write the structured findings array (back-compat shape).
+        # Distinguishes by inspecting the result dict.
+        if isinstance(result, dict) and result.get("findings") is None:
+            payload = result
+            label = "Output"
+        else:
+            payload = [f.to_dict() for f in findings]
+            label = f"Findings ({len(findings)} findings)"
         Path(output).write_text(
-            json.dumps([f.to_dict() for f in findings], ensure_ascii=False, indent=2)
+            json.dumps(payload, ensure_ascii=False, indent=2)
         )
-        console.print(f"\n[green]Findings written to {output}[/green]  ({len(findings)} findings)")
+        console.print(f"\n[green]{label} written to {output}[/green]")
 
     if cleanup_fn:
         cleanup_fn()
