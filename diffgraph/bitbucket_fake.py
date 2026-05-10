@@ -150,17 +150,52 @@ def get_pr_info(
     return md
 
 
+def _normalise_comment(c: dict) -> dict:
+    """Convert yaml-friendly shape into the legacy flat shape that
+    diff-graph's call sites expect:
+      {id, parent_id, depth, file, line, text, author, author_slug,
+       resolved, anchored}.
+    Accepts either flat (author/author_slug strings) or nested
+    (author={name, slug}, anchor={path, line}) inputs."""
+    a = c.get("author")
+    if isinstance(a, dict):
+        author = a.get("name") or a.get("displayName") or a.get("slug") or ""
+        author_slug = a.get("slug") or a.get("name") or ""
+    else:
+        author = str(a or "")
+        author_slug = str(c.get("author_slug") or author or "")
+    anc = c.get("anchor") or {}
+    file_path = anc.get("path") or c.get("file") or ""
+    line = anc.get("line") or c.get("line") or 0
+    return {
+        "id":          int(c.get("id", 0) or 0),
+        "parent_id":   int(c.get("parent_id", 0) or 0),
+        "depth":       int(c.get("depth", 0) or 0),
+        "file":        str(file_path),
+        "line":        int(line or 0),
+        "text":        str(c.get("text") or ""),
+        "author":      str(author),
+        "author_slug": str(author_slug),
+        "resolved":    bool(c.get("resolved") or False),
+        "anchored":    bool(file_path),
+    }
+
+
 def get_pr_comments(
     pr_url: str,
     token: Optional[str] = None,
     ca_bundle: Optional[str] = None,
     client_cert: Optional[str] = None,
 ) -> list[dict]:
-    return list(_load().get("comments") or [])
+    return [_normalise_comment(c) for c in (_load().get("comments") or [])]
 
 
 def _comment_index(comments: list[dict]) -> dict[int, dict]:
     return {int(c.get("id", 0)): c for c in comments if c.get("id") is not None}
+
+
+def _normalised_comments() -> list[dict]:
+    return [_normalise_comment(c) for c in (_load().get("comments") or [])]
 
 
 def _walk_chain_up(idx: dict[int, dict], cid: int) -> int:
@@ -182,9 +217,9 @@ def _walk_chain_up(idx: dict[int, dict], cid: int) -> int:
 
 def _render_thread(comments: list[dict], root_id: int, *,
                    bot_user: str = "", subject_pattern: str = "") -> str:
-    """Render the subtree under `root_id` as plain text — same
-    shape the real `get_comment_thread` returns. Children are
-    indented by depth; self-comments tagged [SELF]."""
+    """Render the subtree under `root_id` as plain text, matching
+    the shape of comments returned by _normalise_comment. Children
+    indented; self-comments tagged [SELF]."""
     idx = _comment_index(comments)
     children_of: dict[int, list[int]] = {}
     for c in comments:
@@ -193,23 +228,16 @@ def _render_thread(comments: list[dict], root_id: int, *,
 
     lines: list[str] = []
 
-    def _author(c: dict) -> str:
-        a = c.get("author") or {}
-        name = a.get("name") or a.get("slug") or "unknown"
-        return name
-
     def _render(node_id: int, depth: int) -> None:
         c = idx.get(node_id)
         if not c:
             return
         prefix = "  " * depth
-        author = _author(c)
-        tag = "[SELF]" if bot_user and (
-            (c.get("author") or {}).get("slug") == bot_user
-        ) else ""
-        anchor = c.get("anchor") or {}
-        anchor_s = (f" ({anchor.get('path','?')}:{anchor.get('line','?')})"
-                    if anchor.get("path") else "")
+        author = c.get("author") or "unknown"
+        tag = "[SELF]" if bot_user and c.get("author_slug") == bot_user else ""
+        anchor_s = ""
+        if c.get("file"):
+            anchor_s = f" ({c.get('file')}:{c.get('line') or '?'})"
         lines.append(
             f"{prefix}#{node_id} {author}{tag}{anchor_s}: {c.get('text','')}"
         )
@@ -229,8 +257,7 @@ def get_comment_thread(
     bot_user: str = "",
     subject_pattern: str = "",
 ) -> str:
-    pl = _load()
-    comments = list(pl.get("comments") or [])
+    comments = _normalised_comments()
     if not comments:
         return ""
     idx = _comment_index(comments)
@@ -238,7 +265,7 @@ def get_comment_thread(
     if not root_id:
         return ""
     return _render_thread(comments, root_id,
-                          bot_user=bot_user or pl.get("self_user", ""),
+                          bot_user=bot_user or _load().get("self_user", ""),
                           subject_pattern=subject_pattern)
 
 
