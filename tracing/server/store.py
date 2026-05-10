@@ -188,9 +188,18 @@ class SQLiteTraceStore:
         # so without this it evaluates the EXISTS per event row.
         try:
             with self._conn() as c:
+                # Bound the run-id pool: with no filters, the JOIN
+                # against `events` (3M+ rows) blows up otherwise. We
+                # pull the most recent N runs and let the consumer
+                # paginate inside that window. ~10x the page size is
+                # plenty for "browse latest" workflows; explicit
+                # filters (plan/task/session) take a different SQL
+                # path and aren't capped this way.
+                pool_cap = max(200, min(2000, f.limit * 10))
                 ids_rows = c.execute(
-                    f"SELECT id FROM runs WHERE {where}",
-                    params,
+                    f"""SELECT id FROM runs WHERE {where}
+                        ORDER BY started_at DESC LIMIT ?""",
+                    [*params, pool_cap],
                 ).fetchall()
                 ids = [r[0] for r in ids_rows]
                 if not ids:
@@ -276,8 +285,11 @@ class SQLiteTraceStore:
         where, params = self._where_for_runs(f)
         try:
             with self._conn() as c:
+                pool_cap = max(200, min(2000, f.limit * 10))
                 ids = [r[0] for r in c.execute(
-                    f"SELECT id FROM runs WHERE {where}", params,
+                    f"""SELECT id FROM runs WHERE {where}
+                        ORDER BY started_at DESC LIMIT ?""",
+                    [*params, pool_cap],
                 ).fetchall()]
                 if not ids:
                     return 0
