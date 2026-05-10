@@ -161,6 +161,25 @@ class ToolRegistry:
         if td is None:
             return f"unknown tool: {tool_name}"
 
+        # Forbidden tools — unit-tier isolation: certain tools become
+        # available-but-blocked so prompt-driven self-restraint (e.g.
+        # "do not spawn") has a backstop. Set
+        # DIFFGRAPH_FORBIDDEN_TOOLS=spawn_agent,post_comment (comma list)
+        # and any dispatch on those returns a hard error instead of
+        # firing the handler. The error is fed back into the LLM step's
+        # message history just like any other tool result, so the
+        # agent sees it and adapts.
+        import os as _os
+        _forb = _os.environ.get("DIFFGRAPH_FORBIDDEN_TOOLS", "").strip()
+        if _forb:
+            forbidden = {x.strip() for x in _forb.split(",") if x.strip()}
+            if tool_name in forbidden:
+                return (
+                    f"error: tool '{tool_name}' is disabled for this run "
+                    f"(unit-tier isolation). Do not call it again — adjust "
+                    f"your plan to work without it."
+                )
+
         # Validate args against tool's JSON Schema
         error = _validate_args(args, td.parameters)
         if error:
