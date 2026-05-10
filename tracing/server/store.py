@@ -69,6 +69,13 @@ class RunFilter:
     # Narrow further to a specific task (one scenario × attempt within
     # a plan). Joined via qa_tasks.id with the same time-window logic.
     task_id: Optional[int] = None
+    # Sub-agent view filter: pin to one session (= runs.id) to see all
+    # of a single CLI invocation's sub-agents.
+    session_id: Optional[str] = None
+    # Pin to one (agent ↔ judge) pair via the derived scenario_run_id
+    # (= agent's id; judge inherits via linked_run_id). Combine with
+    # ?scenario=…&plan=… to drill "all attempts in this plan".
+    scenario_run_id: Optional[str] = None
 
     # Pagination & sort
     limit: int = 50
@@ -126,6 +133,13 @@ class SQLiteTraceStore:
                    pr_url, project, scenario_id, scenario_tags,
                    generation, mutation, files_touched, jira_keys,
                    linked_run_id, fs_trace_path,
+                   -- scenario_run_id: a stable key shared by an agent
+                   -- run and its companion judge run. For an agent
+                   -- row it's the agent's own id; for a judge row,
+                   -- linked_run_id (which points back at the agent).
+                   -- Filter by scenario + group by scenario_run_id =
+                   -- "compare attempts in this plan side-by-side".
+                   CASE WHEN kind='judge' THEN linked_run_id ELSE id END AS scenario_run_id,
                    findings_count, total_tokens_paid, prompt_source, prompt_hash,
                    COALESCE(
                      (SELECT t.plan_id FROM qa_tasks t
@@ -171,6 +185,128 @@ class SQLiteTraceStore:
         except FileNotFoundError:
             return []
         return [self._row_to_dict(r) for r in rows]
+
+    def list_sub_runs(self, f: RunFilter) -> list[dict]:
+        """Like list_runs, but flatten each session into one row per
+        sub-agent. The "scope" / "request" of a single CLI invocation
+        is `runs.id`; inside it multiple agent_ids work in parallel
+        (dispatcher, reviewer, investigator-1..N). This view shows
+        each sub-agent as its own row, inheriting the session's
+        scenario_id / mutation / plan / etc. — the search filters
+        still apply to the parent runs row.
+        """
+        where, params = self._where_for_runs(f)
+        sort_col = self._safe_sort_col(f.sort)
+        order = "DESC" if (f.order or "desc").lower() == "desc" else "ASC"
+        # Sub-agent timestamps are derived from MIN/MAX events.timestamp
+        # for that (run_id, agent_id) group. fmtLocal in the UI handles
+        # naive vs UTC strings — we don't normalize here.
+        # Sort column on runs vs derived: only `started_at` is meaningful;
+        # default to MIN(events.timestamp) DESC.
+        sub_sort = "MIN(e.timestamp)" if sort_col == "started_at" else f"runs.{sort_col}"
+        q = f"""
+            SELECT runs.id            AS session_id,
+                   e.agent_id         AS agent_id,
+                   e.agent_name       AS agent_name,
+                   runs.kind, runs.model, runs.status,
+                   runs.pr_url, runs.project, runs.scenario_id, runs.scenario_tags,
+                   runs.generation, runs.mutation, runs.files_touched, runs.jira_keys,
+                   runs.linked_run_id, runs.fs_trace_path,
+                   CASE WHEN runs.kind='judge' THEN runs.linked_run_id
+                        ELSE runs.id END AS scenario_run_id,
+                   runs.findings_count, runs.total_tokens_paid,
+                   runs.prompt_source, runs.prompt_hash,
+                   MIN(e.timestamp)   AS started_at,
+                   MAX(e.timestamp)   AS finished_at,
+                   COUNT(e.id)        AS events_count,
+                   COALESCE(
+                     (SELECT t.plan_id FROM qa_tasks t
+                      WHERE SUBSTR(t.mutation_hash, 1, 7) = runs.mutation
+                        AND t.started_at IS NOT NULL
+                        AND runs.started_at >= t.started_at
+                        AND runs.started_at <= COALESCE(t.finished_at, datetime('now'))
+                      ORDER BY t.id DESC LIMIT 1),
+                     (SELECT t.plan_id FROM qa_tasks t, runs a
+                      WHERE a.id = runs.linked_run_id
+                        AND SUBSTR(t.mutation_hash, 1, 7) = a.mutation
+                        AND t.started_at IS NOT NULL
+                        AND a.started_at >= t.started_at
+                        AND a.started_at <= COALESCE(t.finished_at, datetime('now'))
+                      ORDER BY t.id DESC LIMIT 1)
+                   ) AS plan_id,
+                   COALESCE(
+                     (SELECT t.id FROM qa_tasks t
+                      WHERE SUBSTR(t.mutation_hash, 1, 7) = runs.mutation
+                        AND t.started_at IS NOT NULL
+                        AND runs.started_at >= t.started_at
+                        AND runs.started_at <= COALESCE(t.finished_at, datetime('now'))
+                      ORDER BY t.id DESC LIMIT 1),
+                     (SELECT t.id FROM qa_tasks t, runs a
+                      WHERE a.id = runs.linked_run_id
+                        AND SUBSTR(t.mutation_hash, 1, 7) = a.mutation
+                        AND t.started_at IS NOT NULL
+                        AND a.started_at >= t.started_at
+                        AND a.started_at <= COALESCE(t.finished_at, datetime('now'))
+                      ORDER BY t.id DESC LIMIT 1)
+                   ) AS task_id
+            FROM runs JOIN events e ON e.run_id = runs.id
+            WHERE {where} AND e.agent_id IS NOT NULL AND e.agent_id != ''
+            GROUP BY runs.id, e.agent_id, e.agent_name
+            ORDER BY {sub_sort} {order}
+            LIMIT ? OFFSET ?
+        """
+        params.extend([f.limit, f.offset])
+        try:
+            with self._conn() as c:
+                rows = c.execute(q, params).fetchall()
+        except FileNotFoundError:
+            return []
+        out = []
+        for r in rows:
+            d = dict(r)
+            # Compute duration on the fly (events MIN/MAX may straddle naive
+            # vs UTC strings; we keep the raw values for the UI's fmtLocal).
+            try:
+                from datetime import datetime as _dt
+                a = _dt.fromisoformat(d["started_at"]) if d.get("started_at") else None
+                b = _dt.fromisoformat(d["finished_at"]) if d.get("finished_at") else None
+                if a and b:
+                    aux = a if a.tzinfo == b.tzinfo else (
+                        a.replace(tzinfo=None) if a.tzinfo else a)
+                    bux = b if a.tzinfo == b.tzinfo else (
+                        b.replace(tzinfo=None) if b.tzinfo else b)
+                    d["duration_ms"] = int((bux - aux).total_seconds() * 1000)
+            except Exception:
+                d["duration_ms"] = None
+            for col in ("files_touched", "jira_keys", "scenario_tags"):
+                v = d.get(col)
+                if isinstance(v, str) and v:
+                    try:
+                        d[col] = json.loads(v)
+                    except Exception:
+                        d[col] = []
+                elif v is None:
+                    d[col] = []
+            # Use agent_id for the row's "id" field so the link goes
+            # straight to the agent's trace.
+            d["id"] = d["session_id"]  # primary column = session id
+            out.append(d)
+        return out
+
+    def count_sub_runs(self, f: RunFilter) -> int:
+        where, params = self._where_for_runs(f)
+        q = f"""
+            SELECT COUNT(*) FROM (
+              SELECT 1 FROM runs JOIN events e ON e.run_id = runs.id
+              WHERE {where} AND e.agent_id IS NOT NULL AND e.agent_id != ''
+              GROUP BY runs.id, e.agent_id, e.agent_name
+            )
+        """
+        try:
+            with self._conn() as c:
+                return int(c.execute(q, params).fetchone()[0])
+        except FileNotFoundError:
+            return 0
 
     def count_runs(self, f: RunFilter) -> int:
         where, params = self._where_for_runs(f)
@@ -856,7 +992,13 @@ class SQLiteTraceStore:
                 params.append(val)
 
         eq("kind", f.kind)
+        eq("runs.id", f.session_id)         # qualified — disambiguates in JOIN events
         eq("agent_name", f.agent_name)
+        if f.scenario_run_id:
+            clauses.append(
+                "(CASE WHEN kind='judge' THEN linked_run_id ELSE id END = ?)"
+            )
+            params.append(f.scenario_run_id)
         eq("model", f.model)
         eq("status", f.status)
         eq("generation", f.generation)

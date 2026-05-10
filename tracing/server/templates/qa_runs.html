@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=c4847817"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=fca121f2"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -179,7 +179,9 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
     <table class="runs-table">
       <thead>
         <tr>
-          <th>id</th>
+          <th>session</th>
+          <th>scen_run</th>
+          <th>agent_id</th>
           <th>kind</th>
           <th>agent</th>
           <th>scenario</th>
@@ -195,10 +197,28 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
         </tr>
       </thead>
       <tbody>
-        <template x-for="r in rows" :key="r.id">
+        <template x-for="r in rows" :key="`${r.session_id || r.id}|${r.agent_id || ''}`">
           <tr>
             <td>
-              <a class="run-link" :href="`{{ base_path }}/runs/${r.id}`" x-text="(r.id || '').slice(0,12)"></a>
+              <a class="run-link"
+                 :href="`{{ base_path }}/qa/runs?session=${r.session_id || r.id}`"
+                 :title="'show all sub-agents of this session'"
+                 x-text="(r.session_id || r.id || '').slice(0,12)"></a>
+            </td>
+            <td>
+              <template x-if="r.scenario_run_id">
+                <a class="run-link"
+                   :href="`{{ base_path }}/qa/runs?scenario_run=${r.scenario_run_id}`"
+                   :title="'show the agent + judge for this attempt (= one scenario × repeat in a plan)'"
+                   x-text="(r.scenario_run_id || '').slice(0,8)"></a>
+              </template>
+            </td>
+            <td>
+              <a class="run-link"
+                 :href="r.agent_id ? `{{ base_path }}/runs/${r.session_id || r.id}/trace?agent=${r.agent_id}`
+                                   : `{{ base_path }}/runs/${r.session_id || r.id}`"
+                 :title="'open trace for this agent'"
+                 x-text="(r.agent_id || '').slice(0,8) || '—'"></a>
             </td>
             <td><span :class="`kind-${r.kind}`" x-text="r.kind"></span></td>
             <td x-text="r.agent_name || ''"></td>

@@ -84,7 +84,7 @@ document.addEventListener('alpine:init', () => {
         filters: {
           kind: '', agent: '', model: '', scenario: '',
           generation: '', mutation: '', project: '', status: '',
-          plan: '', task: '',
+          plan: '', task: '', session: '', scenario_run: '',
           scenario_tag_arr: [],
           file: '', jira: '', duration_gt_ms: null,
           limit: 50, offset: 0, sort: 'started_at', order: 'desc',
@@ -125,7 +125,8 @@ document.addEventListener('alpine:init', () => {
             kind: 'kind', agent: 'agent', model: 'model',
             scenario: 'scenario', generation: 'generation',
             mutation: 'mutation', project: 'project', status: 'status',
-            plan: 'plan', task: 'task',
+            plan: 'plan', task: 'task', session: 'session',
+            scenario_run: 'scenario_run',
             file: 'file', jira: 'jira',
             duration_gt_ms: 'duration_gt_ms',
           };
@@ -157,6 +158,7 @@ document.addEventListener('alpine:init', () => {
           const scalarOut = { kind: f.kind, agent: f.agent, model: f.model,
             scenario: f.scenario, generation: f.generation, mutation: f.mutation,
             project: f.project, status: f.status, plan: f.plan, task: f.task,
+            session: f.session, scenario_run: f.scenario_run,
             file: f.file, jira: f.jira,
           };
           for (const [k, v] of Object.entries(scalarOut)) {
@@ -183,6 +185,7 @@ document.addEventListener('alpine:init', () => {
           const scalarOut = { kind: f.kind, agent: f.agent, model: f.model,
             scenario: f.scenario, generation: f.generation, mutation: f.mutation,
             project: f.project, status: f.status, plan: f.plan, task: f.task,
+            session: f.session, scenario_run: f.scenario_run,
             file: f.file, jira: f.jira,
           };
           for (const [k, v] of Object.entries(scalarOut)) {
@@ -194,7 +197,11 @@ document.addEventListener('alpine:init', () => {
           qs.append('offset', String(f.offset));
           qs.append('sort', f.sort);
           qs.append('order', f.order);
-          const url = `${window.QA_BASE_PATH || ''}/api/search/runs?` + qs.toString();
+          // /qa/runs displays sub-agent rows by default — one row per
+          // (session × agent_id). Production webhook sessions and
+          // bench-driven CLI sessions both expand into their
+          // dispatcher → reviewer → investigator-N children.
+          const url = `${window.QA_BASE_PATH || ''}/api/search/sub_runs?` + qs.toString();
           const t0 = performance.now();
           const r = await fetch(url);
           const j = await r.json();

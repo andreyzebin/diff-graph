@@ -235,6 +235,8 @@ async def api_search_runs(
     # scheduling — show only runs from this plan (joined via qa_tasks)
     plan: Optional[int] = None,
     task: Optional[int] = None,        # narrow further to one task row
+    session: Optional[str] = None,     # pin to one runs.id (CLI scope)
+    scenario_run: Optional[str] = None,  # pin to one (agent ↔ judge) pair
     # pagination & sort
     limit: int = 50,
     offset: int = 0,
@@ -256,6 +258,8 @@ async def api_search_runs(
         linked_run=linked_run,
         plan_id=plan,
         task_id=task,
+        session_id=session,
+        scenario_run_id=scenario_run,
         limit=max(1, min(500, int(limit))),
         offset=max(0, int(offset)),
         sort=sort, order=order,
@@ -269,6 +273,69 @@ async def api_search_runs(
             "total": total,
             "limit": f.limit, "offset": f.offset,
             "has_more": (f.offset + len(runs)) < total,
+        },
+    })
+
+
+@app.get("/api/search/sub_runs")
+async def api_search_sub_runs(
+    # Same filter set as /api/search/runs — applies to the parent
+    # runs row; the view then flattens each session into one row
+    # per sub-agent (run_id × agent_id × agent_name).
+    kind: Optional[str] = None,
+    agent: Optional[str] = None,
+    model: Optional[str] = None,
+    status: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    duration_gt_ms: Optional[int] = None,
+    tokens_gt: Optional[int] = None,
+    generation: Optional[str] = None,
+    mutation: Optional[str] = None,
+    pr_url: Optional[str] = None,
+    project: Optional[str] = None,
+    file: Optional[str] = None,
+    jira: Optional[str] = None,
+    scenario: Optional[str] = None,
+    scenario_tag: Optional[str] = None,
+    linked_run: Optional[str] = None,
+    plan: Optional[int] = None,
+    task: Optional[int] = None,
+    session: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    sort: str = "started_at",
+    order: str = "desc",
+):
+    """Sub-agent view of /api/search/runs — each row is one
+    `(run_id, agent_id, agent_name)` triple. Production webhook-driven
+    sessions surface here too: their sub-agents (dispatcher → reviewer
+    → investigator-N) show up the same way bench-driven sessions do,
+    just with plan/task columns NULL since they aren't tied to a
+    qa_tasks row."""
+    f = RunFilter(
+        kind=kind, agent_name=agent, model=model, status=status,
+        since=since, until=until,
+        duration_gt_ms=duration_gt_ms, tokens_gt=tokens_gt,
+        generation=generation, mutation=mutation,
+        pr_url=pr_url, project=project, file=file, jira=jira,
+        scenario_id=scenario, scenario_tag=scenario_tag,
+        linked_run=linked_run,
+        plan_id=plan, task_id=task,
+        session_id=session, scenario_run_id=scenario_run,
+        limit=max(1, min(500, int(limit))),
+        offset=max(0, int(offset)),
+        sort=sort, order=order,
+    )
+    s = _store()
+    rows = s.list_sub_runs(f)
+    total = s.count_sub_runs(f)
+    return JSONResponse({
+        "data": rows,
+        "meta": {
+            "total": total,
+            "limit": f.limit, "offset": f.offset,
+            "has_more": (f.offset + len(rows)) < total,
         },
     })
 
