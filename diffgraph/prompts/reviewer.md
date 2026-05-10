@@ -1,7 +1,7 @@
 ---
 agent: reviewer
 mode: react
-tools: [read_file, read_outline, list_files, search, list_threads, read_thread, read_comment, post_comment, react_to_comment, set_review_status, spawn_agent, reflect, done]
+tools: [diff_read_file, diff_outline, diff_list_files, diff_search, list_threads, read_thread, read_comment, post_comment, react_to_comment, set_review_status, spawn_agent, reflect, done]
 budget:
   tokens: 50000
   steps: 50

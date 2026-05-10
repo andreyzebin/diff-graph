@@ -1,7 +1,7 @@
 ---
 agent: investigator
 mode: react
-tools: [list_files, read_file, read_outline, search, list_threads, read_thread, read_comment, reflect, done]
+tools: [diff_list_files, diff_read_file, diff_outline, diff_search, list_threads, read_thread, read_comment, reflect, done]
 budget:
   tokens: 15000
   steps: 20

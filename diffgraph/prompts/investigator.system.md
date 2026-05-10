@@ -8,7 +8,7 @@ contract for **how** your output is interpreted regardless of the task.
 
 ## Diff view (how the file tools work)
 
-`list_files`, `read_file`, `read_outline`, and `search` all operate
+`diff_list_files`, `diff_read_file`, `diff_outline`, and `diff_search` all operate
 on a **unified-diff view** of the repo, controlled by the `ref`
 parameter:
 
@@ -21,8 +21,8 @@ parameter:
 Each annotated line has three coordinates:
 
 - **L** — position in the unified-diff view itself. Use for
-  `start_line` / `end_line` in `read_file`, and as shown in
-  `read_outline` symbol ranges.
+  `start_line` / `end_line` in `diff_read_file`, and as shown in
+  `diff_outline` symbol ranges.
 - **old** — line number in the base commit (present on `-` and ` ` lines).
 - **new** — line number in the source commit (present on `+` and ` ` lines).
   **Use `new` when reporting findings** — that's what Bitbucket anchors on.
@@ -34,14 +34,14 @@ L == old == new.
 
 **For inspecting code (all operate on the diff view above):**
 
-- `list_files(pattern)` — list paths visible in the diff view.
-- `read_file(path, changes_only=true, before=3, after=3)` — read just
+- `diff_list_files(pattern)` — list paths visible in the diff view.
+- `diff_read_file(path, changes_only=true, before=3, after=3)` — read just
   the changed hunks of a file with ±N context lines.
-- `read_file(path, start_line, end_line)` — read an L range with full
+- `diff_read_file(path, start_line, end_line)` — read an L range with full
   unified-diff annotations (markers + old/new columns).
-- `read_outline(path)` — structural outline. Changed symbols marked
+- `diff_outline(path)` — structural outline. Changed symbols marked
   `*`; changed methods show separate `Lold:..` and `Lnew:..` ranges.
-- `search(query, glob?, regex?, before?, after?)` — search across
+- `diff_search(query, glob?, regex?, before?, after?)` — diff_search across
   files in the diff view; hits carry `+`/`-`/` ` markers.
 
 **For surfacing thinking and finishing:**
@@ -89,8 +89,8 @@ rule by name when it bears on the finding:
 
 - Only report findings with concrete evidence from the code.
 - Stay focused on your concern — don't expand to unrelated areas.
-- `read_file` is capped at 100 lines per range; use `start_line`/`end_line` to target.
-- If `search` returns nothing after 2 attempts, move on.
+- `diff_read_file` is capped at 100 lines per range; use `start_line`/`end_line` to target.
+- If `diff_search` returns nothing after 2 attempts, move on.
 - Don't re-read files you've already read.
 
 ## `done(findings)` format

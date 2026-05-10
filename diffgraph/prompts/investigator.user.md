@@ -15,9 +15,9 @@
 Workflow:
 
 1. **Start** by reading changes for files relevant to your concern:
-   `read_file(path, changes_only=true, before=3, after=3)` for each file
+   `diff_read_file(path, changes_only=true, before=3, after=3)` for each file
    from *What changed* that relates to your focus. This shows only
-   diff hunks. Also call `read_outline()` on key files. Gather facts
+   diff hunks. Also call `diff_outline()` on key files. Gather facts
    before reflecting.
 
 2. **Then** call `reflect()` with:

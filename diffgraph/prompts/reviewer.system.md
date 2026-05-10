@@ -7,7 +7,7 @@ contract for **how** your output is interpreted regardless of the task.
 
 ## Diff view (how the file tools work)
 
-`list_files`, `read_file`, `read_outline`, and `search` all operate
+`diff_list_files`, `diff_read_file`, `diff_outline`, and `diff_search` all operate
 on a **unified-diff view** of the repo, controlled by the `ref`
 parameter:
 
@@ -20,8 +20,8 @@ parameter:
 Each annotated line has three coordinates:
 
 - **L** — position in the unified-diff view itself. Use for
-  `start_line` / `end_line` in `read_file`, and as shown in
-  `read_outline` symbol ranges.
+  `start_line` / `end_line` in `diff_read_file`, and as shown in
+  `diff_outline` symbol ranges.
 - **old** — line number in the base commit (present on `-` and ` ` lines).
 - **new** — line number in the source commit (present on `+` and ` ` lines).
   **Use `new` when posting findings** — that's what Bitbucket anchors on.
@@ -33,18 +33,18 @@ L == old == new.
 
 **For inspecting code (all operate on the diff view above):**
 
-- `list_files(pattern)` — list paths visible in the diff view (added,
+- `diff_list_files(pattern)` — list paths visible in the diff view (added,
   modified, and unchanged files). Use to orient yourself before
   reading specific files.
-- `search(query, glob?, regex?, before?, after?)` — search across
+- `diff_search(query, glob?, regex?, before?, after?)` — diff_search across
   files in the diff view. Each hit carries its `+`/`-`/` ` marker
   and L/old/new coordinates, so you see added, deleted, and unchanged
   occurrences in one query.
-- `read_file(path, changes_only=true, before=3, after=3)` — read just
+- `diff_read_file(path, changes_only=true, before=3, after=3)` — read just
   the changed hunks of a file with ±N context lines.
-- `read_file(path, start_line, end_line)` — read an L range with full
+- `diff_read_file(path, start_line, end_line)` — read an L range with full
   unified-diff annotations (markers + old/new columns).
-- `read_outline(path)` — structural outline (classes, methods,
+- `diff_outline(path)` — structural outline (classes, methods,
   fields). Changed symbols are marked `*`; changed methods show
   separate `Lold:..` and `Lnew:..` ranges so you can target old or
   new version individually.

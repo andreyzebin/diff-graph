@@ -115,7 +115,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         return "base..source" if (ctx.base_ref and ctx.source_ref) else "source"
 
     @registry.register(
-        name="list_files",
+        name="diff_list_files",
         description=(
             "List paths in the diff view (default `ref=base..source`) — "
             "every file visible from the source side, whether added, "
@@ -130,7 +130,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "required": ["pattern"],
         },
     )
-    def list_files(pattern: str = "**/*", ref: str = "") -> list[str]:
+    def diff_list_files(pattern: str = "**/*", ref: str = "") -> list[str]:
         _ensure()
         ref = ref or _default_ref()
         vfs_dir = _get_vfs(ctx, ref)
@@ -142,7 +142,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         return [f for f in files if not _skip_dir(f)][:50]
 
     @registry.register(
-        name="read_file",
+        name="diff_read_file",
         description=(
             "Read a file from the diff view as unified diff: every line "
             "carries a `+`/`-`/` ` marker plus its old (base) and new "
@@ -155,7 +155,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
-                "start_line": {"type": "integer", "description": "L position (1-indexed, inclusive). L = position in the unified-diff view, as shown by read_outline."},
+                "start_line": {"type": "integer", "description": "L position (1-indexed, inclusive). L = position in the unified-diff view, as shown by diff_outline."},
                 "end_line": {"type": "integer", "description": "L position (1-indexed, inclusive)."},
                 "changes_only": {"type": "boolean", "description": "Collapse output to changed lines with ±context."},
                 "before": {"type": "integer", "description": "Context lines before each hunk when changes_only=true (default 3)."},
@@ -186,10 +186,10 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         return read_file(path, ctx.repo_path, start_line, end_line) or "(file not found)"
 
     @registry.register(
-        name="read_outline",
+        name="diff_outline",
         description=(
             "Structural outline (classes, methods, fields) of a file in "
-            "the diff view. Each symbol shows L range (use for read_file "
+            "the diff view. Each symbol shows L range (use for diff_read_file "
             "ranges) and old/new ranges (for reference). Changed symbols "
             "are marked `*`; for changed methods the outline shows "
             "separate `Lold:..` and `Lnew:..` so you can read the old or "
@@ -216,7 +216,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         return get_outline(path, ctx.repo_path, changed)
 
     @registry.register(
-        name="search",
+        name="diff_search",
         description=(
             "Search a string or regex across files in the diff view. Each "
             "hit is returned with its `+`/`-`/` ` marker and L/old/new "
