@@ -815,3 +815,24 @@ def _api_post(url: str, token: str, ca_bundle: str | None, client_cert: str | No
         except HTTPError as e:
             raise HTTPError(e.url, e.code, _read_http_error(e), e.headers, None) from None
     return _with_retry(_do)
+
+
+# ── Module-level fake swap ───────────────────────────────────────────────
+# When DIFFGRAPH_FAKE_PR_FILE is set in env at import time, rebind the
+# public API to the fake module (yaml-fixture driven, no network).
+# `parse_pr_url` stays as the real impl — it's pure, no I/O.
+# See TODO §5e.14 + diffgraph/bitbucket_api.py for the contract.
+import os as _os
+if _os.environ.get("DIFFGRAPH_FAKE_PR_FILE"):
+    from . import bitbucket_fake as _f
+    fetch_pr                = _f.fetch_pr
+    get_pr_info             = _f.get_pr_info
+    get_pr_comments         = _f.get_pr_comments
+    get_comment_thread      = _f.get_comment_thread
+    reply_to_pr_comment     = _f.reply_to_pr_comment
+    resolve_pr_comment      = _f.resolve_pr_comment
+    post_pr_comment         = _f.post_pr_comment
+    post_general_pr_comment = _f.post_general_pr_comment
+    post_review_comments    = _f.post_review_comments
+    react_to_pr_comment     = _f.react_to_pr_comment
+    set_review_status       = _f.set_review_status
