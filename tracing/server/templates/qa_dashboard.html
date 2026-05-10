@@ -87,7 +87,7 @@ th { color: #8b949e; font-weight: normal; }
       <tbody>
         <template x-for="s in byScenario" :key="s.scenario_id">
           <tr>
-            <td><a class="run-link" :href="`{{ base_path }}/qa/runs?scenario=${s.scenario_id}`" x-text="s.scenario_id"></a></td>
+            <td><a class="run-link" :href="`{{ base_path }}/qa/traces?scenario=${s.scenario_id}`" x-text="s.scenario_id"></a></td>
             <td class="tn" x-text="s.runs"></td>
             <td class="tn" x-text="Math.round(s.avg_duration_ms || 0)"></td>
             <td class="tn" x-text="s.completed"></td>

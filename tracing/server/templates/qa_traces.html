@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-<title>QA · Runs</title>
+<title>QA · Traces</title>
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
@@ -68,7 +68,7 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 <body hx-boost="true" hx-ext="head-support">
 {% include "_qa_nav.html" %}
 
-<h1>QA · Runs</h1>
+<h1>QA · Traces</h1>
 
 <div x-data="runsView" x-init="init(); setInterval(() => search(true), 5000)">
   <div class="filter-grid">
@@ -201,14 +201,14 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
           <tr>
             <td>
               <a class="run-link"
-                 :href="`{{ base_path }}/qa/runs?session=${r.session_id || r.id}`"
+                 :href="`{{ base_path }}/qa/traces?session=${r.session_id || r.id}`"
                  :title="'show all sub-agents of this session'"
                  x-text="(r.session_id || r.id || '').slice(0,12)"></a>
             </td>
             <td>
               <template x-if="r.scenario_run_id">
                 <a class="run-link"
-                   :href="`{{ base_path }}/qa/runs?scenario_run=${r.scenario_run_id}`"
+                   :href="`{{ base_path }}/qa/traces?scenario_run=${r.scenario_run_id}`"
                    :title="'show the agent + judge for this attempt (= one scenario × repeat in a plan)'"
                    x-text="(r.scenario_run_id || '').slice(0,8)"></a>
               </template>
@@ -229,7 +229,7 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
             <td>
               <template x-if="r.plan_id">
                 <a class="run-link"
-                   :href="`{{ base_path }}/qa/runs?plan=${r.plan_id}`"
+                   :href="`{{ base_path }}/qa/traces?plan=${r.plan_id}`"
                    x-text="`#${r.plan_id}`"
                    :title="'show all runs from this plan'"></a>
               </template>
@@ -237,7 +237,7 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
             <td>
               <template x-if="r.task_id">
                 <a class="run-link"
-                   :href="`{{ base_path }}/qa/runs?task=${r.task_id}`"
+                   :href="`{{ base_path }}/qa/traces?task=${r.task_id}`"
                    x-text="`#${r.task_id}`"
                    :title="'show all runs from this task'"></a>
               </template>

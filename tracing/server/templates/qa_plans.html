@@ -72,7 +72,7 @@ th { color: #8b949e; font-weight: normal; }
         <template x-for="p in plans" :key="p.id">
           <tr>
             <td>
-              <a class="run-link" :href="`{{ base_path }}/qa/runs?plan=${p.id}`"
+              <a class="run-link" :href="`{{ base_path }}/qa/traces?plan=${p.id}`"
                  x-text="`#${p.id}`"
                  :title="'show all runs from this plan'"></a>
             </td>

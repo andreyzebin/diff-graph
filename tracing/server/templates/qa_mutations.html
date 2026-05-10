@@ -115,7 +115,7 @@ th { color: #8b949e; font-weight: normal; }
                        @click.stop="toggleSelect(m.mutation)">
               </td>
               <td>
-                <a class="mut run-link" :href="`{{ base_path }}/qa/runs?mutation=${m.mutation}`"
+                <a class="mut run-link" :href="`{{ base_path }}/qa/traces?mutation=${m.mutation}`"
                    x-text="m.mutation"></a>
               </td>
               <td x-text="m.lineages || '—'" :title="m.full_sha || ''"></td>

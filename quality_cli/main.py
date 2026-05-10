@@ -19,6 +19,11 @@ from tracing.server.store import RunFilter, SQLiteTraceStore, ToolCallFilter
 app = typer.Typer(help="Search and drill over the diff-graph trace DB.",
                   no_args_is_help=True, add_completion=False)
 runs_app = typer.Typer(help="Run-level queries.", no_args_is_help=True)
+traces_app = typer.Typer(
+    help="Trace navigation for AI debug agents — sessions, sub-agent "
+         "trees, raw events, and a find-problems probe over the trace DB.",
+    no_args_is_help=True,
+)
 tools_app = typer.Typer(help="Cross-run tool-call search.", no_args_is_help=True)
 agg_app = typer.Typer(help="Aggregate views.", no_args_is_help=True)
 plans_app = typer.Typer(help="QA plans (group of tasks).", no_args_is_help=True)
@@ -26,6 +31,7 @@ tasks_app = typer.Typer(help="QA tasks.", no_args_is_help=True)
 auto_app = typer.Typer(help="Auto-plan: git-driven discovery + plan creation.",
                        no_args_is_help=True)
 app.add_typer(runs_app, name="runs")
+app.add_typer(traces_app, name="traces")
 app.add_typer(tools_app, name="tool-calls")
 app.add_typer(agg_app, name="aggregates")
 app.add_typer(plans_app, name="plans")
@@ -332,6 +338,295 @@ def agg_scenario(
             str(r["completed"]),
         )
     _Out.console.print(table)
+
+
+# ── traces ────────────────────────────────────────────────────────────────
+# All `traces …` commands talk to the FastAPI server (CLI + UI go
+# through one HTTP API) — never to SQLite directly. Set the server
+# URL via QUALITY_API_URL or --server (default localhost:8765).
+
+import os as _os_traces
+import httpx as _httpx
+
+
+def _api_base() -> str:
+    return _os_traces.environ.get("QUALITY_API_URL",
+                                   "http://localhost:8765").rstrip("/")
+
+
+def _api_get(path: str, params: dict | None = None) -> dict | list:
+    """GET <api>/path?k=v… — returns parsed JSON. Raises on HTTP error."""
+    url = _api_base() + path
+    try:
+        r = _httpx.get(url, params=params or {}, timeout=15.0)
+        r.raise_for_status()
+        return r.json()
+    except _httpx.RequestError as exc:
+        _emit_error(
+            "api_unreachable",
+            f"can't reach {url} ({exc}). Set QUALITY_API_URL or start "
+            f"the server (./dev_server.sh start).",
+        )
+    except _httpx.HTTPStatusError as exc:
+        _emit_error("api_error",
+                    f"{exc.response.status_code} from {url}: "
+                    f"{exc.response.text[:200]}")
+
+
+@traces_app.command("ls")
+def traces_ls(
+    kind: Optional[str] = typer.Option(None, help="agent | judge"),
+    agent: Optional[str] = typer.Option(None,
+                                          help="dispatcher | reviewer | investigator | judge"),
+    status: Optional[str] = typer.Option(None, help="completed | error | running"),
+    scenario: Optional[str] = typer.Option(None),
+    mutation: Optional[str] = typer.Option(None),
+    lineage: Optional[str] = typer.Option(None,
+                                            help="git branch (= lineage in our model)"),
+    plan: Optional[int] = typer.Option(None),
+    task: Optional[int] = typer.Option(None),
+    session: Optional[str] = typer.Option(None,
+                                            help="show all sub-agents of this run_id"),
+    scenario_run: Optional[str] = typer.Option(None,
+                                                 help="agent + judge pair (one attempt)"),
+    since: Optional[str] = typer.Option(None, help="ISO datetime"),
+    limit: int = typer.Option(20),
+    offset: int = typer.Option(0),
+    order: str = typer.Option("desc", help="asc | desc on started_at"),
+):
+    """List sub-agent rows from /api/search/sub_runs.
+
+    The default unit is one (run_id × agent_id) tuple — i.e. one
+    sub-agent of one CLI session. Use --session to drill into all
+    sub-agents of a single session, or --scenario_run to see an
+    (agent + judge) pair.
+    """
+    params = {k: v for k, v in {
+        "kind": kind, "agent": agent, "status": status,
+        "scenario": scenario, "mutation": mutation,
+        "session": session, "scenario_run": scenario_run,
+        "plan": plan, "task": task,
+        "since": since,
+        "limit": limit, "offset": offset, "order": order,
+    }.items() if v is not None}
+    j = _api_get("/api/search/sub_runs", params)
+    if _Out.json_mode:
+        _emit(j.get("data", []), meta=j.get("meta"))
+        return
+    rows = j.get("data", [])
+    if not rows:
+        _emit([], suggestion="no traces match — drop filters or try `ls --status=error`")
+        return
+    table = Table(title=f"sub-agents · {(j.get('meta') or {}).get('total', len(rows))}")
+    for col in ("session", "agent_id", "kind", "agent", "scenario",
+                "mutation", "plan", "task", "events", "started"):
+        table.add_column(col)
+    for r in rows:
+        table.add_row(
+            (r.get("session_id") or "")[:12],
+            (r.get("agent_id") or "")[:8],
+            r.get("kind") or "",
+            r.get("agent_name") or "",
+            r.get("scenario_id") or "",
+            (r.get("mutation") or "")[:7],
+            f"#{r['plan_id']}" if r.get("plan_id") else "",
+            f"#{r['task_id']}" if r.get("task_id") else "",
+            str(r.get("events_count") or ""),
+            (r.get("started_at") or "")[:19],
+        )
+    _Out.console.print(table)
+
+
+@traces_app.command("session")
+def traces_session(run_id: str = typer.Argument(...)):
+    """Render one session as a sub-agent tree. Drill into specific
+    spans via `traces events` or `traces event`."""
+    j = _api_get("/api/search/sub_runs", {"session": run_id, "limit": 200})
+    rows = j.get("data", [])
+    if _Out.json_mode:
+        _emit(rows, meta=j.get("meta"))
+        return
+    if not rows:
+        _emit([], suggestion=f"no sub-agents for run {run_id}")
+        return
+    _Out.console.print(f"[bold]session[/bold] [cyan]{run_id}[/cyan]")
+    # Group by agent_name to produce: dispatcher (root) → reviewer → investigator-N
+    # For Phase 0 we don't have parent info; show a flat list ordered by start.
+    for r in rows:
+        prefix = "  " if r.get("agent_name") not in ("dispatcher", "reviewer") else ""
+        ev = r.get("events_count") or 0
+        dur_ms = r.get("duration_ms")
+        dur = f"{dur_ms}ms" if dur_ms else "—"
+        _Out.console.print(
+            f"{prefix}[green]{r.get('agent_name'):>14}[/green] "
+            f"[dim]{(r.get('agent_id') or '')[:8]}[/dim]  "
+            f"events=[cyan]{ev}[/cyan] dur=[yellow]{dur}[/yellow]  "
+            f"started=[dim]{(r.get('started_at') or '')[:19]}[/dim]"
+        )
+
+
+@traces_app.command("events")
+def traces_events(
+    run_id: str = typer.Argument(...),
+    agent_id: Optional[str] = typer.Option(None,
+                                             help="filter to one sub-agent"),
+    event_type: Optional[str] = typer.Option(None,
+                                                help="agent_llm_request | agent_tool_request | …"),
+    limit: int = typer.Option(50),
+):
+    """List events of one session. Each event is one step / LLM call /
+    tool result / etc. — the raw audit trail an agent uses to debug."""
+    events = _api_get(f"/api/runs/{run_id}/events")
+    if not isinstance(events, list):
+        events = events.get("data", []) if isinstance(events, dict) else []
+    filtered = []
+    for e in events:
+        if agent_id and e.get("agent_id") != agent_id:
+            continue
+        if event_type and e.get("event_type") != event_type:
+            continue
+        filtered.append(e)
+        if len(filtered) >= limit:
+            break
+    if _Out.json_mode:
+        _emit(filtered, meta={"total_in_run": len(events), "returned": len(filtered)})
+        return
+    if not filtered:
+        _emit([], suggestion="no events match — drop filter")
+        return
+    table = Table(title=f"events · run {run_id} · {len(filtered)}/{len(events)}")
+    for col in ("ev_id", "step", "agent", "agent_id", "event_type", "ts"):
+        table.add_column(col)
+    for e in filtered:
+        table.add_row(
+            str(e.get("id") or ""),
+            str(e.get("step") or ""),
+            (e.get("agent_name") or ""),
+            (e.get("agent_id") or "")[:8],
+            e.get("event_type") or "",
+            (e.get("timestamp") or "")[:19],
+        )
+    _Out.console.print(table)
+
+
+@traces_app.command("event")
+def traces_event(
+    run_id: str = typer.Argument(...),
+    event_id: int = typer.Argument(...),
+):
+    """Fetch one event with its full `data` payload (LLM messages,
+    tool args, tool results, etc.). The granular building block an
+    AI debugger uses to root-cause a failure."""
+    events = _api_get(f"/api/runs/{run_id}/events")
+    if not isinstance(events, list):
+        events = events.get("data", []) if isinstance(events, dict) else []
+    matching = next((e for e in events if e.get("id") == event_id), None)
+    if not matching:
+        _emit_error("not_found", f"event #{event_id} not in run {run_id}")
+    if _Out.json_mode:
+        _emit(matching)
+        return
+    _Out.console.print(f"[bold]event #{matching['id']}[/bold] "
+                        f"[dim]run={run_id}[/dim]")
+    _Out.console.print(f"  type: [cyan]{matching['event_type']}[/cyan]  "
+                        f"step={matching.get('step')}  "
+                        f"agent={matching.get('agent_name')}/"
+                        f"{(matching.get('agent_id') or '')[:8]}")
+    _Out.console.print(f"  ts:   {matching['timestamp']}")
+    _Out.console.print(f"\n[dim]data:[/dim]")
+    import json as _j
+    _Out.console.print(_j.dumps(matching.get("data") or {}, indent=2,
+                                 ensure_ascii=False))
+
+
+@traces_app.command("otel")
+def traces_otel(run_id: str = typer.Argument(...)):
+    """Dump one session as OTLP-JSON. Pipe to a Jaeger/Tempo collector
+    or any OTel-aware tool: `quality-cli traces otel X | jq …`."""
+    j = _api_get(f"/api/otel/traces/{run_id}")
+    import json as _j
+    _Out.console.print(_j.dumps(j, indent=2, ensure_ascii=False))
+
+
+@traces_app.command("problems")
+def traces_problems(
+    since: Optional[str] = typer.Option(None,
+                                          help="ISO datetime; defaults to last 24h"),
+    limit: int = typer.Option(20),
+    score_threshold: float = typer.Option(0.5,
+                                            help="judge overall_score below this counts as bad"),
+):
+    """Surface candidates for AI-debug attention.
+
+    Probes:
+      1. Runs with status='error' (uncaught exceptions)
+      2. Tasks stuck in 'leased' / 'running' beyond their lease
+      3. Dead workers from list_workers' self-classification
+      4. Mutations whose mean judge score is below threshold
+
+    JSON output groups them under {errored_runs, stuck_tasks,
+    dead_workers, low_score_mutations} so an AI agent can iterate.
+    """
+    out = {"errored_runs": [], "stuck_tasks": [],
+           "dead_workers": [], "low_score_mutations": []}
+    # 1. Errored runs
+    j = _api_get("/api/search/runs",
+                 {"status": "error", "limit": limit,
+                  **({"since": since} if since else {})})
+    out["errored_runs"] = j.get("data", [])
+    # 2. Stuck leased tasks
+    tasks_j = _api_get("/api/qa/tasks",
+                        {"state": "leased", "limit": limit})
+    if isinstance(tasks_j, dict):
+        tasks = tasks_j.get("data", [])
+    else:
+        tasks = tasks_j or []
+    out["stuck_tasks"] = tasks
+    # 3. Dead workers
+    workers_j = _api_get("/api/qa/workers")
+    workers = workers_j.get("data", []) if isinstance(workers_j, dict) else []
+    out["dead_workers"] = [w for w in workers if w.get("health") == "dead"]
+    # 4. Low-score mutations
+    muts_j = _api_get("/api/search/aggregates/by_mutation", {"limit": 100})
+    muts = muts_j.get("data", []) if isinstance(muts_j, dict) else []
+    low = []
+    for m in muts:
+        try:
+            s_j = _api_get(f"/api/search/scoring/{m['mutation']}")
+            score = ((s_j.get("data") or {}).get("axes") or {}).get("hard_skill")
+            if score is not None and score < score_threshold:
+                low.append({"mutation": m["mutation"],
+                            "hard_skill": score,
+                            "runs": m.get("runs"),
+                            "lineages": m.get("lineages")})
+        except SystemExit:  # _emit_error inside _api_get
+            pass
+    out["low_score_mutations"] = low[:limit]
+
+    if _Out.json_mode:
+        _emit(out)
+        return
+    _Out.console.print("[bold]🔍 problems probe[/bold]")
+    _Out.console.print(f"  errored runs:        [red]{len(out['errored_runs'])}[/red]")
+    _Out.console.print(f"  stuck leased tasks:  [yellow]{len(out['stuck_tasks'])}[/yellow]")
+    _Out.console.print(f"  dead workers:        [red]{len(out['dead_workers'])}[/red]")
+    _Out.console.print(f"  low-score mutations: "
+                        f"[yellow]{len(out['low_score_mutations'])}[/yellow] "
+                        f"(< {score_threshold:.2f})")
+    if out["errored_runs"]:
+        _Out.console.print("\n[dim]errored runs (first 5):[/dim]")
+        for r in out["errored_runs"][:5]:
+            _Out.console.print(
+                f"  [red]✗[/red] {r['id'][:12]} {r.get('agent_name')} "
+                f"scen={r.get('scenario_id')} mut={r.get('mutation')}"
+            )
+    if out["low_score_mutations"]:
+        _Out.console.print("\n[dim]low-score mutations:[/dim]")
+        for m in out["low_score_mutations"][:5]:
+            _Out.console.print(
+                f"  [yellow]·[/yellow] mutation {m['mutation']} "
+                f"hard_skill={m['hard_skill']:.2f} runs={m['runs']}"
+            )
 
 
 # ── plans ─────────────────────────────────────────────────────────────────

@@ -1025,9 +1025,9 @@ async def qa_dashboard(request: Request):
     return templates.TemplateResponse(request, "qa_dashboard.html", {"active": "overview"})
 
 
-@app.get("/qa/runs", response_class=HTMLResponse)
-async def qa_runs_page(request: Request):
-    return templates.TemplateResponse(request, "qa_runs.html", {"active": "runs"})
+@app.get("/qa/traces", response_class=HTMLResponse)
+async def qa_traces_page(request: Request):
+    return templates.TemplateResponse(request, "qa_traces.html", {"active": "traces"})
 
 
 @app.get("/qa/plans", response_class=HTMLResponse)
