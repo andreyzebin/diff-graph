@@ -85,6 +85,7 @@ document.addEventListener('alpine:init', () => {
           kind: '', agent: '', model: '', scenario: '',
           generation: '', mutation: '', project: '', status: '',
           plan: '', task: '', session: '', scenario_run: '',
+          window: '24h',  // time-window default: last 24h (Jaeger convention)
           scenario_tag_arr: [],
           file: '', jira: '', duration_gt_ms: null,
           limit: 50, offset: 0, sort: 'started_at', order: 'desc',
@@ -193,6 +194,18 @@ document.addEventListener('alpine:init', () => {
           }
           if (f.duration_gt_ms) qs.append('duration_gt_ms', String(f.duration_gt_ms));
           if (f.scenario_tag_arr.length) qs.append('scenario_tag', f.scenario_tag_arr.join(','));
+          // Time window → ISO `since`. "all time" = no since (caller
+          // opts in to a full scan; server's default-window fallback
+          // does NOT trigger because we explicitly send empty since).
+          if (f.window) {
+            const m = /^(\d+)([hd])$/.exec(f.window);
+            if (m) {
+              const n = parseInt(m[1], 10);
+              const ms = (m[2] === 'h' ? n*3600 : n*86400) * 1000;
+              const since = new Date(Date.now() - ms).toISOString();
+              qs.append('since', since);
+            }
+          }
           qs.append('limit', String(f.limit));
           qs.append('offset', String(f.offset));
           qs.append('sort', f.sort);

@@ -166,6 +166,34 @@ class SQLiteTraceStore:
             return []
         return [self._row_to_dict(r) for r in rows]
 
+    @staticmethod
+    def _apply_default_window(f: RunFilter,
+                               default_hours: int = 24) -> RunFilter:
+        """If no narrowing filter is set, default `since` to last
+        `default_hours`. Caller can opt out by passing `since=` to
+        any string before the cutoff.
+
+        Narrowing filter = anything that already bounds the result
+        set to a small slice (plan / task / session / scenario_run /
+        a specific mutation / an explicit since/until). Open-ended
+        queries (kind, scenario, lineage alone) DO get the window.
+        """
+        if f.since or f.until:
+            return f
+        narrowing = (f.plan_id is not None or f.task_id is not None
+                     or f.session_id or f.scenario_run_id
+                     or f.linked_run)
+        if narrowing:
+            return f
+        # Mutation can match many sub-agents historically (every
+        # commit-pinned bench plan). Window-default still useful.
+        from datetime import datetime, timezone, timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=default_hours)
+                 ).isoformat()
+        # Construct a copy so we don't mutate the caller's RunFilter.
+        from dataclasses import replace
+        return replace(f, since=cutoff)
+
     def list_sub_runs(self, f: RunFilter) -> list[dict]:
         """Like list_runs, but flatten each session into one row per
         sub-agent. The "scope" / "request" of a single CLI invocation
@@ -174,7 +202,15 @@ class SQLiteTraceStore:
         each sub-agent as its own row, inheriting the session's
         scenario_id / mutation / plan / etc. — the search filters
         still apply to the parent runs row.
+
+        Time-window default: when no `since` is passed AND no
+        narrowing filter (plan/task/session/mutation) is set, default
+        to last 24h — same convention as Jaeger/Tempo. Indexes on
+        runs.started_at + events.timestamp make this O(window-size)
+        instead of full table scan. Caller can pass `since=1970-01-01`
+        to opt out.
         """
+        f = self._apply_default_window(f)
         where, params = self._where_for_runs(f)
         sort_col = self._safe_sort_col(f.sort)
         order = "DESC" if (f.order or "desc").lower() == "desc" else "ASC"
@@ -282,6 +318,7 @@ class SQLiteTraceStore:
         return out
 
     def count_sub_runs(self, f: RunFilter) -> int:
+        f = self._apply_default_window(f)
         where, params = self._where_for_runs(f)
         try:
             with self._conn() as c:

@@ -225,6 +225,12 @@ class TaskQueue:
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_trace_run ON qa_tasks(trace_run_id);
                 -- Speed up sub-agent GROUP BY in /api/search/sub_runs.
                 CREATE INDEX IF NOT EXISTS idx_events_run_agent  ON events(run_id, agent_id);
+                -- Time-window scan is the primary axis for trace data
+                -- (Jaeger/Tempo default to "last 1h"). Without these
+                -- indexes our default ORDER BY timestamp DESC LIMIT N
+                -- across millions of events does a full scan.
+                CREATE INDEX IF NOT EXISTS idx_events_timestamp  ON events(timestamp DESC);
+                CREATE INDEX IF NOT EXISTS idx_otel_spans_start  ON otel_spans(start_ns DESC);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_parent   ON qa_tasks(parent_task_id);
 
                 CREATE TABLE IF NOT EXISTS qa_workers (
