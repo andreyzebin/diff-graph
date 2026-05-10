@@ -76,21 +76,17 @@ def _make_llm_client(llm_cfg: dict):
     api_url = llm_cfg.get("api_url", "").strip()
     if api_url:
         kwargs["base_url"] = api_url
-    # Timeout
     timeout = llm_cfg.get("timeout", 600)
     kwargs["timeout"] = timeout
-
-    # Custom CA bundle or SSL disable for LLM endpoint
-    ca_bundle = llm_cfg.get("ca_bundle", "").strip() or os.environ.get("LLM_CA_BUNDLE", "")
-    if ca_bundle:
-        ca_bundle = os.path.expanduser(ca_bundle)
-    no_ssl = os.environ.get("GIT_SSL_NO_VERIFY") == "1"  # set by --no-verify-ssl
-    if no_ssl:
+    # `verify`: True (default — system CA store), False (skip
+    # verification), or a path to a custom CA bundle. Set in the
+    # provider's yaml profile alongside api_url / api_key.
+    verify = llm_cfg.get("verify", True)
+    if verify is not True:
         import httpx
-        kwargs["http_client"] = httpx.Client(verify=False, timeout=timeout)
-    elif ca_bundle:
-        import httpx
-        kwargs["http_client"] = httpx.Client(verify=ca_bundle, timeout=timeout)
+        if isinstance(verify, str):
+            verify = os.path.expanduser(verify)
+        kwargs["http_client"] = httpx.Client(verify=verify, timeout=timeout)
     return OpenAI(**kwargs)
 
 
