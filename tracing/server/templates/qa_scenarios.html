@@ -7,6 +7,8 @@
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
 <script defer src="{{ base_path }}/static/qa.js?v=fd003966"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
+<script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
 <style>
 [x-cloak] { display: none !important; }
 body { padding: 20px; max-width: 1400px; margin: 0 auto; }
@@ -44,7 +46,7 @@ select { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
          padding: 3px 6px; border-radius: 3px; }
 </style>
 </head>
-<body>
+<body hx-boost="true" hx-ext="head-support">
 {% include "_qa_nav.html" %}
 
 <h1>QA · Scenarios</h1>
