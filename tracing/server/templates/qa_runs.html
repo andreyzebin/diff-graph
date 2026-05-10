@@ -187,6 +187,7 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
           <th>generation</th>
           <th>mutation</th>
           <th>plan</th>
+          <th>task</th>
           <th class="dur-cell">dur ms</th>
           <th>linked</th>
           <th>tags</th>
@@ -207,9 +208,18 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
             <td style="font-family: ui-monospace, monospace;" x-text="(r.mutation || '').slice(0,8)"></td>
             <td>
               <template x-if="r.plan_id">
-                <a class="run-link" :href="`{{ base_path }}/qa/plans?highlight=${r.plan_id}`"
+                <a class="run-link"
+                   :href="`{{ base_path }}/qa/runs?plan=${r.plan_id}`"
                    x-text="`#${r.plan_id}`"
-                   :title="`filter to this plan: /qa/runs?plan=${r.plan_id}`"></a>
+                   :title="'show all runs from this plan'"></a>
+              </template>
+            </td>
+            <td>
+              <template x-if="r.task_id">
+                <a class="run-link"
+                   :href="`{{ base_path }}/qa/runs?task=${r.task_id}`"
+                   x-text="`#${r.task_id}`"
+                   :title="'show all runs from this task'"></a>
               </template>
             </td>
             <td class="dur-cell" x-text="r.duration_ms || ''"></td>

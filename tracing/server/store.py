@@ -142,7 +142,23 @@ class SQLiteTraceStore:
                         AND a.started_at >= t.started_at
                         AND a.started_at <= COALESCE(t.finished_at, datetime('now'))
                       ORDER BY t.id DESC LIMIT 1)
-                   ) AS plan_id
+                   ) AS plan_id,
+                   COALESCE(
+                     (SELECT t.id FROM qa_tasks t
+                      WHERE SUBSTR(t.mutation_hash, 1, 7) = runs.mutation
+                        AND t.started_at IS NOT NULL
+                        AND runs.started_at >= t.started_at
+                        AND runs.started_at <= COALESCE(t.finished_at, datetime('now'))
+                      ORDER BY t.id DESC LIMIT 1),
+                     -- judge fallback: inherit task from linked agent
+                     (SELECT t.id FROM qa_tasks t, runs a
+                      WHERE a.id = runs.linked_run_id
+                        AND SUBSTR(t.mutation_hash, 1, 7) = a.mutation
+                        AND t.started_at IS NOT NULL
+                        AND a.started_at >= t.started_at
+                        AND a.started_at <= COALESCE(t.finished_at, datetime('now'))
+                      ORDER BY t.id DESC LIMIT 1)
+                   ) AS task_id
             FROM runs
             WHERE {where}
             ORDER BY {sort_col} {order}
