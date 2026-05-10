@@ -124,6 +124,7 @@ class SQLiteTraceStore:
     # ── List / search runs ─────────────────────────────────────────────
 
     def list_runs(self, f: RunFilter) -> list[dict]:
+        f = self._apply_default_window(f)
         where, params = self._where_for_runs(f)
         sort_col = self._safe_sort_col(f.sort)
         order = "DESC" if (f.order or "desc").lower() == "desc" else "ASC"
@@ -169,29 +170,17 @@ class SQLiteTraceStore:
     @staticmethod
     def _apply_default_window(f: RunFilter,
                                default_hours: int = 24) -> RunFilter:
-        """If no narrowing filter is set, default `since` to last
-        `default_hours`. Caller can opt out by passing `since=` to
-        any string before the cutoff.
-
-        Narrowing filter = anything that already bounds the result
-        set to a small slice (plan / task / session / scenario_run /
-        a specific mutation / an explicit since/until). Open-ended
-        queries (kind, scenario, lineage alone) DO get the window.
+        """Time-window is always present (Jaeger convention). If
+        caller didn't pass `since`/`until`, default to last
+        `default_hours`. Narrowing filters (plan/task/session/…)
+        DO still get the window — explicit since= overrides.
         """
         if f.since or f.until:
             return f
-        narrowing = (f.plan_id is not None or f.task_id is not None
-                     or f.session_id or f.scenario_run_id
-                     or f.linked_run)
-        if narrowing:
-            return f
-        # Mutation can match many sub-agents historically (every
-        # commit-pinned bench plan). Window-default still useful.
         from datetime import datetime, timezone, timedelta
+        from dataclasses import replace
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=default_hours)
                  ).isoformat()
-        # Construct a copy so we don't mutate the caller's RunFilter.
-        from dataclasses import replace
         return replace(f, since=cutoff)
 
     def list_sub_runs(self, f: RunFilter) -> list[dict]:
@@ -224,40 +213,43 @@ class SQLiteTraceStore:
         # FK; for judge rows the lookup follows linked_run_id (=
         # the agent's run id, which IS the trace_run_id stamped at
         # lease time).
+        # CTE name `r` (not `runs`) to avoid the self-reference clash
+        # — `WITH runs AS (SELECT * FROM runs ...)` is a circular ref
+        # under SQLite's CTE rules.
         q = f"""
-            WITH runs AS MATERIALIZED (
+            WITH r AS MATERIALIZED (
               SELECT * FROM runs WHERE {where}
             )
-            SELECT runs.id            AS session_id,
-                   e.agent_id         AS agent_id,
-                   e.agent_name       AS agent_name,
-                   runs.kind, runs.model, runs.status,
-                   runs.pr_url, runs.project, runs.scenario_id, runs.scenario_tags,
-                   runs.generation, runs.mutation, runs.files_touched, runs.jira_keys,
-                   runs.linked_run_id, runs.fs_trace_path,
-                   CASE WHEN runs.kind='judge' THEN runs.linked_run_id
-                        ELSE runs.id END AS scenario_run_id,
-                   runs.findings_count, runs.total_tokens_paid,
-                   runs.prompt_source, runs.prompt_hash,
-                   MIN(e.timestamp)   AS started_at,
-                   MAX(e.timestamp)   AS finished_at,
-                   COUNT(e.id)        AS events_count,
+            SELECT r.id              AS session_id,
+                   e.agent_id        AS agent_id,
+                   e.agent_name      AS agent_name,
+                   r.kind, r.model, r.status,
+                   r.pr_url, r.project, r.scenario_id, r.scenario_tags,
+                   r.generation, r.mutation, r.files_touched, r.jira_keys,
+                   r.linked_run_id, r.fs_trace_path,
+                   CASE WHEN r.kind='judge' THEN r.linked_run_id
+                        ELSE r.id END AS scenario_run_id,
+                   r.findings_count, r.total_tokens_paid,
+                   r.prompt_source, r.prompt_hash,
+                   MIN(e.timestamp)  AS started_at,
+                   MAX(e.timestamp)  AS finished_at,
+                   COUNT(e.id)       AS events_count,
                    COALESCE(
                      (SELECT t.plan_id FROM qa_tasks t
-                      WHERE t.trace_run_id = runs.id LIMIT 1),
+                      WHERE t.trace_run_id = r.id LIMIT 1),
                      (SELECT t.plan_id FROM qa_tasks t
-                      WHERE t.trace_run_id = runs.linked_run_id LIMIT 1)
+                      WHERE t.trace_run_id = r.linked_run_id LIMIT 1)
                    ) AS plan_id,
                    COALESCE(
                      (SELECT t.id FROM qa_tasks t
-                      WHERE t.trace_run_id = runs.id LIMIT 1),
+                      WHERE t.trace_run_id = r.id LIMIT 1),
                      (SELECT t.id FROM qa_tasks t
-                      WHERE t.trace_run_id = runs.linked_run_id LIMIT 1)
+                      WHERE t.trace_run_id = r.linked_run_id LIMIT 1)
                    ) AS task_id
-            FROM runs JOIN events e ON e.run_id = runs.id
+            FROM r JOIN events e ON e.run_id = r.id
             WHERE e.agent_id IS NOT NULL AND e.agent_id != ''
-            GROUP BY runs.id, e.agent_id, e.agent_name
-            ORDER BY {sub_sort} {order}
+            GROUP BY r.id, e.agent_id, e.agent_name
+            ORDER BY {sub_sort.replace("runs.", "r.")} {order}
             LIMIT ? OFFSET ?
         """
         try:
@@ -303,13 +295,13 @@ class SQLiteTraceStore:
         f = self._apply_default_window(f)
         where, params = self._where_for_runs(f)
         q = f"""
-            WITH runs AS MATERIALIZED (
+            WITH r AS MATERIALIZED (
               SELECT id FROM runs WHERE {where}
             )
             SELECT COUNT(*) FROM (
-              SELECT 1 FROM runs JOIN events e ON e.run_id = runs.id
+              SELECT 1 FROM r JOIN events e ON e.run_id = r.id
               WHERE e.agent_id IS NOT NULL AND e.agent_id != ''
-              GROUP BY runs.id, e.agent_id, e.agent_name
+              GROUP BY r.id, e.agent_id, e.agent_name
             )
         """
         try:
@@ -320,6 +312,7 @@ class SQLiteTraceStore:
             return 0
 
     def count_runs(self, f: RunFilter) -> int:
+        f = self._apply_default_window(f)
         where, params = self._where_for_runs(f)
         q = f"SELECT COUNT(*) FROM runs WHERE {where}"
         try:
