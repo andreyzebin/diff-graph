@@ -51,14 +51,22 @@ class SubprocessLLMClient:
                  prompts_subdir: str = "diffgraph/prompts/judges/",
                  timeout: int = 600,
                  model: str = "",
+                 api_url: str = "",
+                 api_key: str = "",
+                 provider: str = "",
                  stream_output: bool = False):
         self._repo = Path(diffgraph_repo).expanduser().resolve()
         self._agent = agent
         self._prompts_dir = (self._repo / prompts_subdir).resolve()
         self._timeout = timeout
-        # Optional: forward provider/model via cli.py flags so the bench
-        # config still controls which LLM does the judging.
+        # Forward LLM credentials/profile via cli.py flags so the bench
+        # config controls the judge endpoint independently of whatever
+        # diff-graph's own config.local.yaml points at (cloud.ru,
+        # OpenAI, etc. — agents and judges may run on different LLMs).
         self._model = model
+        self._api_url = api_url
+        self._api_key = api_key
+        self._provider = provider
         self._stream_output = stream_output
 
     def complete_json(self, prompt: str) -> dict:
@@ -74,8 +82,14 @@ class SubprocessLLMClient:
                 "--output", out_path,
                 "--user-message", prompt,
             ]
+            if self._provider:
+                cmd.extend(["--provider", self._provider])
             if self._model:
                 cmd.extend(["--model", self._model])
+            if self._api_url:
+                cmd.extend(["--api-url", self._api_url])
+            if self._api_key:
+                cmd.extend(["--api-key", self._api_key])
             log.info("OrchestraJudge: shelling out to %s", " ".join(cmd[:6]))
             r = subprocess.run(cmd, cwd=str(self._repo),
                                 capture_output=True, text=True,

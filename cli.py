@@ -105,6 +105,9 @@ def _make_llm_client(judge_cfg: dict):
                                           "diffgraph/prompts/judges/"),
             timeout=judge_cfg.get("timeout", 600),
             model=judge_cfg.get("model", ""),
+            api_url=_expand_env(judge_cfg.get("api_url", "")),
+            api_key=_expand_env(judge_cfg.get("api_key", "")),
+            provider=judge_cfg.get("provider", ""),
             stream_output=judge_cfg.get("output", "log") == "stream",
         )
     from runner.judge import AnthropicLLMClient, OpenAILLMClient
