@@ -564,6 +564,78 @@ def run(
       python cli.py run --pr-url ... --agent investigator -d focus="null safety"
       python cli.py run --repo . --base HEAD~1
     """
+    # ── Root span: opened FIRST, before logging / config / anything
+    # else that could crash. Every cli.py invocation leaves a row
+    # in /qa/traces — even on early crashes (arg parsing, trace_db
+    # init, LLM client setup). status='running' is visible
+    # immediately via the sync SQLite processor; the span closes
+    # via atexit (normal exit) or excepthook (uncaught exception).
+    # `diffgraph.agent_name` is stamped from --agent so the row is
+    # tied to a concrete agent identity from the moment it's open.
+    from orchestra.otel import setup_tracing, set_domain_attrs
+    _root_tracer = setup_tracing("diffgraph-cli")
+    _root_cm = _root_tracer.start_as_current_span(
+        "cli.run",
+        attributes={
+            "cli.argv": " ".join(sys.argv[1:])[:500],
+            "cli.pid": os.getpid(),
+            "diffgraph.agent_name": agent or "",
+        },
+    )
+    _root_span = _root_cm.__enter__()
+    # Stamp domain dims from env up front so even an early crash row
+    # in /qa/traces is correctly grouped under its plan/task/scenario.
+    set_domain_attrs(
+        run_id=os.environ.get("DIFFGRAPH_TRACE_RUN_ID", ""),
+        plan_id=os.environ.get("DIFFGRAPH_PLAN_ID", ""),
+        task_id=os.environ.get("DIFFGRAPH_TASK_ID", ""),
+        scenario_id=os.environ.get("DIFFGRAPH_SCENARIO_ID", ""),
+        mutation=os.environ.get("DIFFGRAPH_MUTATION_OVERRIDE", ""),
+        lineage=os.environ.get("DIFFGRAPH_LINEAGE", ""),
+        agent_name=agent or "",
+    )
+    # Re-stamp on the already-open span (start_as_current_span took a
+    # snapshot of attributes; new domain dims need to land on it too).
+    for _k, _v in __import__("orchestra.otel", fromlist=["get_domain_attrs"]).get_domain_attrs().items():
+        try: _root_span.set_attribute(_k, _v)
+        except Exception: pass
+
+    import atexit
+    _root_closed = {"v": False}
+    def _close_root_span(exc_info=None):
+        if _root_closed["v"]:
+            return
+        _root_closed["v"] = True
+        try:
+            if exc_info and exc_info[0]:
+                from opentelemetry.trace import StatusCode, Status as _Status
+                _root_span.record_exception(exc_info[1])
+                _root_span.set_status(_Status(
+                    StatusCode.ERROR,
+                    f"{exc_info[0].__name__}: {exc_info[1]}"[:300],
+                ))
+        finally:
+            ei = exc_info or (None, None, None)
+            try:
+                _root_cm.__exit__(ei[0], ei[1], ei[2])
+            except Exception:
+                pass
+    _orig_excepthook = sys.excepthook
+    def _root_excepthook(et, ev, tb):
+        # SystemExit (typer.Exit) is also delivered here. Mark the
+        # span as failed only when the exit code is non-zero.
+        if issubclass(et, SystemExit):
+            code = ev.code if isinstance(ev.code, int) else 0
+            if code != 0:
+                _close_root_span((et, ev, tb))
+            else:
+                _close_root_span()
+        else:
+            _close_root_span((et, ev, tb))
+        _orig_excepthook(et, ev, tb)
+    sys.excepthook = _root_excepthook
+    atexit.register(lambda: _close_root_span())
+
     import logging
     level = log_level or ("DEBUG" if verbose else "INFO")
     logging.basicConfig(

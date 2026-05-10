@@ -110,9 +110,18 @@ class TraceDBWriter:
         """)
 
     def _insert_run(self):
+        # OR IGNORE: when the worker pre-stamps DIFFGRAPH_TRACE_RUN_ID on
+        # the agent's qa_task, the bench process inherits that env and
+        # passes it to BOTH the agent's cli.py AND the judge's cli.py
+        # (via OrchestraJudge). The second invocation hits a UNIQUE
+        # constraint on runs.id; ignoring is safe because finish_run
+        # uses UPDATE … WHERE id=? and events/spans are addressed by
+        # span_id (unique by construction).
         self.conn.execute(
-            "INSERT INTO runs (id, started_at, status, kind) VALUES (?, ?, ?, ?)",
-            (self.run_id, datetime.now(timezone.utc).isoformat(), "running", self.kind),
+            "INSERT OR IGNORE INTO runs (id, started_at, status, kind) "
+            "VALUES (?, ?, ?, ?)",
+            (self.run_id, datetime.now(timezone.utc).isoformat(),
+             "running", self.kind),
         )
         self.conn.commit()
 

@@ -275,9 +275,13 @@ class SQLiteTraceStore:
         domain dims live in attributes JSON; time funnel uses
         the dedicated start_ns column (idx_otel_spans_start)."""
         clauses: list[str] = [
-            "name LIKE 'agent.%'",      # idx_otel_spans_name_start
+            # `cli.run` is the root span that EVERY cli.py invocation
+            # opens at the very first line of run() — captures even
+            # crashes during arg parsing / setup, before any agent.*
+            # span has a chance to open. One row per invocation.
+            "name = 'cli.run'",
             # in-flight spans (end_ns NULL) DO surface — _SyncSQLiteProcessor
-            # writes them at on_start so /qa/traces shows the agent the
+            # writes them at on_start so /qa/traces shows the run the
             # moment it spins up. status='running' for those rows.
         ]
         params: list[Any] = []
