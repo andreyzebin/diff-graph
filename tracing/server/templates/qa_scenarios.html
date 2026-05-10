@@ -137,9 +137,30 @@ select { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
         scenario(s) anonymously</h3>
 
       <div style="display:flex; flex-direction:column; gap:10px;">
-        <label>diff-graph commit SHA (mutation)
-          <input type="text" x-model="fireModal.sha" style="width:100%;"
-                 placeholder="e.g. e27a652c9f16 or full sha">
+        <label>diff-graph commit (mutation)
+          <div style="display:flex; gap:6px; align-items:center; margin-top:4px;">
+            <label style="display:inline-flex; gap:4px; font-size:0.85em;">
+              <input type="radio" value="recent" x-model="fireModal.shaMode"> from recent
+            </label>
+            <label style="display:inline-flex; gap:4px; font-size:0.85em;">
+              <input type="radio" value="custom" x-model="fireModal.shaMode"> custom SHA
+            </label>
+          </div>
+          <template x-if="fireModal.shaMode === 'recent'">
+            <select x-model="fireModal.shaPicked" style="width:100%; margin-top:4px;">
+              <template x-for="m in recentMutations" :key="m.full_sha">
+                <option :value="m.full_sha"
+                  x-text="`${m.mutation} · ${m.lineages || '?'} · ${fmtLocal(m.last_seen || m.last_planned)} · ${m.runs} run(s)`"></option>
+              </template>
+              <template x-if="recentMutations.length === 0">
+                <option value="" disabled>no mutations seen yet — use custom SHA</option>
+              </template>
+            </select>
+          </template>
+          <template x-if="fireModal.shaMode === 'custom'">
+            <input type="text" x-model="fireModal.shaCustom" style="width:100%; margin-top:4px;"
+                   placeholder="e.g. e27a652c9f16 or full sha">
+          </template>
         </label>
         <label>lineage
           <input type="text" x-model="fireModal.lineage" style="width:100%;">
@@ -162,7 +183,7 @@ select { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
         <button class="btn" @click="fireModal.open = false">cancel</button>
         <button class="btn-primary btn"
-                :disabled="!fireModal.sha || fireModal.firing"
+                :disabled="!fireModalSha || fireModal.firing"
                 @click="fireNow()">
           <span x-text="fireModal.firing ? 'firing…' : 'fire'"></span>
         </button>

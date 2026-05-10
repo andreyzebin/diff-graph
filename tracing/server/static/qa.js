@@ -867,9 +867,12 @@ document.addEventListener('alpine:init', () => {
     agentFilter: '',
     q: '',
     fireStatus: '',
+    recentMutations: [],          // from /api/search/aggregates/by_mutation
     fireModal: {
       open: false,
-      sha: '',
+      shaMode: 'recent',          // 'recent' | 'custom'
+      shaPicked: '',              // full_sha when shaMode==='recent'
+      shaCustom: '',              // free-form input when shaMode==='custom'
       lineage: 'master',
       provider: 'deepseek',
       name: '',
@@ -877,8 +880,16 @@ document.addEventListener('alpine:init', () => {
     },
     async load() {
       const base = window.QA_BASE_PATH || '';
-      const r = await (await fetch(`${base}/api/qa/scenarios`)).json();
-      this.all = r.data || [];
+      const [scR, mutR] = await Promise.all([
+        fetch(`${base}/api/qa/scenarios`).then(r => r.json()),
+        fetch(`${base}/api/search/aggregates/by_mutation?limit=20`).then(r => r.json()),
+      ]);
+      this.all = scR.data || [];
+      this.recentMutations = (mutR.data || []).filter(m => m.full_sha);
+    },
+    get fireModalSha() {
+      const m = this.fireModal;
+      return m.shaMode === 'custom' ? m.shaCustom : m.shaPicked;
     },
     filtered() {
       const q = (this.q || '').trim().toLowerCase();
@@ -897,21 +908,31 @@ document.addEventListener('alpine:init', () => {
     },
     openFireModal() {
       this.fireModal.open = true;
-      // Try to default-fill SHA from query string ?sha=...
       const sp = new URLSearchParams(window.location.search);
-      const sha = sp.get('sha');
-      if (sha) this.fireModal.sha = sha;
+      const shaParam = sp.get('sha');
+      if (shaParam) {
+        this.fireModal.shaMode = 'custom';
+        this.fireModal.shaCustom = shaParam;
+      } else if (this.recentMutations.length > 0) {
+        // Default to the latest seen mutation.
+        this.fireModal.shaMode = 'recent';
+        this.fireModal.shaPicked = this.recentMutations[0].full_sha;
+        // Carry over lineage too if we know it for this mutation.
+        const lin = (this.recentMutations[0].lineages || '').split(',')[0].trim();
+        if (lin) this.fireModal.lineage = lin;
+      }
     },
     async fireNow() {
       const m = this.fireModal;
-      if (!this.picked.length || !m.sha) return;
+      const sha = (m.shaMode === 'custom' ? m.shaCustom : m.shaPicked).trim();
+      if (!this.picked.length || !sha) return;
       m.firing = true;
       try {
         const base = window.QA_BASE_PATH || '';
         const r = await fetch(`${base}/api/qa/fire-anonymous`, {
           method: 'POST', headers: {'content-type': 'application/json'},
           body: JSON.stringify({
-            scenarios: this.picked, sha: m.sha,
+            scenarios: this.picked, sha,
             lineage: m.lineage || 'master',
             provider: m.provider || 'deepseek',
             name: m.name || '',
@@ -921,7 +942,7 @@ document.addEventListener('alpine:init', () => {
         if (j.error) {
           this.fireStatus = `error: ${j.error.message}`;
         } else {
-          this.fireStatus = `plan #${j.data.id} created · ${this.picked.length} scenario(s) on ${m.sha.slice(0,7)}`;
+          this.fireStatus = `plan #${j.data.id} created · ${this.picked.length} scenario(s) on ${sha.slice(0,7)}`;
           m.open = false;
         }
       } finally {
