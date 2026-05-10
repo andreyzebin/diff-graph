@@ -7,7 +7,7 @@ tags: [tier:unit, agent:investigator, isolation, single-concern]
 # check AGENTS.md, and produce a finding with the correct severity.
 #
 # No mocks needed — investigator doesn't spawn anything itself, so
-# its tool surface (read_file, search, read_outline, reflect, done)
+# its tool surface (diff_read_file, diff_search, diff_outline, reflect, done)
 # already runs on the real (small) diff cheaply.
 
 input:
