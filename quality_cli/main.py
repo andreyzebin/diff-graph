@@ -1009,26 +1009,36 @@ def worker_loop(
             q.set_task_trace_run_id(t.id, pre_run_id)
         except Exception:
             pass
-        # OTel span around this task's bench subprocess. Inject the
-        # W3C TraceContext into env so the bench → diff-graph chain
-        # joins ONE distributed trace.
+        # OTel span around this task's bench subprocess. Stamp the
+        # domain dims (plan/task/scenario/mutation/lineage) so the
+        # worker.task span AND any spans inside (the bench → cli.py
+        # → agent.* chain via TRACEPARENT) carry the same identity
+        # — single denormalised otel_spans table answers all queries.
         try:
-            from orchestra.otel import setup_tracing, current_traceparent
+            from orchestra.otel import (setup_tracing, set_domain_attrs,
+                                          current_traceparent)
             _otel_tracer = setup_tracing("diffgraph-worker")
-            _bench_span_cm = _otel_tracer.start_as_current_span(
-                f"worker.task#{t.id}",
-                attributes={
-                    "qa.task_id": t.id,
-                    "qa.scenario_id": t.scenario_id or "",
-                    "qa.provider": t.provider or "",
-                    "qa.lineage": t.lineage or "",
-                    "qa.mutation_hash": t.mutation_hash or "",
-                    "qa.attempt_n": t.attempt_n or 1,
-                    "diffgraph.run_id": pre_run_id,
-                },
+            set_domain_attrs(
+                plan_id=t.plan_id,
+                task_id=t.id,
+                scenario_id=t.scenario_id or "",
+                mutation=(t.mutation_hash or "")[:7] or None,
+                lineage=t.lineage or "",
+                provider=t.provider or "",
+                run_id=pre_run_id,
             )
+            _bench_span_cm = _otel_tracer.start_as_current_span(
+                f"worker.task#{t.id}")
             _bench_span = _bench_span_cm.__enter__()
             env["TRACEPARENT"] = current_traceparent()
+            # Also pass diffgraph.* dims as env so the bench → cli.py
+            # subprocess can re-set domain attrs (TRACEPARENT carries
+            # span context but not baggage; we keep it explicit).
+            if t.plan_id is not None:
+                env["DIFFGRAPH_PLAN_ID"] = str(t.plan_id)
+            env["DIFFGRAPH_TASK_ID"] = str(t.id)
+            if t.lineage:
+                env["DIFFGRAPH_LINEAGE"] = t.lineage
         except Exception:
             _bench_span_cm = None
             _bench_span = None

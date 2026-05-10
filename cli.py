@@ -379,10 +379,26 @@ def _run_with_dispatcher(
     # Agent.run itself — root and spawned children share that path,
     # nothing duplicated. The session span only adds context (run_id,
     # scenario_id, mutation) that doesn't make sense at agent level.
-    from orchestra.otel import setup_tracing
+    from orchestra.otel import setup_tracing, set_domain_attrs
     _otel_tracer = setup_tracing(
         "diffgraph-cli",
         fs_root=str(fs_dir) if fs_dir else None,
+    )
+    # Stamp domain dims on the current OTel context. Every span
+    # spawned under cli.session — agent.<name>, llm.request,
+    # tool.* — auto-merges these from get_domain_attrs(), so the
+    # spans table is self-sufficient (no JOIN with `runs` to
+    # filter by scenario / mutation / plan / task).
+    set_domain_attrs(
+        run_id=_trace_db.run_id,
+        scenario_id=_scenario_id_env,
+        mutation=_mutation_override,
+        model=effective_model,
+        agent_name=agent_name,
+        # plan/task come from the worker via env (existing).
+        plan_id=os.environ.get("DIFFGRAPH_PLAN_ID", ""),
+        task_id=os.environ.get("DIFFGRAPH_TASK_ID", ""),
+        lineage=os.environ.get("DIFFGRAPH_LINEAGE", ""),
     )
     with _otel_tracer.start_as_current_span("cli.session") as _otel_session:
         _otel_session.set_attribute("diffgraph.run_id", _trace_db.run_id)

@@ -103,6 +103,15 @@ class SQLiteSpanExporter(SpanExporter):
                   ON otel_spans(trace_id);
                 CREATE INDEX IF NOT EXISTS idx_otel_spans_parent
                   ON otel_spans(parent_span_id);
+                -- Global time-funnel index. Every read query
+                -- starts with `WHERE start_ns >= ?` (Jaeger
+                -- convention) so the planner can clip the table
+                -- to a small recent slice before any json_extract.
+                CREATE INDEX IF NOT EXISTS idx_otel_spans_start
+                  ON otel_spans(start_ns DESC);
+                -- Filter on agent.* / llm.request / tool.* common.
+                CREATE INDEX IF NOT EXISTS idx_otel_spans_name_start
+                  ON otel_spans(name, start_ns DESC);
             """)
             c.commit()
 
@@ -213,6 +222,41 @@ def setup_tracing(service_name: str = "diffgraph",
     return trace.get_tracer(service_name)
 
 
+# ── Domain attributes propagation ──────────────────────────────────────────
+# Phase 3: instead of synthesising domain dimensions (scenario_id,
+# mutation, plan_id, …) from JOINs at read time, we stamp them on
+# EVERY span at write time. cli.py / worker call set_domain_attrs
+# at the entry point; Agent.run / observe() merge what's there into
+# their own span attributes. Cross-process: env vars (existing
+# DIFFGRAPH_*) carry the same info into a child subprocess where
+# cli.py re-runs set_domain_attrs.
+from contextvars import ContextVar
+from typing import Any
+_DOMAIN: ContextVar[dict] = ContextVar("_DIFFGRAPH_DOMAIN", default={})
+
+
+def set_domain_attrs(**kwargs: Any) -> None:
+    """Stamp domain dimensions onto the current OTel context.
+
+    Subsequent spans (created via tracer.start_as_current_span /
+    Agent.run / observe()) will get these attrs merged. Pass `None`
+    or empty values to skip a key.
+    """
+    cur = _DOMAIN.get() or {}
+    new = dict(cur)
+    for k, v in kwargs.items():
+        if v is None or v == "":
+            continue
+        new[f"diffgraph.{k}"] = str(v)
+    _DOMAIN.set(new)
+
+
+def get_domain_attrs() -> dict:
+    """Snapshot the active domain attrs. Used by Agent.run to merge
+    into its `agent.<name>` span."""
+    return dict(_DOMAIN.get() or {})
+
+
 # ── Single observable wrapper ──────────────────────────────────────────────
 # One context manager used for BOTH llm calls and tool calls, so the
 # trace shape is identical and each writer never has to remember the
@@ -244,7 +288,12 @@ def observe(name: str, attributes: Optional[dict] = None,
     """
     from opentelemetry.trace import StatusCode, Status as _Status
     tracer = trace.get_tracer(service)
-    with tracer.start_as_current_span(name, attributes=attributes or {}) as span:
+    # Merge domain attrs (scenario_id, mutation, plan_id, etc.)
+    # set by cli.session / worker so EVERY span carries the
+    # dimensions needed for filter+search at read time. Avoids
+    # joining `runs` or aggregating `events` in /qa/traces.
+    merged = {**get_domain_attrs(), **(attributes or {})}
+    with tracer.start_as_current_span(name, attributes=merged) as span:
         try:
             yield span
         except Exception as exc:

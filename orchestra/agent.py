@@ -225,16 +225,21 @@ class Agent:
                            parent_id=self.parent_id, depth=self.depth)
         try:
             from opentelemetry import trace as _otel_trace
+            from .otel import get_domain_attrs as _get_domain
             _tracer = _otel_trace.get_tracer("diffgraph-agent")
+            # Merge domain dims (scenario_id / mutation / plan_id /
+            # task_id) set by cli.session — so /qa/traces can filter
+            # via single SELECT on otel_spans without any JOIN.
+            _attrs = {
+                **_get_domain(),
+                "diffgraph.agent_id":   self.agent_id,
+                "diffgraph.agent_name": self.config.name,
+                "diffgraph.depth":      self.depth,
+                "diffgraph.parent_id":  self.parent_id or "",
+                "diffgraph.mode":       self.config.mode.name,
+            }
             _span_cm = _tracer.start_as_current_span(
-                f"agent.{self.config.name}",
-                attributes={
-                    "diffgraph.agent_id":   self.agent_id,
-                    "diffgraph.agent_name": self.config.name,
-                    "diffgraph.depth":      self.depth,
-                    "diffgraph.parent_id":  self.parent_id or "",
-                    "diffgraph.mode":       self.config.mode.name,
-                },
+                f"agent.{self.config.name}", attributes=_attrs,
             )
         except Exception:
             _span_cm = None

@@ -184,132 +184,168 @@ class SQLiteTraceStore:
         return replace(f, since=cutoff)
 
     def list_sub_runs(self, f: RunFilter) -> list[dict]:
-        """Like list_runs, but flatten each session into one row per
-        sub-agent. The "scope" / "request" of a single CLI invocation
-        is `runs.id`; inside it multiple agent_ids work in parallel
-        (dispatcher, reviewer, investigator-1..N). This view shows
-        each sub-agent as its own row, inheriting the session's
-        scenario_id / mutation / plan / etc. — the search filters
-        still apply to the parent runs row.
+        """One row per `agent.<name>` OTel span — Jaeger-style.
 
-        Time-window default: when no `since` is passed AND no
-        narrowing filter (plan/task/session/mutation) is set, default
-        to last 24h — same convention as Jaeger/Tempo. Indexes on
-        runs.started_at + events.timestamp make this O(window-size)
-        instead of full table scan. Caller can pass `since=1970-01-01`
-        to opt out.
+        Phase 3: we no longer JOIN runs+events. cli.py / worker stamp
+        domain dims (run_id / scenario_id / mutation / plan_id /
+        task_id / model / lineage / agent_id / agent_name) onto every
+        span via `set_domain_attrs`. So /qa/traces is just a SELECT
+        on `otel_spans` filtered by `start_ns >= since` (mandatory
+        global time-funnel via idx_otel_spans_start) and
+        `name LIKE 'agent.%'` (idx_otel_spans_name_start).
+
+        Old `runs`/`events` rows produced before this migration
+        won't appear (no spans). That's the explicit trade-off the
+        user accepted ("не парься об обратной совместимости").
         """
         f = self._apply_default_window(f)
-        where, params = self._where_for_runs(f)
-        sort_col = self._safe_sort_col(f.sort)
+        where, params = self._where_for_spans(f)
+        # Sort: only `started_at` makes sense for a span-only view —
+        # other run columns aren't materialised here. Map them all
+        # to start_ns; UI default is started_at desc anyway.
         order = "DESC" if (f.order or "desc").lower() == "desc" else "ASC"
-        sub_sort = ("MIN(e.timestamp)" if sort_col == "started_at"
-                    else f"runs.{sort_col}")
-        # MATERIALIZED CTE forces SQLite to compute the runs filter
-        # FIRST (uses idx_runs_started + qa_tasks.trace_run_id) and
-        # only then JOINs events against the resulting (small) set.
-        # Without it the planner picks a 3M-event scan for the outer
-        # loop. plan_id / task_id come from the direct trace_run_id
-        # FK; for judge rows the lookup follows linked_run_id (=
-        # the agent's run id, which IS the trace_run_id stamped at
-        # lease time).
-        # CTE name `r` (not `runs`) to avoid the self-reference clash
-        # — `WITH runs AS (SELECT * FROM runs ...)` is a circular ref
-        # under SQLite's CTE rules.
         q = f"""
-            WITH r AS MATERIALIZED (
-              SELECT * FROM runs WHERE {where}
-            )
-            SELECT r.id              AS session_id,
-                   e.agent_id        AS agent_id,
-                   e.agent_name      AS agent_name,
-                   r.kind, r.model, r.status,
-                   r.pr_url, r.project, r.scenario_id, r.scenario_tags,
-                   r.generation, r.mutation, r.files_touched, r.jira_keys,
-                   r.linked_run_id, r.fs_trace_path,
-                   CASE WHEN r.kind='judge' THEN r.linked_run_id
-                        ELSE r.id END AS scenario_run_id,
-                   r.findings_count, r.total_tokens_paid,
-                   r.prompt_source, r.prompt_hash,
-                   MIN(e.timestamp)  AS started_at,
-                   MAX(e.timestamp)  AS finished_at,
-                   COUNT(e.id)       AS events_count,
-                   COALESCE(
-                     (SELECT t.plan_id FROM qa_tasks t
-                      WHERE t.trace_run_id = r.id LIMIT 1),
-                     (SELECT t.plan_id FROM qa_tasks t
-                      WHERE t.trace_run_id = r.linked_run_id LIMIT 1)
-                   ) AS plan_id,
-                   COALESCE(
-                     (SELECT t.id FROM qa_tasks t
-                      WHERE t.trace_run_id = r.id LIMIT 1),
-                     (SELECT t.id FROM qa_tasks t
-                      WHERE t.trace_run_id = r.linked_run_id LIMIT 1)
-                   ) AS task_id
-            FROM r JOIN events e ON e.run_id = r.id
-            WHERE e.agent_id IS NOT NULL AND e.agent_id != ''
-            GROUP BY r.id, e.agent_id, e.agent_name
-            ORDER BY {sub_sort.replace("runs.", "r.")} {order}
+            SELECT
+              json_extract(attributes, '$."diffgraph.run_id"')      AS session_id,
+              json_extract(attributes, '$."diffgraph.agent_id"')    AS agent_id,
+              json_extract(attributes, '$."diffgraph.agent_name"')  AS agent_name,
+              CASE WHEN json_extract(attributes, '$."diffgraph.agent_name"')='judge'
+                   THEN 'judge' ELSE 'agent' END                    AS kind,
+              json_extract(attributes, '$."diffgraph.model"')       AS model,
+              json_extract(attributes, '$."diffgraph.scenario_id"') AS scenario_id,
+              json_extract(attributes, '$."diffgraph.mutation"')    AS mutation,
+              json_extract(attributes, '$."diffgraph.generation"')  AS generation,
+              CAST(json_extract(attributes, '$."diffgraph.plan_id"') AS INTEGER) AS plan_id,
+              CAST(json_extract(attributes, '$."diffgraph.task_id"') AS INTEGER) AS task_id,
+              json_extract(attributes, '$."diffgraph.run_id"')      AS scenario_run_id,
+              CASE WHEN status_code='ERROR' THEN 'failed' ELSE 'completed' END AS status,
+              datetime(start_ns / 1000000000.0, 'unixepoch')        AS started_at,
+              datetime(end_ns   / 1000000000.0, 'unixepoch')        AS finished_at,
+              CAST((COALESCE(end_ns, start_ns) - start_ns) / 1000000 AS INTEGER) AS duration_ms,
+              span_id, trace_id
+            FROM otel_spans
+            WHERE {where}
+            ORDER BY start_ns {order}
             LIMIT ? OFFSET ?
         """
         try:
             with self._conn() as c:
-                rows = c.execute(
-                    q, [*params, f.limit, f.offset],
-                ).fetchall()
+                rows = c.execute(q, [*params, f.limit, f.offset]).fetchall()
         except FileNotFoundError:
             return []
         out = []
         for r in rows:
             d = dict(r)
-            # Compute duration on the fly (events MIN/MAX may straddle naive
-            # vs UTC strings; we keep the raw values for the UI's fmtLocal).
-            try:
-                from datetime import datetime as _dt
-                a = _dt.fromisoformat(d["started_at"]) if d.get("started_at") else None
-                b = _dt.fromisoformat(d["finished_at"]) if d.get("finished_at") else None
-                if a and b:
-                    aux = a if a.tzinfo == b.tzinfo else (
-                        a.replace(tzinfo=None) if a.tzinfo else a)
-                    bux = b if a.tzinfo == b.tzinfo else (
-                        b.replace(tzinfo=None) if b.tzinfo else b)
-                    d["duration_ms"] = int((bux - aux).total_seconds() * 1000)
-            except Exception:
-                d["duration_ms"] = None
-            for col in ("files_touched", "jira_keys", "scenario_tags"):
-                v = d.get(col)
-                if isinstance(v, str) and v:
-                    try:
-                        d[col] = json.loads(v)
-                    except Exception:
-                        d[col] = []
-                elif v is None:
-                    d[col] = []
-            # Use agent_id for the row's "id" field so the link goes
-            # straight to the agent's trace.
-            d["id"] = d["session_id"]  # primary column = session id
+            # Fields the UI tolerates as null/empty under the new schema.
+            for col in ("scenario_tags", "files_touched", "jira_keys"):
+                d[col] = []
+            for col in ("pr_url", "project", "linked_run_id",
+                        "fs_trace_path", "prompt_source", "prompt_hash"):
+                d[col] = None
+            d["findings_count"] = None
+            d["total_tokens_paid"] = None
+            d["events_count"] = None
+            # Row's primary id mirrors the previous schema so existing
+            # links (?session=…) keep working.
+            d["id"] = d["session_id"]
             out.append(d)
         return out
 
     def count_sub_runs(self, f: RunFilter) -> int:
         f = self._apply_default_window(f)
-        where, params = self._where_for_runs(f)
-        q = f"""
-            WITH r AS MATERIALIZED (
-              SELECT id FROM runs WHERE {where}
-            )
-            SELECT COUNT(*) FROM (
-              SELECT 1 FROM r JOIN events e ON e.run_id = r.id
-              WHERE e.agent_id IS NOT NULL AND e.agent_id != ''
-              GROUP BY r.id, e.agent_id, e.agent_name
-            )
-        """
+        where, params = self._where_for_spans(f)
+        q = f"SELECT COUNT(*) FROM otel_spans WHERE {where}"
         try:
             with self._conn() as c:
                 row = c.execute(q, params).fetchone()
                 return int(row[0]) if row else 0
         except FileNotFoundError:
             return 0
+
+    @staticmethod
+    def _where_for_spans(f: RunFilter) -> tuple[str, list[Any]]:
+        """Build a WHERE for the otel_spans table. Filters on
+        domain dims live in attributes JSON; time funnel uses
+        the dedicated start_ns column (idx_otel_spans_start)."""
+        clauses: list[str] = [
+            "name LIKE 'agent.%'",      # idx_otel_spans_name_start
+            "end_ns IS NOT NULL",       # exclude in-flight spans
+        ]
+        params: list[Any] = []
+
+        # Mandatory time-funnel — `_apply_default_window` guarantees
+        # f.since is set; convert ISO → ns once.
+        from datetime import datetime as _dt
+        def _iso_to_ns(s: str) -> int:
+            try:
+                return int(_dt.fromisoformat(s.replace("Z", "+00:00"))
+                           .timestamp() * 1e9)
+            except Exception:
+                return 0
+        if f.since:
+            clauses.append("start_ns >= ?")
+            params.append(_iso_to_ns(f.since))
+        if f.until:
+            clauses.append("start_ns <= ?")
+            params.append(_iso_to_ns(f.until))
+
+        def jeq(key: str, val):
+            if val is not None and val != "":
+                clauses.append(
+                    f"json_extract(attributes, '$.\"diffgraph.{key}\"') = ?"
+                )
+                params.append(str(val))
+
+        jeq("run_id", f.session_id)
+        jeq("agent_name", f.agent_name)
+        jeq("model", f.model)
+        jeq("scenario_id", f.scenario_id)
+        jeq("generation", f.generation)
+        if f.plan_id is not None:
+            clauses.append(
+                "json_extract(attributes, '$.\"diffgraph.plan_id\"') = ?"
+            )
+            params.append(str(f.plan_id))
+        if f.task_id is not None:
+            clauses.append(
+                "json_extract(attributes, '$.\"diffgraph.task_id\"') = ?"
+            )
+            params.append(str(f.task_id))
+        if f.mutation:
+            # Prefix match — short hashes common in URLs.
+            clauses.append(
+                "(json_extract(attributes, '$.\"diffgraph.mutation\"') = ? "
+                " OR json_extract(attributes, '$.\"diffgraph.mutation\"') LIKE ?)"
+            )
+            params.append(f.mutation)
+            params.append(f.mutation + "%")
+        if f.kind:
+            # Derived from agent_name; only 'judge' vs 'agent' make sense.
+            if f.kind == "judge":
+                clauses.append(
+                    "json_extract(attributes, '$.\"diffgraph.agent_name\"') = 'judge'"
+                )
+            else:
+                clauses.append(
+                    "json_extract(attributes, '$.\"diffgraph.agent_name\"') != 'judge'"
+                )
+        if f.status == "failed":
+            clauses.append("status_code = 'ERROR'")
+        elif f.status == "completed":
+            clauses.append("(status_code IS NULL OR status_code != 'ERROR')")
+        if f.duration_gt_ms is not None:
+            clauses.append("(end_ns - start_ns) / 1000000 >= ?")
+            params.append(int(f.duration_gt_ms))
+        # scenario_run_id == run_id under the new schema (no judge
+        # linkage: the judge span carries the SAME run_id its agent
+        # carries, since both share the parent OTel trace).
+        if f.scenario_run_id:
+            clauses.append(
+                "json_extract(attributes, '$.\"diffgraph.run_id\"') = ?"
+            )
+            params.append(f.scenario_run_id)
+
+        return " AND ".join(clauses), params
 
     def count_runs(self, f: RunFilter) -> int:
         f = self._apply_default_window(f)
