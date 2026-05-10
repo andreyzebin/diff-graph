@@ -1016,6 +1016,7 @@ def worker_loop(
         # — single denormalised otel_spans table answers all queries.
         try:
             from orchestra.otel import (setup_tracing, set_domain_attrs,
+                                          get_domain_attrs,
                                           current_traceparent)
             _otel_tracer = setup_tracing("diffgraph-worker")
             set_domain_attrs(
@@ -1027,8 +1028,13 @@ def worker_loop(
                 provider=t.provider or "",
                 run_id=pre_run_id,
             )
+            # Merge domain dims into the span attrs at creation time
+            # so /qa/traces shows the row with plan_id/task_id/etc.
+            # the moment the worker leases this task — before bench
+            # has even forked. Without this the worker.task span is
+            # empty and the row is unidentifiable.
             _bench_span_cm = _otel_tracer.start_as_current_span(
-                f"worker.task#{t.id}")
+                f"worker.task#{t.id}", attributes=get_domain_attrs())
             _bench_span = _bench_span_cm.__enter__()
             env["TRACEPARENT"] = current_traceparent()
             # Also pass diffgraph.* dims as env so the bench → cli.py

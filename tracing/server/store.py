@@ -275,20 +275,29 @@ class SQLiteTraceStore:
         domain dims live in attributes JSON; time funnel uses
         the dedicated start_ns column (idx_otel_spans_start)."""
         clauses: list[str] = [
-            # Rows are sub-agents (agent.<name>) — that's the
-            # natural scope: dispatcher / reviewer / investigator-1 /
-            # … each get their own row. cli.run surfaces ONLY as a
-            # fallback when the cli.py invocation crashed BEFORE any
-            # agent.<name> span had a chance to open (e.g. a config
-            # / proxy / arg-parsing crash). For those, the cli.run
-            # row is the only evidence the invocation happened — we
-            # show it so /qa/traces has no trace gaps.
+            # Progressive row scope: at any moment, the row for a
+            # given trace_id is the deepest currently-known level —
+            # worker.task → cli.run → agent.<name>. Each level
+            # vetoes the levels above it: as soon as a more specific
+            # span opens in the same trace, the outer rows drop out
+            # and the row "tightens" to the new level (with richer
+            # attrs). When an agent spawns a sub-agent, both
+            # agent.<name> spans surface as their own rows — that's
+            # the row split. Visibility-wise: worker.task gives
+            # plan_id/task_id immediately when the task is leased;
+            # cli.run adds agent_name from --agent ~100ms later;
+            # agent.<name> adds agent_id/model when the agent inits.
             """(
                 name LIKE 'agent.%'
                 OR (name = 'cli.run' AND NOT EXISTS (
                     SELECT 1 FROM otel_spans s2
                     WHERE s2.trace_id = otel_spans.trace_id
                       AND s2.name LIKE 'agent.%'
+                ))
+                OR (name LIKE 'worker.%' AND NOT EXISTS (
+                    SELECT 1 FROM otel_spans s2
+                    WHERE s2.trace_id = otel_spans.trace_id
+                      AND (s2.name LIKE 'agent.%' OR s2.name = 'cli.run')
                 ))
             )""",
             # in-flight spans (end_ns NULL) DO surface — _SyncSQLiteProcessor
