@@ -10,8 +10,8 @@ bench_cmd: >
   cd /home/andrey/repos/code-review-benchmarks && source .env
   && unset ALL_PROXY all_proxy
   && .venv/bin/python -m benchmark.cli run-unit
-       benchmark/scenarios/unit/investigator/INV-U-001-cancel-npe.yaml
-       --provider={provider}
+  benchmark/scenarios/unit/investigator/INV-U-001-cancel-npe.yaml
+  --provider={provider}
 
 # References real branches in the local orderflow repo. The runner
 # `git clone --local --no-hardlinks` orderflow into a tempdir, checks

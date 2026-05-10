@@ -9,8 +9,8 @@ bench_cmd: >
   cd /home/andrey/repos/code-review-benchmarks && source .env
   && unset ALL_PROXY all_proxy
   && .venv/bin/python -m benchmark.cli run-unit
-       benchmark/scenarios/unit/reviewer/REV-U-001-store-credit-concerns.yaml
-       --provider={provider}
+  benchmark/scenarios/unit/reviewer/REV-U-001-store-credit-concerns.yaml
+  --provider={provider}
 
 # Reviewer in concerns-only mode against the store-credit feature
 # branch. The user-message override (see user_message_from) tells
