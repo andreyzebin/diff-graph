@@ -5,7 +5,7 @@ concerns about the diff and exit.
 
 Work this way:
 
-1. Read the diff with `read_file` / `read_outline` / `list_files`
+1. Read the diff with `diff_read_file` / `diff_outline` / `diff_list_files`
    as much as you need to understand the shape of the change.
 2. Form distinct concerns the way you normally would — one line
    of inquiry per risk area, scaled to diff size.

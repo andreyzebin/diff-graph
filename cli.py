@@ -914,6 +914,63 @@ def history(limit: int = typer.Option(20, "--limit", "-n", help="Number of runs 
     console.print(table)
 
 
+@app.command("run-unit")
+def run_unit(
+    fixture: str = typer.Argument(..., help="Path to a unit-fixture yaml (or to a directory containing scenario.yaml)"),
+    provider: Optional[str] = typer.Option(None, "--provider", "-p",
+                                            help="Provider profile from ~/repos/.llm_creds.toml (e.g. deepseek)"),
+    timeout: int = typer.Option(300, "--timeout", "-t", help="Hard timeout for cli.py subprocess (seconds)"),
+    keep_tmp: bool = typer.Option(False, "--keep-tmp", help="Don't delete the temp clone on success — useful for debugging the diff view"),
+):
+    """Run a unit-tier scenario against a local-cloned repo (orderflow-style).
+
+    Stage 1 of TODO §5e.14: just plumbing — invokes diff-graph cli.py
+    against a temp local clone of the fixture's source repo, prints
+    the agent's output and exit status. No LLM judge yet.
+    """
+    from runner.run_unit import run_unit_fixture
+    p = Path(fixture).expanduser()
+    if p.is_dir():
+        # accept a dir if it has scenario.yaml in it
+        if (p / "scenario.yaml").exists():
+            p = p / "scenario.yaml"
+    if not p.exists():
+        console.print(f"[red]fixture not found: {p}[/red]")
+        raise typer.Exit(2)
+
+    result = run_unit_fixture(p, provider=provider, timeout=timeout,
+                              keep_tmp_on_success=keep_tmp)
+    status_label = "[green]PASS[/green]" if result.exit_code == 0 else "[red]FAIL[/red]"
+    console.print(f"\n{status_label}  {result.fixture_id}  agent=[cyan]{result.agent}[/cyan]  exit={result.exit_code}")
+    console.print(f"  base={result.base_sha[:12]}  source={result.source_sha[:12]}")
+    if not result.cleaned_up:
+        console.print(f"  tmp_repo: [dim]{result.tmp_repo}[/dim]")
+    if result.cli_output is not None:
+        console.print("  agent_output:")
+        console.print_json(json.dumps(result.cli_output, default=str)[:2000])
+    if result.posted:
+        console.print(f"  posted by agent ({len(result.posted)} actions):")
+        for rec in result.posted:
+            kind = rec.get("kind", "?")
+            if kind == "post_comment":
+                console.print(f"    [cyan]post_comment[/cyan] #{rec.get('new_id')} "
+                              f"{rec.get('file','')}:{rec.get('line','')} "
+                              f"[{rec.get('severity','')}] {(rec.get('text','') or '')[:80]}")
+            elif kind == "reply":
+                console.print(f"    [cyan]reply[/cyan] to #{rec.get('parent_id')}: "
+                              f"{(rec.get('text','') or '')[:80]}")
+            elif kind == "set_status":
+                console.print(f"    [magenta]set_status[/magenta] {rec.get('user_slug')} → {rec.get('status')}")
+            elif kind == "react":
+                console.print(f"    [yellow]react[/yellow] #{rec.get('comment_id')} {rec.get('emoticon')}")
+            else:
+                console.print(f"    [dim]{kind}[/dim] {json.dumps(rec)[:120]}")
+    if result.exit_code != 0:
+        console.print(f"\n[dim]stdout (tail):[/dim]\n{result.stdout_tail}")
+        console.print(f"\n[dim]stderr (tail):[/dim]\n{result.stderr_tail}")
+        raise typer.Exit(result.exit_code)
+
+
 @app.command()
 def ab(
     agent_a: str = typer.Option(..., "--agent-a", help="URL of agent A"),

@@ -1,0 +1,41 @@
+id: REV-U-001-store-credit-concerns
+agent: reviewer
+
+# Reviewer in concerns-only mode against the store-credit feature
+# branch. The user-message override (see user_message_from) tells
+# the agent: read diff, list concerns via reflect(), call done(empty).
+# No spawn_agent, no post_comment, no set_review_status — the test
+# measures concern-forming, nothing else. Pattern matches the
+# existing REV-001 integration scenario but on a local clone.
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: feature/ORD-301-store-credit
+
+# Custom user-message — turns the reviewer into a one-shot
+# concerns-extractor. Without this the reviewer follows its default
+# flow (spawn investigators, post inline comments, set verdict),
+# which is exactly the wrong behaviour for a unit test.
+user_message_from: ../../../fixtures/user-messages/concerns-only.md
+
+pr_state:
+  metadata:
+    title: "ORD-301: Add customer store credit redemption"
+    description: |
+      Adds a store-credit balance per customer plus an endpoint
+      to redeem credit at checkout. Touches StoreCreditService,
+      a new repository, and the customer controller.
+    pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/301"
+    bot_user: "diffgraph-bot"
+
+  # No existing threads for this fixture — concerns-only mode
+  # reads only the diff. Later fixtures may add a thread graph
+  # to test incremental_awareness.
+  comments: []
+
+trigger:
+  type: comment
+  text: "/review"
+  comment_id: 0
+
+agent_data: {}
