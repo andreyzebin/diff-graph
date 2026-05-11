@@ -207,9 +207,15 @@ document.addEventListener('alpine:init', () => {
     diagramAutoRefresh: true,    // user-toggleable; default on
     diagramBudget: 60,           // max_events; default fits on one screen
     d2PlayHref: '',              // computed in _buildD2PlayHref after each load
+    // Filter state — driven by G6 click handlers, applied to ALL
+    // three formats via /api/diagram?actor=…&edge=…. Each entry is
+    // a canonical actor URI (`agent:<run>:<aid>`, `system:diff`).
+    selectedActors: [],
+    selectedEdges: [],           // [{src, tgt}] using URI keys
     _diagramLoadedOnce: false,
     _diagramTimer: null,
     _g6Instance: null,
+    _g6NodeUri: {},              // safe_id → canonical URI lookup
 
     // play.d2lang.com URL format is `?script=<urlsafe-base64(raw-deflate(source))>`,
     // NOT `?script=<urlencoded(source)>`. Sending raw-encoded source
@@ -328,10 +334,21 @@ document.addEventListener('alpine:init', () => {
       const scopeUri = this.diagramScope === 'scenario_run'
         ? `scenario_run://${this.meta.scenario_run_id || this.runId}`
         : `session://${this.runId}`;
+      // Carry the click-driven filter through the URL so the diagram
+      // re-fetch on auto-refresh / scope change preserves the
+      // current selection.
+      const actorParam = this.selectedActors.length
+        ? `&actor=${encodeURIComponent(this.selectedActors.join(','))}`
+        : '';
+      const edgeParam = this.selectedEdges.length
+        ? `&edge=${encodeURIComponent(
+            this.selectedEdges.map(e => `${e.src}>${e.tgt}`).join(','))}`
+        : '';
       const url = `${this.qaBase}/api/diagram`
         + `?scope=${encodeURIComponent(scopeUri)}`
         + `&format=${this.diagramFormat}`
-        + `&max_events=${this.diagramBudget}`;
+        + `&max_events=${this.diagramBudget}`
+        + actorParam + edgeParam;
       try {
         const resp = await fetch(url);
         if (!resp.ok) {
@@ -448,7 +465,11 @@ document.addEventListener('alpine:init', () => {
           labelCfg: { autoRotate: true, style: { fill: '#8b949e', fontSize: 10 } },
         },
         nodeStateStyles: {
-          hover: { fill: '#1f6feb88', stroke: '#79c0ff', lineWidth: 2 },
+          hover:    { fill: '#1f6feb88', stroke: '#79c0ff', lineWidth: 2 },
+          selected: { lineWidth: 4, stroke: '#f0883e' },
+        },
+        edgeStateStyles: {
+          selected: { stroke: '#f0883e', lineWidth: 4, opacity: 1 },
         },
         modes: { default: ['drag-canvas', 'zoom-canvas', 'drag-node'] },
       });
@@ -472,9 +493,106 @@ document.addEventListener('alpine:init', () => {
       }));
       graph.data({ nodes, edges });
       graph.render();
+
+      // Map safe_id → canonical actor URI. The diagram backend
+      // builds nodes keyed by `_safe_id(uri)`; we need the inverse
+      // so click handlers can send the canonical URI back through
+      // `/api/diagram?actor=…&edge=…`.
+      this._g6NodeUri = {};
+      for (const n of (this.diagramG6.nodes || [])) {
+        // The server emits each node with id == safe_id of an actor
+        // URI plus role/kind info. We carry the URI as a hidden
+        // attribute on the node when building the JSON server-side
+        // (see diagram._participants_of). Fall back to label-prefix
+        // heuristics if not present.
+        const uri = n.uri || this._uriFromNode(n);
+        if (uri) this._g6NodeUri[n.id] = uri;
+      }
+
       graph.on('node:mouseenter', e => graph.setItemState(e.item, 'hover', true));
       graph.on('node:mouseleave', e => graph.setItemState(e.item, 'hover', false));
+      graph.on('node:click', e => this._onG6NodeClick(e.item));
+      graph.on('edge:click', e => this._onG6EdgeClick(e.item));
+      graph.on('canvas:click', () => this.clearFilter());
       this._g6Instance = graph;
+      // Re-apply persistent visual selection after re-render
+      // (auto-refresh / scope change rebuilds the graph).
+      this._g6SyncSelection();
+    },
+
+    _uriFromNode(n) {
+      // Server-side `to_g6` stores `kind` ∈ {agent, system, human}.
+      // For systems, URI is `system:<label>`. For agents, the safe_id
+      // already encodes `agent_<run>_<aid>` — invert to
+      // `agent:<run>:<aid>` by splitting on the first three `_`.
+      if (n.kind === 'system') return `system:${n.label}`;
+      if (n.kind === 'agent' && typeof n.id === 'string'
+          && n.id.startsWith('agent_')) {
+        const parts = n.id.split('_');
+        if (parts.length >= 3) return `agent:${parts[1]}:${parts[2]}`;
+      }
+      return null;
+    },
+
+    _onG6NodeClick(item) {
+      const id = item.get('id');
+      const uri = this._g6NodeUri[id];
+      if (!uri) return;
+      const idx = this.selectedActors.indexOf(uri);
+      if (idx >= 0) this.selectedActors.splice(idx, 1);
+      else this.selectedActors.push(uri);
+      this._g6SyncSelection();
+      this.loadDiagram();
+    },
+
+    _onG6EdgeClick(item) {
+      const model = item.get('model');
+      const src = this._g6NodeUri[model.source];
+      const tgt = this._g6NodeUri[model.target];
+      if (!src || !tgt) return;
+      const key = `${src}>${tgt}`;
+      const idx = this.selectedEdges.findIndex(e => `${e.src}>${e.tgt}` === key);
+      if (idx >= 0) this.selectedEdges.splice(idx, 1);
+      else this.selectedEdges.push({ src, tgt });
+      this._g6SyncSelection();
+      this.loadDiagram();
+    },
+
+    clearFilter() {
+      if (!this.selectedActors.length && !this.selectedEdges.length) return;
+      this.selectedActors = [];
+      this.selectedEdges = [];
+      this._g6SyncSelection();
+      this.loadDiagram();
+    },
+
+    _g6SyncSelection() {
+      // Apply visual `selected` state to G6 items matching the
+      // current selection sets. Cheap — graph has ≤20 nodes typical.
+      if (!this._g6Instance) return;
+      const actorSet = new Set(this.selectedActors);
+      const edgeSet = new Set(
+        this.selectedEdges.map(e => `${e.src}>${e.tgt}`));
+      const g = this._g6Instance;
+      g.getNodes().forEach(n => {
+        const uri = this._g6NodeUri[n.get('id')];
+        g.setItemState(n, 'selected', actorSet.has(uri));
+      });
+      g.getEdges().forEach(e => {
+        const m = e.get('model');
+        const src = this._g6NodeUri[m.source];
+        const tgt = this._g6NodeUri[m.target];
+        const key = `${src}>${tgt}`;
+        const revKey = `${tgt}>${src}`;
+        g.setItemState(e, 'selected',
+                       edgeSet.has(key) || edgeSet.has(revKey));
+      });
+    },
+
+    isActorSelected(uri) { return this.selectedActors.includes(uri); },
+    get hasFilter() {
+      return this.selectedActors.length > 0 || this.selectedEdges.length > 0;
+    },
     },
 
     // Three export actions, all format-aware:

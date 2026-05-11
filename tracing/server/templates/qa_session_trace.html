@@ -8,7 +8,7 @@
   window.QA_BASE_PATH = "{{ base_path }}";
   window.RUN_ID = "{{ run_id }}";
 </script>
-<script defer src="{{ base_path }}/static/qa_session_trace.js?v=8"></script>
+<script defer src="{{ base_path }}/static/qa_session_trace.js?v=9"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
 body { padding: 16px; max-width: 1700px; margin: 0 auto; }
@@ -118,6 +118,16 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
 .auto-status { color: #56d364; font-weight: 600; }
 .d2-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 .d2-too-big { color: #d29922; font-size: 0.85em; cursor: help; }
+.filter-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; background: #f0883e22; border: 1px solid #f0883e;
+  border-radius: 4px; font-size: 0.85em; color: #f0883e;
+}
+.filter-chip .chip {
+  background: #21262d; color: #c9d1d9; padding: 1px 6px;
+  border-radius: 3px; font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+}
 .diagram-output { padding: 14px; min-height: 120px; }
 .diagram-output #diagram-mermaid-host { overflow-x: auto; }
 .diagram-output #diagram-mermaid-host svg { max-width: 100%; height: auto; }
@@ -201,6 +211,18 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
               x-show="diagramFormat !== 'd2'"
               @click="exportDiagramImage()"
               :title="'download rendered SVG'">🖼 SVG</button>
+      <template x-if="hasFilter">
+        <span class="filter-chip" :title="'click any selection to remove · click empty canvas to clear all'">
+          filter:
+          <template x-for="uri in selectedActors" :key="uri">
+            <span class="chip" x-text="uri.startsWith('agent:') ? uri.split(':')[2].substring(0,8) : uri.split(':')[1]"></span>
+          </template>
+          <template x-for="e in selectedEdges" :key="e.src + e.tgt">
+            <span class="chip" x-text="(e.src.split(':').pop() || '').substring(0,8) + ' ↔ ' + (e.tgt.split(':').pop() || '').substring(0,8)"></span>
+          </template>
+          <button type="button" class="toolbar-btn" @click="clearFilter()">× clear</button>
+        </span>
+      </template>
       <label class="autorefresh-label" :title="meta.status === 'running' ? 'auto-refresh every 5s while the run is still going' : 'run already finished — auto-refresh is a no-op'">
         <input type="checkbox" :checked="diagramAutoRefresh" @change="toggleAutoRefresh()">
         auto-refresh

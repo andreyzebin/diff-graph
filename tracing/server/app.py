@@ -119,31 +119,44 @@ async def api_run_json(run_id: str):
 
 @app.get("/api/diagram")
 async def api_diagram(scope: str, format: str = "mermaid",
-                       max_events: int = 60):
+                       max_events: int = 60,
+                       actor: Optional[str] = None,
+                       edge: Optional[str] = None):
     """Build an interaction diagram for any scope URI.
 
     Parameters:
       scope       — resource URI: `session://<run_id>` or
-                    `scenario_run://<id>` or `plan://<int>` (more
-                    schemes coming via the resolver — see diagram.py).
-      format      — `mermaid` (inline-renderable sequence source),
-                    `d2` (savable D2 source), `g6` (node-edge JSON
-                    for AntV G6).
-      max_events  — soft cap for the rendered diagram. Fair-share
-                    progressive collapse fits to this budget; pass
-                    0 to disable collapsing (debug). Default 60 so
-                    the result fits on one screen for typical
-                    sessions; the UI's ±buttons scale this.
-
-    All three formats render the same canonical event stream from
-    `events_from_runs(resolve_runs(scope))` — adding a new
-    URI scheme or output format is local to diagram.py.
+                    `scenario_run://<id>` or `plan://<int>`.
+      format      — `mermaid`, `d2`, `g6`.
+      max_events  — soft cap; fair-share collapse fits to budget.
+      actor       — comma-separated actor URIs to keep events for.
+                    Event passes if `actor` OR `target` is in the
+                    set. Drives G6's "click node = filter" UX.
+      edge        — comma-separated `src→tgt` pairs (URL-encoded
+                    `→` or literal `>`). Event passes if its
+                    (actor, target) matches one of the pairs in
+                    either direction. Drives G6's "click edge =
+                    show interactions between exactly this pair".
     """
     from tracing.server.diagram import build_diagram
     from fastapi.responses import PlainTextResponse
+
+    actor_list = [s for s in (actor or "").split(",") if s] or None
+    edge_list: Optional[list[tuple[str, str]]] = None
+    if edge:
+        pairs: list[tuple[str, str]] = []
+        for chunk in edge.split(","):
+            for sep in ("→", ">", "->"):
+                if sep in chunk:
+                    src, _, tgt = chunk.partition(sep)
+                    pairs.append((src.strip(), tgt.strip()))
+                    break
+        edge_list = pairs or None
     try:
         mime, body = build_diagram(scope, format, str(DEFAULT_DB_PATH),
-                                    max_events=max_events)
+                                    max_events=max_events,
+                                    actor_filter=actor_list,
+                                    edge_filter=edge_list)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     if isinstance(body, dict):

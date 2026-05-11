@@ -200,22 +200,44 @@ def _ordered(conn: sqlite3.Connection, ids: set[str]) -> list[str]:
 
 
 def events_from_runs(run_ids: list[str], db_path: str,
-                     *, max_events: Optional[int] = None) -> list[Event]:
+                     *, max_events: Optional[int] = None,
+                     actor_filter: Optional[list[str]] = None,
+                     edge_filter: Optional[list[tuple[str, str]]] = None,
+                     ) -> list[Event]:
     """Build the canonical event stream for every run in scope, sort
-    by timestamp. Each run's events are extracted independently — the
-    transitive closure happened in the resolver.
+    by timestamp. Filters apply BEFORE fair-collapse so the budget
+    accounts for the filtered subset, not the pre-filtered total.
 
-    `max_events` engages progressive fair-share collapsing: when the
-    combined stream is larger than the budget, each run's events are
-    folded down to its share `max_events / len(run_ids)`. Folding is
-    cross-step adjacent-pair: consecutive events with the same
-    (kind, actor, target, tool name) merge into one with `count`
-    summed. Runs whose natural size already fits their share are
-    untouched, so a chatty investigator doesn't starve a terse one."""
+    `actor_filter` — URIs of actors of interest. An event passes if
+    EITHER its `actor` OR its `target` is in the list (union of
+    "everything touching X" for each X). Use the safe_id-decoded
+    canonical URIs (e.g. `agent:<run>:<aid>`, `system:diff`).
+
+    `edge_filter` — list of (source_uri, target_uri) tuples. An event
+    passes if its (actor, target) matches one of the pairs in either
+    direction (since e.g. tool_result reverses the arrow vs the
+    original tool_call).
+
+    If BOTH filters are supplied: the event must satisfy both
+    (intersection — "interactions between A and B that also touch
+    actor X"). That's the natural UX when a user clicks an edge AND
+    a node in G6.
+    """
     out: list[Event] = []
     for rid in run_ids:
         out.extend(_events_from_run(rid, db_path))
     out.sort(key=lambda e: e.ts)
+
+    if actor_filter:
+        af = set(actor_filter)
+        out = [e for e in out if e.actor in af or (e.target and e.target in af)]
+    if edge_filter:
+        ef = set()
+        for src, tgt in edge_filter:
+            ef.add((src, tgt)); ef.add((tgt, src))
+        out = [e for e in out
+               if (e.actor, e.target) in ef]
+
     if max_events and len(out) > max_events:
         out = _fair_collapse(out, max_events)
     return out
@@ -1178,6 +1200,10 @@ def to_g6(events: list[Event], db_path: str) -> dict:
         fill, stroke = _ROLE_PALETTE.get(role, _ROLE_PALETTE["agent"])
         nodes_by_id[nid] = {
             "id": nid, "label": label, "kind": kind, "role": role,
+            # `uri` is the canonical actor key (agent:<run>:<aid> or
+            # system:<name>). Frontend needs it to feed back into
+            # `/api/diagram?actor=…` when the user clicks the node.
+            "uri": uri,
             "fill": fill[:7],   # G6 accepts #RRGGBB
             "stroke": stroke,
         }
@@ -1218,20 +1244,25 @@ def to_g6(events: list[Event], db_path: str) -> dict:
 
 
 def build_diagram(scope_uri: str, fmt: str, db_path: str,
-                  *, max_events: int = 60):
+                  *, max_events: int = 60,
+                  actor_filter: Optional[list[str]] = None,
+                  edge_filter: Optional[list[tuple[str, str]]] = None):
     """Return (mime_type, body) for the given scope + format.
     Body is a string for mermaid/d2, a dict for g6 (route serialises).
 
-    `max_events` is the soft cap for the rendered diagram. The
-    collector applies fair-share progressive collapse to fit — when
-    the natural stream is bigger, runs over their share fold
-    adjacent-identical events until they're under it. Pass 0 to
-    disable collapsing entirely (e.g. for debugging the raw stream).
+    `max_events` — soft cap. Fair-share progressive collapse fits to
+    this budget; pass 0 to disable.
+
+    `actor_filter` / `edge_filter` — surface up the canonical filters
+    in `events_from_runs`. Driven by the G6 "click to filter" UX:
+    clicking a node fills `actor_filter`, clicking an edge fills
+    `edge_filter`, and supplying both narrows to the intersection.
     """
     run_ids = resolve_runs(scope_uri, db_path)
     events = events_from_runs(
         run_ids, db_path,
         max_events=max_events if max_events > 0 else None,
+        actor_filter=actor_filter, edge_filter=edge_filter,
     )
     if fmt == "mermaid":
         return ("text/plain; charset=utf-8", to_mermaid(events, db_path))
