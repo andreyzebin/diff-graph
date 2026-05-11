@@ -431,6 +431,12 @@ document.addEventListener('alpine:init', () => {
       const height = host.clientHeight || 480;
       const graph = new window.G6.Graph({
         container: host, width, height,
+        // `renderer: 'svg'` lets us export the diagram as scalable
+        // SVG by serialising the `<svg>` node G6 builds — same path
+        // we use for Mermaid. Canvas render mode is faster on huge
+        // graphs but agent-interaction graphs are tiny, the trade
+        // doesn't matter and we gain export quality.
+        renderer: 'svg',
         layout: { type: 'force', preventOverlap: true, nodeStrength: -100, edgeStrength: 0.4, linkDistance: 120 },
         defaultNode: {
           size: 32,
@@ -471,40 +477,79 @@ document.addEventListener('alpine:init', () => {
       this._g6Instance = graph;
     },
 
-    // Format-aware export. Mermaid → SVG (serialise the rendered
-    // SVG node), D2 → `.d2` text file (the source), G6 → PNG via
-    // the Graph's `toFullDataURL` method. One button, three
-    // behaviours — same vocabulary the user already has elsewhere.
-    async exportDiagram() {
+    // Three export actions, all format-aware:
+    //   📋 Copy   → clipboard, source text (or JSON for G6).
+    //   📥 Source → download the source file (.mmd / .d2 / .json).
+    //   🖼 Image  → download a rendered image (Mermaid → .svg,
+    //              G6 → .png). D2 has no inline render in this UI,
+    //              so the image button is hidden for D2.
+
+    _diagramFileStem() {
+      return `session-${(this.runId || '').substring(0, 12)}`;
+    },
+
+    _sourceForCopy() {
+      // G6 doesn't have a text source; serialise the node-edge
+      // JSON instead so the user always has SOMETHING on the clipboard.
+      if (this.diagramFormat === 'g6') {
+        return JSON.stringify(this.diagramG6 || {}, null, 2);
+      }
+      return this.diagramSource || '';
+    },
+
+    async exportDiagramSource() {
       const fmt = this.diagramFormat;
-      const stem = `session-${(this.runId || '').substring(0, 12)}`;
+      const stem = this._diagramFileStem();
       try {
-        if (fmt === 'd2') {
-          this._download(this.diagramSource, `${stem}.d2`, 'text/plain');
-        } else if (fmt === 'mermaid') {
+        if (fmt === 'mermaid') {
+          this._download(this.diagramSource || '', `${stem}.mmd`,
+                         'text/plain');
+          this._toast(`✓ exported ${stem}.mmd`);
+        } else if (fmt === 'd2') {
+          this._download(this.diagramSource || '', `${stem}.d2`,
+                         'text/plain');
+          this._toast(`✓ exported ${stem}.d2`);
+        } else if (fmt === 'g6') {
+          this._download(this._sourceForCopy(), `${stem}.json`,
+                         'application/json');
+          this._toast(`✓ exported ${stem}.json`);
+        }
+      } catch (e) {
+        this._toast('export failed: ' + (e.message || e));
+      }
+    },
+
+    async exportDiagramImage() {
+      const fmt = this.diagramFormat;
+      const stem = this._diagramFileStem();
+      try {
+        if (fmt === 'mermaid') {
           const svg = document.querySelector('#diagram-mermaid-host svg');
           if (!svg) { this._toast('nothing to export (no rendered svg)'); return; }
-          // Inject a couple of attributes so the file opens
-          // standalone (rendered mermaid omits the xmlns).
+          // Standalone SVG needs the xmlns attrs that the inline
+          // render omits.
           const cloned = svg.cloneNode(true);
           cloned.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
           cloned.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
           const xml = new XMLSerializer().serializeToString(cloned);
           this._download('<?xml version="1.0" encoding="UTF-8"?>\n' + xml,
                          `${stem}.svg`, 'image/svg+xml');
+          this._toast(`✓ exported ${stem}.svg`);
         } else if (fmt === 'g6') {
-          if (!this._g6Instance) { this._toast('graph not ready'); return; }
-          const fname = `${stem}.png`;
-          // G6 4.x callback signature: (dataUrl: string)
-          this._g6Instance.toFullDataURL((dataUrl) => {
-            const a = document.createElement('a');
-            a.href = dataUrl; a.download = fname;
-            document.body.appendChild(a); a.click(); a.remove();
-          }, 'image/png');
+          // We init G6 with `renderer: 'svg'` so the host already
+          // has a real <svg> we can serialise — same path as Mermaid.
+          const svg = document.querySelector('#diagram-g6-host svg');
+          if (!svg) { this._toast('graph not ready'); return; }
+          const cloned = svg.cloneNode(true);
+          cloned.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+          cloned.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+          const xml = new XMLSerializer().serializeToString(cloned);
+          this._download('<?xml version="1.0" encoding="UTF-8"?>\n' + xml,
+                         `${stem}.svg`, 'image/svg+xml');
+          this._toast(`✓ exported ${stem}.svg`);
         }
-        this._toast(`✓ exported ${stem}.${fmt === 'd2' ? 'd2' : (fmt === 'g6' ? 'png' : 'svg')}`);
       } catch (e) {
-        this._toast('export failed: ' + (e.message || e));
+        this._toast('image export failed: ' + (e.message || e));
       }
     },
 
@@ -519,8 +564,9 @@ document.addEventListener('alpine:init', () => {
 
     async copyDiagramSource() {
       try {
-        await navigator.clipboard.writeText(this.diagramSource);
-        this._toast('✓ source copied');
+        await navigator.clipboard.writeText(this._sourceForCopy());
+        this._toast(this.diagramFormat === 'g6'
+                    ? '✓ JSON copied' : '✓ source copied');
       } catch (e) {
         this._toast('error: ' + (e.message || e));
       }

@@ -8,7 +8,7 @@
   window.QA_BASE_PATH = "{{ base_path }}";
   window.RUN_ID = "{{ run_id }}";
 </script>
-<script defer src="{{ base_path }}/static/qa_session_trace.js?v=7"></script>
+<script defer src="{{ base_path }}/static/qa_session_trace.js?v=8"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
 body { padding: 16px; max-width: 1700px; margin: 0 auto; }
@@ -192,8 +192,15 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
         <button type="button" class="toolbar-btn" @click="bumpBudget(+1)" :disabled="diagramBudget >= 2000">+</button>
       </div>
       <button type="button" class="toolbar-btn"
-              @click="exportDiagram()"
-              :title="diagramFormat === 'mermaid' ? 'export as SVG' : (diagramFormat === 'd2' ? 'export as .d2 source file' : 'export as PNG')">📥 Export</button>
+              @click="copyDiagramSource()"
+              :title="diagramFormat === 'g6' ? 'copy node-edge JSON to clipboard' : 'copy source text to clipboard'">📋 Copy</button>
+      <button type="button" class="toolbar-btn"
+              @click="exportDiagramSource()"
+              :title="diagramFormat === 'mermaid' ? 'download as .mmd' : (diagramFormat === 'd2' ? 'download as .d2' : 'download as .json')">📥 Source</button>
+      <button type="button" class="toolbar-btn"
+              x-show="diagramFormat !== 'd2'"
+              @click="exportDiagramImage()"
+              :title="'download rendered SVG'">🖼 SVG</button>
       <label class="autorefresh-label" :title="meta.status === 'running' ? 'auto-refresh every 5s while the run is still going' : 'run already finished — auto-refresh is a no-op'">
         <input type="checkbox" :checked="diagramAutoRefresh" @change="toggleAutoRefresh()">
         auto-refresh
@@ -201,7 +208,6 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
       </label>
       <template x-if="diagramFormat === 'd2'">
         <span class="d2-tools">
-          <button type="button" class="toolbar-btn" @click="copyDiagramSource()">📋 Copy</button>
           <template x-if="d2PlayHref">
             <a class="back-link" :href="d2PlayHref"
                target="_blank" rel="noopener">↗ open in play.d2lang.com</a>
