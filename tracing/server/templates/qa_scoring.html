@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=fd003980"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=fd003981"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -125,6 +125,20 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
       lineage. Sloping = quality drift (look at what changed). Flat =
       stable. Multiple lineages selected = lines for each, color-coded
       by scenario.
+    </div>
+  </div>
+
+  <!-- (2) Score distribution per scenario — test maturity / flakiness. -->
+  <div class="section" x-show="rows.length > 0 && distinctScenarioCount > 1">
+    <h2>score distribution per scenario · test maturity</h2>
+    <div id="chart-distribution" class="chart-frame"></div>
+    <div class="legend-note">
+      Boxplot per scenario, sorted by median score. <b>Tight box</b> =
+      mature, repeatable test. <b>Wide box / outliers</b> = the
+      scenario flap-its — needs more repeats or a tighter judge
+      rubric. Dots are individual attempts (hover for mutation + ts).
+      A scenario with only 1–2 attempts shows as a degenerate box —
+      treat its median as untrustworthy until N grows.
     </div>
   </div>
 

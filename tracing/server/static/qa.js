@@ -375,6 +375,13 @@ document.addEventListener('alpine:init', () => {
     availableScenarios: [],
     availableLineages: [],
     status: '',
+    get distinctScenarioCount() {
+      // Drives x-show on the distribution chart — a boxplot of one
+      // box vs. nothing isn't a comparison, so we hide it.
+      const s = new Set();
+      for (const r of this.rows) if (r.scenario) s.add(r.scenario);
+      return s.size;
+    },
     async init() {
       const base = window.QA_BASE_PATH || '';
       const dims = (await (await fetch(`${base}/api/search/dimensions`)).json()).data || {};
@@ -517,6 +524,58 @@ document.addEventListener('alpine:init', () => {
         },
       };
       embed('#chart-trend', trendSpec);
+
+      // (2) Score distribution per scenario — test-maturity view.
+      // One boxplot per scenario (Y axis), score on X. Sorted by
+      // median score so the strongest scenarios float to the top.
+      // A tight box ≈ mature, repeatable test; a wide box (or one
+      // riddled with outliers) ≈ flap-prone — needs more repeats
+      // or a tighter judge rubric. Tooltip surfaces `n` (sample
+      // size) so a one-shot scenario is visibly less trustworthy
+      // than one with 30 attempts even if both have the same
+      // median.
+      // Skipped when only one scenario is in the data — a single
+      // box compared to nothing is uninformative.
+      const distinctScenarios = new Set(data.map(r => r.scenario)).size;
+      if (distinctScenarios > 1) {
+        const distSpec = {
+          ...dark,
+          width: 'container',
+          height: Math.max(180, distinctScenarios * 28),
+          data: {values: data},
+          layer: [
+            {
+              mark: {type: 'boxplot', extent: 'min-max', size: 18},
+              encoding: {
+                y: {field: 'scenario', type: 'nominal',
+                    sort: {op: 'median', field: 'score', order: 'descending'},
+                    title: 'scenario (sorted by median score)'},
+                x: {field: 'score', type: 'quantitative',
+                    title: 'overall_score', scale: {domain: [0, 1]}},
+                color: {field: 'scenario', type: 'nominal', legend: null},
+              },
+            },
+            {
+              mark: {type: 'point', filled: true, size: 32,
+                      opacity: 0.45},
+              encoding: {
+                y: {field: 'scenario', type: 'nominal',
+                    sort: {op: 'median', field: 'score', order: 'descending'}},
+                x: {field: 'score', type: 'quantitative',
+                    scale: {domain: [0, 1]}},
+                color: {field: 'scenario', type: 'nominal', legend: null},
+                tooltip: [
+                  {field: 'scenario', type: 'nominal'},
+                  {field: 'score', type: 'quantitative', format: '.3f'},
+                  {field: 'mutation_short', type: 'nominal'},
+                  {field: 'ts', type: 'temporal'},
+                ],
+              },
+            },
+          ],
+        };
+        embed('#chart-distribution', distSpec);
+      }
 
       // (3) Per-attempt timeline — when ONE scenario is picked.
       // Every dot = one judge verdict in chronological order. Same
