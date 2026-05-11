@@ -121,3 +121,31 @@ def ui_url(uri: str, base: Optional[str] = None) -> Optional[str]:
 
 def known_kinds() -> list[str]:
     return sorted(_HANDLERS.keys())
+
+
+def denormalise(uris: list[str]) -> dict:
+    """Project a list of resource URIs onto the legacy QA columns
+    (scenario_id / provider / lineage / mutation_hash) so generic-
+    enqueue tasks still join scoring / aggregates / UI filters that
+    haven't migrated to URI lookups yet. Unknown kinds are ignored.
+
+    Last-write-wins per kind. Caller decides whether to use this
+    purely as a cache (preserving caller-supplied column values) or
+    let it overwrite them.
+    """
+    cols: dict[str, str] = {}
+    kind_to_col = {
+        "scenario": "scenario_id",
+        "provider": "provider",
+        "lineage":  "lineage",
+        "mutation": "mutation_hash",
+    }
+    for uri in uris or []:
+        parsed = parse_uri(uri)
+        if parsed is None:
+            continue
+        kind, id_ = parsed
+        col = kind_to_col.get(kind)
+        if col:
+            cols[col] = id_
+    return cols

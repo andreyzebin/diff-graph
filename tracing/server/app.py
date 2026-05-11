@@ -935,9 +935,17 @@ async def api_qa_enqueue_generic(p: GenericEnqueuePayload):
     if p.tags:
         payload["tags"] = list(p.tags)
 
+    # Denormalise resources → legacy QA columns so generic tasks
+    # still participate in scoring / aggregates / UI filters that
+    # query by scenario_id / lineage / mutation_hash directly.
+    # `queue` argument wins over provider:// URI for the routing key.
+    from quality_api.resources import denormalise as _denorm_resources
+    denorm = _denorm_resources(resources)
     spec = TaskSpec(
-        scenario_id="",                         # generic — no scenario binding
-        provider=p.queue,
+        scenario_id=denorm.get("scenario_id", ""),
+        provider=p.queue or denorm.get("provider", ""),
+        lineage=denorm.get("lineage", ""),
+        mutation_hash=denorm.get("mutation_hash", ""),
         priority=p.priority,
         payload=payload,
         not_before=p.not_before,
