@@ -882,6 +882,165 @@ def tasks_reap(grace_seconds: int = typer.Option(30)):
     _Out.console.print(f"[green]reaped[/green] {n} stale lease(s)")
 
 
+# ── generic abstract-task ops — talk to the API instead of poking
+#    SQLite directly, so behaviour matches what the UI sees. Use
+#    --server to point at a non-default origin (envvar QA_SERVER_URL
+#    also honoured).
+
+def _server_url() -> str:
+    import os
+    return (os.environ.get("QA_SERVER_URL") or "http://localhost:8765").rstrip("/")
+
+
+def _api_call(method: str, path: str, *, json_body: Optional[dict] = None,
+              params: Optional[dict] = None) -> dict:
+    """Single-shot urllib call. Returns parsed JSON; raises on
+    non-2xx with the server's `error.message` if available."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+    qs = ""
+    if params:
+        qs = "?" + urllib.parse.urlencode({k: v for k, v in params.items()
+                                            if v is not None})
+    url = _server_url() + path + qs
+    data = _json.dumps(json_body).encode("utf-8") if json_body is not None else None
+    req = urllib.request.Request(
+        url, data=data, method=method,
+        headers={"Content-Type": "application/json"} if data else {},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = r.read().decode("utf-8")
+            return _json.loads(body) if body else {}
+    except urllib.request.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            j = _json.loads(body)
+            raise RuntimeError(f"HTTP {e.code}: {j.get('error', {}).get('message', body)}")
+        except _json.JSONDecodeError:
+            raise RuntimeError(f"HTTP {e.code}: {body}")
+
+
+def _open_browser(url: str) -> None:
+    import webbrowser
+    try:
+        webbrowser.open(url, new=2)
+    except Exception:
+        _Out.console.print(f"[yellow]could not open browser: {url}[/yellow]")
+
+
+@tasks_app.command("enqueue")
+def tasks_enqueue(
+    queue: str = typer.Option(..., help="Routing key — the worker's --provider value"),
+    cmd: str = typer.Option(..., help="Shell cmd template (worker .format()s {provider} etc.)"),
+    env: Optional[list[str]] = typer.Option(None, "--env", "-e",
+                                              help="Per-task env var, repeatable: KEY=VALUE"),
+    cwd: Optional[str] = typer.Option(None, help="Working directory for the cmd"),
+    priority: int = typer.Option(100, help="Lower = sooner"),
+    max_retries: int = typer.Option(3),
+    not_before: Optional[str] = typer.Option(None, help="ISO datetime to gate execution"),
+    resource: Optional[list[str]] = typer.Option(None, "--resource", "-r",
+                                                   help="Resource URI, repeatable: scenario://X lineage://master mutation://abc"),
+    tag: Optional[list[str]] = typer.Option(None, "--tag", "-t",
+                                              help="Tag, repeatable"),
+    open_in_ui: bool = typer.Option(False, "--open-in-ui",
+                                      help="After enqueue, open this task in /qa/queue"),
+):
+    """Enqueue a generic task — abstract distributed-queue model.
+    No QA-specific fields required; everything navigates via
+    resource URIs (scenario://X, lineage://master, ...)."""
+    env_map = {}
+    for item in (env or []):
+        if "=" not in item:
+            _Out.console.print(f"[red]bad --env (need KEY=VALUE): {item}[/red]")
+            raise typer.Exit(2)
+        k, v = item.split("=", 1)
+        env_map[k.strip()] = v
+    body = {
+        "queue": queue, "cmd": cmd,
+        "env": env_map or None, "cwd": cwd,
+        "priority": priority, "max_retries": max_retries,
+        "not_before": not_before,
+        "resources": list(resource or []),
+        "tags": list(tag or []),
+    }
+    j = _api_call("POST", "/api/qa/tasks/enqueue", json_body=body)
+    data = j["data"]
+    if _Out.json_mode:
+        _emit(data); return
+    _Out.console.print(f"[green]enqueued[/green] task #{data['id']}  queue={data['queue']}")
+    if open_in_ui:
+        _open_browser(f"{_server_url()}/qa/queue?id={data['id']}")
+
+
+@tasks_app.command("get")
+def tasks_get(
+    task_id: int = typer.Argument(...),
+    open_in_ui: bool = typer.Option(False, "--open-in-ui",
+                                      help="Open this task in /qa/queue"),
+):
+    j = _api_call("GET", f"/api/qa/tasks/{task_id}")
+    data = j["data"]
+    if _Out.json_mode:
+        _emit(data); return
+    _Out.console.print(f"task #{data['id']} · [cyan]{data['state']}[/cyan]")
+    _Out.console.print(f"  queue: {data['queue']}")
+    _Out.console.print(f"  retry: {data['retry_count']}/{data['max_retries']}")
+    if data['error_class']:
+        _Out.console.print(f"  error_class: [red]{data['error_class']}[/red]")
+    if data.get("resources"):
+        _Out.console.print(f"  resources:")
+        for u in data["resources"]:
+            _Out.console.print(f"    · {u}")
+    if open_in_ui:
+        _open_browser(f"{_server_url()}/qa/queue?id={task_id}")
+
+
+@tasks_app.command("retry")
+def tasks_retry(
+    task_id: int = typer.Argument(...),
+    open_in_ui: bool = typer.Option(False, "--open-in-ui"),
+):
+    """Manually re-queue a finished/errored task."""
+    j = _api_call("POST", f"/api/qa/tasks/{task_id}/retry")
+    data = j["data"]
+    if _Out.json_mode:
+        _emit(data); return
+    note = j.get("meta", {}).get("no_op")
+    if note:
+        _Out.console.print(f"task #{task_id}: {note}")
+    else:
+        _Out.console.print(f"[green]re-queued[/green] task #{task_id} · state={data['state']}")
+    if open_in_ui:
+        _open_browser(f"{_server_url()}/qa/queue?id={task_id}")
+
+
+@tasks_app.command("cancel")
+def tasks_cancel(task_id: int = typer.Argument(...)):
+    j = _api_call("POST", f"/api/qa/tasks/{task_id}/cancel")
+    if _Out.json_mode:
+        _emit(j.get("data", {})); return
+    _Out.console.print(f"[yellow]cancelled[/yellow] task #{task_id}")
+
+
+@tasks_app.command("resolve")
+def tasks_resolve(
+    uri: str = typer.Argument(..., help="Resource URI to inspect"),
+    open_in_ui: bool = typer.Option(False, "--open-in-ui"),
+):
+    """Resolve a resource URI to its UI link + display name."""
+    j = _api_call("GET", "/api/qa/resources/resolve", params={"uri": uri})
+    data = j["data"]
+    if _Out.json_mode:
+        _emit(data); return
+    _Out.console.print(f"{data['uri']} → {data['display']}")
+    if data["ui_url"]:
+        _Out.console.print(f"  ui: [blue]{data['ui_url']}[/blue]")
+    if open_in_ui and data["ui_url"]:
+        _open_browser(data["ui_url"])
+
+
 # ── worker ────────────────────────────────────────────────────────────────
 
 @app.command("worker")
