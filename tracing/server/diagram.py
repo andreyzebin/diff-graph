@@ -305,6 +305,23 @@ def _fair_collapse(events: list[Event], max_events: int) -> list[Event]:
         if len(evs) > target_per_run:
             evs = [e for e in evs if e.kind != "tool_result"]
             evs = _fold_until_fixed(evs)
+        # Stage 3: hard truncate. User asked for ≤ N events — at
+        # this point folding has plateaued. Drop the tail and emit
+        # a `Note over …: ⋯ truncated at N events ⋯` sentinel so
+        # the diagram visibly shows that the budget was hit. The
+        # sentinel goes into the canonical Event stream; renderers
+        # surface it as `agent_text` (Mermaid Note / D2 self-arrow).
+        if len(evs) > target_per_run and target_per_run > 0:
+            anchor = evs[0].actor if evs else "system:trunc"
+            anchor_ts = evs[target_per_run - 1].ts if evs else None
+            evs = evs[: target_per_run - 1]
+            evs.append(Event(
+                ts=anchor_ts, kind="agent_text",
+                actor=anchor, target=anchor,
+                label=f"⋯ truncated at {target_per_run} events ⋯",
+                payload={"truncated": True},
+                session_id=sid,
+            ))
         groups[sid] = evs
 
     out: list[Event] = []

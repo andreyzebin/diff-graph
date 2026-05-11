@@ -471,6 +471,47 @@ class TestFairCollapse:
         assert any(e.count >= 5 for e in calls), \
             f"no ×N collapse fired: {[e.label for e in calls]}"
 
+    def test_hard_truncate_when_fold_plateaus(self, db_chatty):
+        """Final stage of fair-share: when folding can't reduce
+        further (e.g. all events have different stems), drop the
+        tail to fit the budget exactly and append a sentinel
+        `agent_text` event with `⋯ truncated at N events ⋯` so the
+        diagram tells the reader it's incomplete."""
+        db_path, rid = db_chatty
+        # Tight budget — fold collapses 20 read_files into ~1 high-
+        # count event; result is ~3-5 events, well under 8 (the
+        # minimum per-run target). Use a different repro: many
+        # distinct tool names so adjacent-fold can't merge.
+        from orchestra.trace_db import TraceDBWriter
+        from pathlib import Path
+        # New fixture inline
+        import tempfile
+        db2 = tempfile.mkdtemp() + "/t.db"
+        w = TraceDBWriter(db_path=db2, run_id="diverse001", kind="agent")
+        w.on_event("agent_started", agent_id="A", agent_name="reviewer")
+        for s in range(15):
+            w.on_event("agent_llm_request", agent_id="A",
+                       agent_name="reviewer", step=s, messages=[])
+            w.on_event(
+                "agent_llm_response", agent_id="A",
+                agent_name="reviewer", step=s,
+                tool_calls=[{"name": f"unique_tool_{s}", "arguments": "{}"}],
+            )
+        w.on_event("agent_llm_request", agent_id="A",
+                   agent_name="reviewer", step=15,
+                   messages=[{"role": "tool", "content": "r"}])
+        w.on_event("agent_done", agent_id="A", agent_name="reviewer",
+                   step=15, output=[])
+        w.finish_run(model="m", status="completed")
+        w.close()
+
+        evs = events_from_runs(["diverse001"], db2, max_events=8)
+        assert len(evs) <= 8, f"hard truncate failed: got {len(evs)} events"
+        # The sentinel should be the last event.
+        assert evs[-1].kind == "agent_text"
+        assert "truncated" in evs[-1].label
+        assert evs[-1].payload.get("truncated") is True
+
     def test_no_collapse_under_budget(self, db_chatty):
         """A small budget triggers folding; a generous one leaves
         events alone."""

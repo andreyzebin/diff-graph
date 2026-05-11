@@ -206,24 +206,49 @@ document.addEventListener('alpine:init', () => {
     diagramOpen: false,          // <details> open state — drives auto-refresh
     diagramAutoRefresh: true,    // user-toggleable; default on
     diagramBudget: 60,           // max_events; default fits on one screen
+    d2PlayHref: '',              // computed in _buildD2PlayHref after each load
     _diagramLoadedOnce: false,
     _diagramTimer: null,
     _g6Instance: null,
 
-    // play.d2lang.com is fronted by CloudFront which rejects URLs
-    // > ~8KB with 414. Encoded source can balloon — return empty
-    // when over the safe threshold so the UI shows a "too large
-    // for URL" hint instead of a link that won't open.
-    get d2PlayHref() {
-      if (!this.diagramSource) return '';
-      const encoded = encodeURIComponent(this.diagramSource);
-      const url = `https://play.d2lang.com/?script=${encoded}`;
-      // Total URL bytes (UTF-8). CloudFront caps requests at
-      // ~8192 bytes; leave a small margin for header/cookie
-      // overhead. If the diagram source exceeds, the user gets a
-      // hint to use Copy and paste into play.d2lang.com manually,
-      // or shrinks via the `−` budget button.
-      return url.length <= 8000 ? url : '';
+    // play.d2lang.com URL format is `?script=<urlsafe-base64(raw-deflate(source))>`,
+    // NOT `?script=<urlencoded(source)>`. Sending raw-encoded source
+    // made the page load and immediately reset to its default
+    // `x -> y` script because the param wasn't recognised. Use the
+    // browser's native CompressionStream (Chrome 80+, FF 113+,
+    // Safari 16.4+) to deflate without pulling in pako.
+    async _buildD2PlayHref(source) {
+      if (!source) return '';
+      if (!('CompressionStream' in window)) {
+        // Older browser — no inline encoder, can't build a working
+        // play URL. The UI will show the Copy fallback.
+        return '';
+      }
+      try {
+        const stream = new Blob([source]).stream()
+          .pipeThrough(new CompressionStream('deflate-raw'));
+        const reader = stream.getReader();
+        const chunks = [];
+        let total = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          total += value.length;
+        }
+        const buf = new Uint8Array(total);
+        let off = 0;
+        for (const c of chunks) { buf.set(c, off); off += c.length; }
+        // Base64 → urlsafe (`+` → `-`, `/` → `_`). Padding stays.
+        let bin = '';
+        for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+        const b64 = btoa(bin).replace(/\+/g, '-').replace(/\//g, '_');
+        const url = `https://play.d2lang.com/?script=${b64}`;
+        // CloudFront still caps at ~8KB even on compressed input.
+        return url.length <= 8000 ? url : '';
+      } catch (e) {
+        return '';
+      }
     },
 
     bumpBudget(direction) {
@@ -317,14 +342,19 @@ document.addEventListener('alpine:init', () => {
         if (this.diagramFormat === 'g6') {
           this.diagramG6 = await resp.json();
           this.diagramSource = '';
+          this.d2PlayHref = '';
           await this._renderG6();
         } else {
           this.diagramSource = await resp.text();
           this.diagramG6 = null;
           if (this.diagramFormat === 'mermaid') {
+            this.d2PlayHref = '';
             await this._renderMermaid();
+          } else if (this.diagramFormat === 'd2') {
+            // Build play.d2lang.com URL after source is in hand —
+            // CompressionStream encoding is async.
+            this.d2PlayHref = await this._buildD2PlayHref(this.diagramSource);
           }
-          // D2: source already in `diagramSource`, the <pre> binds to it.
         }
       } catch (e) {
         this.diagramError = String(e && e.message || e);
@@ -439,6 +469,52 @@ document.addEventListener('alpine:init', () => {
       graph.on('node:mouseenter', e => graph.setItemState(e.item, 'hover', true));
       graph.on('node:mouseleave', e => graph.setItemState(e.item, 'hover', false));
       this._g6Instance = graph;
+    },
+
+    // Format-aware export. Mermaid → SVG (serialise the rendered
+    // SVG node), D2 → `.d2` text file (the source), G6 → PNG via
+    // the Graph's `toFullDataURL` method. One button, three
+    // behaviours — same vocabulary the user already has elsewhere.
+    async exportDiagram() {
+      const fmt = this.diagramFormat;
+      const stem = `session-${(this.runId || '').substring(0, 12)}`;
+      try {
+        if (fmt === 'd2') {
+          this._download(this.diagramSource, `${stem}.d2`, 'text/plain');
+        } else if (fmt === 'mermaid') {
+          const svg = document.querySelector('#diagram-mermaid-host svg');
+          if (!svg) { this._toast('nothing to export (no rendered svg)'); return; }
+          // Inject a couple of attributes so the file opens
+          // standalone (rendered mermaid omits the xmlns).
+          const cloned = svg.cloneNode(true);
+          cloned.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+          cloned.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+          const xml = new XMLSerializer().serializeToString(cloned);
+          this._download('<?xml version="1.0" encoding="UTF-8"?>\n' + xml,
+                         `${stem}.svg`, 'image/svg+xml');
+        } else if (fmt === 'g6') {
+          if (!this._g6Instance) { this._toast('graph not ready'); return; }
+          const fname = `${stem}.png`;
+          // G6 4.x callback signature: (dataUrl: string)
+          this._g6Instance.toFullDataURL((dataUrl) => {
+            const a = document.createElement('a');
+            a.href = dataUrl; a.download = fname;
+            document.body.appendChild(a); a.click(); a.remove();
+          }, 'image/png');
+        }
+        this._toast(`✓ exported ${stem}.${fmt === 'd2' ? 'd2' : (fmt === 'g6' ? 'png' : 'svg')}`);
+      } catch (e) {
+        this._toast('export failed: ' + (e.message || e));
+      }
+    },
+
+    _download(content, filename, mime) {
+      const blob = new Blob([content], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
     },
 
     async copyDiagramSource() {

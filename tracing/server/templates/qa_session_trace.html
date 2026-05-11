@@ -8,7 +8,7 @@
   window.QA_BASE_PATH = "{{ base_path }}";
   window.RUN_ID = "{{ run_id }}";
 </script>
-<script defer src="{{ base_path }}/static/qa_session_trace.js?v=6"></script>
+<script defer src="{{ base_path }}/static/qa_session_trace.js?v=7"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
 body { padding: 16px; max-width: 1700px; margin: 0 auto; }
@@ -191,6 +191,9 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
         <span class="budget-value" x-text="`${diagramBudget} ev`"></span>
         <button type="button" class="toolbar-btn" @click="bumpBudget(+1)" :disabled="diagramBudget >= 2000">+</button>
       </div>
+      <button type="button" class="toolbar-btn"
+              @click="exportDiagram()"
+              :title="diagramFormat === 'mermaid' ? 'export as SVG' : (diagramFormat === 'd2' ? 'export as .d2 source file' : 'export as PNG')">📥 Export</button>
       <label class="autorefresh-label" :title="meta.status === 'running' ? 'auto-refresh every 5s while the run is still going' : 'run already finished — auto-refresh is a no-op'">
         <input type="checkbox" :checked="diagramAutoRefresh" @change="toggleAutoRefresh()">
         auto-refresh
