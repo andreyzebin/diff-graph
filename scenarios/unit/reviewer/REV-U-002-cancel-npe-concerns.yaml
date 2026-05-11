@@ -1,0 +1,56 @@
+id: REV-U-002-cancel-npe-concerns
+agent: reviewer
+tags: [tier:unit, agent:reviewer, isolation, concerns-only]
+
+# Per-fixture worker cmd. {provider} is filled by the worker.
+# No tier-based dispatch in code — this yaml field is the single
+# source of truth for "how to run this fixture".
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmark.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# Reviewer in concerns-only mode against the cancel-NPE hotfix
+# (same PR that INV-U-001-cancel-npe investigates). Goal: capture
+# what concerns a free reviewer raises on this exact diff — so we
+# can compare them to the hand-written investigator focus and see
+# how the latter should actually look in the absence of leaks.
+#
+# IMPORTANT: nothing in this fixture (title, description, comments,
+# focus) may telegraph the verdict. The reviewer must form concerns
+# from the diff alone + AGENTS.md it discovers on its own.
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: hotfix/ORD-287-cancel-npe
+
+# Custom user-message — turns the reviewer into a one-shot
+# concerns-extractor (list concerns via reflect(), done(empty)).
+# Same file REV-U-001 uses; generic, no scenario-specific hints.
+user_message_from: ../../../fixtures/user-messages/concerns-only.md
+
+pr_state:
+  metadata:
+    # Title is the commit subject the author actually wrote — factual,
+    # describes the fix, doesn't pre-judge it.
+    title: "ORD-287: Fix NPE in cancelOrder when items list is null"
+    description: |
+      Production NPE observed inside `OrderService.cancelOrder()`
+      when iterating `order.getItems()`. Adds a null guard around
+      the inventory-release loop. Tiny scope — one method touched.
+    pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/287"
+    bot_user: "diffgraph-bot"
+
+  # No existing threads — reviewer reads only the diff. Same as
+  # REV-U-001; later fixtures may add a thread graph to test
+  # incremental_awareness.
+  comments: []
+
+trigger:
+  type: comment
+  text: "/review"
+  comment_id: 0
+
+agent_data: {}
