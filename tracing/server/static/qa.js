@@ -485,6 +485,17 @@ document.addEventListener('alpine:init', () => {
       // mutations appear automatically as POINTS along their lineage.
       // x = ts of judge run, y = mean per (mutation × lineage × scenario).
       // Default view, always rendered.
+      // Mutations are spaced EQUALLY on the x axis (ordinal), sorted
+      // by their first judge timestamp. Temporal spacing distorted
+      // the chart: when an old mutation got fired 30 times and a new
+      // one fired 2 times, the time-bucket density made the line
+      // look smooth on the dense side and jagged on the sparse side
+      // — exactly hiding the score waves the user is trying to spot.
+      // Equal spacing means each commit is one tick, regardless of
+      // how many attempts landed in that window. Now a "wave"
+      // becomes visible as score moves up/down across consecutive
+      // mutations, not as a function of how long the LLM had to
+      // produce samples for that point.
       const trendSpec = {
         ...dark,
         width: 'container', height: 360,
@@ -502,8 +513,16 @@ document.addEventListener('alpine:init', () => {
           },
         ],
         encoding: {
-          x: {field: 'first_ts', type: 'temporal',
-              title: 'commit chronology'},
+          x: {
+            field: 'mutation_short', type: 'ordinal',
+            title: 'mutation (sorted by first run)',
+            // Vega-Lite supports sorting an ordinal axis by another
+            // field's aggregate — here we use the per-mutation min
+            // ts so the visual order is chronological even though
+            // the spacing is uniform.
+            sort: {op: 'min', field: 'first_ts', order: 'ascending'},
+            axis: {labelAngle: -45, labelLimit: 100},
+          },
           y: {field: 'mean_score', type: 'quantitative',
               title: 'mean overall_score', scale: {domain: [0, 1]}},
           color: {field: 'scenario', type: 'nominal', title: 'scenario',
@@ -519,7 +538,7 @@ document.addEventListener('alpine:init', () => {
             {field: 'scenario', type: 'nominal'},
             {field: 'mean_score', type: 'quantitative', format: '.3f'},
             {field: 'n', type: 'quantitative', title: 'samples'},
-            {field: 'first_ts', type: 'temporal'},
+            {field: 'first_ts', type: 'temporal', title: 'first run'},
           ],
         },
       };
