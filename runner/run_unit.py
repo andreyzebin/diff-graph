@@ -687,7 +687,20 @@ def _run_judge_for_unit_fixture(
         scenario_tags=list(scenario.tags or []),
     )
 
-    output = asyncio.run(judge.evaluate(scenario))
+    # Mirror runner/run.py:218-228 — wrap the judge call so its trace
+    # writer ALWAYS finalises (sqlite runs row → status='completed',
+    # FS run.json updated). Without this the judge writes its
+    # step-00-request/response files but the runs row stays at
+    # status='running' forever and /qa/scoring sees a dangling row.
+    try:
+        output = asyncio.run(judge.evaluate(scenario))
+    finally:
+        finish = getattr(judge, "_finish_trace", None)
+        if callable(finish):
+            try:
+                finish()
+            except Exception:
+                pass
 
     writer = getattr(judge, "_trace_writer", None)
     return {
