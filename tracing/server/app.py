@@ -102,22 +102,6 @@ async def api_runs():
     return JSONResponse(content=runs)
 
 
-@app.get("/api/metrics")
-async def api_metrics(hash: str, since: str = None):
-    """Aggregate metrics for a prompt hash."""
-    from tracing.query import get_metrics
-    m = get_metrics(hash, since=since)
-    return JSONResponse(content=m.to_dict())
-
-
-@app.get("/api/compare")
-async def api_compare(a: str, b: str):
-    """Compare two prompt hashes."""
-    from tracing.query import compare
-    c = compare(a, b)
-    return JSONResponse(content=c.to_dict())
-
-
 @app.get("/api/runs/{run_id}/json")
 async def api_run_json(run_id: str):
     """Full trace data as JSON."""
@@ -435,7 +419,6 @@ async def api_search_runs(
     since: Optional[str] = None,
     until: Optional[str] = None,
     duration_gt_ms: Optional[int] = None,
-    tokens_gt: Optional[int] = None,
     # evolutionary identity
     generation: Optional[str] = None,
     mutation: Optional[str] = None,
@@ -467,7 +450,7 @@ async def api_search_runs(
     f = RunFilter(
         agent_name=agent, model=model, status=status,
         since=since, until=until,
-        duration_gt_ms=duration_gt_ms, tokens_gt=tokens_gt,
+        duration_gt_ms=duration_gt_ms,
         generation=generation, mutation=mutation,
         pr_url=pr_url, project=project, file=file, jira=jira,
         scenario_id=scenario, scenario_tag=scenario_tag,
@@ -504,7 +487,6 @@ async def api_search_sub_runs(
     since: Optional[str] = None,
     until: Optional[str] = None,
     duration_gt_ms: Optional[int] = None,
-    tokens_gt: Optional[int] = None,
     generation: Optional[str] = None,
     mutation: Optional[str] = None,
     pr_url: Optional[str] = None,
@@ -532,7 +514,7 @@ async def api_search_sub_runs(
     f = RunFilter(
         agent_name=agent, model=model, status=status,
         since=since, until=until,
-        duration_gt_ms=duration_gt_ms, tokens_gt=tokens_gt,
+        duration_gt_ms=duration_gt_ms,
         generation=generation, mutation=mutation,
         pr_url=pr_url, project=project, file=file, jira=jira,
         scenario_id=scenario, scenario_tag=scenario_tag,

@@ -41,8 +41,6 @@ h1 { margin-bottom: 20px; }
         <th>Started</th>
         <th>Model</th>
         <th>Prompts</th>
-        <th>Findings</th>
-        <th>Tokens</th>
         <th>Status</th>
       </tr>
       </thead>
@@ -53,8 +51,6 @@ h1 { margin-bottom: 20px; }
           <td x-text="(run.started_at || '?').substring(0, 19)"></td>
           <td x-text="run.model || '?'"></td>
           <td><span class="prompt-gen" x-text="formatPrompts(run)"></span></td>
-          <td x-text="run.findings_count || 0"></td>
-          <td x-text="run.total_tokens_paid || 0"></td>
           <td :class="'status-' + (run.status || 'unknown')" x-text="run.status || '?'"></td>
         </tr>
       </template>

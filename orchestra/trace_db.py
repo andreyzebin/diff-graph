@@ -49,9 +49,6 @@ class TraceDBWriter:
                 finished_at TEXT,
                 model TEXT,
                 pr_url TEXT,
-                diff_summary TEXT,
-                total_tokens_paid INTEGER,
-                findings_count INTEGER,
                 status TEXT DEFAULT 'running',
                 prompt_source TEXT,
                 prompt_hash TEXT
@@ -69,6 +66,17 @@ class TraceDBWriter:
             CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id);
             CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id);
         """)
+        # Migration: drop the diff-graph-specific columns
+        # (findings_count, diff_summary, total_tokens_paid) from
+        # existing databases. SQLite 3.35+ supports DROP COLUMN.
+        # The trace layer is domain-agnostic — agents store their own
+        # output (findings, etc.) via --output JSON files / events.
+        for col in ("findings_count", "diff_summary", "total_tokens_paid"):
+            try:
+                self.conn.execute(f"ALTER TABLE runs DROP COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass  # already absent
+
         # Migrate: add columns if missing (existing DBs).
         # Each column is a separate try/except so we can add new ones
         # without disturbing the existing migration order.
@@ -283,8 +291,7 @@ class TraceDBWriter:
         except Exception:
             pass  # never crash the agent due to tracing
 
-    def finish_run(self, model: str = "", pr_url: str = "", diff_summary: str = "",
-                   findings_count: int = 0, total_tokens_paid: int = 0,
+    def finish_run(self, model: str = "", pr_url: str = "",
                    prompt_source: str = "", prompt_hash: str = "",
                    status: str = "completed"):
         """Mark run as `completed` (default) or `failed` / `cancelled`.
@@ -306,10 +313,8 @@ class TraceDBWriter:
         except Exception:
             duration_ms = None
 
-        # Extract search-dimension fields from pr_url + diff_summary
-        # (pure derivation — best effort).
+        # Extract project from pr_url (pure derivation — best effort).
         project = _extract_project(pr_url)
-        files_touched = _extract_files_from_diff(diff_summary)
 
         generation = self._derive_generation(prompt_source)
         with self._lock:
@@ -319,22 +324,17 @@ class TraceDBWriter:
             # incoming)` so finish_run only writes a value when none
             # exists — never undoes an override.
             self.conn.execute(
-                "UPDATE runs SET finished_at=?, model=?, pr_url=?, diff_summary=?, "
-                "findings_count=?, total_tokens_paid=?, status=?, "
+                "UPDATE runs SET finished_at=?, model=?, pr_url=?, status=?, "
                 "prompt_source=COALESCE(NULLIF(?, ''), prompt_source), "
                 "prompt_hash=COALESCE(NULLIF(?, ''), prompt_hash), "
                 "generation=COALESCE(NULLIF(?, ''), generation), "
                 "mutation=COALESCE(mutation, NULLIF(?, '')), "
                 "duration_ms=?, "
-                "project=COALESCE(NULLIF(?, ''), project), "
-                "files_touched=COALESCE(NULLIF(?, '[]'), files_touched) "
+                "project=COALESCE(NULLIF(?, ''), project) "
                 "WHERE id=?",
-                (datetime.now(timezone.utc).isoformat(), model, pr_url, diff_summary,
-                 findings_count, total_tokens_paid, status,
+                (datetime.now(timezone.utc).isoformat(), model, pr_url, status,
                  prompt_source, prompt_hash, generation, prompt_hash,
-                 duration_ms,
-                 project,
-                 json.dumps(files_touched, ensure_ascii=False),
+                 duration_ms, project,
                  self.run_id),
             )
             self.conn.commit()
@@ -366,8 +366,8 @@ class TraceDBReader:
     def list_runs(self, limit: int = 10) -> list[dict]:
         """List recent runs."""
         rows = self.conn.execute(
-            "SELECT id, started_at, finished_at, model, pr_url, diff_summary, "
-            "findings_count, total_tokens_paid, status, prompt_source, prompt_hash "
+            "SELECT id, started_at, finished_at, model, pr_url, "
+            "status, prompt_source, prompt_hash "
             "FROM runs ORDER BY started_at DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
@@ -518,7 +518,6 @@ import re as _re
 
 
 _PR_URL_PROJECT_RE = _re.compile(r"/projects/([^/]+)/repos/", _re.IGNORECASE)
-_DIFF_FILE_RE = _re.compile(r"^[+-]{3} (?:[ab]/)?(.+?)(?:\s+\(\w+\))?\s*$", _re.MULTILINE)
 
 
 def _extract_project(pr_url: str) -> str:
@@ -532,31 +531,6 @@ def _extract_project(pr_url: str) -> str:
         return ""
     m = _PR_URL_PROJECT_RE.search(str(pr_url))
     return m.group(1) if m else ""
-
-
-def _extract_files_from_diff(diff_summary: str) -> list[str]:
-    """Extract file paths from a diff_summary blob.
-
-    diff_summary is a render of the diff (possibly truncated). We
-    scan for `+++ b/path` and `--- a/path` markers and unique-ify
-    while preserving order. Returns up to 50 paths to keep the JSON
-    blob bounded.
-    """
-    if not diff_summary:
-        return []
-    seen: set[str] = set()
-    out: list[str] = []
-    for m in _DIFF_FILE_RE.finditer(str(diff_summary)):
-        path = m.group(1).strip()
-        if path == "/dev/null" or not path:
-            continue
-        if path in seen:
-            continue
-        seen.add(path)
-        out.append(path)
-        if len(out) >= 50:
-            break
-    return out
 
 
 _JIRA_KEY_RE = _re.compile(r"\b([A-Z][A-Z0-9]{1,9})-(\d+)\b")

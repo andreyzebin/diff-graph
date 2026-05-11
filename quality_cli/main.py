@@ -118,14 +118,13 @@ def runs_list(
     pr_url: Optional[str] = typer.Option(None),
     # activity
     duration_gt_ms: Optional[int] = typer.Option(None, help="only runs longer than N ms"),
-    tokens_gt: Optional[int] = typer.Option(None),
     # range
     since: Optional[str] = typer.Option(None, help="ISO datetime"),
     until: Optional[str] = typer.Option(None),
     # pagination
     limit: int = typer.Option(20, help="page size"),
     offset: int = typer.Option(0),
-    sort: str = typer.Option("started_at", help="started_at | duration_ms | total_tokens_paid | …"),
+    sort: str = typer.Option("started_at", help="started_at | duration_ms | …"),
     order: str = typer.Option("desc", help="asc | desc"),
     db: Optional[str] = typer.Option(None, "--db", help="trace DB path; defaults to ~/.diffgraph/traces.db"),
 ):
@@ -135,7 +134,7 @@ def runs_list(
         generation=generation, mutation=mutation,
         project=project, file=file, jira=jira,
         scenario_id=scenario, scenario_tag=scenario_tag, pr_url=pr_url,
-        duration_gt_ms=duration_gt_ms, tokens_gt=tokens_gt,
+        duration_gt_ms=duration_gt_ms,
         since=since, until=until,
         limit=limit, offset=offset, sort=sort, order=order,
     )

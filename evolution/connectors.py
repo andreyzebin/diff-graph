@@ -24,23 +24,37 @@ class ConnectorConfig:
 
 
 class TracingConnector:
-    """Query tracing subproject."""
+    """Query tracing subproject.
+
+    The diff-graph-specific metrics (findings count, tokens paid,
+    Mann-Whitney comparisons over those) used to live in
+    `tracing.query` — that module was removed when the trace layer
+    was made domain-agnostic. If evolution gets revived, rebuild
+    these on top of: (1) the per-run JSON `--output` files agents
+    write (canonical findings), (2) the generic `runs` /
+    `otel_spans` tables (run metadata, timings, model)."""
 
     def __init__(self, db_path: str = ""):
         from orchestra.trace_db import DEFAULT_DB_PATH
         self.db_path = db_path or str(DEFAULT_DB_PATH)
 
     def metrics(self, prompt_hash: str) -> dict:
-        from tracing.query import get_metrics
-        return get_metrics(prompt_hash, db_path=self.db_path).to_dict()
+        raise NotImplementedError(
+            "tracing.query.get_metrics was removed when the trace "
+            "layer dropped findings_count/total_tokens_paid; rebuild "
+            "on top of agent output JSONs"
+        )
 
     def runs(self, prompt_hash: str, limit: int = 50) -> list[dict]:
-        from tracing.query import get_runs
-        return get_runs(prompt_hash, db_path=self.db_path, limit=limit)
+        raise NotImplementedError(
+            "tracing.query.get_runs was removed; use trace_db.TraceDBReader"
+        )
 
     def compare(self, hash_a: str, hash_b: str) -> dict:
-        from tracing.query import compare
-        return compare(hash_a, hash_b, db_path=self.db_path).to_dict()
+        raise NotImplementedError(
+            "tracing.query.compare did Mann-Whitney on findings_count, "
+            "which is no longer in the runs table"
+        )
 
 
 class AnalyticsConnector:

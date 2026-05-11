@@ -1,9 +1,3 @@
-// Auto-expand agents with findings
-document.querySelectorAll('.output-section').forEach(el => {
-  let details = el.closest('details');
-  if (details) details.open = true;
-});
-
 // Tab system for right panel
 const tabs = {};
 let activeTab = null;

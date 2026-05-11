@@ -227,19 +227,11 @@ function handleEvent(ev) {
     }
 
     case 'agent_done': {
-      const output = data.output;
       if (isChild) {
-        const nFindings = Array.isArray(output) ? output.length : 0;
-        addLine(`<span class="log-child-done">${tag}✓ done · ${ag?.steps || '?'} steps · ${nFindings} findings</span>`);
+        addLine(`<span class="log-child-done">${tag}✓ done · ${ag?.steps || '?'} steps</span>`);
       } else {
         addLine('<div class="log-separator"></div>');
         addLine(`<span class="log-agent">${esc(aname)}</span> done · paid:${agents[aid]?.paid || 0}`);
-        if (Array.isArray(output)) {
-          for (const f of output) {
-            const sev = (f.severity || '?').toLowerCase();
-            addLine(`<div class="log-finding"><span class="log-sev log-sev-${sev}">${esc(f.severity || '?')}</span> ${esc(f.title || '?')} <span class="log-paid">${esc(f.file || '')}:${f.line || ''}</span></div>`);
-          }
-        }
       }
       break;
     }

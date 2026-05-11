@@ -45,7 +45,6 @@ class RunFilter:
     since: Optional[str] = None         # ISO datetime
     until: Optional[str] = None         # ISO datetime
     duration_gt_ms: Optional[int] = None
-    tokens_gt: Optional[int] = None
 
     # By evolutionary identity
     generation: Optional[str] = None
@@ -140,7 +139,7 @@ class SQLiteTraceStore:
                    -- Filter by scenario + group by scenario_run_id =
                    -- "compare attempts in this plan side-by-side".
                    CASE WHEN kind='judge' THEN linked_run_id ELSE id END AS scenario_run_id,
-                   findings_count, total_tokens_paid, prompt_source, prompt_hash,
+                   prompt_source, prompt_hash,
                    COALESCE(
                      (SELECT t.plan_id FROM qa_tasks t
                       WHERE t.trace_run_id = runs.id LIMIT 1),
@@ -286,8 +285,6 @@ class SQLiteTraceStore:
             for col in ("pr_url", "project", "linked_run_id",
                         "fs_trace_path", "prompt_source", "prompt_hash"):
                 d[col] = None
-            d["findings_count"] = None
-            d["total_tokens_paid"] = None
             d["events_count"] = None
             # Row's primary id mirrors the previous schema so existing
             # links (?session=…) keep working.
@@ -541,7 +538,6 @@ class SQLiteTraceStore:
             SELECT model,
                    COUNT(*)                                AS runs,
                    AVG(CASE WHEN duration_ms IS NOT NULL THEN duration_ms END) AS avg_duration_ms,
-                   AVG(CASE WHEN total_tokens_paid IS NOT NULL THEN total_tokens_paid END) AS avg_tokens,
                    SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
                    SUM(CASE WHEN status='error' THEN 1 ELSE 0 END)     AS errored
             FROM runs
@@ -1058,7 +1054,7 @@ class SQLiteTraceStore:
 
     _ALLOWED_SORT = {
         "started_at", "finished_at", "duration_ms", "model", "scenario_id",
-        "agent_name", "kind", "total_tokens_paid", "findings_count",
+        "agent_name", "kind",
     }
 
     def _safe_sort_col(self, name: str) -> str:
@@ -1122,9 +1118,6 @@ class SQLiteTraceStore:
         if f.duration_gt_ms is not None:
             clauses.append("duration_ms >= ?")
             params.append(int(f.duration_gt_ms))
-        if f.tokens_gt is not None:
-            clauses.append("total_tokens_paid >= ?")
-            params.append(int(f.tokens_gt))
 
         # JSON-array contains: AND-semantic for files / jira / tags
         if f.file:

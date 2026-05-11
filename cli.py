@@ -422,7 +422,6 @@ def _run_with_dispatcher(
             _trace_db.finish_run(
                 model=effective_model,
                 pr_url=pr_url,
-                findings_count=len(_findings_ref.get("v", [])),
                 prompt_source=str(prompt_source),
                 prompt_hash=mutation,
                 status=status,
@@ -443,7 +442,6 @@ def _run_with_dispatcher(
 
     _prev_term = _signal.signal(_signal.SIGTERM, _on_signal)
     _prev_int = _signal.signal(_signal.SIGINT, _on_signal)
-    _findings_ref: dict = {"v": []}
 
     try:
         with _otel_tracer.start_as_current_span("cli.session") as _otel_session:
@@ -477,7 +475,6 @@ def _run_with_dispatcher(
         if isinstance(raw, list):
             from diffgraph.orchestrator import _parse_findings
             findings = _parse_findings(raw)
-        _findings_ref["v"] = findings
 
         # SINGLE-mode agents (judge.*, etc.) put their verdict in the
         # result dict and don't produce a `findings` array — write the
@@ -538,7 +535,6 @@ def _run_with_dispatcher(
                 "agent_name": agent_name,
                 "model": effective_model,
                 "pr_url": pr_url or "",
-                "findings_count": len(findings),
                 "prompt_source": str(prompt_source) if prompt_source else "",
                 "prompt_hash": mutation if mutation != "unknown" else "",
             }, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -979,7 +975,6 @@ def run(
     _trace_db.finish_run(
         model=effective_model,
         pr_url=pr_url or "",
-        findings_count=len(findings),
         prompt_source=_prompt_info["source"],
         prompt_hash=_prompt_info["hash"],
     )
@@ -1061,8 +1056,6 @@ def trace(
         table.add_column("Run ID", style="cyan")
         table.add_column("Started")
         table.add_column("Model")
-        table.add_column("Findings", justify="right")
-        table.add_column("Tokens", justify="right")
         table.add_column("Status")
         for r in runs:
             started = r["started_at"][:19] if r["started_at"] else "?"
@@ -1070,8 +1063,6 @@ def trace(
                 r["id"],
                 started,
                 r["model"] or "?",
-                str(r["findings_count"] or 0),
-                str(r["total_tokens_paid"] or 0),
                 r["status"] or "?",
             )
         console.print(table)
