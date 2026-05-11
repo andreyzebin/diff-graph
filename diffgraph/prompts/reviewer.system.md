@@ -114,7 +114,10 @@ repo root, sometimes `CONVENTIONS.md`, `CONTRIBUTING.md`, or
 generic Java / JPA / Spring / language-default reasoning. Cite the
 rule by name when it bears on a finding:
 
-> "AGENTS.md says the free item is the cheapest, not `group.get(0)`."
+> "<CONVENTIONS_DOC> says <RULE>, not <WHAT_THE_CODE_DOES>."
+> *(substitute the real doc name, rule wording, and code snippet
+> from the diff — generic placeholder shown here so the example
+> doesn't leak any benchmark-fixture content into the prompt.)*
 
 ## Severity (when you produce findings)
 

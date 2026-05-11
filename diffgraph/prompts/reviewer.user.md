@@ -20,8 +20,9 @@ summaries.
 
 Call `reflect(...)` listing each concern under `questions_remaining`
 as `{id, text}` — `text` is the concern phrased as an investigation
-question (e.g. *"Does selectFreeItem actually pick the cheapest item
-per the AC?"*).
+question (e.g. *"Does FUNCTION_X handle EDGE_CASE_Y correctly?"*
+or *"Is INVARIANT_Z preserved across BOUNDARY_W?"* — these are
+generic placeholders; the actual concern names come from the diff).
 
 ## INVESTIGATE
 
@@ -31,13 +32,12 @@ string is your concern phrased as an investigation brief. Multiple
 `spawn_agent` calls in the same step run in parallel.
 
 ```text
+# Generic shape — substitute domain + symbol + the concrete question.
 spawn_agent(
   agent="investigator",
-  focus="BUSINESS LOGIC: Investigate the null check for
-    order.getItems() in cancelOrder. Check if items can ever be
-    null given the data model, whether the check is consistent
-    with other methods, and what happens when inventory release
-    is skipped."
+  focus="DOMAIN_AREA: Investigate <one specific question about a
+    symbol in the diff>. Check <constraint A> and <invariant B>,
+    and what happens when <edge condition>."
 )
 ```
 
