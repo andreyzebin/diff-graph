@@ -754,16 +754,49 @@ Coverage matrix today:
 | investigator | yes          | INV-U-001-cancel-npe ✅ — expected_output authored, asserts via `intended_findings` (done().findings) for the focused null-items investigation. INV-002 (integration) still todo — same shape: focus + AGENTS.md citations + questions_remaining via `reflect(learned, questions_remaining)`. |
 | dispatcher   | no           | Add `reflect` to dispatcher's @tools if we want symmetric isolation, OR skip — dispatcher is a router with fewer "thinking" phases. Decide later. Unit fixture not yet authored — depends on the call: either we add reflect, or we assert directly on `spawn_agent.agent_name` + `post_comment.text` from invocations.json (needs a new ExpectedOutput channel — `intended_routing` or similar). |
 
-**Stage 4 — wire the judge to unit fixtures (pending).** `bench run-unit`
-runs the agent against a fake-PR'd local clone today but does NOT
-invoke a judge — the unit yamls' `expected_output` block sits dormant.
-Stage 4 plumbs LLMJudge (or a thinner unit-tier judge per §5e.14's
-"thinner per-axis judge" open question) over `runs/agent/invocations.json`
-once the subprocess exits, and writes a `runs/judge/run.json` mirroring
-the integration tier's layout so /qa/scoring lights up for unit
-scenarios too. The schema (`Scenario` from scenario_loader.py) needs a
-unit-aware loader because unit yamls use the `repo:` / `pr_state:` /
-`bench_cmd:` top-level shape, not `input.bitbucket.provider`.
+**Stage 4 — judge wiring landed.** `bench run-unit` now invokes
+LLMJudge after the agent subprocess finishes when (a) the fixture
+declares `expected_output`, (b) `~/.benchmark/config.yaml` has a
+`judge:` block, and (c) an attempt_dir was provided (auto-derived
+from BENCHMARK_TRACE_DIR for plan-fired tasks).
+
+Pieces:
+
+- `benchmark/runner/fake_view.py` — `FakeBenchPRView(AgentPRView)`
+  reads back the agent's posted comments from the in-memory sink and
+  serves them to the judge through the same interface
+  RealBitbucketPRProxy uses. `get_diff` / `get_raw_file` shell out
+  to `git diff` / `git show` against the temp clone the agent
+  reviewed.
+- `_build_scenario_from_unit_fixture` (in `run_unit.py`) — synthesizes
+  a `Scenario` dataclass from a unit yaml's `expected_output` + tags +
+  agent_data, so LLMJudge needs zero changes to consume the new
+  yaml shape.
+- `run_unit_fixture` accepts `attempt_dir` + `judge_cfg`; when both
+  set, calls the judge under `attempt_dir/runs/judge/`. OTel
+  covered on both sides — agent via `DIFFGRAPH_TRACE_PATH=agent_dir`,
+  judge via `JudgeTraceWriter`. Each writes a `runs` row to
+  `~/.diffgraph/traces.db` with `scenario_id`, `scenario_tags`,
+  and `linked_run_id`.
+
+Surfaces unlocked on the UI side:
+
+- `/qa/scoring` lists the fixture once its first judge row lands
+  (via `scenario_id_scored` dimension reading from `runs.kind='judge'`).
+- `/qa/sessions/<run_id>` shows the agent's trace tree with its
+  invocations + the judge's response.
+- `/qa/plans` shows each task with its judge score after the bench
+  subprocess returns.
+
+Open follow-ups (not blocking unit-tier usage):
+
+- Auto-fire smoke after every commit (§5e.16 tier:smoke) — schedule
+  is missing.
+- New `assert_via:` channels (`intended_reply`, `intended_routing`,
+  `intended_tool_call`) — needed for dispatcher unit fixtures that
+  don't use reflect.
+- Reflect-quality methodology axis (separate channel — see
+  "Reflect quality" section below).
 
 #### Answer channels — reflect is not the only one
 
