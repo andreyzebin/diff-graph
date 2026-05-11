@@ -750,9 +750,108 @@ Coverage matrix today:
 
 | Agent        | Has reflect? | Status |
 |--------------|--------------|--------|
-| reviewer     | yes          | REV-001-concerns ✅ landed |
-| investigator | yes          | INV-002 (todo) — same shape: focus + AGENTS.md citations + questions_remaining via `reflect(learned, questions_remaining)` |
-| dispatcher   | no           | Add `reflect` to dispatcher's @tools if we want symmetric isolation, OR skip — dispatcher is a router with fewer "thinking" phases. Decide later. |
+| reviewer     | yes          | REV-001-concerns ✅ landed (integration). Unit-tier fixtures: REV-U-001-store-credit-concerns + REV-U-002-cancel-npe-concerns ✅ — expected_output authored, judge wiring pending (Stage 4 below). |
+| investigator | yes          | INV-U-001-cancel-npe ✅ — expected_output authored, asserts via `intended_findings` (done().findings) for the focused null-items investigation. INV-002 (integration) still todo — same shape: focus + AGENTS.md citations + questions_remaining via `reflect(learned, questions_remaining)`. |
+| dispatcher   | no           | Add `reflect` to dispatcher's @tools if we want symmetric isolation, OR skip — dispatcher is a router with fewer "thinking" phases. Decide later. Unit fixture not yet authored — depends on the call: either we add reflect, or we assert directly on `spawn_agent.agent_name` + `post_comment.text` from invocations.json (needs a new ExpectedOutput channel — `intended_routing` or similar). |
+
+**Stage 4 — wire the judge to unit fixtures (pending).** `bench run-unit`
+runs the agent against a fake-PR'd local clone today but does NOT
+invoke a judge — the unit yamls' `expected_output` block sits dormant.
+Stage 4 plumbs LLMJudge (or a thinner unit-tier judge per §5e.14's
+"thinner per-axis judge" open question) over `runs/agent/invocations.json`
+once the subprocess exits, and writes a `runs/judge/run.json` mirroring
+the integration tier's layout so /qa/scoring lights up for unit
+scenarios too. The schema (`Scenario` from scenario_loader.py) needs a
+unit-aware loader because unit yamls use the `repo:` / `pr_state:` /
+`bench_cmd:` top-level shape, not `input.bitbucket.provider`.
+
+#### Answer channels — reflect is not the only one
+
+The reflect-only pattern works for reviewer concerns-only because
+reflect is where concerns naturally live. But the principle is
+broader: we hand the agent an input and ask it to surface its answer
+through *some* channel we can read from invocations.json. Reflect is
+one channel; there are others, each with its own ExpectedOutput
+`assert_via:` value:
+
+| Channel              | What the judge reads                       | Used by |
+|----------------------|--------------------------------------------|---------|
+| `intended_concerns`  | `reflect(questions_remaining=...)` titles + `spawn_agent(focus=...)` | reviewer concerns-only |
+| `intended_findings`  | `done(findings=[...])` items                | investigator standalone (REV-U / INV-U / SCEN-009 isolation) |
+| `pr_comments`        | real `post_comment`/`post_general` posts via the fake PR sink | integration tier |
+| `intended_reply` — TODO | `done(text=...)` plain-text or first-final-message text | dispatcher /ask /help, future text-mode agents |
+| `intended_routing` — TODO | `spawn_agent(agent_name=...)` alone (ignore focus) | dispatcher routing-only |
+| `intended_tool_call` — TODO | args of a test-only tool we hand the agent (e.g. `submit_answer(...)`) | agents that don't naturally end in done/reflect |
+
+The last three need new channel constants in scenario_loader's
+`assert_via` whitelist + matching extractors in judge.py
+(`_load_intended_reply` / `_load_intended_routing` /
+`_load_intended_tool_call`). All are mechanical extensions of the
+existing `_load_intended_findings`/`_load_intended_concerns` pattern.
+
+For agents whose default tool surface doesn't include a clean answer
+sink, we can register a test-only tool at the registry level —
+`submit_answer(text: str)` or similar — and have the user-message
+override instruct the agent to call it. This keeps the system prompt
+and methodology untouched while giving the unit test a deterministic
+place to read the output from. No new orchestration code needed; just
+a tool registration in the unit runner.
+
+#### Reflect quality — a separate methodology axis, not the answer channel
+
+When `reflect` is *also* the answer channel (reviewer concerns-only)
+we score against it directly. But when the answer lives elsewhere
+(done / submit_answer / plain text), the reflect calls become a
+separate quality signal: do they happen at the right moments? are
+they coherent? do they show the agent updating its mental model?
+
+This belongs on the methodology axis (§5e.16 axis #2). Concrete
+sub-signals:
+
+- `reflect_called_at_least_once` — for agents whose @tools includes
+  reflect, at least one call before done() suggests the agent
+  actually paused to think. Zero reflects on a non-trivial scenario
+  is a methodology red flag.
+- `reflect_coherence` — successive reflects build on each other
+  (`learned[t+1] ⊇ learned[t]` ish, `questions_remaining[t+1]`
+  is a refinement of `[t]`). Reflects that drop facts or invent
+  new unrelated questions = the agent isn't tracking state.
+- `reflect_convergence` — `|questions_remaining|` trends DOWN over
+  the reflect sequence as the agent answers / rules out / discards
+  hypotheses. A flat or growing list = the agent is opening more
+  questions than it closes, i.e. drifting outward instead of
+  homing in. Acceptable for the first 1-2 reflects (still scoping)
+  but not for the last 1-2 before done().
+- `reflect_no_loops` — once a question is closed (removed from
+  `questions_remaining` or marked resolved in `learned`), it must
+  not reappear in a later reflect. Reopening already-closed
+  questions = the agent isn't keeping memory of what it just
+  figured out, which is the failure mode that burns the budget
+  to zero without ever reaching a verdict.
+- `reflect_confidence_calibration` — when reflect carries
+  `confidence`, it should converge UPWARD (`low → medium → high`)
+  as evidence accumulates, not random-walk and not claim "high"
+  on the first reflect (overclaiming). Allow at most one drop
+  (when the agent legitimately discovers contradicting evidence
+  and revises); more drops = the agent is guessing.
+- `reflect_rejection_visible` — when the agent rules a hypothesis
+  out, the reasoning must surface in `learned` ("X is not the
+  cause because Y") rather than the question silently disappearing.
+  Silent drops are indistinguishable from "agent forgot the
+  question" — and we want to be able to distinguish.
+
+These are *judged separately from* the hard-skill answer. An agent
+can have a great answer with bad reflects (lucky guess) or a bad
+answer with good reflects (was on the right path, ran out of
+budget). The unit-tier judge surfaces both axes so we can tell which
+side regressed when scores move.
+
+Implementation: a separate ExpectedOutput field
+`expected_reflect_quality` (or a dedicated `assert_via:
+[reflect_quality]` channel that triggers the methodology judge), with
+optional knobs `min_calls` / `monotonic_confidence` / `coherence`.
+Defer until we have a few scenarios where reflect-vs-answer mismatch
+is the actually-observed failure mode worth catching.
 
 Why this matters:
 - Decouples LLM-provider quirks (parallel tool calls, tool-parser
