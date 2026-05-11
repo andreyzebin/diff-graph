@@ -164,6 +164,18 @@ def match_any(branch: str, patterns_csv: str) -> bool:
 
 # ── Scenario resolver ──────────────────────────────────────────────────────
 
+def _resolve_bench_root(bench_repo_path: str) -> Optional[Path]:
+    """Resolve the bench checkout root, falling back to
+    quality_api.config when the field is empty or carries an
+    unsubstituted `${ENV}` placeholder."""
+    if bench_repo_path and "${" not in bench_repo_path:
+        p = Path(bench_repo_path).expanduser()
+        if (p / "benchmark" / "scenarios").is_dir():
+            return p
+    from . import config as _qa_config
+    return _qa_config.bench_repo()
+
+
 def scan_scenarios(bench_repo_path: str) -> list[dict]:
     """Walk <bench_repo>/benchmark/scenarios/**/*.yaml and return
     [{id, tags: [...]}, ...]. Used to resolve scenario_tags filters
@@ -171,9 +183,10 @@ def scan_scenarios(bench_repo_path: str) -> list[dict]:
 
     Best-effort: missing or malformed YAML is silently skipped.
     """
-    if not bench_repo_path:
+    bench = _resolve_bench_root(bench_repo_path)
+    if bench is None:
         return []
-    root = Path(bench_repo_path).expanduser() / "benchmark" / "scenarios"
+    root = bench / "benchmark" / "scenarios"
     if not root.exists():
         return []
     try:
@@ -395,9 +408,15 @@ class AutoPlanStore:
         scenarios = resolve_scenarios(cfg)
         if not scenarios:
             return out
+        # Resolve repo_path: empty / unresolved `${ENV}` → diff-graph
+        # checkout from quality_api.config (single source of truth).
+        repo_path = cfg.repo_path
+        if not repo_path or "${" in repo_path:
+            from . import config as _qa_config
+            repo_path = str(_qa_config.diffgraph_repo())
         # Each git branch matched by branch_pattern becomes a lineage —
         # a long-lived line of git commits we'll bench against.
-        lineages = [(b, sha) for (b, sha) in git_list_branches(cfg.repo_path)
+        lineages = [(b, sha) for (b, sha) in git_list_branches(repo_path)
                     if match_any(b, cfg.branch_pattern)]
 
         for lineage, sha in lineages:
