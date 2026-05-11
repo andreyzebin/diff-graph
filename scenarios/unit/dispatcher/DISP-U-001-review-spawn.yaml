@@ -1,0 +1,93 @@
+id: DISP-U-001-review-spawn
+agent: dispatcher
+tags: [tier:unit, agent:dispatcher, isolation, mocked-reviewer]
+
+# Unit-shape mirror of DISP-001 (scenarios/agents/dispatcher/),
+# running on a local clone + fake bitbucket via `bench run-unit`.
+# Dispatcher's /review handling: the reviewer subagent is mocked so
+# the test reduces to checking the dispatcher itself:
+#   1. Ack the trigger comment briefly ("Starting review…").
+#   2. spawn_agent("reviewer") exactly once (intercepted by the mock).
+#   3. NOT restate the (mocked) reviewer findings in its own reply
+#      or done() — the reviewer publishes them itself; mirroring
+#      would double every comment.
+#   4. Finish via done() with no findings list.
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmark.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: feature/ORD-234-buy-3-get-1-free
+
+mocks: ../../../fixtures/mocks/dispatcher-review-spawn.yaml
+
+pr_state:
+  metadata:
+    title: "ORD-234: Implement buy-3-get-1-free promotions"
+    description: |
+      ## ORD-234: Implement buy-3-get-1-free promotions
+
+      **As a** marketing manager
+      **I want to** configure buy-N-get-1-free promotions per product category
+      **So that** we can run campaigns without a deploy
+
+      ### Acceptance criteria
+      - When a customer has 4+ items from a promoted category, the **cheapest**
+        item is free
+      - Discount is shown as a line item labelled with the promotion name
+    pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/234"
+    bot_user: "diffgraph-bot"
+  comments: []
+
+trigger:
+  # /review fired as a root comment — dispatcher path, mocks
+  # short-circuit the reviewer spawn.
+  type: comment
+  text: "/review"
+  comment_id: 0
+
+agent_data: {}
+
+# ── Judge — dispatcher routing + ack ─────────────────────────────────────
+# Dispatcher posts via post_comment (fake bitbucket sink captures it).
+# assert_via=[pr_comments] → judge reads sink-side post_comment kinds
+# via FakeBenchPRView.get_comments(), matches against reply rules.
+expected_output:
+  assert_via: [pr_comments]
+  required_comments: []
+  forbidden_comments:
+    - description: "Inline finding comments posted by the dispatcher — those are the reviewer's job. The dispatcher should only post a brief ack reply."
+
+  reply:
+    must_mention:
+      - ["Starting review", "Запускаю обзор", "Beginning review", "Reviewing"]
+    must_address: ["review"]
+    forbidden_topics:
+      # Don't mirror the reviewer's findings into the ack reply.
+      - ["selectFreeItem", "applyBulkDiscount", "BLOCKER", "MAJOR", "@Transactional", "Lombok"]
+    rationale: |
+      The dispatcher must acknowledge the /review request in the
+      thread but MUST NOT restate the reviewer's findings — those
+      are already posted by the reviewer subagent itself.
+      Re-posting them in the ack would double every comment.
+
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+
+  thresholds:
+    min_score: 0.70
+  acknowledgement_required: true
+
+metadata:
+  difficulty: easy
+  language: any
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [dispatcher, review_dispatch, ack_reply, no_finding_mirror]

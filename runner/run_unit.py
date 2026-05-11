@@ -40,6 +40,11 @@ class UnitFixture:
     pr_state: dict[str, Any] = field(default_factory=dict)
     trigger: dict[str, Any] = field(default_factory=dict)
     user_message_from: Optional[str] = None
+    # Optional ToolMocks fixture path — same shape integration tier
+    # uses via setup.mocks. Plumbed as --mocks to cli.py so e.g.
+    # dispatcher-tests can short-circuit spawn_agent(reviewer) with a
+    # canned response instead of running the heavy chain.
+    mocks: Optional[str] = None
     # Optional scenario-shape blocks — when present the runner can
     # invoke an LLM judge against the agent's invocations.json after
     # the subprocess finishes (TODO §5d.3 / §5e.14 Stage 4). Stored
@@ -99,6 +104,19 @@ def load_fixture(fixture_path: str | Path) -> UnitFixture:
                 f"{p}: user_message_from -> {umf_path} does not exist"
             )
         umf = str(umf_path)
+    # mocks path — resolved relative to the fixture yaml, same as
+    # scenario_loader does for setup.mocks. Fail loudly on missing
+    # files so a typo doesn't silently run the agent against a real
+    # spawn chain (defeating the dispatcher unit's whole point).
+    mocks_raw = raw.get("mocks")
+    mocks_resolved: Optional[str] = None
+    if mocks_raw:
+        mp = (p.parent / str(mocks_raw)).resolve()
+        if not mp.exists():
+            raise FileNotFoundError(
+                f"{p}: mocks -> {mp} does not exist"
+            )
+        mocks_resolved = str(mp)
     return UnitFixture(
         fixture_path=p,
         fixture_id=str(raw.get("id") or p.stem),
@@ -110,6 +128,7 @@ def load_fixture(fixture_path: str | Path) -> UnitFixture:
         pr_state=dict(raw.get("pr_state") or {}),
         trigger=dict(raw.get("trigger") or {}),
         user_message_from=umf,
+        mocks=mocks_resolved,
         expected_output=dict(raw.get("expected_output") or {}),
         tags=list(raw.get("tags") or []),
         raw=raw,
@@ -255,6 +274,11 @@ def run_unit_fixture(
             cmd.extend(["--provider", provider])
         if fixture.user_message_from:
             cmd.extend(["--user-message-from", fixture.user_message_from])
+        if fixture.mocks:
+            # cli.py --mocks=<path> ⇒ orchestra.ToolMocks intercepts the
+            # named tool calls (e.g. spawn_agent → canned reviewer
+            # response). Same as integration tier's setup.mocks plumbing.
+            cmd.extend(["--mocks", fixture.mocks])
         for k, v in fixture.agent_data.items():
             cmd.extend(["-d", f"{k}={v}"])
         # Tell the agent to dump every tool invocation to a file so the

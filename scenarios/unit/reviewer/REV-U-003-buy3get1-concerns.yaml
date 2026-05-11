@@ -1,0 +1,95 @@
+id: REV-U-003-buy3get1-concerns
+agent: reviewer
+tags: [tier:unit, agent:reviewer, isolation, concerns-only]
+
+# Unit-shape mirror of REV-001-concerns (scenarios/agents/reviewer/),
+# now running on a local clone + fake bitbucket via `bench run-unit`.
+# Reviewer in concerns-only mode against the buy-3-get-1-free
+# promotion. The user-message override turns it into a one-shot
+# concerns-extractor (list concerns via reflect().questions_remaining,
+# call done(findings=[])). No spawn, no post, no verdict — the test
+# measures concern-forming, nothing else.
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmark.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: feature/ORD-234-buy-3-get-1-free
+
+user_message_from: ../../../fixtures/user-messages/concerns-only.md
+
+pr_state:
+  metadata:
+    title: "ORD-234: Implement buy-3-get-1-free promotions"
+    description: |
+      ## ORD-234: Implement buy-3-get-1-free promotions
+
+      **As a** marketing manager
+      **I want to** configure buy-N-get-1-free promotions per product category
+      **So that** we can run campaigns without a deploy
+
+      ### Acceptance criteria
+      - When a customer has 4+ items from a promoted category, the **cheapest**
+        item is free
+      - Discount is shown as a line item labelled with the promotion name
+      - Only one promotion applies per category — no stacking
+      - Promotion respects `startDate` and `endDate`
+    pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/234"
+    bot_user: "diffgraph-bot"
+  comments: []
+
+trigger:
+  type: comment
+  text: "/review"
+  comment_id: 0
+
+agent_data: {}
+
+# ── Judge — concerns-only reviewer ───────────────────────────────────────
+# Reviewer surfaces concerns via reflect(questions_remaining=[...]).
+# Judge matches each concern_focuses keyword group AGAINST the union
+# of title+description across all reflect entries. AND-of-OR semantics.
+#
+# Concerns chosen from REV-001's existing rubric (kept identical so
+# unit→unit migration produces directly comparable scores):
+#   • selectFreeItem returns first item rather than cheapest — direct
+#     AGENTS.md "buy-N-get-1-free → cheapest" rule violation
+#   • applyBulkDiscount writes to two repos without @Transactional —
+#     AGENTS.md "two writes ⇒ service-layer @Transactional"
+#   • Promotion entity uses manual getters/setters where the rest of
+#     the codebase uses Lombok — style/convention concern
+expected_output:
+  assert_via: [intended_concerns]
+  required_comments: []
+  forbidden_comments:
+    - description: "Inline comments — reviewer was told concerns-only; no posting."
+  concern_focuses:
+    - id: cheapest-item
+      description_keywords: ["cheapest", "selectFreeItem", "free item", "get(0)", "first item"]
+      rationale: "Reviewer should flag selectFreeItem returning the first item instead of the cheapest, per AGENTS.md."
+    - id: transactional
+      description_keywords: ["@Transactional", "applyBulkDiscount", "atomic", "transaction"]
+      rationale: "applyBulkDiscount writes to two repositories without a transaction — reviewer should call this out as a concern."
+    - id: lombok-or-style
+      description_keywords: ["Lombok", "@Data", "manual", "consistency", "convention", "getter", "setter"]
+      rationale: "Promotion entity uses manual getters/setters where the rest of the codebase uses Lombok — style/convention concern."
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+  thresholds:
+    min_score: 0.65
+    min_required_found: 0
+    max_false_positives: 1
+
+metadata:
+  difficulty: easy
+  language: java
+  pr_size: medium
+  scenario_type: agent_unit
+  capabilities: [reviewer, concern_forming, look_phase, agents_md_awareness]

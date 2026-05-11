@@ -1,0 +1,62 @@
+id: INV-U-002-cheapest-item
+agent: investigator
+tags: [tier:unit, agent:investigator, isolation, single-concern]
+
+# Unit-shape mirror of INV-001 (scenarios/agents/investigator/), now
+# running on a local clone + fake bitbucket via `bench run-unit`. No
+# real Bitbucket API needed — same scoring contract.
+#
+# Investigator is handed ONE concrete focus and a real diff; it has
+# to read the right files, check AGENTS.md, and produce a finding
+# with the correct severity. No mocks needed — investigator doesn't
+# spawn anything itself.
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmark.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: feature/ORD-234-buy-3-get-1-free
+
+agent_data:
+  focus: |
+    PRICING LOGIC: Investigate selectFreeItem in PricingService.
+    The buy-3-get-1-free promotion is supposed to give the
+    customer the cheapest item free per the project AC. Verify
+    the implementation matches the spec — especially what item
+    the method actually returns from the qualifying group.
+
+expected_output:
+  # Investigator returns findings via done() — it has no post_comment
+  # tool. Match required_comments against intended_findings (done's
+  # args from invocations.json), not the PR comments (empty by design).
+  assert_via: [intended_findings]
+  required_comments:
+    - id: cheapest-item
+      severity: BLOCKER
+      description_keywords: ["cheapest", "selectFreeItem", "get(0)", "free item", "AGENTS.md"]
+      rationale: "Investigator must produce a BLOCKER/MAJOR finding citing the AGENTS.md rule and the actual code line."
+
+  forbidden_comments:
+    - description: "Findings opening fresh investigation directions unrelated to the pricing/selectFreeItem call/data graph (transaction safety in other services, Lombok style, store credit, etc.). Incidental on-the-path findings — e.g. a related observation discovered while reading PricingService — are allowed."
+
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+
+  thresholds:
+    min_score: 0.70
+    min_required_found: 1
+    max_false_positives: 1
+
+metadata:
+  difficulty: easy
+  language: java
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [investigator, focused_investigation, agents_md_citation]
