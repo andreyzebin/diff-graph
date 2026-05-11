@@ -1270,7 +1270,44 @@ def build_diagram(scope_uri: str, fmt: str, db_path: str,
         return ("text/plain; charset=utf-8", to_d2(events, db_path))
     if fmt == "g6":
         return ("application/json", to_g6(events, db_path))
+    if fmt == "events":
+        # JSON list of canonical Event dicts. Drives the table view
+        # in the session trace UI — same `events_from_runs` pipeline
+        # as the diagrams, so G6 click-filters and ± budget controls
+        # propagate to the table for free.
+        return ("application/json",
+                _enrich_events_for_ui(events, db_path))
     raise ValueError(f"unsupported format: {fmt}")
+
+
+def _enrich_events_for_ui(events: list[Event], db_path: str) -> list[dict]:
+    """Return events as JSON-safe dicts. We swap raw URIs for the
+    same human labels the diagrams use (`reviewer`, `investigator-2`,
+    `diff`) so the table reads naturally without a separate
+    client-side lookup."""
+    if not events:
+        return []
+    participants = _enrich_agent_labels(
+        events, _participants_of(events), db_path,
+    )
+    label_for: dict[str, str] = {uri: label for uri, label in participants}
+    out: list[dict] = []
+    for e in events:
+        out.append({
+            "ts": e.ts.isoformat() if e.ts else None,
+            "kind": e.kind,
+            "actor": e.actor,
+            "target": e.target,
+            "actor_label": label_for.get(e.actor, e.actor),
+            "target_label": (label_for.get(e.target, e.target)
+                             if e.target else None),
+            "label": e.label,
+            "step": e.step,
+            "count": e.count,
+            "session_id": e.session_id,
+            "bundle": (e.payload or {}).get("bundle"),
+        })
+    return out
 
 
 # Test/debug aid — dump events as JSON for inspection.

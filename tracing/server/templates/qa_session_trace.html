@@ -8,7 +8,7 @@
   window.QA_BASE_PATH = "{{ base_path }}";
   window.RUN_ID = "{{ run_id }}";
 </script>
-<script defer src="{{ base_path }}/static/qa_session_trace.js?v=10"></script>
+<script defer src="{{ base_path }}/static/qa_session_trace.js?v=11"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
 body { padding: 16px; max-width: 1700px; margin: 0 auto; }
@@ -118,6 +118,45 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
 .auto-status { color: #56d364; font-weight: 600; }
 .d2-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 .d2-too-big { color: #d29922; font-size: 0.85em; cursor: help; }
+.view-toggle {
+  display: flex; gap: 4px; margin: 6px 0 10px;
+  padding-bottom: 6px; border-bottom: 1px solid #21262d;
+}
+.trace-table-wrap { display: flex; flex-direction: column; gap: 8px; }
+.table-filters {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+.table-filters .filter-input,
+.table-filters select {
+  background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+  padding: 4px 8px; border-radius: 4px; font-size: 0.85em;
+}
+.table-filters .meta { color: #8b949e; font-size: 0.85em; margin-left: auto; }
+.trace-table-scroll { overflow: auto; max-height: calc(100vh - 360px); }
+.trace-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+.trace-table th, .trace-table td {
+  padding: 4px 8px; text-align: left; border-bottom: 1px solid #21262d;
+  white-space: nowrap; vertical-align: top;
+}
+.trace-table th {
+  position: sticky; top: 0; background: #0d1117; color: #8b949e;
+  font-weight: normal; cursor: pointer; user-select: none;
+  border-bottom: 1px solid #30363d;
+}
+.trace-table th:hover, .trace-table th.sorted { color: #c9d1d9; }
+.trace-table tbody tr { cursor: pointer; }
+.trace-table tbody tr:hover { background: #161b22; }
+.trace-table .ts-cell { font-family: ui-monospace, monospace;
+                         color: #8b949e; font-variant-numeric: tabular-nums; }
+.trace-table .label-cell {
+  white-space: normal; word-break: break-word; max-width: 540px;
+  font-family: ui-monospace, monospace; font-size: 0.85em;
+}
+.row-kind-agent_spawn td:nth-child(3) { color: #d2a8ff; }
+.row-kind-agent_done  td:nth-child(3) { color: #56d364; }
+.row-kind-tool_call   td:nth-child(3) { color: #58a6ff; }
+.row-kind-tool_result td:nth-child(3) { color: #8b949e; }
+.row-kind-judge_verdict td:nth-child(3) { color: #d29922; font-weight: 600; }
 .step-open-all {
   background: #21262d; color: #58a6ff; border: 1px solid #30363d;
   padding: 1px 8px; border-radius: 3px; cursor: pointer;
@@ -270,10 +309,89 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
 
   <div class="split" x-show="tree">
     <section class="split-left">
+      <div class="view-toggle">
+        <button type="button" class="format-tab"
+                :class="{ active: traceViewMode === 'tree' }"
+                @click="setViewMode('tree')">Tree</button>
+        <button type="button" class="format-tab"
+                :class="{ active: traceViewMode === 'table' }"
+                @click="setViewMode('table')">Table</button>
+      </div>
+
       <template x-if="!tree">
         <div class="loading">loading…</div>
       </template>
 
+      <!-- ── TABLE VIEW ──────────────────────────────────────── -->
+      <div x-show="traceViewMode === 'table'" class="trace-table-wrap">
+        <div class="table-filters">
+          <input type="text"
+                 x-model.lazy="tableFilters.label"
+                 @change="onTableFilterChange()"
+                 placeholder="filter label…" class="filter-input">
+          <select x-model="tableFilters.agent" @change="onTableFilterChange()">
+            <option value="">any agent</option>
+            <template x-for="a in tableAgentOptions" :key="a">
+              <option :value="a" x-text="a"></option>
+            </template>
+          </select>
+          <select x-model="tableFilters.kind" @change="onTableFilterChange()">
+            <option value="">any kind</option>
+            <template x-for="k in tableKindOptions" :key="k">
+              <option :value="k" x-text="k"></option>
+            </template>
+          </select>
+          <span class="meta" x-text="`${filteredTableEvents.length} / ${traceEvents.length} events`"></span>
+        </div>
+        <div class="trace-table-scroll">
+          <table class="trace-table">
+            <thead>
+              <tr>
+                <th @click="setSort('ts')"
+                    :class="{ sorted: tableSort.col === 'ts' }">
+                  time <span x-show="tableSort.col === 'ts'"
+                              x-text="tableSort.dir === 'asc' ? '↑' : '↓'"></span>
+                </th>
+                <th @click="setSort('step')"
+                    :class="{ sorted: tableSort.col === 'step' }">
+                  step <span x-show="tableSort.col === 'step'"
+                              x-text="tableSort.dir === 'asc' ? '↑' : '↓'"></span>
+                </th>
+                <th @click="setSort('kind')"
+                    :class="{ sorted: tableSort.col === 'kind' }">
+                  kind <span x-show="tableSort.col === 'kind'"
+                              x-text="tableSort.dir === 'asc' ? '↑' : '↓'"></span>
+                </th>
+                <th>actor → target</th>
+                <th>label</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="(e, i) in filteredTableEvents" :key="`${e.session_id}-${i}`">
+                <tr @click="onRowClick(e)" :class="`row-kind-${e.kind}`">
+                  <td class="ts-cell" x-text="formatTs(e.ts)"></td>
+                  <td x-text="e.step != null ? `s${e.step}` : ''"></td>
+                  <td x-text="e.kind"></td>
+                  <td x-text="(e.actor_label || '') + (e.target_label && e.target_label !== e.actor_label ? ' → ' + e.target_label : '')"></td>
+                  <td class="label-cell">
+                    <template x-if="e.bundle && e.bundle.length">
+                      <span><span x-text="e.bundle.length"></span> ops: <span x-text="e.bundle.join(' · ')"></span></span>
+                    </template>
+                    <template x-if="!e.bundle">
+                      <span x-text="e.label"></span>
+                    </template>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <div x-show="traceLoading" class="loading">loading…</div>
+      </div>
+
+      <!-- ── TREE VIEW (original) ────────────────────────────── -->
+      <template x-if="traceViewMode === 'tree'">
+        <div>
       <template x-for="agent in flatAgents" :key="agent.agent_id">
         <details class="agent" :open="agent.is_root || agent.paired_steps.length > 0">
           <summary class="agent-header">
@@ -413,6 +531,8 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
             <div class="spawn-label">spawned <span x-text="agent.children.length"></span> agent(s)</div>
           </template>
         </details>
+      </template>
+        </div>
       </template>
     </section>
 

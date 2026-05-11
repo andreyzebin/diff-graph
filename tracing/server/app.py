@@ -159,7 +159,7 @@ async def api_diagram(scope: str, format: str = "mermaid",
                                     edge_filter=edge_list)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
-    if isinstance(body, dict):
+    if isinstance(body, (dict, list)):
         return JSONResponse(body)
     return PlainTextResponse(body, media_type=mime)
 

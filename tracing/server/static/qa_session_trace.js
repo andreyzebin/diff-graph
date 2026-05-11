@@ -21,10 +21,26 @@ document.addEventListener('alpine:init', () => {
     // Resizable split
     leftWidth: null,
 
+    // Trace view state — drives the left-pane toggle between
+    // hierarchical "Tree" (the original spawn-indented agent
+    // outline) and flat "Table" (one row per event, sortable +
+    // filterable like /qa/sessions). Persisted in URL params:
+    //   ?view=table     toggle
+    //   ?tlabel=foo     label substring filter
+    //   ?tagent=name    agent-name dropdown
+    //   ?tkind=kind     event-kind dropdown
+    //   ?tsort=col:dir  sort column + direction
+    traceViewMode: 'tree',
+    traceEvents: [],
+    traceLoading: false,
+    tableFilters: { label: '', agent: '', kind: '' },
+    tableSort: { col: 'ts', dir: 'asc' },
+
     async init() {
       this.runId = window.RUN_ID || '';
       this.qaBase = window.QA_BASE_PATH || '';
       this.fromQuery = new URLSearchParams(location.search).get('from') || '';
+      this._restoreTableUrl();
 
       try {
         const [metaR, treeR] = await Promise.all([
@@ -59,6 +75,139 @@ document.addEventListener('alpine:init', () => {
         out.push(...this._flatten(c, node.agent_name, false));
       }
       return out;
+    },
+
+    _restoreTableUrl() {
+      const qs = new URLSearchParams(location.search);
+      if (qs.get('view') === 'table') this.traceViewMode = 'table';
+      this.tableFilters.label = qs.get('tlabel') || '';
+      this.tableFilters.agent = qs.get('tagent') || '';
+      this.tableFilters.kind  = qs.get('tkind')  || '';
+      const ts = qs.get('tsort');
+      if (ts && ts.includes(':')) {
+        const [col, dir] = ts.split(':');
+        this.tableSort = { col, dir };
+      }
+    },
+
+    _pushTableUrl() {
+      const qs = new URLSearchParams(location.search);
+      // Replace only the table-state params, leaving `from=...` etc. alone.
+      qs.set('view', this.traceViewMode);
+      if (this.traceViewMode === 'tree') {
+        // No table-specific keys in tree mode; URL stays clean.
+        for (const k of ['tlabel', 'tagent', 'tkind', 'tsort']) qs.delete(k);
+      } else {
+        if (this.tableFilters.label) qs.set('tlabel', this.tableFilters.label);
+        else qs.delete('tlabel');
+        if (this.tableFilters.agent) qs.set('tagent', this.tableFilters.agent);
+        else qs.delete('tagent');
+        if (this.tableFilters.kind)  qs.set('tkind',  this.tableFilters.kind);
+        else qs.delete('tkind');
+        const ts = `${this.tableSort.col}:${this.tableSort.dir}`;
+        if (ts !== 'ts:asc') qs.set('tsort', ts);
+        else qs.delete('tsort');
+      }
+      const url = location.pathname
+        + (qs.toString() ? '?' + qs.toString() : '');
+      history.replaceState({}, '', url);
+    },
+
+    async setViewMode(mode) {
+      this.traceViewMode = mode;
+      this._pushTableUrl();
+      if (mode === 'table' && !this.traceEvents.length) {
+        await this.loadTable();
+      }
+    },
+
+    async loadTable() {
+      this.traceLoading = true;
+      try {
+        const scopeUri = `session://${this.runId}`;
+        // Reuse the diagram filter / budget so G6 click-filter and
+        // ± budget propagate to the table for free.
+        const actorParam = this.selectedActors.length
+          ? `&actor=${encodeURIComponent(this.selectedActors.join(','))}`
+          : '';
+        const edgeParam = this.selectedEdges.length
+          ? `&edge=${encodeURIComponent(
+              this.selectedEdges.map(e => `${e.src}>${e.tgt}`).join(','))}`
+          : '';
+        const url = `${this.qaBase}/api/diagram`
+          + `?scope=${encodeURIComponent(scopeUri)}`
+          + `&format=events`
+          + `&max_events=${this.diagramBudget}`
+          + actorParam + edgeParam;
+        const r = await fetch(url);
+        if (r.ok) this.traceEvents = await r.json();
+      } catch (e) { /* ignore — keep prior */ }
+      finally { this.traceLoading = false; }
+    },
+
+    setSort(col) {
+      if (this.tableSort.col === col) {
+        this.tableSort.dir = this.tableSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.tableSort = { col, dir: 'asc' };
+      }
+      this._pushTableUrl();
+    },
+
+    get filteredTableEvents() {
+      const f = this.tableFilters;
+      let rows = this.traceEvents.slice();
+      if (f.label) {
+        const needle = f.label.toLowerCase();
+        rows = rows.filter(e => (e.label || '').toLowerCase().includes(needle));
+      }
+      if (f.agent) {
+        rows = rows.filter(e =>
+          (e.actor_label || '').includes(f.agent) ||
+          (e.target_label || '').includes(f.agent));
+      }
+      if (f.kind) rows = rows.filter(e => e.kind === f.kind);
+      const { col, dir } = this.tableSort;
+      const mul = dir === 'desc' ? -1 : 1;
+      rows.sort((a, b) => {
+        const va = a[col] ?? ''; const vb = b[col] ?? '';
+        if (va < vb) return -1 * mul;
+        if (va > vb) return  1 * mul;
+        return 0;
+      });
+      return rows;
+    },
+
+    get tableAgentOptions() {
+      const s = new Set();
+      for (const e of this.traceEvents) {
+        if (e.actor_label) s.add(e.actor_label);
+        if (e.target_label) s.add(e.target_label);
+      }
+      return Array.from(s).sort();
+    },
+
+    get tableKindOptions() {
+      const s = new Set(this.traceEvents.map(e => e.kind));
+      return Array.from(s).sort();
+    },
+
+    onTableFilterChange() { this._pushTableUrl(); },
+
+    // Click a row → open the step's request/response/history tabs.
+    // Skip rows whose actor isn't an agent (system rows have no step).
+    onRowClick(e) {
+      if (!e.actor || !e.actor.startsWith('agent:') || e.step == null) return;
+      const aid = e.actor.split(':')[2] || '';
+      this.openStepDetails(aid, e.step);
+    },
+
+    formatTs(iso) {
+      if (!iso) return '';
+      // Show only the HH:MM:SS.mmm portion (time-of-day) — full ISO
+      // is too wide for a table column, and the row's run context
+      // makes the date redundant.
+      return iso.length > 19 ? iso.substring(11, 23) : iso.substring(11);
     },
 
     get backHref() {
@@ -310,6 +459,7 @@ document.addEventListener('alpine:init', () => {
       if (next === cur) return;
       this.diagramBudget = next;
       this.loadDiagram();
+      if (this.traceViewMode === 'table') this.loadTable();
     },
 
     onDiagramToggle(el) {
@@ -354,6 +504,9 @@ document.addEventListener('alpine:init', () => {
         }
       } catch (e) { /* keep prior meta */ }
       await this.loadDiagram();
+      // The table view shares the same event stream; refresh in
+      // step so a live run's table grows without a manual reload.
+      if (this.traceViewMode === 'table') await this.loadTable();
       if (this.meta.status && this.meta.status !== 'running') {
         this._stopTimer();
       }
@@ -585,7 +738,7 @@ document.addEventListener('alpine:init', () => {
       if (idx >= 0) this.selectedActors.splice(idx, 1);
       else this.selectedActors.push(uri);
       this._g6SyncSelection();
-      this.loadDiagram();
+      this._reloadAfterFilter();
     },
 
     _onG6EdgeClick(item) {
@@ -598,7 +751,7 @@ document.addEventListener('alpine:init', () => {
       if (idx >= 0) this.selectedEdges.splice(idx, 1);
       else this.selectedEdges.push({ src, tgt });
       this._g6SyncSelection();
-      this.loadDiagram();
+      this._reloadAfterFilter();
     },
 
     clearFilter() {
@@ -606,7 +759,12 @@ document.addEventListener('alpine:init', () => {
       this.selectedActors = [];
       this.selectedEdges = [];
       this._g6SyncSelection();
+      this._reloadAfterFilter();
+    },
+
+    _reloadAfterFilter() {
       this.loadDiagram();
+      if (this.traceViewMode === 'table') this.loadTable();
     },
 
     _g6SyncSelection() {
