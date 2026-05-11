@@ -93,8 +93,12 @@ input[type="text"], select {
         </template>
       </select>
     </label>
-    <label style="flex:1;">filter
-      <input type="text" x-model="filters.q" placeholder="id / tag / resource URI substring"
+    <label>id
+      <input type="text" x-model="filters.id" style="width: 100px;"
+             placeholder="e.g. 1225" @change="load()" @keyup.enter="load()">
+    </label>
+    <label style="flex:1;">search
+      <input type="text" x-model="filters.q" placeholder="tag / resource URI substring"
              @input.debounce.300ms="load()">
     </label>
     <button class="btn-primary btn" @click="openEnqueue()">▶ enqueue task…</button>

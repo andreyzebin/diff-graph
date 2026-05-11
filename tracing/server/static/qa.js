@@ -973,7 +973,7 @@ document.addEventListener('alpine:init', () => {
     tasks: [],
     queueOptions: [],
     meta: '',
-    filters: { state: '', queue: '', q: '' },
+    filters: { state: '', queue: '', q: '', id: '' },
     enqueueModal: {
       open: false, queue: '', cmd: '',
       resourcesText: '', tagsText: '',
@@ -982,12 +982,36 @@ document.addEventListener('alpine:init', () => {
     },
     async load(silent) {
       const base = window.QA_BASE_PATH || '';
+      // Pick up ?id=... / ?state=... / ?queue=... from URL on first load.
+      if (!silent && !this._urlApplied) {
+        const sp = new URLSearchParams(window.location.search);
+        for (const k of ['id', 'state', 'queue', 'q']) {
+          const v = sp.get(k);
+          if (v !== null) this.filters[k] = v;
+        }
+        this._urlApplied = true;
+      }
+      // ?id=N → single-task view; bypass the list endpoint.
+      const idFilter = (this.filters.id || '').trim();
+      if (idFilter) {
+        const t0 = performance.now();
+        const r = await fetch(`${base}/api/qa/tasks/${encodeURIComponent(idFilter)}`);
+        if (r.status === 404) {
+          this.tasks = [];
+          this.queueOptions = [];
+          this.meta = `task #${idFilter} not found · ${(performance.now() - t0).toFixed(0)}ms`;
+          return;
+        }
+        const j = await r.json();
+        const t = j.data;
+        this.tasks = t ? [t] : [];
+        this.queueOptions = t ? [t.queue || ''] : [];
+        this.meta = `task #${idFilter} · ${(performance.now() - t0).toFixed(0)}ms`;
+        return;
+      }
       const qs = new URLSearchParams();
       if (this.filters.state) qs.append('state', this.filters.state);
-      if (this.filters.queue) qs.append('provider', this.filters.queue);
-      // filter by tag/resource is client-side; query a wide page,
-      // narrow in JS. Server's /api/qa/tasks doesn't speak `tag`
-      // or `resource` filter yet (TODO if list grows).
+      if (this.filters.queue) qs.append('queue', this.filters.queue);
       qs.append('limit', '200');
       const url = `${base}/api/qa/tasks?` + qs.toString();
       const t0 = performance.now();
