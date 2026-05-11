@@ -794,7 +794,6 @@ document.addEventListener('alpine:init', () => {
     get hasFilter() {
       return this.selectedActors.length > 0 || this.selectedEdges.length > 0;
     },
-    },
 
     // Three export actions, all format-aware:
     //   📋 Copy   → clipboard, source text (or JSON for G6).
