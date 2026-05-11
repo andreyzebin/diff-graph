@@ -1,7 +1,3 @@
-# What changed
-
-{diff_summary}
-
 # Commits *(oldest → newest)*
 
 {commits}

@@ -352,15 +352,35 @@ def _format_search_results(
 
 
 def list_files_vfs(vfs_dir: str, glob_pattern: str = "**/*") -> list[str]:
-    """List files in the virtual FS, excluding .diffmeta/."""
+    """List files in the virtual FS with diff-status prefixes.
+
+    Each entry is `<status> <path>`, mirroring the `+` / `-` / ` `
+    line-marker convention from diff_read_file / diff_search:
+
+        A  src/added.java
+        M  src/modified.java
+        D  src/deleted.java
+        R  src/renamed_new.java
+        C  src/copied.java
+           src/unchanged.java        (space = unchanged context file)
+
+    The status comes from the manifest written by `materialize_vfs`
+    via `load_path_status`. Files not in the manifest are treated as
+    unchanged (` `). The `.diffmeta/` directory is hidden as before.
+    """
+    from .virtual_fs import load_path_status
     vfs = Path(vfs_dir)
+    statuses = load_path_status(vfs_dir)
     paths = sorted(vfs.glob(glob_pattern))
-    result = []
+    result: list[str] = []
     for p in paths:
-        if p.is_file():
-            rel = str(p.relative_to(vfs))
-            if not rel.startswith(".diffmeta"):
-                result.append(rel)
+        if not p.is_file():
+            continue
+        rel = str(p.relative_to(vfs))
+        if rel.startswith(".diffmeta"):
+            continue
+        st = statuses.get(rel, " ")
+        result.append(f"{st} {rel}")
     return result
 
 

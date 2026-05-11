@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 import shutil
 
+import pytest
+
 from diffsearch.virtual_fs import materialize_vfs
 from diffsearch.tools import list_files_vfs, read_outline_vfs
 
@@ -22,8 +24,8 @@ class TestListFilesVFS:
         try:
             files = list_files_vfs(vfs)
             log.info("list_files → %s", files)
-            assert "src/OrderService.java" in files
-            assert "src/Util.java" in files
+            assert "M src/OrderService.java" in files
+            assert "  src/Util.java" in files
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
@@ -32,7 +34,8 @@ class TestListFilesVFS:
         vfs = materialize_vfs(repo, base, source)
         try:
             files = list_files_vfs(vfs)
-            assert all(not f.startswith(".diffmeta") for f in files)
+            # Each entry is "<STATUS> <path>" — strip the prefix before checking.
+            assert all(not f[2:].startswith(".diffmeta") for f in files)
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
@@ -41,6 +44,7 @@ class TestListFilesVFS:
         vfs = materialize_vfs(repo, base, source)
         try:
             files = list_files_vfs(vfs, "**/*.java")
+            assert files, "expected at least one java file"
             assert all(f.endswith(".java") for f in files)
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
@@ -50,8 +54,8 @@ class TestListFilesVFS:
         vfs = materialize_vfs(repo, base, source)
         try:
             files = list_files_vfs(vfs)
-            assert "src/AuditLog.java" in files
-            assert "src/Order.java" in files
+            assert "A src/AuditLog.java" in files
+            assert "  src/Order.java" in files
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
@@ -61,7 +65,94 @@ class TestListFilesVFS:
         try:
             files = list_files_vfs(vfs)
             log.info("list_files (renamed) → %s", files)
-            assert "src/OrderUtils.java" in files
+            assert "R src/OrderUtils.java" in files
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+
+class TestListFilesStatusMarkers:
+    """Each entry must start with a single-char git status code plus a space,
+    mirroring the +/-/space line markers used by diff_read_file / diff_search:
+
+        A  added
+        M  modified
+        D  deleted
+        R  rename destination (the old path appears with a D marker)
+        C  copy destination
+           unchanged (space)
+
+    These tests pin every status code to a fixture so a future refactor
+    that drops a status (e.g. collapses rename → modified) is caught.
+    """
+
+    def _by_path(self, files: list[str]) -> dict[str, str]:
+        """`{'src/Foo.java': 'M', ...}` for assertions."""
+        out: dict[str, str] = {}
+        for entry in files:
+            assert len(entry) >= 2 and entry[1] == " ", entry
+            out[entry[2:]] = entry[0]
+        return out
+
+    def test_modified(self, rename_field_repo):
+        repo, base, source = rename_field_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            status = self._by_path(list_files_vfs(vfs))
+            assert status["src/OrderService.java"] == "M"
+            assert status["src/Util.java"] == " "  # unchanged context file
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_added(self, new_file_repo):
+        repo, base, source = new_file_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            status = self._by_path(list_files_vfs(vfs))
+            assert status["src/AuditLog.java"] == "A"
+            assert status["src/Order.java"] == " "
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_deleted(self, deleted_file_repo):
+        repo, base, source = deleted_file_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            status = self._by_path(list_files_vfs(vfs))
+            assert status["src/LegacyService.java"] == "D"
+            assert status["src/Order.java"] == " "
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_renamed_pair(self, renamed_file_repo):
+        """A rename surfaces as D for the old path + R for the new path,
+        matching the VFS layout (both paths exist in the materialised tree
+        — old as a deleted file, new as the renamed content)."""
+        repo, base, source = renamed_file_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            status = self._by_path(list_files_vfs(vfs))
+            assert status["src/OrderHelper.java"] == "D", \
+                f"expected old path marked D, got: {status}"
+            assert status["src/OrderUtils.java"] == "R", \
+                f"expected new path marked R, got: {status}"
+            assert status["src/Main.java"] == " "
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_entry_shape(self, any_repo):
+        """Every entry across every fixture has shape '<X> <path>' with
+        X in the known status set. Guards against accidental regressions
+        where list_files_vfs forgets the prefix on some code path."""
+        name, repo, base, source = any_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            files = list_files_vfs(vfs)
+            assert files, f"{name}: no files listed"
+            valid = {"A", "M", "D", "R", "C", "T", " "}
+            for entry in files:
+                assert len(entry) >= 3, f"{name}: too short: {entry!r}"
+                assert entry[1] == " ", f"{name}: bad separator: {entry!r}"
+                assert entry[0] in valid, f"{name}: unknown status: {entry!r}"
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 

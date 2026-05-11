@@ -48,6 +48,46 @@ def get_changed_files(base_ref: str, source_ref: str, repo_path: str) -> list[st
     return [f for f in out.stdout.strip().splitlines() if f]
 
 
+# git --name-status emits one-letter codes plus a similarity score for R/C.
+# We collapse to single chars in the manifest: A/M/D/R/C/T. Renamed and
+# copied report both the source and destination paths separated by tab —
+# we map the destination to R/C and (for renames) the source to D so
+# moves show up as a delete+add pair, which matches the VFS layout.
+_GIT_STATUS_CODES = {"A", "M", "D", "T"}
+
+
+def get_path_status(
+    base_ref: str, source_ref: str, repo_path: str
+) -> dict[str, str]:
+    """Map of path → single-letter git diff status:
+        A (added), M (modified), D (deleted), R (renamed),
+        C (copied), T (type-change). Unchanged paths are omitted —
+        callers default missing keys to ' ' (a space, matching the
+        per-line marker convention for unchanged content)."""
+    out = subprocess.run(
+        ["git", "diff", "--name-status", base_ref, source_ref],
+        cwd=repo_path, capture_output=True, text=True, check=True,
+    )
+    statuses: dict[str, str] = {}
+    for line in out.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        code = parts[0][:1]
+        if code == "R":
+            # R<score>\t<old>\t<new> — surface as D for old, R for new.
+            if len(parts) >= 3:
+                statuses[parts[1]] = "D"
+                statuses[parts[2]] = "R"
+        elif code == "C":
+            # C<score>\t<src>\t<dst>
+            if len(parts) >= 3:
+                statuses[parts[2]] = "C"
+        elif code in _GIT_STATUS_CODES and len(parts) >= 2:
+            statuses[parts[1]] = code
+    return statuses
+
+
 def build_virtual_file(
     base_ref: str, source_ref: str, path: str, repo_path: str
 ) -> VirtualFile:
@@ -173,6 +213,10 @@ def materialize_vfs(
         target_dir = tempfile.mkdtemp(prefix="diffsearch-vfs-")
 
     changed = set(get_changed_files(base_ref, source_ref, repo_path))
+    # Per-path status (A / M / D / R / C). Written to a manifest at the
+    # end so list_files_vfs can prefix each entry with its status, the
+    # same way `+` / `-` / ` ` markers annotate individual lines.
+    status_by_path = get_path_status(base_ref, source_ref, repo_path)
 
     # Get all files in source ref
     all_files_out = subprocess.run(
@@ -260,6 +304,13 @@ def materialize_vfs(
         except (UnicodeDecodeError, OSError):
             out_path.write_text("(binary file)\n")
 
+    # Materialise the status manifest. Deleted paths are kept too —
+    # they have a VFS entry from the `base_only` branch above.
+    index_path = Path(target_dir) / ".diffmeta" / "__index.json"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(index_path, "w") as f:
+        json.dump({"paths": status_by_path}, f)
+
     return target_dir
 
 
@@ -270,3 +321,16 @@ def load_diffmeta(vfs_dir: str, path: str) -> list[dict] | None:
         return None
     with open(meta_path) as f:
         return json.load(f)
+
+
+def load_path_status(vfs_dir: str) -> dict[str, str]:
+    """Read the per-path status manifest written by materialize_vfs.
+    Empty dict if missing (older VFS / external materialiser)."""
+    p = Path(vfs_dir) / ".diffmeta" / "__index.json"
+    if not p.exists():
+        return {}
+    try:
+        with open(p) as f:
+            return dict((json.load(f) or {}).get("paths") or {})
+    except Exception:
+        return {}

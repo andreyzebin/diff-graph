@@ -93,15 +93,14 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
 
     @registry.register(
         name="pr_context",
-        description="PR context data provider (diff summary, comments, commits).",
+        description="PR context data provider (comments, commits).",
         hidden=True,
         cache=True,
     )
     def pr_context() -> dict:
         _ensure()
-        from .orchestrator import _make_diff_summary, _get_commit_list, _format_existing_comments
+        from .orchestrator import _get_commit_list, _format_existing_comments
         return {
-            "diff_summary": _make_diff_summary(ctx.diff_result),
             "existing_comments": _format_existing_comments(
                 ctx.existing_comments,
                 bot_user=getattr(ctx, '_bot_user', ''),
@@ -117,9 +116,14 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     @registry.register(
         name="diff_list_files",
         description=(
-            "List paths in the diff view (default `ref=base..source`) — "
-            "every file visible from the source side, whether added, "
-            "modified, or unchanged. Returns up to 50 relative paths."
+            "List paths in the diff view (default `ref=base..source`). "
+            "Each entry is `<status> <path>` where `<status>` is the "
+            "single-char git diff code — `A`/`M`/`D`/`R`/`C`/`T` for "
+            "added / modified / deleted / renamed / copied / type-changed, "
+            "or a space for unchanged context files. Mirrors the "
+            "`+` / `-` / ` ` line markers in diff_read_file. Renames "
+            "appear as a pair: `D <old_path>` plus `R <new_path>`. "
+            "Returns up to 50 entries."
         ),
         parameters={
             "type": "object",

@@ -327,16 +327,6 @@ def _get_commit_list(repo_path: str, base_ref: str, source_ref: str) -> str:
         return "(unavailable)"
 
 
-def _make_diff_summary(diff_result: DiffResult) -> str:
-    parts = []
-    for path, fd in diff_result.files.items():
-        parts.append(
-            f"  [{fd.status.upper()}] {path}"
-            f"  (+{len(fd.after_changed_lines)} lines changed)"
-        )
-    return "\n".join(parts)
-
-
 _MAX_COMMENTS = 20
 
 # Optional regex for "synthetic author" recognition. When `subject_pattern`

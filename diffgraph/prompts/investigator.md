@@ -9,9 +9,6 @@ sgr_interval: 3
 llm:
   temperature: 0
 data:
-  diff_summary:
-    type: string
-    from: pr_context.diff_summary
   commits:
     type: string
     from: pr_context.commits
