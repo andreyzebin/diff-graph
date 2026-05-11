@@ -750,9 +750,10 @@ def plans_get(plan_id: int = typer.Argument(...)):
             f"({eta['remaining_tasks']} task(s) left, "
             f"based on {eta['based_on']['history_runs']} historical runs)"
         )
-        for pp in eta["per_provider"]:
+        for pp in (eta.get("per_queue") or eta.get("per_provider") or []):
+            q_name = pp.get("queue") or pp.get("provider") or "?"
             _Out.console.print(
-                f"  · {pp['provider']}: {pp['remaining_tasks']} tasks · "
+                f"  · {q_name}: {pp['remaining_tasks']} tasks · "
                 f"{pp['workers']} worker(s) → ~{pp['eta_seconds']//60}m"
             )
 
@@ -1533,18 +1534,23 @@ def auto_list():
     table.add_column("name")
     table.add_column("repo")
     table.add_column("branches")
-    table.add_column("unit/full")
-    table.add_column("providers")
+    table.add_column("scenarios/tags")
+    table.add_column("queues")
+    table.add_column("mode")
     table.add_column("enabled")
     table.add_column("last discover")
     for c in cfgs:
+        scen_summary = (",".join(c.scenarios) if c.scenarios
+                        else "tag:" + ",".join(c.scenario_tags) if c.scenario_tags
+                        else "—")
         table.add_row(
             str(c.id),
             c.name or "",
-            c.repo_path[-30:],
+            (c.repo_path or "")[-30:],
             c.branch_pattern,
-            f"{len(c.unit_scenarios)}/{len(c.full_scenarios)}",
+            scen_summary[:32],
             ",".join(c.providers),
+            c.mode,
             "✓" if c.enabled else "·",
             (c.last_discover_at or "")[:19],
         )

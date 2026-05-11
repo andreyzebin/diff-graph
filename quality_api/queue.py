@@ -1207,7 +1207,7 @@ class PlanStore:
         now = _now()
         with self.queue._lock, self.queue._conn() as c:
             tasks = c.execute(
-                """SELECT id, scenario_id, provider, state, started_at
+                """SELECT id, queue, state, started_at, resources
                    FROM qa_tasks
                    WHERE plan_id=? AND kind='agent'""",
                 (plan_id,),
@@ -1247,11 +1247,11 @@ class PlanStore:
 
             # Concurrency policy from pools.
             pool_rows = c.execute(
-                """SELECT provider, target_workers
+                """SELECT queue, target_workers
                    FROM qa_worker_pools WHERE enabled=1""",
             ).fetchall()
-            workers_by_provider: dict[str, int] = {
-                r["provider"]: max(1, int(r["target_workers"])) for r in pool_rows
+            workers_by_queue: dict[str, int] = {
+                r["queue"]: max(1, int(r["target_workers"])) for r in pool_rows
             }
 
         FALLBACK_MS = 60_000.0
@@ -1262,14 +1262,16 @@ class PlanStore:
                     or FALLBACK_MS)
 
         terminal = {"finished", "cancelled", "error"}
-        per_prov: dict[str, dict] = {}
+        per_q: dict[str, dict] = {}
         remaining_total = 0
+        from .resources import find_id as _uri_id
         for t in tasks:
             if t["state"] in terminal:
                 continue
-            prov = t["provider"] or "?"
-            scen = t["scenario_id"] or ""
-            est = _est_total_ms(scen, prov)
+            q_name = t["queue"] or "?"
+            uris = json.loads(t["resources"] or "[]")
+            scen = _uri_id(uris, "scenario") or ""
+            est = _est_total_ms(scen, q_name)
             if t["state"] in ("leased", "running") and t["started_at"]:
                 try:
                     started = datetime.fromisoformat(t["started_at"])
@@ -1279,20 +1281,20 @@ class PlanStore:
                     remaining_ms = est
             else:
                 remaining_ms = est
-            slot = per_prov.setdefault(prov, {"provider": prov,
-                                              "remaining_tasks": 0,
-                                              "remaining_ms": 0.0})
+            slot = per_q.setdefault(q_name, {"queue": q_name,
+                                             "remaining_tasks": 0,
+                                             "remaining_ms": 0.0})
             slot["remaining_tasks"] += 1
             slot["remaining_ms"] += remaining_ms
             remaining_total += 1
 
-        per_provider_out = []
+        per_queue_out = []
         plan_eta_s = 0
-        for prov, slot in per_prov.items():
-            workers = workers_by_provider.get(prov, 1)
+        for q_name, slot in per_q.items():
+            workers = workers_by_queue.get(q_name, 1)
             eta_s = int(round(slot["remaining_ms"] / 1000.0 / max(1, workers)))
-            per_provider_out.append({
-                "provider": prov,
+            per_queue_out.append({
+                "queue": q_name,
                 "remaining_tasks": slot["remaining_tasks"],
                 "remaining_seconds": int(round(slot["remaining_ms"] / 1000.0)),
                 "workers": workers,
@@ -1307,8 +1309,8 @@ class PlanStore:
             "remaining_tasks": remaining_total,
             "eta_seconds": plan_eta_s if remaining_total else 0,
             "eta_at": eta_at,
-            "per_provider": sorted(per_provider_out,
-                                   key=lambda x: -x["eta_seconds"]),
+            "per_queue": sorted(per_queue_out,
+                                key=lambda x: -x["eta_seconds"]),
             "based_on": {"history_runs": history_runs_total,
                          "fallback_default_s": int(FALLBACK_MS / 1000)},
         }

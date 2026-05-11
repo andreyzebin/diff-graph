@@ -299,8 +299,11 @@ document.addEventListener('alpine:init', () => {
         etaTooltip(p) {
           const e = p.eta;
           if (!e) return '';
-          const parts = e.per_provider.map(pp =>
-            `${pp.provider}: ${pp.remaining_tasks} tasks · ${pp.workers} worker(s) · ~${Math.round(pp.eta_seconds/60)}m`);
+          const per = e.per_queue || e.per_provider || [];   // Stage B rename
+          const parts = per.map(pp => {
+            const q = pp.queue || pp.provider || '?';
+            return `${q}: ${pp.remaining_tasks} tasks · ${pp.workers} worker(s) · ~${Math.round(pp.eta_seconds/60)}m`;
+          });
           return `eta_at: ${e.eta_at}\n` + parts.join('\n') +
                  `\nbased on ${e.based_on.history_runs} historical runs`;
         },
