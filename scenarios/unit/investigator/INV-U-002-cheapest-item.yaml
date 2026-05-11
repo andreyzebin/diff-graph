@@ -24,12 +24,28 @@ repo:
   source_branch: feature/ORD-234-buy-3-get-1-free
 
 agent_data:
+  # NB: `selectFreeItem` is the legitimate scope of investigation —
+  # a reviewer's spawn_agent.focus would naturally name the method
+  # under suspicion. It's whitelisted in `leak_allowlist` below.
+  # The focus must NOT spell out the AC ("cheapest item free") or
+  # the bug — those are what the investigator earns its score by
+  # discovering.
   focus: |
-    PRICING LOGIC: Investigate selectFreeItem in PricingService.
-    The buy-3-get-1-free promotion is supposed to give the
-    customer the cheapest item free per the project AC. Verify
-    the implementation matches the spec — especially what item
-    the method actually returns from the qualifying group.
+    PRICING LOGIC: Investigate selectFreeItem in PricingService
+    against the buy-3-get-1-free acceptance criteria documented in
+    the PR description / project conventions. Verify the
+    implementation correctly matches the spec — specifically what
+    the method returns from the qualifying group, and whether that
+    choice is consistent with how the project documents the
+    promotion.
+
+# selectFreeItem unavoidably appears in both the focus (scope of
+# investigation) and required_comments.description_keywords (the
+# finding has to identify the offending method). That's not a real
+# leak — the investigator isn't being graded on saying the method
+# name, only on saying the right THING about it. Real signal lives
+# in the other keywords: "cheapest", "get(0)", "first item", "AGENTS.md".
+leak_allowlist: ["selectFreeItem"]
 
 expected_output:
   # Investigator returns findings via done() — it has no post_comment

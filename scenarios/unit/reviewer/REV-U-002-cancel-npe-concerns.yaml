@@ -35,11 +35,16 @@ pr_state:
   metadata:
     # Title is the commit subject the author actually wrote — factual,
     # describes the fix, doesn't pre-judge it.
-    title: "ORD-287: Fix NPE in cancelOrder when items list is null"
+    # NB: do not spell out the fix shape ("adds a null guard") in
+    # the description — that telegraphs the very concern keyword
+    # the reviewer is graded on finding ("null guard"). Keep the
+    # description to OBSERVED behaviour only; the reviewer has to
+    # read the diff to know HOW the fix was implemented.
+    title: "ORD-287: Hotfix NPE in cancelOrder"
     description: |
       Production NPE observed inside `OrderService.cancelOrder()`
-      when iterating `order.getItems()`. Adds a null guard around
-      the inventory-release loop. Tiny scope — one method touched.
+      when iterating `order.getItems()`. Tiny hotfix — one method
+      touched.
     pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/287"
     bot_user: "diffgraph-bot"
 

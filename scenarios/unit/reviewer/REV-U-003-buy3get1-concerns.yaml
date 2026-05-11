@@ -51,6 +51,18 @@ trigger:
 
 agent_data: {}
 
+# `cheapest` appears in BOTH the PR description (acceptance criterion
+# "the cheapest item is free") AND the concern's description_keywords.
+# That's not a leak — it's how real PRs work: the AC documents what
+# the spec wants; the reviewer's job is to compare the implementation
+# (which says `group.get(0)`) to the spec (which says cheapest). A
+# reviewer who fails to read the AC isn't a good reviewer. So we
+# accept the overlap consciously and rely on the OTHER keywords in
+# the group ("selectFreeItem", "free item", "get(0)", "first item")
+# to ensure the reviewer is actually identifying the implementation
+# mismatch, not just parroting the spec word.
+leak_allowlist: ["cheapest"]
+
 # ── Judge — concerns-only reviewer ───────────────────────────────────────
 # Reviewer surfaces concerns via reflect(questions_remaining=[...]).
 # Judge matches each concern_focuses keyword group AGAINST the union
