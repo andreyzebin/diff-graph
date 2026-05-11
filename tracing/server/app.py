@@ -755,11 +755,15 @@ async def _stop_qa_supervisors():
 
 
 class TaskCreatePayload(BaseModel):
-    scenario_id: str
-    provider: str
+    """Legacy single-task create. New code should use the generic
+    POST /api/qa/tasks/enqueue endpoint. Stage B: scenario_id /
+    lineage / mutation_hash flow as resource URIs in payload.resources;
+    the dedicated fields here are converted at enqueue time."""
+    queue: str = ""                  # routing key
+    scenario_id: str = ""            # optional — synthesised to scenario:// URI
     attempt_n: int = 1
-    lineage: str = ""
-    mutation_hash: str = ""
+    lineage: str = ""                # synthesised to lineage:// URI
+    mutation_hash: str = ""          # synthesised to mutation:// URI
     plan_id: Optional[int] = None
     priority: int = 100
     payload: dict = {}
@@ -779,27 +783,30 @@ class TaskHeartbeatPayload(BaseModel):
 
 
 class TaskLeasePayload(BaseModel):
-    provider: str
+    queue: str
     worker_id: str
     lease_seconds: int = 60
 
 
 class WorkerRegisterPayload(BaseModel):
     worker_id: Optional[str] = None
-    provider: str = ""
+    queue: str = ""
     capacity: int = 1
     pid: Optional[int] = None
 
 
 @app.post("/api/qa/tasks")
 async def api_qa_create_task(p: TaskCreatePayload):
-    """Enqueue a single task. Future /api/qa/plans will fan out into
-    many of these in one request."""
+    """Enqueue a single task. Legacy shape; prefer
+    POST /api/qa/tasks/enqueue for generic tasks."""
+    resources: list[str] = []
+    if p.scenario_id:    resources.append(f"scenario://{p.scenario_id}")
+    if p.lineage:        resources.append(f"lineage://{p.lineage}")
+    if p.mutation_hash:  resources.append(f"mutation://{p.mutation_hash}")
     spec = TaskSpec(
-        scenario_id=p.scenario_id, provider=p.provider,
-        attempt_n=p.attempt_n, lineage=p.lineage,
-        mutation_hash=p.mutation_hash, plan_id=p.plan_id,
+        queue=p.queue, attempt_n=p.attempt_n, plan_id=p.plan_id,
         priority=p.priority, payload=p.payload or {},
+        resources=resources,
     )
     task_id = _qa_queue.enqueue(spec)
     t = _qa_queue.get(task_id)
@@ -809,12 +816,12 @@ async def api_qa_create_task(p: TaskCreatePayload):
 @app.get("/api/qa/tasks")
 async def api_qa_list_tasks(
     state: Optional[str] = None,
-    provider: Optional[str] = None,
+    queue: Optional[str] = None,
     plan_id: Optional[int] = None,
     limit: int = 50,
     offset: int = 0,
 ):
-    rows = _qa_queue.list(state=state, provider=provider, plan_id=plan_id,
+    rows = _qa_queue.list(state=state, queue=queue, plan_id=plan_id,
                           limit=max(1, min(500, limit)),
                           offset=max(0, offset))
     return JSONResponse({
@@ -836,8 +843,8 @@ async def api_qa_get_task(task_id: int):
 @app.post("/api/qa/tasks/lease")
 async def api_qa_lease(p: TaskLeasePayload):
     """Atomic next-task pickup. Returns 204 if queue is empty for
-    this provider — cleaner than 200 with null data for poll loops."""
-    t = _qa_queue.lease(provider=p.provider, worker_id=p.worker_id,
+    this queue — cleaner than 200 with null data for poll loops."""
+    t = _qa_queue.lease(queue=p.queue, worker_id=p.worker_id,
                         lease_seconds=max(5, p.lease_seconds))
     if t is None:
         # 200 with data=null — workers poll this in a loop, easier to
@@ -935,19 +942,14 @@ async def api_qa_enqueue_generic(p: GenericEnqueuePayload):
     if p.tags:
         payload["tags"] = list(p.tags)
 
-    # Denormalise resources → legacy QA columns so generic tasks
-    # still participate in scoring / aggregates / UI filters that
-    # query by scenario_id / lineage / mutation_hash directly.
-    # `queue` argument wins over provider:// URI for the routing key.
+    # `queue` argument wins over any provider:// URI in resources.
     from quality_api.resources import denormalise as _denorm_resources
     denorm = _denorm_resources(resources)
     spec = TaskSpec(
-        scenario_id=denorm.get("scenario_id", ""),
-        provider=p.queue or denorm.get("provider", ""),
-        lineage=denorm.get("lineage", ""),
-        mutation_hash=denorm.get("mutation_hash", ""),
+        queue=p.queue or denorm.get("provider", ""),
         priority=p.priority,
         payload=payload,
+        resources=resources,
         not_before=p.not_before,
     )
     task_id = _qa_queue.enqueue(spec)
@@ -1047,10 +1049,10 @@ async def api_qa_queues():
     try:
         with _qa_queue._lock, _qa_queue._conn() as c:
             cur = c.execute(
-                """SELECT provider AS queue, state, COUNT(*) AS n
+                """SELECT queue, state, COUNT(*) AS n
                    FROM qa_tasks
-                   GROUP BY provider, state
-                   ORDER BY provider, state"""
+                   GROUP BY queue, state
+                   ORDER BY queue, state"""
             )
             rows = [dict(r) for r in cur.fetchall()]
     except _sqlite.OperationalError:
@@ -1077,7 +1079,7 @@ async def api_qa_resource_kinds():
 @app.post("/api/qa/workers")
 async def api_qa_register_worker(p: WorkerRegisterPayload):
     wid = _qa_queue.register_worker(
-        worker_id=p.worker_id, provider=p.provider,
+        worker_id=p.worker_id, queue=p.queue,
         capacity=p.capacity, pid=p.pid,
     )
     return JSONResponse({"data": {"worker_id": wid}}, status_code=201)
@@ -1107,8 +1109,8 @@ async def api_qa_list_workers():
     conn = sqlite3.connect(str(DEFAULT_DB_PATH))
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
-        SELECT id, scenario_id, provider, plan_id, state, lease_owner,
-               started_at, lease_expires_at
+        SELECT id, queue, plan_id, state, lease_owner,
+               started_at, lease_expires_at, resources
         FROM qa_tasks
         WHERE state IN ('leased', 'running') AND lease_owner != ''
     """).fetchall()
@@ -1157,7 +1159,7 @@ async def api_qa_list_workers():
 
 class PoolCreatePayload(BaseModel):
     name: str = ""
-    provider: str
+    queue: str
     target_workers: int = 1
     trigger: str = "live_queue"
     max_idle_seconds: int = 120
@@ -1168,7 +1170,7 @@ class PoolCreatePayload(BaseModel):
 
 class PoolUpdatePayload(BaseModel):
     name: Optional[str] = None
-    provider: Optional[str] = None
+    queue: Optional[str] = None
     target_workers: Optional[int] = None
     trigger: Optional[str] = None
     max_idle_seconds: Optional[int] = None
@@ -1181,7 +1183,7 @@ class PoolUpdatePayload(BaseModel):
 async def api_qa_pool_create(p: PoolCreatePayload):
     try:
         pid = _qa_pools.add(
-            name=p.name, provider=p.provider,
+            name=p.name, queue=p.queue,
             target_workers=p.target_workers, trigger=p.trigger,
             max_idle_seconds=p.max_idle_seconds,
             task_timeout_seconds=p.task_timeout_seconds,
@@ -1329,7 +1331,7 @@ async def api_qa_fire_anonymous(p: FireAnonymousPayload):
         plan_id, task_ids = _qa_plans.create_anonymous(
             name=name, scenarios=resolved,
             lineage=p.lineage, mutation_hash=p.sha,
-            provider=p.provider, attempts_min=p.attempts_min,
+            queue=p.provider, attempts_min=p.attempts_min,
             notes=f"anonymous fire-and-forget, {len(resolved)} scenario(s)",
         )
     except ValueError as exc:

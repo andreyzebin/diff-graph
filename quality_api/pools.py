@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 class PoolConfig:
     id: int
     name: str
-    provider: str
+    queue: str
     target_workers: int
     trigger: str
     max_idle_seconds: int
@@ -66,7 +66,7 @@ def _row_to_pool(row) -> Optional[PoolConfig]:
     return PoolConfig(
         id=int(row["id"]),
         name=row["name"] or "",
-        provider=row["provider"],
+        queue=row["queue"],
         target_workers=int(row["target_workers"] or 1),
         trigger=row["trigger"] or "live_queue",
         max_idle_seconds=int(row["max_idle_seconds"] or 120),
@@ -80,7 +80,7 @@ def _row_to_pool(row) -> Optional[PoolConfig]:
 
 def pool_to_dict(p: PoolConfig) -> dict:
     return {
-        "id": p.id, "name": p.name, "provider": p.provider,
+        "id": p.id, "name": p.name, "queue": p.queue,
         "target_workers": p.target_workers, "trigger": p.trigger,
         "max_idle_seconds": p.max_idle_seconds,
         "task_timeout_seconds": p.task_timeout_seconds,
@@ -96,14 +96,14 @@ class PoolStore:
     def __init__(self, queue: TaskQueue):
         self.queue = queue
 
-    def add(self, *, name: str, provider: str, target_workers: int = 1,
+    def add(self, *, name: str, queue: str, target_workers: int = 1,
             trigger: str = "live_queue",
             max_idle_seconds: int = 120,
             task_timeout_seconds: int = 900,
             bench_cmd: str = "",
             enabled: bool = True) -> int:
-        if not provider:
-            raise ValueError("provider required")
+        if not queue:
+            raise ValueError("queue required")
         if target_workers < 1:
             raise ValueError("target_workers must be >= 1")
         if trigger not in ("live_queue",):
@@ -111,11 +111,11 @@ class PoolStore:
         with self.queue._lock, self.queue._conn() as c:
             cur = c.execute(
                 """INSERT INTO qa_worker_pools
-                   (name, provider, target_workers, trigger,
+                   (name, queue, target_workers, trigger,
                     max_idle_seconds, task_timeout_seconds,
                     bench_cmd, enabled, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (name or "", provider, int(target_workers), trigger,
+                (name or "", queue, int(target_workers), trigger,
                  int(max_idle_seconds), int(task_timeout_seconds),
                  bench_cmd or "",
                  1 if enabled else 0, datetime.now(timezone.utc).isoformat()),
@@ -124,7 +124,7 @@ class PoolStore:
             return int(cur.lastrowid)
 
     def update(self, pool_id: int, **fields) -> bool:
-        allowed = {"name", "provider", "target_workers", "trigger",
+        allowed = {"name", "queue", "target_workers", "trigger",
                    "max_idle_seconds", "task_timeout_seconds",
                    "bench_cmd", "enabled"}
         sets, params = [], []
@@ -306,22 +306,21 @@ class WorkerSupervisor:
     def _reconcile(self, pool: PoolConfig) -> None:
         if pool.trigger != "live_queue":
             return
-        # Count queued tasks for this provider.
+        # Count queued tasks for this queue.
         with self.queue._lock, self.queue._conn() as c:
             row = c.execute(
                 """SELECT COUNT(*) AS n FROM qa_tasks
-                   WHERE state='queued' AND provider=? AND kind='agent'
+                   WHERE state='queued' AND queue=? AND kind='agent'
                      AND (not_before IS NULL OR not_before <= ?)""",
-                (pool.provider, datetime.now(timezone.utc).isoformat()),
+                (pool.queue, datetime.now(timezone.utc).isoformat()),
             ).fetchone()
             queued = int(row["n"] or 0)
         if queued == 0:
             return  # nothing to spawn for; existing workers will idle-out
-        # Count alive workers for this provider (via list_workers, which
-        # auto-reaps stale rows).
+        # Count alive workers subscribed to this queue.
         alive = sum(
             1 for w in self.queue.list_workers()
-            if (w.get("provider") == pool.provider
+            if (w.get("queue") == pool.queue
                 and (w.get("state") or "").strip().lower() == "running")
         )
         deficit = pool.target_workers - alive
@@ -334,12 +333,9 @@ class WorkerSupervisor:
         """Fire-and-forget subprocess. Worker writes to the same DB and
         manages its own lifecycle via --max-idle-seconds."""
         bench_cmd = pool.bench_cmd or DEFAULT_BENCH_CMD
-        # `--json` is a top-level callback option (must precede the
-        # subcommand), and we use it so the spawned worker emits
-        # structured logs friendlier to grep / log aggregation.
         cmd = (
             f"{QUALITY_CLI_PATH} --json worker "
-            f"--provider={shlex.quote(pool.provider)} "
+            f"--queue={shlex.quote(pool.queue)} "
             f"--max-idle-seconds={pool.max_idle_seconds} "
             f"--task-timeout-seconds={pool.task_timeout_seconds} "
             f"--max-tasks=0 "
@@ -347,7 +343,7 @@ class WorkerSupervisor:
         )
         try:
             log_dir = Path("/tmp")
-            log_path = log_dir / f"qa-pool-{pool.provider}-{os.getpid()}-{len(self._spawned)}.log"
+            log_path = log_dir / f"qa-pool-{pool.queue}-{os.getpid()}-{len(self._spawned)}.log"
             with open(log_path, "ab") as logfh:
                 p = subprocess.Popen(
                     ["bash", "-c", cmd],
@@ -355,7 +351,7 @@ class WorkerSupervisor:
                     start_new_session=True,
                 )
             self._spawned.add(p.pid)
-            log.info("supervisor: spawned worker pid=%s for pool=%s provider=%s",
-                     p.pid, pool.id, pool.provider)
+            log.info("supervisor: spawned worker pid=%s for pool=%s queue=%s",
+                     p.pid, pool.id, pool.queue)
         except Exception:
             log.exception("supervisor: failed to spawn worker for pool %s", pool.id)

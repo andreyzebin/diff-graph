@@ -840,11 +840,11 @@ def plans_watch(
 @tasks_app.command("list")
 def tasks_list(
     state: Optional[str] = typer.Option(None),
-    provider: Optional[str] = typer.Option(None),
+    queue: Optional[str] = typer.Option(None, help="routing key (formerly `provider`)"),
     plan_id: Optional[int] = typer.Option(None),
     limit: int = typer.Option(20),
 ):
-    rows = _queue().list(state=state, provider=provider, plan_id=plan_id, limit=limit)
+    rows = _queue().list(state=state, queue=queue, plan_id=plan_id, limit=limit)
     data = [task_to_dict(r) for r in rows]
     if _Out.json_mode:
         _emit(data)
@@ -855,7 +855,7 @@ def tasks_list(
     table = Table(title=f"tasks · {len(data)}")
     table.add_column("id", style="cyan", justify="right")
     table.add_column("state")
-    table.add_column("provider")
+    table.add_column("queue")
     table.add_column("scenario")
     table.add_column("attempt", justify="right")
     table.add_column("plan", justify="right")
@@ -865,8 +865,8 @@ def tasks_list(
         table.add_row(
             str(d["id"]),
             d["state"],
-            d["provider"],
-            d["scenario_id"],
+            d["queue"],
+            d["scenario_id"],     # derived from resources URIs server-side
             str(d["attempt_n"]),
             str(d["plan_id"] or ""),
             (d.get("lease_owner") or "")[:14],
@@ -1155,7 +1155,11 @@ def auto_fire_on(
 
 @app.command("worker")
 def worker_loop(
-    provider: str = typer.Option(..., help="LLM provider this worker serves"),
+    queue: str = typer.Option(..., "--queue", "--provider",
+                                help="Routing key this worker subscribes to "
+                                     "(historically the LLM provider name, "
+                                     "e.g. 'deepseek'). Stage B of the queue "
+                                     "refactor renamed the field from provider."),
     capacity: int = typer.Option(1, help="(reserved — single in-flight task for now)"),
     bench_cmd: str = typer.Option(
         "",
@@ -1189,7 +1193,7 @@ def worker_loop(
     import time
 
     q = _queue()
-    wid = q.register_worker(provider=provider, capacity=capacity, pid=os.getpid())
+    wid = q.register_worker(queue=queue, capacity=capacity, pid=os.getpid())
     stop = threading.Event()
 
     def _stop(signum, frame):
@@ -1206,7 +1210,7 @@ def worker_loop(
         bench_cmd = default_bench_cmd_template()
 
     if not _Out.json_mode:
-        _Out.console.print(f"[green]worker[/green] [cyan]{wid}[/cyan] · provider={provider} · pid={os.getpid()}")
+        _Out.console.print(f"[green]worker[/green] [cyan]{wid}[/cyan] · queue={queue} · pid={os.getpid()}")
         _Out.console.print(f"[dim]bench_cmd template: {bench_cmd}[/dim]")
         _Out.console.print(f"[dim]ctrl-c to stop · max_tasks={max_tasks or '∞'}[/dim]")
 
@@ -1220,7 +1224,7 @@ def worker_loop(
         # Worker heartbeat — keep alive in qa_workers regardless of leasing.
         q.worker_heartbeat(wid)
 
-        t = q.lease(provider=provider, worker_id=wid, lease_seconds=lease_seconds)
+        t = q.lease(queue=queue, worker_id=wid, lease_seconds=lease_seconds)
         if t is None:
             if idle_since is None:
                 idle_since = _time.monotonic()
@@ -1234,8 +1238,14 @@ def worker_loop(
             continue
         idle_since = None  # got work, reset idle counter
 
+        # Pull QA-bound ids out of the task's resource URIs.
+        from quality_api.resources import find_id as _uri_id
+        t_scenario = _uri_id(t.resources, "scenario") or ""
+        t_lineage  = _uri_id(t.resources, "lineage") or ""
+        t_mutation = _uri_id(t.resources, "mutation") or ""
+
         if not _Out.json_mode:
-            _Out.console.print(f"[green]→ leased[/green] task #{t.id} scenario={t.scenario_id} attempt={t.attempt_n}")
+            _Out.console.print(f"[green]→ leased[/green] task #{t.id} scenario={t_scenario} attempt={t.attempt_n}")
 
         # Heartbeat thread — extends task lease AND refreshes the
         # worker row while bench runs. Without the worker_heartbeat
@@ -1261,21 +1271,16 @@ def worker_loop(
         # tiers — it just runs whatever cmd template was assigned.
         task_cmd_tmpl = (t.payload or {}).get("bench_cmd") or bench_cmd
         cmd = task_cmd_tmpl.format(
-            scenario=t.scenario_id, provider=t.provider,
-            lineage=t.lineage, mutation=t.mutation_hash,
+            scenario=t_scenario, provider=t.queue,
+            lineage=t_lineage, mutation=t_mutation,
             attempt=t.attempt_n,
         )
         result_state = "finished"
         error_class = None
         result_payload: dict = {}
-        # Pass the git commit SHA (when this task came from auto-plan)
-        # to diff-graph so its runs.mutation is keyed by commit instead
-        # of by prompt-content-hash. Without this, multiple plans on
-        # different commits with identical prompt content collapse to
-        # one mutation row in the analytics.
         env = dict(os.environ)
-        if t.mutation_hash:
-            env["DIFFGRAPH_MUTATION_OVERRIDE"] = t.mutation_hash
+        if t_mutation:
+            env["DIFFGRAPH_MUTATION_OVERRIDE"] = t_mutation
         # Pre-generate the diff-graph run_id and stamp it onto qa_tasks
         # NOW (before the bench subprocess starts). Diff-graph reads
         # the same id from env and uses it as its run_id, so /qa/runs
@@ -1302,10 +1307,10 @@ def worker_loop(
             set_domain_attrs(
                 plan_id=t.plan_id,
                 task_id=t.id,
-                scenario_id=t.scenario_id or "",
-                mutation=(t.mutation_hash or "")[:7] or None,
-                lineage=t.lineage or "",
-                provider=t.provider or "",
+                scenario_id=t_scenario,
+                mutation=t_mutation[:7] if t_mutation else None,
+                lineage=t_lineage,
+                provider=t.queue or "",
                 run_id=pre_run_id,
             )
             # Merge domain dims into the span attrs at creation time
@@ -1323,8 +1328,8 @@ def worker_loop(
             if t.plan_id is not None:
                 env["DIFFGRAPH_PLAN_ID"] = str(t.plan_id)
             env["DIFFGRAPH_TASK_ID"] = str(t.id)
-            if t.lineage:
-                env["DIFFGRAPH_LINEAGE"] = t.lineage
+            if t_lineage:
+                env["DIFFGRAPH_LINEAGE"] = t_lineage
         except Exception:
             _bench_span_cm = None
             _bench_span = None

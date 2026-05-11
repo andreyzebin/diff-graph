@@ -62,37 +62,37 @@ RETRYABLE_ERROR_CLASSES = frozenset({
 
 @dataclass
 class TaskSpec:
-    """What a worker needs to actually run a task. Caller-supplied."""
-    scenario_id: str
-    provider: str
+    """What a worker needs to actually run a task. Caller-supplied.
+
+    Stage B of the queue refactor dropped scenario_id / provider /
+    lineage / mutation_hash columns; all task↔resource identity is
+    now in `resources` (URI list, supplied via payload or computed
+    by the caller). The only routing-key column is `queue`.
+    """
+    queue: str                                # routing key (worker.subscribe(queue))
     attempt_n: int = 1
-    lineage: str = ""
-    mutation_hash: str = ""
     plan_id: Optional[int] = None
-    priority: int = 100              # lower = sooner
+    priority: int = 100                       # lower = sooner
     payload: dict = field(default_factory=dict)
-    not_before: Optional[str] = None  # ISO datetime; lease() honours this
-    kind: str = "agent"              # 'agent' | 'judge' (B-light phantom)
+    resources: list[str] = field(default_factory=list)  # URI list (canonical)
+    not_before: Optional[str] = None          # ISO datetime; lease() honours this
+    kind: str = "agent"                       # 'agent' | 'judge' (B-light phantom)
     parent_task_id: Optional[int] = None
-    initial_state: str = "queued"    # 'queued' for normal, 'blocked' for judge phantom
+    initial_state: str = "queued"             # 'queued' for normal, 'blocked' for judge phantom
 
 
 @dataclass
 class TaskRow:
     """Persisted shape — what /qa/tasks endpoints return.
 
-    `lineage` = a long-lived line of git commits we're testing as a
-    hypothesis (typically a git branch like `master` or `feature/foo`);
-    `mutation_hash` = a specific commit on that lineage we benched
-    against.
+    Stage B: scenario_id / lineage / mutation_hash columns are gone.
+    Anything that needs them reads from `resources` via URIs
+    (scenario://X, lineage://master, mutation://abc1234).
     """
     id: int
     state: str
-    scenario_id: str
-    provider: str
+    queue: str
     attempt_n: int
-    lineage: str
-    mutation_hash: str
     plan_id: Optional[int]
     priority: int
     payload: dict
@@ -204,10 +204,14 @@ class TaskQueue:
             # Rename branch → lineage on qa_tasks and qa_planned_commits;
             # rename branches → lineages on qa_plans. Idempotent: SELECT
             # the new name first, only ALTER if it errors.
+            # Stage B: provider → queue (the generic routing-key name).
             for table, old, new in [
                 ("qa_tasks",            "branch",   "lineage"),
                 ("qa_planned_commits",  "branch",   "lineage"),
                 ("qa_plans",            "branches", "lineages"),
+                ("qa_tasks",            "provider", "queue"),
+                ("qa_workers",          "provider", "queue"),
+                ("qa_worker_pools",     "provider", "queue"),
             ]:
                 try:
                     c.execute(f"SELECT {new} FROM {table} LIMIT 0")
@@ -216,50 +220,65 @@ class TaskQueue:
                         c.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
                     except sqlite3.OperationalError:
                         pass  # table doesn't exist yet — initial CREATE will use new name
+            # Stage B: drop scenario_id / lineage / mutation_hash from
+            # qa_tasks. resources column (Stage A) is the canonical
+            # source; these columns were denorm caches. Idempotent —
+            # OperationalError on already-dropped is swallowed.
+            for col in ("scenario_id", "lineage", "mutation_hash"):
+                try:
+                    c.execute(f"ALTER TABLE qa_tasks DROP COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass  # already gone or table doesn't exist yet
             try:
                 c.execute("CREATE INDEX IF NOT EXISTS idx_qa_plans_promote ON qa_plans(promote_ready)")
                 c.execute("CREATE INDEX IF NOT EXISTS idx_qa_tasks_not_before ON qa_tasks(not_before)")
             except sqlite3.OperationalError:
                 pass
-            # Backfill `resources` from legacy columns for any existing
-            # rows where it's still empty/'[]'. Idempotent: empty-array
-            # check makes re-runs a no-op. After Stage B drops the
-            # legacy columns this CASE collapses to a no-op.
-            try:
-                c.execute(
-                    """UPDATE qa_tasks
-                       SET resources = (
-                         SELECT json_group_array(uri) FROM (
-                           SELECT 'scenario://' || scenario_id AS uri
-                             WHERE COALESCE(scenario_id, '') != ''
-                           UNION ALL
-                           SELECT 'provider://' || provider WHERE COALESCE(provider, '') != ''
-                           UNION ALL
-                           SELECT 'lineage://' || lineage WHERE COALESCE(lineage, '') != ''
-                           UNION ALL
-                           SELECT 'mutation://' || mutation_hash
-                             WHERE COALESCE(mutation_hash, '') != ''
-                         )
-                       )
-                       WHERE COALESCE(resources, '') IN ('', '[]')""",
-                )
-                c.commit()
-            except sqlite3.OperationalError:
-                pass
+            # Backfill `resources` from legacy denorm columns for any
+            # existing rows where it's still empty/'[]'. Each branch
+            # uses pre-rename column names if they still exist
+            # (back-compat for fresh schema on the first migration);
+            # SQLite errors silently swallowed.
+            for backfill_sql in [
+                # Pre-Stage-B (with scenario_id / provider / lineage / mutation_hash):
+                """UPDATE qa_tasks SET resources = (
+                     SELECT json_group_array(uri) FROM (
+                       SELECT 'scenario://' || scenario_id AS uri
+                         WHERE COALESCE(scenario_id, '') != ''
+                       UNION ALL
+                       SELECT 'provider://' || queue WHERE COALESCE(queue, '') != ''
+                       UNION ALL
+                       SELECT 'lineage://' || lineage WHERE COALESCE(lineage, '') != ''
+                       UNION ALL
+                       SELECT 'mutation://' || mutation_hash
+                         WHERE COALESCE(mutation_hash, '') != ''
+                     )
+                   ) WHERE COALESCE(resources, '') IN ('', '[]')""",
+                # Post-Stage-B (provider / lineage / mutation_hash gone):
+                """UPDATE qa_tasks SET resources = (
+                     SELECT json_group_array(uri) FROM (
+                       SELECT 'provider://' || queue WHERE COALESCE(queue, '') != ''
+                     )
+                   ) WHERE COALESCE(resources, '') IN ('', '[]')""",
+            ]:
+                try:
+                    c.execute(backfill_sql)
+                    c.commit()
+                    break
+                except sqlite3.OperationalError:
+                    continue
             c.executescript("""
                 CREATE TABLE IF NOT EXISTS qa_tasks (
                     id                INTEGER PRIMARY KEY AUTOINCREMENT,
                     state             TEXT NOT NULL DEFAULT 'queued',
                     kind              TEXT NOT NULL DEFAULT 'agent',
                     parent_task_id    INTEGER,
-                    scenario_id       TEXT NOT NULL,
-                    provider          TEXT NOT NULL,
+                    queue             TEXT NOT NULL,
                     attempt_n         INTEGER NOT NULL DEFAULT 1,
-                    lineage           TEXT,
-                    mutation_hash     TEXT,
                     plan_id           INTEGER,
                     priority          INTEGER NOT NULL DEFAULT 100,
                     payload           TEXT,
+                    resources         TEXT NOT NULL DEFAULT '[]',
                     lease_owner       TEXT,
                     lease_expires_at  TEXT,
                     enqueued_at       TEXT NOT NULL,
@@ -270,19 +289,12 @@ class TaskQueue:
                     error_class       TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_state    ON qa_tasks(state);
-                CREATE INDEX IF NOT EXISTS idx_qa_tasks_provider ON qa_tasks(provider);
+                CREATE INDEX IF NOT EXISTS idx_qa_tasks_queue    ON qa_tasks(queue);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_plan     ON qa_tasks(plan_id);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_lease    ON qa_tasks(lease_expires_at);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_kind     ON qa_tasks(kind, state);
-                -- Direct (qa_tasks → runs) link via trace_run_id is the
-                -- canonical join — no more mutation+time-window guessing.
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_trace_run ON qa_tasks(trace_run_id);
-                -- Speed up sub-agent GROUP BY in /api/search/sub_runs.
                 CREATE INDEX IF NOT EXISTS idx_events_run_agent  ON events(run_id, agent_id);
-                -- Time-window scan is the primary axis for trace data
-                -- (Jaeger/Tempo default to "last 1h"). Without these
-                -- indexes our default ORDER BY timestamp DESC LIMIT N
-                -- across millions of events does a full scan.
                 CREATE INDEX IF NOT EXISTS idx_events_timestamp  ON events(timestamp DESC);
                 CREATE INDEX IF NOT EXISTS idx_otel_spans_start  ON otel_spans(start_ns DESC);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_parent   ON qa_tasks(parent_task_id);
@@ -290,13 +302,13 @@ class TaskQueue:
                 CREATE TABLE IF NOT EXISTS qa_workers (
                     id                TEXT PRIMARY KEY,
                     pid               INTEGER,
-                    provider          TEXT,
+                    queue             TEXT,
                     capacity          INTEGER NOT NULL DEFAULT 1,
                     started_at        TEXT NOT NULL,
                     last_heartbeat    TEXT NOT NULL,
                     state             TEXT NOT NULL DEFAULT 'running'
                 );
-                CREATE INDEX IF NOT EXISTS idx_qa_workers_provider ON qa_workers(provider);
+                CREATE INDEX IF NOT EXISTS idx_qa_workers_queue ON qa_workers(queue);
 
                 CREATE TABLE IF NOT EXISTS qa_auto_plan_configs (
                     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -316,14 +328,12 @@ class TaskQueue:
 
                 CREATE TABLE IF NOT EXISTS qa_worker_pools (
                     -- Server-side worker supervisor config: "keep N alive
-                    -- workers for provider X while queue has tasks".
+                    -- workers subscribed to queue X while queue has tasks".
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
                     name            TEXT,
-                    provider        TEXT NOT NULL,
+                    queue           TEXT NOT NULL,
                     target_workers  INTEGER NOT NULL DEFAULT 1,
                     trigger         TEXT NOT NULL DEFAULT 'live_queue',
-                    -- 'live_queue' = spawn while queue non-empty for this provider
-                    -- (future: 'cron', 'always_on')
                     max_idle_seconds INTEGER NOT NULL DEFAULT 120,
                     task_timeout_seconds INTEGER NOT NULL DEFAULT 900,
                     bench_cmd       TEXT,           -- override worker --bench-cmd template
@@ -332,7 +342,7 @@ class TaskQueue:
                     last_check_at   TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_qa_pools_enabled ON qa_worker_pools(enabled);
-                CREATE INDEX IF NOT EXISTS idx_qa_pools_provider ON qa_worker_pools(provider);
+                CREATE INDEX IF NOT EXISTS idx_qa_pools_queue ON qa_worker_pools(queue);
 
                 CREATE TABLE IF NOT EXISTS qa_planned_commits (
                     -- Idempotency ledger: one row per (config, lineage, sha,
@@ -378,32 +388,32 @@ class TaskQueue:
         legacy QA fields + any URIs the caller stashed in
         `payload.resources`. Stage A of the column-drop migration.
         """
-        # Synthesise canonical resource URIs from the legacy fields.
-        # payload.resources (caller-supplied) wins for de-dup ordering.
+        # Assemble canonical resource URIs. spec.resources (explicit)
+        # + payload.resources (legacy/extra) get merged, queue→
+        # provider:// auto-appended, plan→ plan:// too. De-duped,
+        # order preserved.
         uris: list[str] = []
         seen: set[str] = set()
         def _add(u: str):
             if u and u not in seen:
                 uris.append(u); seen.add(u)
+        for u in spec.resources or []:
+            _add(str(u))
         for u in (spec.payload or {}).get("resources", []) or []:
             _add(str(u))
-        if spec.scenario_id:    _add(f"scenario://{spec.scenario_id}")
-        if spec.provider:       _add(f"provider://{spec.provider}")
-        if spec.lineage:        _add(f"lineage://{spec.lineage}")
-        if spec.mutation_hash:  _add(f"mutation://{spec.mutation_hash}")
-        if spec.plan_id:        _add(f"plan://{spec.plan_id}")
+        if spec.queue:    _add(f"provider://{spec.queue}")
+        if spec.plan_id:  _add(f"plan://{spec.plan_id}")
         resources_json = json.dumps(uris, ensure_ascii=False)
 
         with self._lock, self._conn() as c:
             cur = c.execute(
                 """INSERT INTO qa_tasks
-                   (state, kind, parent_task_id, scenario_id, provider,
-                    attempt_n, lineage, mutation_hash, plan_id, priority,
-                    payload, enqueued_at, not_before, resources)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (state, kind, parent_task_id, queue, attempt_n,
+                    plan_id, priority, payload, enqueued_at,
+                    not_before, resources)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (spec.initial_state, spec.kind, spec.parent_task_id,
-                 spec.scenario_id, spec.provider, spec.attempt_n,
-                 spec.lineage or "", spec.mutation_hash or "",
+                 spec.queue, spec.attempt_n,
                  spec.plan_id, spec.priority,
                  json.dumps(spec.payload, ensure_ascii=False),
                  _now().isoformat(),
@@ -421,7 +431,7 @@ class TaskQueue:
         return self._row_to_task(row) if row else None
 
     def list(self, *, state: Optional[str] = None,
-             provider: Optional[str] = None,
+             queue: Optional[str] = None,
              plan_id: Optional[int] = None,
              limit: int = 50, offset: int = 0) -> list[TaskRow]:
         clauses = ["1=1"]
@@ -429,9 +439,9 @@ class TaskQueue:
         if state:
             clauses.append("state=?")
             params.append(state)
-        if provider:
-            clauses.append("provider=?")
-            params.append(provider)
+        if queue:
+            clauses.append("queue=?")
+            params.append(queue)
         if plan_id is not None:
             clauses.append("plan_id=?")
             params.append(plan_id)
@@ -446,9 +456,9 @@ class TaskQueue:
 
     # ── Lease / heartbeat / finish ────────────────────────────────────────
 
-    def lease(self, *, provider: str, worker_id: str,
+    def lease(self, *, queue: str, worker_id: str,
               lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Optional[TaskRow]:
-        """Atomically pick the next queued task for `provider` and lease
+        """Atomically pick the next queued task for `queue` and lease
         it to `worker_id`. Returns None if the queue is empty.
 
         Ordering: by `priority` (asc), then `enqueued_at` (asc) — so
@@ -460,11 +470,11 @@ class TaskQueue:
         with self._lock, self._immediate() as c:
             row = c.execute(
                 """SELECT id FROM qa_tasks
-                   WHERE state='queued' AND provider=? AND kind='agent'
+                   WHERE state='queued' AND queue=? AND kind='agent'
                      AND (not_before IS NULL OR not_before <= ?)
                    ORDER BY priority ASC, enqueued_at ASC
                    LIMIT 1""",
-                (provider, now_iso),
+                (queue, now_iso),
             ).fetchone()
             if not row:
                 return None
@@ -692,16 +702,16 @@ class TaskQueue:
     # ── Workers ───────────────────────────────────────────────────────────
 
     def register_worker(self, *, worker_id: Optional[str] = None,
-                        provider: str = "", capacity: int = 1,
+                        queue: str = "", capacity: int = 1,
                         pid: Optional[int] = None) -> str:
         wid = worker_id or str(uuid.uuid4())[:12]
         now = _now().isoformat()
         with self._lock, self._conn() as c:
             c.execute(
                 """INSERT OR REPLACE INTO qa_workers
-                   (id, pid, provider, capacity, started_at, last_heartbeat, state)
+                   (id, pid, queue, capacity, started_at, last_heartbeat, state)
                    VALUES (?, ?, ?, ?, ?, ?, 'running')""",
-                (wid, pid, provider or "", capacity, now, now),
+                (wid, pid, queue or "", capacity, now, now),
             )
             c.commit()
         return wid
@@ -749,6 +759,11 @@ class TaskQueue:
                 # (SQLite contention, GIL stall, …). This is a defense
                 # in depth on top of the dedicated heartbeat thread.
                 # We resurrect such workers by bumping last_heartbeat.
+                # Stage B: the (scenario_id, mutation_hash) JOIN keys
+                # moved to t.resources URIs. Match via EXISTS on
+                # json_each — slower per row but only runs against
+                # leased rows during periodic self-heal, not in the
+                # hot lease path.
                 c.execute(
                     """UPDATE qa_workers
                        SET last_heartbeat = ?
@@ -757,8 +772,14 @@ class TaskQueue:
                            SELECT t.lease_owner
                            FROM qa_tasks t
                            JOIN runs r
-                             ON r.scenario_id = t.scenario_id
-                            AND r.mutation = t.mutation_hash
+                              ON EXISTS (
+                                   SELECT 1 FROM json_each(t.resources) je
+                                   WHERE je.value = 'scenario://' || r.scenario_id
+                                 )
+                             AND EXISTS (
+                                   SELECT 1 FROM json_each(t.resources) je
+                                   WHERE je.value LIKE 'mutation://' || r.mutation || '%'
+                                 )
                            JOIN events e ON e.run_id = r.id
                            WHERE t.state IN ('leased', 'running')
                              AND t.lease_owner IS NOT NULL
@@ -813,11 +834,8 @@ class TaskQueue:
         return TaskRow(
             id=int(row["id"]),
             state=row["state"],
-            scenario_id=row["scenario_id"],
-            provider=row["provider"],
+            queue=row["queue"],
             attempt_n=int(row["attempt_n"]),
-            lineage=row["lineage"] or "",
-            mutation_hash=row["mutation_hash"] or "",
             plan_id=row["plan_id"],
             priority=int(row["priority"]),
             payload=payload,
@@ -885,7 +903,7 @@ class PlanStore:
 
     def create_anonymous(self, *, name: str, scenarios: list[dict],
                           lineage: str, mutation_hash: str,
-                          provider: str, attempts_min: int = 1,
+                          queue: str, attempts_min: int = 1,
                           priority: int = 100,
                           notes: str = "") -> tuple[int, list[int]]:
         """One-shot plan over a heterogeneous list of scenarios.
@@ -896,13 +914,14 @@ class PlanStore:
         can co-exist in a single plan and the worker dispatches each
         with the right cmd template.
 
-        Phantom judge companion is still created for each agent task
-        (matches auto-fire behaviour). Returns (plan_id, [task_ids]).
+        Each task carries scenario / lineage / mutation as resource URIs
+        (Stage B: those identifiers no longer have dedicated columns).
+        Phantom judge companion still created. Returns (plan_id, task_ids).
         """
         if not scenarios:
             raise ValueError("anonymous plan requires at least one scenario")
-        if not provider:
-            raise ValueError("anonymous plan requires a provider")
+        if not queue:
+            raise ValueError("anonymous plan requires a queue")
         scenario_ids = [str(s["id"]) for s in scenarios if s.get("id")]
         with self.queue._lock, self.queue._conn() as c:
             cur = c.execute(
@@ -912,7 +931,7 @@ class PlanStore:
                    VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
                 (name or "", _now().isoformat(), "anonymous",
                  json.dumps([lineage] if lineage else []),
-                 json.dumps([provider]),
+                 json.dumps([queue]),
                  json.dumps(scenario_ids),
                  max(1, attempts_min), notes or ""),
             )
@@ -925,24 +944,24 @@ class PlanStore:
             payload_base: dict = {"plan_name": name} if name else {}
             if bench_cmd:
                 payload_base["bench_cmd"] = bench_cmd
+            # Build resource URIs for this scenario+lineage+mutation triple.
+            resources: list[str] = []
+            if scen_id:        resources.append(f"scenario://{scen_id}")
+            if lineage:        resources.append(f"lineage://{lineage}")
+            if mutation_hash:  resources.append(f"mutation://{mutation_hash}")
             for attempt_n in range(1, max(1, attempts_min) + 1):
                 agent_tid = self.queue.enqueue(TaskSpec(
-                    scenario_id=scen_id,
-                    provider=provider,
+                    queue=queue,
                     attempt_n=attempt_n,
-                    lineage=lineage or "",
-                    mutation_hash=mutation_hash or "",
                     plan_id=plan_id,
                     priority=priority,
                     payload=dict(payload_base),
+                    resources=list(resources),
                 ))
                 task_ids.append(agent_tid)
                 judge_tid = self.queue.enqueue(TaskSpec(
-                    scenario_id=scen_id,
-                    provider=provider,
+                    queue=queue,
                     attempt_n=attempt_n,
-                    lineage=lineage or "",
-                    mutation_hash=mutation_hash or "",
                     plan_id=plan_id,
                     priority=priority,
                     kind="judge",
@@ -983,39 +1002,38 @@ class PlanStore:
 
         # Fan-out via the existing enqueue (each acquires the queue lock
         # individually, but at the speed of bulk inserts it's fine).
+        # Stage B: scenario/lineage/mutation flow as resource URIs in
+        # spec.resources — no dedicated columns anymore.
         task_ids: list[int] = []
-        lineages = spec.lineages or [""]    # [""] → one task per (provider, scenario)
+        lineages = spec.lineages or [""]    # [""] → one task per (queue, scenario)
         for lineage in lineages:
-            for provider in spec.providers:
+            for queue_name in spec.providers:
                 for scenario in spec.scenarios:
                     for attempt_n in range(1, max(1, spec.attempts_min) + 1):
+                        resources: list[str] = []
+                        if scenario:  resources.append(f"scenario://{scenario}")
+                        if lineage:   resources.append(f"lineage://{lineage}")
                         # Agent task — leased + run by a worker.
                         agent_tid = self.queue.enqueue(TaskSpec(
-                            scenario_id=scenario,
-                            provider=provider,
+                            queue=queue_name,
                             attempt_n=attempt_n,
-                            lineage=lineage,
                             plan_id=plan_id,
                             priority=spec.priority,
                             payload={"plan_name": spec.name} if spec.name else {},
+                            resources=list(resources),
                         ))
                         task_ids.append(agent_tid)
-                        # Phantom judge companion — never leased; the
-                        # bench process scoring the agent IS the judge,
-                        # so finish() of the agent cascades the same
-                        # state onto this row. Adds visibility "agents
-                        # X/Y · judges A/B" without a bench refactor.
+                        # Phantom judge companion — never leased.
                         judge_tid = self.queue.enqueue(TaskSpec(
-                            scenario_id=scenario,
-                            provider=provider,
+                            queue=queue_name,
                             attempt_n=attempt_n,
-                            lineage=lineage,
                             plan_id=plan_id,
                             priority=spec.priority,
                             kind="judge",
                             parent_task_id=agent_tid,
                             initial_state="blocked",
                             payload={"plan_name": spec.name} if spec.name else {},
+                            resources=list(resources),
                         ))
                         task_ids.append(judge_tid)
         return plan_id, task_ids
@@ -1048,9 +1066,15 @@ class PlanStore:
                 FROM runs r
                 WHERE r.kind='judge' AND r.status='completed'
                   AND r.linked_run_id IN (
-                    -- agent runs that belong to this plan
+                    -- agent runs that belong to this plan, joined by
+                    -- mutation URI in qa_tasks.resources (Stage B —
+                    -- mutation_hash column was dropped).
                     SELECT a.id FROM runs a JOIN qa_tasks t
-                      ON SUBSTR(t.mutation_hash, 1, 7) = a.mutation
+                       ON EXISTS (
+                            SELECT 1 FROM json_each(t.resources) je
+                            WHERE je.value LIKE 'mutation://' || a.mutation || '%'
+                               OR je.value = 'mutation://' || a.mutation
+                          )
                      AND t.started_at IS NOT NULL
                      AND a.started_at >= t.started_at
                      AND a.started_at <= COALESCE(t.finished_at, datetime('now'))
@@ -1381,30 +1405,16 @@ def task_to_dict(t: TaskRow) -> dict:
     # session id lands on the task post-lease — append live.
     if t.trace_run_id:
         _add(f"session://{t.trace_run_id}")
-    # Defensive backfill: if a row somehow lacks resources but has
-    # legacy column values, synthesise. After Stage B this dead
-    # path can be deleted.
-    if not res:
-        if t.scenario_id:    _add(f"scenario://{t.scenario_id}")
-        if t.provider:       _add(f"provider://{t.provider}")
-        if t.lineage:        _add(f"lineage://{t.lineage}")
-        if t.mutation_hash:  _add(f"mutation://{t.mutation_hash}")
-        if t.plan_id:        _add(f"plan://{t.plan_id}")
+
+    # Expose legacy scenario_id / lineage / mutation_hash from the
+    # canonical URIs for clients that still read them as flat fields.
+    from .resources import find_id as _uri_id
     return {
         "id": t.id,
         "state": t.state,
-        # legacy QA fields — kept for now; new clients should
-        # prefer `resources` for any QA-bound semantics.
-        "scenario_id": t.scenario_id,
-        "provider": t.provider,
+        "queue": t.queue,
         "attempt_n": t.attempt_n,
-        "lineage": t.lineage,
-        "mutation_hash": t.mutation_hash,
         "plan_id": t.plan_id,
-        # generic, abstract task fields.
-        "queue": t.provider,                     # alias — `queue` is the right
-                                                 # generic name; `provider`
-                                                 # stays for legacy clients.
         "priority": t.priority,
         "payload": t.payload,
         "resources": res,
@@ -1419,4 +1429,10 @@ def task_to_dict(t: TaskRow) -> dict:
         "trace_run_id": t.trace_run_id,
         "result_json": t.result_json,
         "error_class": t.error_class,
+        # Derived from `resources` for legacy clients. None if no
+        # corresponding URI present.
+        "scenario_id": _uri_id(res, "scenario") or "",
+        "lineage":     _uri_id(res, "lineage") or "",
+        "mutation_hash": _uri_id(res, "mutation") or "",
+        "provider":    t.queue,   # back-compat alias
     }

@@ -875,20 +875,20 @@ class SQLiteTraceStore:
             clauses.append("a.scenario_id = ?")
             params.append(scenario)
         if lineage:
-            # Lineage lives in qa_tasks.lineage, not in runs. Match via
-            # mutation + task time-window (same join we use for the
-            # plan_id filter) — captures every agent run spawned by a
-            # task on this lineage, including for interaction scenarios
-            # where runs.scenario_id is NULL.
+            # Stage B: lineage and mutation_hash columns dropped;
+            # both now live in qa_tasks.resources as URIs. Match via
+            # json_each on a single qa_tasks row that carries both.
             clauses.append(
                 "EXISTS (SELECT 1 FROM qa_tasks t "
-                " WHERE t.lineage = ? "
-                "   AND SUBSTR(t.mutation_hash, 1, 7) = a.mutation "
+                " WHERE EXISTS (SELECT 1 FROM json_each(t.resources) je "
+                "                WHERE je.value = ?) "
+                "   AND EXISTS (SELECT 1 FROM json_each(t.resources) je "
+                "                WHERE je.value LIKE 'mutation://' || a.mutation || '%') "
                 "   AND t.started_at IS NOT NULL "
                 "   AND a.started_at >= t.started_at "
                 "   AND a.started_at <= COALESCE(t.finished_at, datetime('now')))"
             )
-            params.append(lineage)
+            params.append(f"lineage://{lineage}")
         clauses.append("a.linked_run_id IS NOT NULL")
 
         try:

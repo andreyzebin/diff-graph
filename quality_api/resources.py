@@ -123,6 +123,17 @@ def known_kinds() -> list[str]:
     return sorted(_HANDLERS.keys())
 
 
+def find_id(uris: list[str], kind: str) -> Optional[str]:
+    """Return the id of the first `kind://...` URI in `uris`, or None.
+    Use to replace `t.scenario_id` / `t.lineage` etc. after Stage B
+    drops the legacy denorm columns — resources is now canonical."""
+    prefix = f"{kind}://"
+    for u in uris or []:
+        if isinstance(u, str) and u.startswith(prefix):
+            return u[len(prefix):]
+    return None
+
+
 def denormalise(uris: list[str]) -> dict:
     """Project a list of resource URIs onto the legacy QA columns
     (scenario_id / provider / lineage / mutation_hash) so generic-

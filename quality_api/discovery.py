@@ -459,48 +459,41 @@ class AutoPlanStore:
 
         task_ids = []
         slot_idx = 0
-        for provider in cfg.providers:
+        for queue_name in cfg.providers:
             for scenario in scenarios:
                 for attempt_n in range(1, max(1, cfg.attempts_min) + 1):
                     not_before = None
                     if spread_step > 0:
                         not_before = (now + timedelta(seconds=spread_step * slot_idx)).isoformat()
+                    # Stage B: scenario/lineage/mutation flow as URIs.
+                    resources = [
+                        f"scenario://{scenario}",
+                        f"lineage://{lineage}",
+                        f"mutation://{sha}",
+                    ]
+                    payload_base = {"plan_name": plan_name,
+                                    "config_id": cfg.id,
+                                    "config_name": cfg.name}
                     agent_tid = self.queue.enqueue(TaskSpec(
-                        scenario_id=scenario,
-                        provider=provider,
+                        queue=queue_name,
                         attempt_n=attempt_n,
-                        lineage=lineage,
-                        mutation_hash=sha,
                         plan_id=plan_id,
                         priority=100,
-                        payload={"plan_name": plan_name,
-                                 "config_id": cfg.id,
-                                 "config_name": cfg.name},
+                        payload=dict(payload_base),
+                        resources=list(resources),
                         not_before=not_before,
                     ))
                     task_ids.append(agent_tid)
-                    # Phantom judge companion paired with the agent.
-                    # Same scenario/provider/attempt — never leased
-                    # (initial_state='blocked'); the bench process that
-                    # runs the agent ALSO runs the LLM judge call (per
-                    # runner/run.py: agent → judge.evaluate sequentially
-                    # in one async). queue.finish() cascades the agent's
-                    # terminal state onto this row so the UI's "agents
-                    # X/Y · judges A/B" counters move in lockstep.
                     judge_tid = self.queue.enqueue(TaskSpec(
-                        scenario_id=scenario,
-                        provider=provider,
+                        queue=queue_name,
                         attempt_n=attempt_n,
-                        lineage=lineage,
-                        mutation_hash=sha,
                         plan_id=plan_id,
                         priority=100,
                         kind="judge",
                         parent_task_id=agent_tid,
                         initial_state="blocked",
-                        payload={"plan_name": plan_name,
-                                 "config_id": cfg.id,
-                                 "config_name": cfg.name},
+                        payload=dict(payload_base),
+                        resources=list(resources),
                     ))
                     task_ids.append(judge_tid)
                     slot_idx += 1
