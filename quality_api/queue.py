@@ -23,9 +23,12 @@ State machine:
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
+
+log = logging.getLogger(__name__)
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -43,7 +46,16 @@ def _now() -> datetime:
 
 
 DEFAULT_LEASE_SECONDS = 60
-DEFAULT_HEARTBEAT_GRACE_SECONDS = 30
+DEFAULT_HEARTBEAT_GRACE_SECONDS = 180  # bumped from 30: brief GC / IO pauses
+                                       # in a live worker shouldn't release its
+                                       # lease (a queue/supervisor wake-up will
+                                       # still re-collect after sleep+resume).
+DEFAULT_MAX_RETRIES = 3                # transient errors (non_zero_exit /
+                                       # timeout / lease_expired) auto-retry up
+                                       # to this many times before marked final.
+RETRYABLE_ERROR_CLASSES = frozenset({
+    "non_zero_exit", "timeout", "lease_expired", "worker_died",
+})
 
 
 # ── Models ───────────────────────────────────────────────────────────────────
@@ -162,6 +174,12 @@ class TaskQueue:
                 # UI without a bench-side refactor.
                 ("qa_tasks",              "kind",                 "TEXT NOT NULL DEFAULT 'agent'"),
                 ("qa_tasks",              "parent_task_id",       "INTEGER"),
+                # Auto-retry for transient errors. retry_count tracks how
+                # many times this row has been re-queued from a failed
+                # attempt; max_retries is the per-task ceiling (default
+                # DEFAULT_MAX_RETRIES). finish() decides retry vs final.
+                ("qa_tasks",              "retry_count",          "INTEGER NOT NULL DEFAULT 0"),
+                ("qa_tasks",              "max_retries",          f"INTEGER NOT NULL DEFAULT {DEFAULT_MAX_RETRIES}"),
             ]:
                 try:
                     c.execute(f"SELECT {col} FROM {table} LIMIT 0")
@@ -429,12 +447,46 @@ class TaskQueue:
 
         state in {finished, error, cancelled}.
 
+        Auto-retry: when state=='error' and `error_class` is in
+        `RETRYABLE_ERROR_CLASSES` and the task's retry_count is below
+        max_retries, the row is re-queued instead of terminal-marked.
+        retry_count is incremented and lease cleared. The bench cmd
+        (including payload) is preserved.
+
         Side effect: if this was the last non-terminal task of a plan,
         the plan auto-transitions running → done.
         """
         if state not in ("finished", "error", "cancelled"):
             raise ValueError(f"invalid finish state: {state}")
         with self._lock, self._conn() as c:
+            # Check retry eligibility for transient errors.
+            retried = False
+            if state == "error" and error_class in RETRYABLE_ERROR_CLASSES:
+                row = c.execute(
+                    "SELECT retry_count, max_retries FROM qa_tasks "
+                    "WHERE id=? AND lease_owner=?",
+                    (task_id, worker_id),
+                ).fetchone()
+                if row and int(row["retry_count"] or 0) < int(row["max_retries"] or 0):
+                    c.execute(
+                        """UPDATE qa_tasks
+                           SET state='queued', retry_count = retry_count + 1,
+                               lease_owner=NULL, lease_expires_at=NULL,
+                               started_at=NULL, finished_at=NULL,
+                               error_class=?, result_json=?
+                           WHERE id=? AND lease_owner=?""",
+                        (f"retry:{error_class}",
+                         json.dumps(result, ensure_ascii=False)
+                            if result is not None else None,
+                         task_id, worker_id),
+                    )
+                    c.commit()
+                    log.info("task %s retry %d/%d (error=%s)",
+                             task_id, int(row["retry_count"]) + 1,
+                             int(row["max_retries"]), error_class)
+                    retried = True
+            if retried:
+                return True
             cur = c.execute(
                 """UPDATE qa_tasks
                    SET state=?, finished_at=?, trace_run_id=?,
@@ -536,6 +588,27 @@ class TaskQueue:
             return cur.rowcount > 0
 
     # ── Reaper ────────────────────────────────────────────────────────────
+
+    def force_release_all_leases(self, *, reason: str = "force_release") -> int:
+        """Unconditionally release every leased/running task back to
+        queued, regardless of grace window. Used by the supervisor's
+        sleep-resume handler: after host wake, every lease that was
+        held during sleep is suspect — no worker actually ticked
+        during that window. The bench subprocess may already be
+        broken (network gone, LLM disconnected). Cheaper to retry
+        than guess. Tasks pick up retry_count via subsequent finish()
+        calls or via tooling; force_release itself doesn't bump it.
+        """
+        with self._lock, self._conn() as c:
+            cur = c.execute(
+                """UPDATE qa_tasks
+                   SET state='queued', lease_owner=NULL, lease_expires_at=NULL,
+                       started_at=NULL, error_class=?
+                   WHERE state IN ('leased', 'running')""",
+                (reason,),
+            )
+            c.commit()
+            return cur.rowcount
 
     def reap_stale_leases(self, *, grace_seconds: int = DEFAULT_HEARTBEAT_GRACE_SECONDS) -> int:
         """Return tasks whose lease expired more than `grace_seconds`

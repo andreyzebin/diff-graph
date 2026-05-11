@@ -183,7 +183,15 @@ QUALITY_CLI_PATH = (
 
 class WorkerSupervisor:
     """Background loop that ensures each enabled pool has its target
-    number of alive workers, spawning subprocesses as needed."""
+    number of alive workers, spawning subprocesses as needed.
+
+    Also handles fleet stability:
+    - periodic reap of stale leases on every tick (~30 s), so a
+      worker that died silently / went to sleep doesn't pin a task
+    - sleep-resume detection via monotonic vs wall-clock drift —
+      after host sleep, force-release ALL leases so tasks resume
+      cleanly on the next tick instead of waiting for grace timeout
+    """
 
     def __init__(self, queue: TaskQueue, store: PoolStore,
                  check_interval_seconds: int = 30):
@@ -195,6 +203,16 @@ class WorkerSupervisor:
         # PIDs we've spawned (best-effort accounting; workers self-evict
         # via DB heartbeat when they die).
         self._spawned: set[int] = set()
+        # Sleep-resume sentinel: compare monotonic delta (paused
+        # while system sleeps) vs wall-clock delta (advances during
+        # sleep). A jump > threshold means the host slept since the
+        # last tick.
+        self._mono_anchor: Optional[float] = None
+        self._wall_anchor: Optional[float] = None
+        # Threshold above which we consider it a sleep-wake (vs.
+        # normal scheduling jitter). At check_interval=30s the
+        # expected drift is < 1s; 60s gives a wide margin.
+        self._sleep_drift_threshold = 60.0
 
     def start(self) -> None:
         if self._task and not self._task.done():
@@ -219,8 +237,58 @@ class WorkerSupervisor:
             except asyncio.TimeoutError:
                 pass
 
+    def _detect_sleep_wake(self) -> bool:
+        """Compare wall vs monotonic clock since last tick. Returns
+        True if the difference suggests the host slept (drift >
+        threshold). Updates the anchors as a side effect."""
+        import time
+        now_mono = time.monotonic()
+        now_wall = time.time()
+        if self._mono_anchor is None:
+            self._mono_anchor = now_mono
+            self._wall_anchor = now_wall
+            return False
+        expected_delta = now_mono - self._mono_anchor
+        actual_delta = now_wall - self._wall_anchor
+        drift = actual_delta - expected_delta
+        self._mono_anchor = now_mono
+        self._wall_anchor = now_wall
+        return drift > self._sleep_drift_threshold
+
     def _tick(self) -> None:
-        """One supervision pass — runs in a thread (sync DB access)."""
+        """One supervision pass — runs in a thread (sync DB access).
+
+        Sequence:
+        1. Sleep-resume detection — if host slept since last tick,
+           force-release all leases.
+        2. Periodic reap — pick up any leases that expired naturally
+           (worker died silently, GC pause exceeded grace).
+        3. List workers — auto-heal pass marks stale workers `dead`
+           and releases their tasks.
+        4. Pool reconcile — spawn replacement workers if queue has
+           queued tasks and we're below target.
+        """
+        if self._detect_sleep_wake():
+            log.warning("supervisor: sleep-resume detected, force-releasing "
+                        "all live leases")
+            try:
+                n = self.queue.force_release_all_leases(
+                    reason="sleep_wake")
+                if n > 0:
+                    log.warning("supervisor: released %d leases held across sleep", n)
+            except Exception:
+                log.exception("supervisor: force_release_all_leases failed")
+        try:
+            n = self.queue.reap_stale_leases()
+            if n > 0:
+                log.info("supervisor: reaped %d stale leases", n)
+        except Exception:
+            log.exception("supervisor: reap_stale_leases failed")
+        try:
+            self.queue.list_workers()   # self-heal pass (stale → dead)
+        except Exception:
+            log.exception("supervisor: list_workers self-heal failed")
+
         for pool in self.store.list(only_enabled=True):
             self._reconcile(pool)
             with self.queue._lock, self.queue._conn() as c:
