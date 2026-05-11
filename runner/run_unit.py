@@ -223,21 +223,35 @@ def run_unit_fixture(
                "DIFFGRAPH_FORBIDDEN_TOOLS":
                    "spawn_agent,post_comment,react_to_comment,set_review_status"}
 
-        # PR-state plumbing (reviewer / dispatcher fixtures).
+        # Fake-PR plumbing — runs for EVERY fixture, including those
+        # without a `pr_state` block. Why: under cli.py's
+        # `_run_with_dispatcher`, the first domain tool call triggers
+        # `_lazy_init` ⇒ `fetch_pr(pr_url)` ⇒ `parse_pr_url(pr_url)`.
+        # With an empty pr_url that raises ValueError, the agent
+        # runner wraps it as `"error: …"`, and every `diff_*` tool
+        # call returns that error. Net effect: investigators on
+        # fixtures without pr_state run blind. Always wiring up a
+        # fake PR (empty comments + minimal metadata) lets the
+        # bitbucket_fake provider answer `get_pr_info` / `fetch_pr`
+        # /etc. with the local repo, so tools work the same way they
+        # do for reviewer fixtures. `_build_fake_pr_payload` is
+        # already defensive about missing pr_state — `pr.get(...) or
+        # default` everywhere.
+        payload = _build_fake_pr_payload(fixture, tmp_repo, base_sha, source_sha)
+        fpfd, fake_pr_path = tempfile.mkstemp(suffix=".json", prefix="unit-fake-pr-")
+        os.close(fpfd)
+        Path(fake_pr_path).write_text(json.dumps(payload), encoding="utf-8")
+        snk_fd, sink_path = tempfile.mkstemp(suffix=".jsonl", prefix="unit-sink-")
+        os.close(snk_fd)
+        env["DIFFGRAPH_FAKE_PR_FILE"] = fake_pr_path
+        env["DIFFGRAPH_FAKE_PR_SINK"] = sink_path
+        # Pass --pr-url so cli.py routes via _run_with_dispatcher
+        # (the path that calls get_pr_info / get_pr_comments /
+        # get_comment_thread). bitbucket_fake intercepts them.
+        cmd.extend(["--pr-url", payload["pr_url"]])
+        # Trigger plumbs into --message / --comment-id — only relevant
+        # when the fixture explicitly carries one (reviewer/dispatcher).
         if fixture.pr_state:
-            payload = _build_fake_pr_payload(fixture, tmp_repo, base_sha, source_sha)
-            fpfd, fake_pr_path = tempfile.mkstemp(suffix=".json", prefix="unit-fake-pr-")
-            os.close(fpfd)
-            Path(fake_pr_path).write_text(json.dumps(payload), encoding="utf-8")
-            snk_fd, sink_path = tempfile.mkstemp(suffix=".jsonl", prefix="unit-sink-")
-            os.close(snk_fd)
-            env["DIFFGRAPH_FAKE_PR_FILE"] = fake_pr_path
-            env["DIFFGRAPH_FAKE_PR_SINK"] = sink_path
-            # Pass --pr-url so cli.py routes via _run_with_dispatcher
-            # (the path that calls get_pr_info / get_pr_comments /
-            # get_comment_thread). bitbucket_fake intercepts them.
-            cmd.extend(["--pr-url", payload["pr_url"]])
-            # Trigger plumbs into --message / --comment-id.
             trig = fixture.trigger or {}
             text = trig.get("text")
             if text:
