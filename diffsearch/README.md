@@ -141,14 +141,28 @@ Key feature: finds both **deleted** code (`-` lines from base) and **added** cod
 
 ### `list_files_vfs(vfs_dir, glob_pattern?)`
 
-List files in the virtual FS. Excludes `.diffmeta/` internal directory. Includes both changed and unchanged files. Binary files are listed (read_file returns `(binary file)` for them).
+List files in the virtual FS as plain text, one row per file. Excludes `.diffmeta/`; includes both changed and unchanged files (binary files surface as `(binary)`).
 
-```python
-files = list_files_vfs(vfs_dir, "**/*.java")
-# ['src/main/java/.../Order.java',
-#  'src/main/java/.../OrderService.java',
-#  'src/main/java/.../PricingService.java']
 ```
+M  src/OrderService.java  (45L · +13/-6 · 1.5kB)
+A  src/AuditLog.java      (19L · +19/-0 · 506B)
+D  src/LegacyService.java (22L · +0/-22 · 485B)
+R  src/OrderUtils.java    (19L · +19/-0 · 499B)
+   src/Util.java          (7L · 146B)
+```
+
+**Status code** (column 1) — same alphabet as `git diff --name-status`:
+- `A` added, `M` modified, `D` deleted, `R` renamed, `C` copied, `T` type-change
+- space — unchanged context file
+
+Renames surface as a pair: `D <old>` + `R <new>` (both paths exist in the VFS: old as a deleted file, new as the renamed content).
+
+**Summary** `(L · +N/-M · bytes)` lets you budget reads before calling `read_file_vfs`:
+- `L` — total lines in the unified-diff view, i.e. exactly what `read_file_vfs(path)` returns without a range.
+- `+N/-M` — added / removed line counts. Big delta vs small `L` means `changes_only=true` saves little; small delta vs big `L` means it saves a lot. Omitted for unchanged files (both zero by definition).
+- bytes — file size on disk (human-formatted: `B`/`kB`/`MB`). For changed files this is the byte cost of a full read; for unchanged files, the size of the source-side content.
+
+Paths are space-padded so the `(` column lines up across rows.
 
 ### `read_outline_vfs(vfs_dir, path, repo_path?)`
 

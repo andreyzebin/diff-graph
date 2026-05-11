@@ -29,6 +29,53 @@ def _skip_dir(path: str) -> bool:
     return any(p in _SKIP_DIRS for p in path.replace("\\", "/").split("/"))
 
 
+def _path_from_listing_row(row: str) -> str:
+    """Extract the file path from a diff_list_files row.
+    Row shape: `<X>  <path>  (<summary>)` — two spaces after status,
+    two spaces before summary. We slice off the 3-char status prefix
+    and trim trailing summary."""
+    body = row[3:] if len(row) > 3 else row
+    cut = body.rfind("  (")
+    return (body[:cut] if cut > 0 else body).rstrip()
+
+
+def _filter_and_cap_listing(text: str, limit: int) -> str:
+    """Drop rows whose path is inside a skip-dir, then cap to `limit`
+    rows. Path-width alignment from list_files_vfs is preserved — we
+    only filter and slice, never re-align (column widths are sized
+    once at format time, so trimming rows just leaves consistent
+    trailing whitespace, which is fine in monospace)."""
+    if not text:
+        return ""
+    rows = [r for r in text.splitlines()
+            if not _skip_dir(_path_from_listing_row(r))]
+    return "\n".join(rows[:limit])
+
+
+def _format_plain_listing(paths: list[str], repo_path: str) -> str:
+    """Format a plain (non-VFS, `ref="source"`) listing with the same
+    shape as list_files_vfs but no diff metadata — status is always
+    space, summary is `(<L>L · <bytes>)`."""
+    from diffsearch.tools import _fmt_bytes
+    if not paths:
+        return ""
+    from pathlib import Path as _P
+    rows: list[tuple[str, str]] = []
+    for rel in paths:
+        p = _P(repo_path) / rel
+        try:
+            size = p.stat().st_size
+            with open(p, "rb") as f:
+                L = sum(1 for _ in f)
+        except (OSError, UnicodeDecodeError):
+            size = 0
+            L = 0
+        rows.append((rel, f"({L}L · {_fmt_bytes(size)})"))
+    path_w = max(len(r[0]) for r in rows)
+    return "\n".join(f"   {path:<{path_w}}  {summary}"
+                     for path, summary in rows)
+
+
 def _resolve_ref(ctx: "_Ctx", ref: str) -> tuple[str, str] | None:
     """Resolve abstract ref names to SHA pair. Returns None for plain mode."""
     if ".." not in ref:
@@ -116,14 +163,24 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     @registry.register(
         name="diff_list_files",
         description=(
-            "List paths in the diff view (default `ref=base..source`). "
-            "Each entry is `<status> <path>` where `<status>` is the "
-            "single-char git diff code — `A`/`M`/`D`/`R`/`C`/`T` for "
-            "added / modified / deleted / renamed / copied / type-changed, "
-            "or a space for unchanged context files. Mirrors the "
-            "`+` / `-` / ` ` line markers in diff_read_file. Renames "
-            "appear as a pair: `D <old_path>` plus `R <new_path>`. "
-            "Returns up to 50 entries."
+            "List paths in the diff view (default `ref=base..source`) "
+            "as plain text, one row per file with a status code and a "
+            "size summary so you can budget reads before calling "
+            "`diff_read_file`. Example rows:\n"
+            "    M  src/OrderService.java  (68L · +12/-8 · 2.4kB)\n"
+            "    A  src/AuditLog.java      (50L · +50/-0 · 1.8kB)\n"
+            "    D  src/LegacyService.java (30L · +0/-30 · 1.1kB)\n"
+            "       src/Util.java          (42L · 980B)\n"
+            "\n"
+            "Status: `A`/`M`/`D`/`R`/`C`/`T` (added/modified/deleted/"
+            "renamed/copied/type-changed) or a space for unchanged "
+            "context files — same alphabet as `git diff --name-status`. "
+            "Renames surface as a pair: `D <old>` + `R <new>`. "
+            "Summary: `L` = total lines in the unified-diff view "
+            "(= what `diff_read_file(path)` returns without a range); "
+            "`+N/-M` = added/removed line counts (omitted for "
+            "unchanged files, where both are zero); bytes = file size. "
+            "Capped at 50 rows."
         ),
         parameters={
             "type": "object",
@@ -134,16 +191,18 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "required": ["pattern"],
         },
     )
-    def diff_list_files(pattern: str = "**/*", ref: str = "") -> list[str]:
+    def diff_list_files(pattern: str = "**/*", ref: str = "") -> str:
         _ensure()
         ref = ref or _default_ref()
         vfs_dir = _get_vfs(ctx, ref)
         if vfs_dir:
             from diffsearch.tools import list_files_vfs
-            files = list_files_vfs(vfs_dir, pattern)
-        else:
-            files = _list_files_impl(pattern, ctx.repo_path)
-        return [f for f in files if not _skip_dir(f)][:50]
+            text = list_files_vfs(vfs_dir, pattern)
+            return _filter_and_cap_listing(text, limit=50)
+        # Plain mode (no VFS, no diff metadata) — format with size only.
+        files = _list_files_impl(pattern, ctx.repo_path)
+        files = [f for f in files if not _skip_dir(f)][:50]
+        return _format_plain_listing(files, ctx.repo_path)
 
     @registry.register(
         name="diff_read_file",

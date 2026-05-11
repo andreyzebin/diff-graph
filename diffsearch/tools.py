@@ -358,28 +358,55 @@ def _format_search_results(
     return "\n".join(parts).rstrip()
 
 
-def list_files_vfs(vfs_dir: str, glob_pattern: str = "**/*") -> list[str]:
-    """List files in the virtual FS with diff-status prefixes.
+def _fmt_bytes(n: int) -> str:
+    """Compact byte size for diff_list_files summaries — `980B`, `2.4kB`,
+    `1.2MB`. We intentionally stop at MB: VFS files larger than that are
+    almost always generated/binary and read by the agent at most once."""
+    if n < 1024:
+        return f"{n}B"
+    if n < 1024 * 1024:
+        return f"{n/1024:.1f}kB"
+    return f"{n/(1024*1024):.1f}MB"
 
-    Each entry is `<status> <path>`, mirroring the `+` / `-` / ` `
-    line-marker convention from diff_read_file / diff_search:
 
-        A  src/added.java
-        M  src/modified.java
-        D  src/deleted.java
-        R  src/renamed_new.java
-        C  src/copied.java
-           src/unchanged.java        (space = unchanged context file)
+def list_files_vfs(vfs_dir: str, glob_pattern: str = "**/*") -> str:
+    """List files in the virtual FS as plain text, one row per file:
 
-    The status comes from the manifest written by `materialize_vfs`
-    via `load_path_status`. Files not in the manifest are treated as
-    unchanged (` `). The `.diffmeta/` directory is hidden as before.
-    """
+        M  src/OrderService.java  (68L · +12/-8 · 2.4kB)
+        A  src/AuditLog.java      (50L · +50/-0 · 1.8kB)
+        D  src/LegacyService.java (30L · +0/-30 · 1.1kB)
+        R  src/OrderUtils.java    (25L · +0/-0 · 720B)
+           src/Util.java          (42L · 980B)
+
+    The leading status code mirrors the `+` / `-` / ` ` line markers
+    in diff_read_file / diff_search — A/M/D/R/C/T from git diff plus a
+    space for unchanged context files. Renames surface as a `D <old>`
+    + `R <new>` pair so both paths exist in the listing.
+
+    The trailing `(...)` summary lets the agent estimate the cost of
+    reading the file *before* calling diff_read_file:
+
+      - `L`     — total lines in the unified-diff view (== what you'd
+                  get from `diff_read_file(path)` without a range).
+      - `+N/-M` — added / removed line counts. Big delta vs small `L`
+                  means `changes_only=true` saves little; small delta
+                  vs big `L` means it saves a lot.
+      - bytes   — file size on disk (the materialised VFS file holds
+                  the unified-diff content for changed files, so this
+                  is the byte cost of a full read).
+
+    For unchanged files (status=` `) we drop `+N/-M` (always zero by
+    definition) and show only `L · bytes`. Binary files are listed as
+    `(binary)` — no useful L / +N/-M to report.
+
+    The `.diffmeta/` directory is hidden. Returns an empty string when
+    no files match the glob."""
     from .virtual_fs import load_path_status
     vfs = Path(vfs_dir)
     statuses = load_path_status(vfs_dir)
     paths = sorted(vfs.glob(glob_pattern))
-    result: list[str] = []
+
+    rows: list[tuple[str, str, str]] = []  # (status, path, summary)
     for p in paths:
         if not p.is_file():
             continue
@@ -387,8 +414,55 @@ def list_files_vfs(vfs_dir: str, glob_pattern: str = "**/*") -> list[str]:
         if rel.startswith(".diffmeta"):
             continue
         st = statuses.get(rel, " ")
-        result.append(f"{st} {rel}")
-    return result
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = 0
+
+        # Binary marker file — `(binary file)\n` written by
+        # materialize_vfs. No meaningful line counts.
+        is_binary = False
+        try:
+            if size <= 32:
+                head = p.read_text()
+                if head.strip() == "(binary file)":
+                    is_binary = True
+        except (UnicodeDecodeError, OSError):
+            is_binary = True
+
+        if is_binary:
+            rows.append((st, rel, "(binary)"))
+            continue
+
+        meta = load_diffmeta(vfs_dir, rel)
+        if meta is not None:
+            # Changed file — L from meta length, +/- from markers.
+            L = len(meta)
+            plus = sum(1 for m in meta if m.get("marker") == "+")
+            minus = sum(1 for m in meta if m.get("marker") == "-")
+            summary = f"({L}L · +{plus}/-{minus} · {_fmt_bytes(size)})"
+        else:
+            # Unchanged file — count lines from content (cheap; agent
+            # rarely lists tens of thousands of unchanged files).
+            try:
+                with open(p, "rb") as f:
+                    L = sum(1 for _ in f)
+            except OSError:
+                L = 0
+            summary = f"({L}L · {_fmt_bytes(size)})"
+        rows.append((st, rel, summary))
+
+    if not rows:
+        return ""
+
+    # Column-align path → summary so the `(` lines up. The status
+    # prefix is always `<X>  ` (status char, two spaces), 3 cols wide,
+    # so unchanged rows (status=' ') and changed rows align without
+    # extra logic.
+    path_w = max(len(r[1]) for r in rows)
+    out = [f"{st}  {path:<{path_w}}  {summary}"
+           for st, path, summary in rows]
+    return "\n".join(out)
 
 
 def read_outline_vfs(
