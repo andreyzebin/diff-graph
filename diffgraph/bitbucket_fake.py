@@ -346,8 +346,12 @@ def _render_thread(comments: list[dict], root_id: int, *,
             int(c["id"]))
 
     lines: list[str] = []
+    visited: set[int] = set()  # cycle guard — malformed fixtures can loop
 
     def _render(node_id: int, depth: int) -> None:
+        if node_id in visited:
+            return
+        visited.add(node_id)
         c = idx.get(node_id)
         if not c:
             return
