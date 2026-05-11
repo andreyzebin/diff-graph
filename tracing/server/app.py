@@ -872,6 +872,126 @@ async def api_qa_reap(grace_seconds: int = 30):
     return JSONResponse({"data": {"reaped": n}})
 
 
+# ── Generic enqueue + retry + browse — abstract distributed-queue API ──
+
+class GenericEnqueuePayload(BaseModel):
+    """Generic task: a shell cmd that a worker subscribed to `queue`
+    picks up and runs. Resources are URIs (scenario://X, provider://Y)
+    that get parsed + linked by the UI/CLI. No QA-specific framing —
+    a task is just (queue, cmd, env, cwd, retries, payload, resources).
+    """
+    queue: str                                   # routing key (= worker's provider)
+    cmd: str                                     # shell cmd template (worker .format()s {provider} etc.)
+    env: Optional[dict[str, str]] = None
+    cwd: Optional[str] = None
+    priority: int = 100
+    max_retries: int = 3
+    not_before: Optional[str] = None             # ISO datetime; worker honours
+    resources: Optional[list[str]] = None        # URIs: scenario://X, lineage://master, mutation://abc
+    tags: Optional[list[str]] = None             # free-form
+    payload: Optional[dict] = None               # extra free-form metadata
+
+
+@app.post("/api/qa/tasks/enqueue")
+async def api_qa_enqueue_generic(p: GenericEnqueuePayload):
+    """Enqueue a generic task. The worker selects by `queue` (which
+    maps to its --provider flag), runs `cmd` after `.format({provider})`
+    expansion. Resources are URIs the UI dereferences to deep-links."""
+    from quality_api.resources import resolve as _resolve_resource
+
+    # Pre-validate every resource URI so bad input is rejected upfront.
+    resources = list(p.resources or [])
+    for u in resources:
+        if _resolve_resource(u) is None:
+            return JSONResponse({"error": {
+                "code": "bad_resource",
+                "message": f"resource URI not recognised: {u}"}},
+                status_code=400)
+
+    payload = dict(p.payload or {})
+    payload["bench_cmd"] = p.cmd               # worker picks this up
+    if p.env:
+        payload["env"] = p.env
+    if p.cwd:
+        payload["cwd"] = p.cwd
+    if resources:
+        payload["resources"] = resources
+    if p.tags:
+        payload["tags"] = list(p.tags)
+
+    spec = TaskSpec(
+        scenario_id="",                         # generic — no scenario binding
+        provider=p.queue,
+        priority=p.priority,
+        payload=payload,
+        not_before=p.not_before,
+    )
+    task_id = _qa_queue.enqueue(spec)
+    # Honour max_retries override (default 3 from schema; allow caller to lift/cap).
+    if p.max_retries != 3:
+        with _qa_queue._lock, _qa_queue._conn() as c:
+            c.execute("UPDATE qa_tasks SET max_retries=? WHERE id=?",
+                      (int(p.max_retries), task_id))
+            c.commit()
+    t = _qa_queue.get(task_id)
+    return JSONResponse({"data": task_to_dict(t)}, status_code=201)
+
+
+@app.post("/api/qa/tasks/{task_id}/retry")
+async def api_qa_retry_task(task_id: int):
+    """Re-queue a finished/error task. Resets retry_count to 0 (this
+    is a *manual* retry — separate from auto-retry counted in
+    retry_count). Cancels + re-queues if lease is still live."""
+    t = _qa_queue.get(task_id)
+    if not t:
+        return JSONResponse({"error": {"code": "not_found",
+                                       "message": f"task {task_id} not found"}},
+                             status_code=404)
+    if t.state == "queued":
+        return JSONResponse({"data": task_to_dict(t),
+                             "meta": {"no_op": "already queued"}})
+    with _qa_queue._lock, _qa_queue._conn() as c:
+        c.execute(
+            """UPDATE qa_tasks
+               SET state='queued', retry_count=0,
+                   lease_owner=NULL, lease_expires_at=NULL,
+                   started_at=NULL, finished_at=NULL,
+                   error_class=NULL, result_json=NULL
+               WHERE id=?""",
+            (task_id,),
+        )
+        c.commit()
+    t = _qa_queue.get(task_id)
+    return JSONResponse({"data": task_to_dict(t)})
+
+
+@app.get("/api/qa/resources/resolve")
+async def api_qa_resolve_resource(uri: str):
+    """Resolve a resource URI to its metadata + UI deep-link. Used
+    by clients that want to render `scenario://X` as a clickable
+    chip without hardcoding the URL pattern."""
+    from quality_api.resources import resolve as _resolve, known_kinds, ui_url
+    info = _resolve(uri)
+    if info is None:
+        return JSONResponse({"error": {"code": "bad_uri",
+                                       "message": f"malformed URI: {uri}",
+                                       "known_kinds": known_kinds()}},
+                             status_code=400)
+    return JSONResponse({"data": {
+        "uri": info.uri, "kind": info.kind, "id": info.id,
+        "display": info.display, "ui_path": info.ui_path,
+        "ui_url": ui_url(info.uri) or "",
+    }})
+
+
+@app.get("/api/qa/resources/kinds")
+async def api_qa_resource_kinds():
+    """Enumerate known resource kinds so clients can render kind-aware
+    icons / hint dropdowns without hardcoding the list."""
+    from quality_api.resources import known_kinds
+    return JSONResponse({"data": known_kinds()})
+
+
 @app.post("/api/qa/workers")
 async def api_qa_register_worker(p: WorkerRegisterPayload):
     wid = _qa_queue.register_worker(

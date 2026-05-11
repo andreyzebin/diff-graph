@@ -104,6 +104,8 @@ class TaskRow:
     trace_run_id: Optional[str]
     result_json: Optional[dict]
     error_class: Optional[str]
+    retry_count: int = 0
+    max_retries: int = 3
 
 
 # ── Store ────────────────────────────────────────────────────────────────────
@@ -771,6 +773,10 @@ class TaskQueue:
             trace_run_id=row["trace_run_id"],
             result_json=result,
             error_class=row["error_class"],
+            retry_count=int(row["retry_count"] or 0)
+                if "retry_count" in row.keys() else 0,
+            max_retries=int(row["max_retries"] or 0)
+                if "max_retries" in row.keys() else 0,
         )
 
 
@@ -1300,18 +1306,49 @@ def plan_to_dict(p: PlanRow, *, progress: dict | None = None,
 
 
 def task_to_dict(t: TaskRow) -> dict:
-    """For API serialisation. JSON-safe."""
+    """For API serialisation. JSON-safe.
+
+    `resources` lists URIs the task references (scenario://X,
+    provider://Y, lineage://Z, mutation://abc). They're synthesised
+    from the legacy QA columns so old + new callers see one format —
+    UI / CLI can deep-link without per-column glue.
+    """
+    res: list[str] = []
+    if t.scenario_id:    res.append(f"scenario://{t.scenario_id}")
+    if t.provider:       res.append(f"provider://{t.provider}")
+    if t.lineage:        res.append(f"lineage://{t.lineage}")
+    if t.mutation_hash:  res.append(f"mutation://{t.mutation_hash}")
+    if t.plan_id:        res.append(f"plan://{t.plan_id}")
+    if t.trace_run_id:   res.append(f"session://{t.trace_run_id}")
+    # Payload may carry caller-supplied resource URIs (from the
+    # generic enqueue path). Merge, de-duplicate, preserve order.
+    payload_resources = (t.payload or {}).get("resources") or []
+    seen = set(res)
+    for u in payload_resources:
+        if u not in seen:
+            res.append(u)
+            seen.add(u)
     return {
         "id": t.id,
         "state": t.state,
+        # legacy QA fields — kept for now; new clients should
+        # prefer `resources` for any QA-bound semantics.
         "scenario_id": t.scenario_id,
         "provider": t.provider,
         "attempt_n": t.attempt_n,
         "lineage": t.lineage,
         "mutation_hash": t.mutation_hash,
         "plan_id": t.plan_id,
+        # generic, abstract task fields.
+        "queue": t.provider,                     # alias — `queue` is the right
+                                                 # generic name; `provider`
+                                                 # stays for legacy clients.
         "priority": t.priority,
         "payload": t.payload,
+        "resources": res,
+        "tags": list((t.payload or {}).get("tags") or []),
+        "retry_count": t.retry_count,
+        "max_retries": t.max_retries,
         "lease_owner": t.lease_owner,
         "lease_expires_at": t.lease_expires_at,
         "enqueued_at": t.enqueued_at,
