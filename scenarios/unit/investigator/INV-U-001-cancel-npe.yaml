@@ -24,12 +24,21 @@ repo:
   source_branch: hotfix/ORD-287-cancel-npe
 
 agent_data:
+  # NB: don't telegraph the answer. A reviewer's spawn_agent focus
+  # would naturally describe the diff shape and the concern; it
+  # would NOT name the suspected root cause or recommended fix
+  # location ("mapping configuration / persistence layer" / "fix at
+  # entity") — those are the investigator's job to derive. Earlier
+  # draft of this fixture leaked exactly those phrases, then graded
+  # the investigator on finding them; the score was confirming what
+  # the focus already said, not measuring root-cause discovery.
   focus: |
-    The hotfix wraps `order.getItems()` in a null guard inside
-    `cancelOrder()`. Investigate whether this is the right level
-    to fix the issue, or whether the null `items` itself indicates
-    a deeper problem (mapping configuration, persistence layer)
-    that the guard would silently hide.
+    OrderService.cancelOrder() was hitting a NullPointerException on
+    `order.getItems()`. The hotfix in this diff wraps that loop in
+    `if (order.getItems() != null)`. Investigate whether this is
+    the right place and shape of fix, and whether the underlying
+    cause is properly understood — or whether something more
+    fundamental about the Order entity is going wrong.
 
 # ── Judge (investigator standalone) ──────────────────────────────────────
 # Investigator runs its full LOOK→THINK→DONE loop on the given focus.

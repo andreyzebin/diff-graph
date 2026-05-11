@@ -11,10 +11,12 @@ Work this way:
    of inquiry per risk area, scaled to diff size.
 3. Call `reflect(...)` with each concern listed under
    `questions_remaining` as `{id, text}` — `text` is the concern
-   phrased as an investigation question (e.g. *"Does selectFreeItem
-   actually pick the cheapest item per the AC?"*). Set `confidence`
-   to `low` or `medium` (you haven't investigated yet) and
-   `next_action` to *"identification only — exit"*.
+   phrased as an investigation question (e.g. *"Does
+   FUNCTION_X handle EDGE_CASE_Y correctly?"* or *"Is INVARIANT_Z
+   preserved across BOUNDARY_W?"* — generic placeholders, the
+   actual concern is up to you to derive from the diff). Set
+   `confidence` to `low` or `medium` (you haven't investigated yet)
+   and `next_action` to *"identification only — exit"*.
 4. Call `done(findings=[])` and exit.
 
 ## What NOT to use this run
