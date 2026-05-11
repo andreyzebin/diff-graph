@@ -566,6 +566,52 @@ class TestMermaid:
         assert "-->>-" not in out, \
             f"unbalanced agent_done rendered as `-->>-`: {out}"
 
+    def test_role_boxes_in_mermaid(self, db_two_runs):
+        """Participants must be wrapped in `box rgb(...)` groups,
+        one per role (Reviewer / Investigators / Tools / Judge).
+        Box colouring is mermaid's only first-class per-actor
+        styling — without it the diagram would render with all
+        lanes the same blue."""
+        db_path, agent_id, _ = db_two_runs
+        events = events_from_runs(
+            resolve_runs(f"scenario_run://{agent_id}", db_path), db_path,
+        )
+        out = to_mermaid(events, db_path)
+        assert "  box rgb(" in out, \
+            f"no role box wrapping in mermaid output:\n{out[:400]}"
+        # `end` closes each box; count should match boxes.
+        boxes = sum(1 for l in out.splitlines() if l.strip().startswith("box "))
+        ends  = sum(1 for l in out.splitlines() if l.strip() == "end")
+        assert boxes == ends, f"unbalanced box/end: {boxes} boxes vs {ends} ends"
+
+    def test_d2_per_actor_style(self, db_two_runs):
+        """D2 actors carry per-participant `style.fill` /
+        `style.stroke` so the diagram renders with role colours
+        instead of D2's plain default lanes."""
+        db_path, agent_id, _ = db_two_runs
+        events = events_from_runs(
+            resolve_runs(f"scenario_run://{agent_id}", db_path), db_path,
+        )
+        out = to_d2(events, db_path)
+        assert "style.fill" in out
+        assert "style.stroke" in out
+
+    def test_g6_nodes_carry_role_colors(self, db_two_runs):
+        """G6 nodes get `fill` and `stroke` from the shared palette
+        so the frontend doesn't need to know about roles to render
+        consistently with mermaid/d2."""
+        db_path, agent_id, _ = db_two_runs
+        events = events_from_runs(
+            resolve_runs(f"scenario_run://{agent_id}", db_path), db_path,
+        )
+        out = to_g6(events, db_path)
+        for n in out["nodes"]:
+            assert "fill" in n, f"missing fill on g6 node: {n}"
+            assert "stroke" in n, f"missing stroke on g6 node: {n}"
+            assert "role" in n, f"missing role on g6 node: {n}"
+            assert n["fill"].startswith("#"), n
+            assert n["stroke"].startswith("#"), n
+
     def test_open_activation_gets_closed(self, db_two_runs):
         """If the run is mid-flight (spawn arrived but no done yet),
         any still-activated lanes get a synthetic `deactivate` at

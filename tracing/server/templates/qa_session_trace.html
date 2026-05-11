@@ -8,7 +8,7 @@
   window.QA_BASE_PATH = "{{ base_path }}";
   window.RUN_ID = "{{ run_id }}";
 </script>
-<script defer src="{{ base_path }}/static/qa_session_trace.js?v=4"></script>
+<script defer src="{{ base_path }}/static/qa_session_trace.js?v=5"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
 body { padding: 16px; max-width: 1700px; margin: 0 auto; }
@@ -104,6 +104,12 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
 }
 .format-tab:hover { background: #30363d; }
 .format-tab.active { background: #1f6feb44; color: #58a6ff; border-color: #1f6feb; }
+.budget-controls {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 0.85em; color: #8b949e;
+}
+.budget-controls button { min-width: 26px; padding: 2px 6px; }
+.budget-value { font-variant-numeric: tabular-nums; min-width: 4em; text-align: center; }
 .autorefresh-label {
   display: flex; align-items: center; gap: 4px; font-size: 0.85em;
   color: #8b949e; cursor: pointer; user-select: none;
@@ -178,6 +184,11 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
                   @click="diagramFormat = f; loadDiagram()"
                   x-text="f === 'mermaid' ? 'Mermaid' : (f === 'd2' ? 'D2 source' : 'G6 graph')"></button>
         </template>
+      </div>
+      <div class="budget-controls" title="event budget — fewer = more aggressive collapse">
+        <button type="button" class="toolbar-btn" @click="bumpBudget(-1)" :disabled="diagramBudget <= 20">−</button>
+        <span class="budget-value" x-text="`${diagramBudget} ev`"></span>
+        <button type="button" class="toolbar-btn" @click="bumpBudget(+1)" :disabled="diagramBudget >= 2000">+</button>
       </div>
       <label class="autorefresh-label" :title="meta.status === 'running' ? 'auto-refresh every 5s while the run is still going' : 'run already finished — auto-refresh is a no-op'">
         <input type="checkbox" :checked="diagramAutoRefresh" @change="toggleAutoRefresh()">

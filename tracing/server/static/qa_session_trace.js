@@ -205,9 +205,22 @@ document.addEventListener('alpine:init', () => {
     diagramError: '',
     diagramOpen: false,          // <details> open state — drives auto-refresh
     diagramAutoRefresh: true,    // user-toggleable; default on
+    diagramBudget: 60,           // max_events; default fits on one screen
     _diagramLoadedOnce: false,
     _diagramTimer: null,
     _g6Instance: null,
+
+    bumpBudget(direction) {
+      // Geometric steps so the value scales naturally — small
+      // adjustments at the low end, bigger jumps at the high end.
+      const cur = this.diagramBudget;
+      const next = direction > 0
+        ? Math.min(2000, Math.round(cur * 1.5))
+        : Math.max(20, Math.round(cur / 1.5));
+      if (next === cur) return;
+      this.diagramBudget = next;
+      this.loadDiagram();
+    },
 
     onDiagramToggle(el) {
       this.diagramOpen = !!el.open;
@@ -274,7 +287,10 @@ document.addEventListener('alpine:init', () => {
       const scopeUri = this.diagramScope === 'scenario_run'
         ? `scenario_run://${this.meta.scenario_run_id || this.runId}`
         : `session://${this.runId}`;
-      const url = `${this.qaBase}/api/diagram?scope=${encodeURIComponent(scopeUri)}&format=${this.diagramFormat}`;
+      const url = `${this.qaBase}/api/diagram`
+        + `?scope=${encodeURIComponent(scopeUri)}`
+        + `&format=${this.diagramFormat}`
+        + `&max_events=${this.diagramBudget}`;
       try {
         const resp = await fetch(url);
         if (!resp.ok) {
@@ -384,12 +400,16 @@ document.addEventListener('alpine:init', () => {
         },
         modes: { default: ['drag-canvas', 'zoom-canvas', 'drag-node'] },
       });
-      // Colour nodes by kind: agents vs systems.
+      // Colours come from the server (role-keyed palette shared with
+      // the mermaid/d2 renderers, see diagram._ROLE_PALETTE). Keeps
+      // the same agent the same colour across all three formats.
       const nodes = (this.diagramG6.nodes || []).map(n => ({
         ...n,
-        style: n.kind === 'system'
-          ? { fill: '#56d36444', stroke: '#56d364', lineWidth: 1.5 }
-          : { fill: '#1f6feb44', stroke: '#58a6ff', lineWidth: 1.5 },
+        style: {
+          fill: (n.fill || '#1f6feb') + '44',  // re-apply translucency
+          stroke: n.stroke || '#58a6ff',
+          lineWidth: 1.5,
+        },
       }));
       // Edge labels show call count; thicker for hotter edges.
       const edges = (this.diagramG6.edges || []).map(e => ({

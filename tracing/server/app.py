@@ -118,16 +118,22 @@ async def api_run_json(run_id: str):
 
 
 @app.get("/api/diagram")
-async def api_diagram(scope: str, format: str = "mermaid"):
+async def api_diagram(scope: str, format: str = "mermaid",
+                       max_events: int = 60):
     """Build an interaction diagram for any scope URI.
 
     Parameters:
-      scope   — resource URI: `session://<run_id>` or
-                `scenario_run://<id>` or `plan://<int>` (more
-                schemes coming via the resolver — see diagram.py).
-      format  — `mermaid` (inline-renderable sequence source),
-                `d2` (savable D2 source), `g6` (node-edge JSON for
-                AntV G6).
+      scope       — resource URI: `session://<run_id>` or
+                    `scenario_run://<id>` or `plan://<int>` (more
+                    schemes coming via the resolver — see diagram.py).
+      format      — `mermaid` (inline-renderable sequence source),
+                    `d2` (savable D2 source), `g6` (node-edge JSON
+                    for AntV G6).
+      max_events  — soft cap for the rendered diagram. Fair-share
+                    progressive collapse fits to this budget; pass
+                    0 to disable collapsing (debug). Default 60 so
+                    the result fits on one screen for typical
+                    sessions; the UI's ±buttons scale this.
 
     All three formats render the same canonical event stream from
     `events_from_runs(resolve_runs(scope))` — adding a new
@@ -136,7 +142,8 @@ async def api_diagram(scope: str, format: str = "mermaid"):
     from tracing.server.diagram import build_diagram
     from fastapi.responses import PlainTextResponse
     try:
-        mime, body = build_diagram(scope, format, str(DEFAULT_DB_PATH))
+        mime, body = build_diagram(scope, format, str(DEFAULT_DB_PATH),
+                                    max_events=max_events)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     if isinstance(body, dict):

@@ -664,6 +664,46 @@ def _match_spawn(args_raw: str,
 # ── Renderers ─────────────────────────────────────────────────────────────
 
 
+# ── Role-based coloring ───────────────────────────────────────────────────
+
+# One palette shared across all three renderers so Mermaid / D2 / G6
+# colour the same agent the same way. Tuple is (fill, stroke).
+# Colours target a dark background; fills are translucent so the
+# participant text stays readable.
+_ROLE_PALETTE: dict[str, tuple[str, str]] = {
+    "reviewer":     ("#1f6feb44", "#58a6ff"),   # blue
+    "investigator": ("#a371f744", "#d2a8ff"),   # purple
+    "judge":        ("#d2992244", "#e3b341"),   # gold
+    "dispatcher":   ("#db6d2844", "#f0883e"),   # orange
+    "tools":        ("#56d36444", "#79c0ff"),   # green (systems)
+    "agent":        ("#8b949e44", "#c9d1d9"),   # gray fallback
+}
+
+
+def _role_for(uri: str, label: str) -> str:
+    """Bucket an actor (URI + label) into one of the palette roles.
+    Agents take their `agent_name` (`reviewer`, `investigator`, …);
+    systems all share the `tools` lane colour."""
+    if uri.startswith("system:"):
+        return "tools"
+    if not uri.startswith("agent:"):
+        return "agent"
+    # Label might be `investigator-3` — strip the disambiguator.
+    base = label.split("-", 1)[0].strip().lower()
+    return base if base in _ROLE_PALETTE else "agent"
+
+
+def _rgba_for_mermaid(role: str) -> str:
+    """Mermaid `box rgb(r, g, b, a)` expects integer rgb + 0..1 alpha.
+    Our palette stores `#RRGGBBAA`; convert."""
+    fill, _ = _ROLE_PALETTE.get(role, _ROLE_PALETTE["agent"])
+    if fill.startswith("#") and len(fill) >= 7:
+        r = int(fill[1:3], 16); g = int(fill[3:5], 16); b = int(fill[5:7], 16)
+        a = int(fill[7:9], 16) / 255 if len(fill) >= 9 else 1.0
+        return f"rgb({r}, {g}, {b}, {a:.2f})"
+    return "rgb(128, 128, 128, 0.27)"
+
+
 _PART_SAFE = re.compile(r"[^A-Za-z0-9_]")
 
 
@@ -826,8 +866,33 @@ def to_mermaid(events: list[Event], db_path: str) -> str:
     participants = _participants_of(events)
     participants = _enrich_agent_labels(events, participants, db_path)
     lines: list[str] = ["sequenceDiagram"]
+
+    # Group participants by role so each gets a coloured `box`. Box
+    # syntax (Mermaid 9.4+) is the only per-actor colouring mermaid
+    # supports out of the box — individual `participant`s aren't
+    # styleable inline.
+    from collections import OrderedDict
+    grouped: "OrderedDict[str, list[tuple[str, str]]]" = OrderedDict()
     for uri, label in participants:
-        lines.append(f"  participant {_safe_id(uri)} as {_mm_escape(label)}")
+        role = _role_for(uri, label)
+        grouped.setdefault(role, []).append((uri, label))
+
+    # Pretty-up the role label (singular if 1, plural with count if more).
+    _role_display = {
+        "reviewer": "Reviewer", "investigator": "Investigator",
+        "judge": "Judge", "dispatcher": "Dispatcher",
+        "tools": "Tools", "agent": "Agent",
+    }
+    for role, items in grouped.items():
+        n = len(items)
+        display = _role_display.get(role, role.capitalize())
+        if n > 1 and role not in ("tools",):
+            display = f"{display}s ({n})"
+        rgba = _rgba_for_mermaid(role)
+        lines.append(f"  box {rgba} {display}")
+        for uri, label in items:
+            lines.append(f"    participant {_safe_id(uri)} as {_mm_escape(label)}")
+        lines.append("  end")
 
     # Mermaid's `+` / `-` syntax MUST be balanced — emitting a
     # `-->>-` for a participant that was never `->>+`'d trips
@@ -894,7 +959,16 @@ def to_d2(events: list[Event], db_path: str) -> str:
                         "  shape: sequence_diagram"]
     for uri, label in participants:
         sid = _safe_id(uri)
-        lines.append(f"  {sid}: {json.dumps(label)}")
+        role = _role_for(uri, label)
+        fill, stroke = _ROLE_PALETTE.get(role, _ROLE_PALETTE["agent"])
+        # D2 expects 6-digit hex (no alpha). Drop the alpha channel
+        # — D2 actor lanes don't honour translucent fills cleanly.
+        fill6 = fill[:7]
+        lines.append(f"  {sid}: {{")
+        lines.append(f"    label: {json.dumps(label)}")
+        lines.append(f"    style.fill: {json.dumps(fill6)}")
+        lines.append(f"    style.stroke: {json.dumps(stroke)}")
+        lines.append(f"  }}")
 
     for e in events:
         sa, ta = _safe_id(e.actor), _safe_id(e.target or e.actor)
@@ -924,7 +998,13 @@ def to_g6(events: list[Event], db_path: str) -> dict:
     for uri, label in participants:
         nid = _safe_id(uri)
         kind = (uri.split(":", 1)[0] if ":" in uri else "other")
-        nodes_by_id[nid] = {"id": nid, "label": label, "kind": kind}
+        role = _role_for(uri, label)
+        fill, stroke = _ROLE_PALETTE.get(role, _ROLE_PALETTE["agent"])
+        nodes_by_id[nid] = {
+            "id": nid, "label": label, "kind": kind, "role": role,
+            "fill": fill[:7],   # G6 accepts #RRGGBB
+            "stroke": stroke,
+        }
 
     for e in events:
         if not e.target or e.actor == e.target:
@@ -962,7 +1042,7 @@ def to_g6(events: list[Event], db_path: str) -> dict:
 
 
 def build_diagram(scope_uri: str, fmt: str, db_path: str,
-                  *, max_events: int = 200):
+                  *, max_events: int = 60):
     """Return (mime_type, body) for the given scope + format.
     Body is a string for mermaid/d2, a dict for g6 (route serialises).
 
