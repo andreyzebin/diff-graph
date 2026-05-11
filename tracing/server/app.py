@@ -117,6 +117,33 @@ async def api_run_json(run_id: str):
     return JSONResponse(content=_prepare_agent(raw, depth=0))
 
 
+@app.get("/api/diagram")
+async def api_diagram(scope: str, format: str = "mermaid"):
+    """Build an interaction diagram for any scope URI.
+
+    Parameters:
+      scope   — resource URI: `session://<run_id>` or
+                `scenario_run://<id>` or `plan://<int>` (more
+                schemes coming via the resolver — see diagram.py).
+      format  — `mermaid` (inline-renderable sequence source),
+                `d2` (savable D2 source), `g6` (node-edge JSON for
+                AntV G6).
+
+    All three formats render the same canonical event stream from
+    `events_from_runs(resolve_runs(scope))` — adding a new
+    URI scheme or output format is local to diagram.py.
+    """
+    from tracing.server.diagram import build_diagram
+    from fastapi.responses import PlainTextResponse
+    try:
+        mime, body = build_diagram(scope, format, str(DEFAULT_DB_PATH))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if isinstance(body, dict):
+        return JSONResponse(body)
+    return PlainTextResponse(body, media_type=mime)
+
+
 @app.get("/api/runs/{run_id}")
 async def api_run_meta(run_id: str):
     """Run-level metadata for the per-run header strip (scenario, plan,
