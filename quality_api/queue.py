@@ -106,6 +106,7 @@ class TaskRow:
     error_class: Optional[str]
     retry_count: int = 0
     max_retries: int = 3
+    resources: list[str] = field(default_factory=list)
 
 
 # ── Store ────────────────────────────────────────────────────────────────────
@@ -182,6 +183,14 @@ class TaskQueue:
                 # DEFAULT_MAX_RETRIES). finish() decides retry vs final.
                 ("qa_tasks",              "retry_count",          "INTEGER NOT NULL DEFAULT 0"),
                 ("qa_tasks",              "max_retries",          f"INTEGER NOT NULL DEFAULT {DEFAULT_MAX_RETRIES}"),
+                # Canonical task↔resource binding — JSON array of URIs
+                # like ["scenario://X", "provider://Y", …]. Stage A of
+                # the column-drop migration (see TODO): we dual-write
+                # this alongside scenario_id / provider / lineage /
+                # mutation_hash so consumers can switch over one at a
+                # time. Stage B drops the legacy columns once every
+                # SQL reader uses resources via json_each.
+                ("qa_tasks",              "resources",            "TEXT NOT NULL DEFAULT '[]'"),
             ]:
                 try:
                     c.execute(f"SELECT {col} FROM {table} LIMIT 0")
@@ -210,6 +219,31 @@ class TaskQueue:
             try:
                 c.execute("CREATE INDEX IF NOT EXISTS idx_qa_plans_promote ON qa_plans(promote_ready)")
                 c.execute("CREATE INDEX IF NOT EXISTS idx_qa_tasks_not_before ON qa_tasks(not_before)")
+            except sqlite3.OperationalError:
+                pass
+            # Backfill `resources` from legacy columns for any existing
+            # rows where it's still empty/'[]'. Idempotent: empty-array
+            # check makes re-runs a no-op. After Stage B drops the
+            # legacy columns this CASE collapses to a no-op.
+            try:
+                c.execute(
+                    """UPDATE qa_tasks
+                       SET resources = (
+                         SELECT json_group_array(uri) FROM (
+                           SELECT 'scenario://' || scenario_id AS uri
+                             WHERE COALESCE(scenario_id, '') != ''
+                           UNION ALL
+                           SELECT 'provider://' || provider WHERE COALESCE(provider, '') != ''
+                           UNION ALL
+                           SELECT 'lineage://' || lineage WHERE COALESCE(lineage, '') != ''
+                           UNION ALL
+                           SELECT 'mutation://' || mutation_hash
+                             WHERE COALESCE(mutation_hash, '') != ''
+                         )
+                       )
+                       WHERE COALESCE(resources, '') IN ('', '[]')""",
+                )
+                c.commit()
             except sqlite3.OperationalError:
                 pass
             c.executescript("""
@@ -338,21 +372,43 @@ class TaskQueue:
     def enqueue(self, spec: TaskSpec) -> int:
         """Insert a new task. Returns its id. Default state is 'queued';
         kind='judge' phantom companions should be created with
-        initial_state='blocked' so lease() never picks them up."""
+        initial_state='blocked' so lease() never picks them up.
+
+        Dual-write resources: assembles the URI array from the spec's
+        legacy QA fields + any URIs the caller stashed in
+        `payload.resources`. Stage A of the column-drop migration.
+        """
+        # Synthesise canonical resource URIs from the legacy fields.
+        # payload.resources (caller-supplied) wins for de-dup ordering.
+        uris: list[str] = []
+        seen: set[str] = set()
+        def _add(u: str):
+            if u and u not in seen:
+                uris.append(u); seen.add(u)
+        for u in (spec.payload or {}).get("resources", []) or []:
+            _add(str(u))
+        if spec.scenario_id:    _add(f"scenario://{spec.scenario_id}")
+        if spec.provider:       _add(f"provider://{spec.provider}")
+        if spec.lineage:        _add(f"lineage://{spec.lineage}")
+        if spec.mutation_hash:  _add(f"mutation://{spec.mutation_hash}")
+        if spec.plan_id:        _add(f"plan://{spec.plan_id}")
+        resources_json = json.dumps(uris, ensure_ascii=False)
+
         with self._lock, self._conn() as c:
             cur = c.execute(
                 """INSERT INTO qa_tasks
                    (state, kind, parent_task_id, scenario_id, provider,
                     attempt_n, lineage, mutation_hash, plan_id, priority,
-                    payload, enqueued_at, not_before)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    payload, enqueued_at, not_before, resources)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (spec.initial_state, spec.kind, spec.parent_task_id,
                  spec.scenario_id, spec.provider, spec.attempt_n,
                  spec.lineage or "", spec.mutation_hash or "",
                  spec.plan_id, spec.priority,
                  json.dumps(spec.payload, ensure_ascii=False),
                  _now().isoformat(),
-                 spec.not_before),
+                 spec.not_before,
+                 resources_json),
             )
             c.commit()
             return int(cur.lastrowid)
@@ -777,6 +833,9 @@ class TaskQueue:
                 if "retry_count" in row.keys() else 0,
             max_retries=int(row["max_retries"] or 0)
                 if "max_retries" in row.keys() else 0,
+            resources=(json.loads(row["resources"]) if "resources" in row.keys()
+                                                    and row["resources"]
+                       else []),
         )
 
 
@@ -1308,26 +1367,29 @@ def plan_to_dict(p: PlanRow, *, progress: dict | None = None,
 def task_to_dict(t: TaskRow) -> dict:
     """For API serialisation. JSON-safe.
 
-    `resources` lists URIs the task references (scenario://X,
-    provider://Y, lineage://Z, mutation://abc). They're synthesised
-    from the legacy QA columns so old + new callers see one format —
-    UI / CLI can deep-link without per-column glue.
+    `resources` comes from the canonical column (Stage A); fall back
+    to synthesising from legacy columns for rows that pre-date the
+    migration / Stage B. session://<trace_run_id> is added live
+    because the run_id is only populated after lease()→worker→bench
+    spans up, not at enqueue.
     """
-    res: list[str] = []
-    if t.scenario_id:    res.append(f"scenario://{t.scenario_id}")
-    if t.provider:       res.append(f"provider://{t.provider}")
-    if t.lineage:        res.append(f"lineage://{t.lineage}")
-    if t.mutation_hash:  res.append(f"mutation://{t.mutation_hash}")
-    if t.plan_id:        res.append(f"plan://{t.plan_id}")
-    if t.trace_run_id:   res.append(f"session://{t.trace_run_id}")
-    # Payload may carry caller-supplied resource URIs (from the
-    # generic enqueue path). Merge, de-duplicate, preserve order.
-    payload_resources = (t.payload or {}).get("resources") or []
+    res = list(t.resources or [])
     seen = set(res)
-    for u in payload_resources:
-        if u not in seen:
-            res.append(u)
-            seen.add(u)
+    def _add(u: str):
+        if u and u not in seen:
+            res.append(u); seen.add(u)
+    # session id lands on the task post-lease — append live.
+    if t.trace_run_id:
+        _add(f"session://{t.trace_run_id}")
+    # Defensive backfill: if a row somehow lacks resources but has
+    # legacy column values, synthesise. After Stage B this dead
+    # path can be deleted.
+    if not res:
+        if t.scenario_id:    _add(f"scenario://{t.scenario_id}")
+        if t.provider:       _add(f"provider://{t.provider}")
+        if t.lineage:        _add(f"lineage://{t.lineage}")
+        if t.mutation_hash:  _add(f"mutation://{t.mutation_hash}")
+        if t.plan_id:        _add(f"plan://{t.plan_id}")
     return {
         "id": t.id,
         "state": t.state,
