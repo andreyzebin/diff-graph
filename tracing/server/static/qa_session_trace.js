@@ -75,26 +75,25 @@ document.addEventListener('alpine:init', () => {
     // out one message from a `messages` array if provided.
     async openTab(id, title, url, msgIndex) {
       // De-dupe — if tab is already open, just activate it.
-      const existing = this.tabs.find(t => t.id === id);
-      if (existing) {
+      if (this.tabs.find(t => t.id === id)) {
         this.activeId = id;
         return;
       }
-      const tab = {
+      this.tabs.push({
         id, title,
         content: 'Loading…',
         rawJson: null,
         jsonMode: false,
         loading: true,
-      };
-      this.tabs.push(tab);
+      });
       this.activeId = id;
 
+      let content;
+      let rawJson = null;
       try {
         const resp = await fetch(url);
         const raw = await resp.text();
-        let content = raw;
-        let rawJson = null;
+        content = raw;
         if (msgIndex !== undefined && msgIndex !== null) {
           try {
             const msgs = JSON.parse(raw);
@@ -122,12 +121,26 @@ document.addEventListener('alpine:init', () => {
             }
           } catch (e) { /* not JSON */ }
         }
-        tab.content = content;
-        tab.rawJson = (content === rawJson) ? null : rawJson;
-        tab.loading = false;
       } catch (e) {
-        tab.content = 'Error: ' + (e && e.message ? e.message : e);
-        tab.loading = false;
+        content = 'Error: ' + (e && e.message ? e.message : e);
+      }
+
+      // Replace the tab slot in `this.tabs` instead of mutating the
+      // local reference. Alpine's reactive proxy wraps the array but
+      // the `tab` object we built before `push` is the un-proxied
+      // original — mutating its fields directly didn't trigger the
+      // re-render of `x-text="activeTab.content"`. Replacing the
+      // entry forces the array setter to fire so the panel updates
+      // as soon as the fetch resolves (no more "Loading…" stuck
+      // until you click another tab and back).
+      const i = this.tabs.findIndex(t => t.id === id);
+      if (i >= 0) {
+        this.tabs[i] = {
+          ...this.tabs[i],
+          content,
+          rawJson: (content === rawJson) ? null : rawJson,
+          loading: false,
+        };
       }
     },
 
