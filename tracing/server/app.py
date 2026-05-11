@@ -1036,6 +1036,36 @@ async def api_qa_config():
     }})
 
 
+@app.get("/api/qa/queues")
+async def api_qa_queues():
+    """List distinct routing-keys (queues) with per-state task counts.
+    Used by /qa/queue UI's queue-filter dropdown and by CLI's
+    `quality-cli queue stats`. Computed live from qa_tasks — no
+    extra bookkeeping."""
+    import sqlite3 as _sqlite
+    rows = []
+    try:
+        with _qa_queue._lock, _qa_queue._conn() as c:
+            cur = c.execute(
+                """SELECT provider AS queue, state, COUNT(*) AS n
+                   FROM qa_tasks
+                   GROUP BY provider, state
+                   ORDER BY provider, state"""
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+    except _sqlite.OperationalError:
+        rows = []
+    # Pivot to {queue: {state: count, total: N}}
+    by_queue: dict[str, dict] = {}
+    for r in rows:
+        q = r["queue"] or "(unspecified)"
+        by_queue.setdefault(q, {"queue": q, "total": 0})
+        by_queue[q][r["state"]] = int(r["n"])
+        by_queue[q]["total"] += int(r["n"])
+    return JSONResponse({"data": sorted(by_queue.values(),
+                                         key=lambda x: -x["total"])})
+
+
 @app.get("/api/qa/resources/kinds")
 async def api_qa_resource_kinds():
     """Enumerate known resource kinds so clients can render kind-aware

@@ -26,6 +26,8 @@ traces_app = typer.Typer(
 )
 tools_app = typer.Typer(help="Cross-run tool-call search.", no_args_is_help=True)
 agg_app = typer.Typer(help="Aggregate views.", no_args_is_help=True)
+queue_app = typer.Typer(help="QA queue: distinct routing keys + counts.",
+                         no_args_is_help=True)
 plans_app = typer.Typer(help="QA plans (group of tasks).", no_args_is_help=True)
 tasks_app = typer.Typer(help="QA tasks.", no_args_is_help=True)
 auto_app = typer.Typer(help="Auto-plan: git-driven discovery + plan creation.",
@@ -35,6 +37,7 @@ app.add_typer(traces_app, name="traces")
 app.add_typer(tools_app, name="tool-calls")
 app.add_typer(agg_app, name="aggregates")
 app.add_typer(plans_app, name="plans")
+app.add_typer(queue_app, name="queue")
 app.add_typer(tasks_app, name="tasks")
 app.add_typer(auto_app, name="auto-plan")
 
@@ -1039,6 +1042,113 @@ def tasks_resolve(
         _Out.console.print(f"  ui: [blue]{data['ui_url']}[/blue]")
     if open_in_ui and data["ui_url"]:
         _open_browser(data["ui_url"])
+
+
+# ── queue group ──
+
+@queue_app.command("stats")
+def queue_stats(
+    open_in_ui: bool = typer.Option(False, "--open-in-ui",
+                                      help="Open /qa/queue in browser"),
+):
+    """Distinct routing keys with per-state task counts."""
+    j = _api_call("GET", "/api/qa/queues")
+    data = j["data"]
+    if _Out.json_mode:
+        _emit(data); return
+    if not data:
+        _Out.console.print("[dim]no tasks yet[/dim]")
+        return
+    table = Table(title=f"queues · {len(data)}")
+    table.add_column("queue", style="cyan")
+    # Collect every state seen, in conventional ordering.
+    states = ["queued", "leased", "running", "finished",
+              "error", "cancelled", "blocked"]
+    for st in states:
+        if any(r.get(st) for r in data):
+            table.add_column(st, justify="right")
+    table.add_column("total", justify="right", style="bold")
+    for row in data:
+        cells = [row.get("queue") or ""]
+        for st in states:
+            if any(r.get(st) for r in data):
+                cells.append(str(row.get(st, 0) or ""))
+        cells.append(str(row.get("total", 0)))
+        table.add_row(*cells)
+    _Out.console.print(table)
+    if open_in_ui:
+        _open_browser(f"{_server_url()}/qa/queue")
+
+
+# ── plans extension: fire-anonymous (mirrors POST /api/qa/fire-anonymous) ──
+
+@plans_app.command("fire-anonymous")
+def plans_fire_anonymous(
+    scenarios: list[str] = typer.Option(..., "--scenario", "-s",
+                                          help="Scenario id, repeatable"),
+    sha: str = typer.Option(..., "--sha",
+                              help="Mutation SHA (diff-graph commit)"),
+    lineage: str = typer.Option("master"),
+    provider: str = typer.Option("deepseek"),
+    name: str = typer.Option("", help="Optional plan name override"),
+    open_in_ui: bool = typer.Option(False, "--open-in-ui"),
+):
+    """One-shot anonymous plan over N scenarios on a (lineage, sha).
+    Same as POST /api/qa/fire-anonymous; result appears in /qa/plans."""
+    body = {
+        "scenarios": list(scenarios), "sha": sha,
+        "lineage": lineage, "provider": provider,
+        "name": name,
+    }
+    j = _api_call("POST", "/api/qa/fire-anonymous", json_body=body)
+    data = j["data"]
+    if _Out.json_mode:
+        _emit({**data, "task_ids": j.get("meta", {}).get("task_ids")}); return
+    _Out.console.print(f"[green]plan[/green] #{data['id']} · {data['name']}")
+    _Out.console.print(f"  scenarios: {', '.join(scenarios)}")
+    _Out.console.print(f"  tasks created: {len(j.get('meta', {}).get('task_ids', []))}")
+    if open_in_ui:
+        _open_browser(f"{_server_url()}/qa/traces?plan={data['id']}")
+
+
+# ── auto-plan extension: yaml reload + fire-on ──
+
+@auto_app.command("reload-yaml")
+def auto_reload_yaml():
+    """Re-import schedules/*.yaml into qa_auto_plan_configs (yaml wins)."""
+    j = _api_call("POST", "/api/qa/auto-plan/reload-yaml")
+    data = j["data"]
+    if _Out.json_mode:
+        _emit(data); return
+    _Out.console.print(f"[green]yaml reloaded[/green] from [dim]{data['schedules_dir']}[/dim]")
+    if data["created"]:
+        _Out.console.print(f"  created: {', '.join(data['created'])}")
+    if data["updated"]:
+        _Out.console.print(f"  updated: {', '.join(data['updated'])}")
+    if data["errors"]:
+        _Out.console.print(f"  [red]errors[/red]:")
+        for e in data["errors"]:
+            _Out.console.print(f"    · {e['name']}: {e['error']}  ({e['source']})")
+
+
+@auto_app.command("fire-on")
+def auto_fire_on(
+    config_id: int = typer.Argument(...),
+    sha: str = typer.Option(..., "--sha"),
+    lineage: str = typer.Option("master", "--lineage"),
+    open_in_ui: bool = typer.Option(False, "--open-in-ui"),
+):
+    """Manually fire an on_demand schedule on a specific (lineage, sha)."""
+    j = _api_call("POST", f"/api/qa/auto-plan/configs/{config_id}/fire-on",
+                   json_body={"lineage": lineage, "sha": sha})
+    data = j.get("data") or {}
+    if _Out.json_mode:
+        _emit(data); return
+    plan_id = data.get("plan_id")
+    _Out.console.print(f"[green]fired[/green] config #{config_id} → plan #{plan_id} "
+                       f"· {data.get('task_count', 0)} tasks")
+    if open_in_ui and plan_id:
+        _open_browser(f"{_server_url()}/qa/traces?plan={plan_id}")
 
 
 # ── worker ────────────────────────────────────────────────────────────────
