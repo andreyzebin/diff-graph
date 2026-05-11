@@ -476,6 +476,22 @@ class AutoPlanStore:
         )
         now = datetime.now(timezone.utc)
 
+        # Per-scenario bench_cmd from the fixture yaml — unit
+        # fixtures (with bench_cmd: ...) need `bench run-unit
+        # <path>` instead of the pool's default `bench run -s …`.
+        # Same lookup fire-anonymous uses (single source of truth).
+        from .scenarios_index import find_scenario, build_bench_cmd
+        bench_cmd_by_scen: dict[str, str] = {}
+        for sid in scenarios:
+            try:
+                entry = find_scenario(sid)
+            except ValueError:
+                entry = None
+            if entry is not None:
+                cmd = build_bench_cmd(entry, scenario_id=sid)
+                if cmd:
+                    bench_cmd_by_scen[sid] = cmd
+
         task_ids = []
         slot_idx = 0
         for queue_name in cfg.providers:
@@ -493,6 +509,9 @@ class AutoPlanStore:
                     payload_base = {"plan_name": plan_name,
                                     "config_id": cfg.id,
                                     "config_name": cfg.name}
+                    bench_cmd_override = bench_cmd_by_scen.get(scenario, "")
+                    if bench_cmd_override:
+                        payload_base["bench_cmd"] = bench_cmd_override
                     agent_tid = self.queue.enqueue(TaskSpec(
                         queue=queue_name,
                         attempt_n=attempt_n,
