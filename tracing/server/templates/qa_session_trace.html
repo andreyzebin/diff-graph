@@ -8,7 +8,7 @@
   window.QA_BASE_PATH = "{{ base_path }}";
   window.RUN_ID = "{{ run_id }}";
 </script>
-<script defer src="{{ base_path }}/static/qa_session_trace.js?v=2"></script>
+<script defer src="{{ base_path }}/static/qa_session_trace.js?v=3"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
 body { padding: 16px; max-width: 1700px; margin: 0 auto; }
@@ -72,6 +72,49 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
 }
 
 .loading { color: #8b949e; padding: 40px; text-align: center; }
+
+/* Diagram section */
+.diagram-block {
+  margin-bottom: 12px; border: 1px solid #30363d; border-radius: 6px;
+  background: #161b22;
+}
+.diagram-summary {
+  padding: 8px 14px; cursor: pointer; display: flex;
+  align-items: center; gap: 12px; user-select: none;
+}
+.diagram-summary > span:first-child { font-weight: 600; }
+.diagram-hint { color: #8b949e; font-size: 0.85em; }
+.diagram-controls {
+  display: flex; align-items: center; gap: 16px; padding: 8px 14px;
+  border-top: 1px solid #30363d; flex-wrap: wrap;
+}
+.diagram-controls label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 0.85em; color: #8b949e;
+}
+.diagram-controls select {
+  background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+  padding: 3px 6px; border-radius: 4px; font-size: 0.85em;
+}
+.format-tabs { display: flex; gap: 4px; }
+.format-tab {
+  background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+  padding: 3px 10px; cursor: pointer; border-radius: 4px;
+  font-size: 0.85em;
+}
+.format-tab:hover { background: #30363d; }
+.format-tab.active { background: #1f6feb44; color: #58a6ff; border-color: #1f6feb; }
+.d2-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.diagram-output { padding: 14px; min-height: 120px; }
+.diagram-output #diagram-mermaid-host { overflow-x: auto; }
+.diagram-output #diagram-mermaid-host svg { max-width: 100%; height: auto; }
+.diagram-d2-source {
+  background: #0d1117; color: #c9d1d9; padding: 12px;
+  border: 1px solid #30363d; border-radius: 6px; overflow: auto;
+  max-height: 500px; font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+}
+.diagram-error { color: #f85149; padding: 12px; }
 </style>
 </head>
 <body>
@@ -108,6 +151,55 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
       <a class="back-link" :href="`${qaBase}/runs/${runId}/trace`" style="margin-left: 12px;" title="Old Jinja-rendered trace">legacy view ⧉</a>
     </span>
   </div>
+
+  <details class="diagram-block" :open="false" @toggle="$el.open && loadDiagram()">
+    <summary class="diagram-summary">
+      <span>Interaction diagram</span>
+      <span class="diagram-hint">click to expand · Mermaid · D2 source · G6 graph</span>
+    </summary>
+    <div class="diagram-controls">
+      <label>scope
+        <select x-model="diagramScope" @change="loadDiagram()">
+          <option value="session">this session</option>
+          <option value="scenario_run">scenario_run (incl. judge)</option>
+        </select>
+      </label>
+      <div class="format-tabs">
+        <template x-for="f in ['mermaid', 'd2', 'g6']" :key="f">
+          <button type="button"
+                  class="format-tab"
+                  :class="{ active: diagramFormat === f }"
+                  @click="diagramFormat = f; loadDiagram()"
+                  x-text="f === 'mermaid' ? 'Mermaid' : (f === 'd2' ? 'D2 source' : 'G6 graph')"></button>
+        </template>
+      </div>
+      <template x-if="diagramFormat === 'd2'">
+        <span class="d2-tools">
+          <button type="button" class="toolbar-btn" @click="copyDiagramSource()">📋 Copy</button>
+          <a class="back-link" :href="`https://play.d2lang.com/?script=${encodeURIComponent(diagramSource || '')}`"
+             target="_blank" rel="noopener">↗ open in play.d2lang.com</a>
+        </span>
+      </template>
+    </div>
+    <div class="diagram-output">
+      <template x-if="diagramLoading">
+        <div class="loading">rendering…</div>
+      </template>
+      <template x-if="diagramError">
+        <div class="diagram-error" x-text="diagramError"></div>
+      </template>
+      <!-- Mermaid renders into this container, Alpine leaves it
+           alone after the first render so mermaid.run can mutate it. -->
+      <div x-show="diagramFormat === 'mermaid' && !diagramLoading && !diagramError"
+           id="diagram-mermaid-host"></div>
+      <pre x-show="diagramFormat === 'd2' && !diagramLoading && !diagramError"
+           class="diagram-d2-source"
+           x-text="diagramSource"></pre>
+      <div x-show="diagramFormat === 'g6' && !diagramLoading && !diagramError"
+           id="diagram-g6-host"
+           style="width: 100%; height: 480px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px;"></div>
+    </div>
+  </details>
 
   <div class="split" x-show="tree">
     <section class="split-left">

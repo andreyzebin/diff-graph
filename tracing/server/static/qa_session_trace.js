@@ -191,7 +191,171 @@ document.addEventListener('alpine:init', () => {
       return `${m}m${s.toString().padStart(2, '0')}s`;
     },
 
-    // Resizable split divider
+    // ── Diagram (Mermaid / D2 / G6) ──────────────────────────────────
+    //
+    // The right-side panel for tool payloads is independent from this
+    // block; both live on the page. Diagram lazy-loads its renderer
+    // library the first time the user opens the block. /api/diagram
+    // returns text for mermaid/d2 and JSON for g6.
+    diagramScope: 'session',
+    diagramFormat: 'mermaid',
+    diagramSource: '',
+    diagramG6: null,
+    diagramLoading: false,
+    diagramError: '',
+    _diagramLoadedOnce: false,
+    _g6Instance: null,
+
+    async loadDiagram() {
+      this._diagramLoadedOnce = true;
+      this.diagramError = '';
+      this.diagramLoading = true;
+
+      // Build the scope URI from the current selection.
+      const scopeUri = this.diagramScope === 'scenario_run'
+        ? `scenario_run://${this.meta.scenario_run_id || this.runId}`
+        : `session://${this.runId}`;
+      const url = `${this.qaBase}/api/diagram?scope=${encodeURIComponent(scopeUri)}&format=${this.diagramFormat}`;
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          this.diagramError = `diagram fetch failed (${resp.status})`;
+          this.diagramLoading = false;
+          return;
+        }
+        if (this.diagramFormat === 'g6') {
+          this.diagramG6 = await resp.json();
+          this.diagramSource = '';
+          await this._renderG6();
+        } else {
+          this.diagramSource = await resp.text();
+          this.diagramG6 = null;
+          if (this.diagramFormat === 'mermaid') {
+            await this._renderMermaid();
+          }
+          // D2: source already in `diagramSource`, the <pre> binds to it.
+        }
+      } catch (e) {
+        this.diagramError = String(e && e.message || e);
+      } finally {
+        this.diagramLoading = false;
+      }
+    },
+
+    async _loadScript(src) {
+      // De-dupe: once a script tag with this src exists, just wait
+      // until window has whatever symbol shows up.
+      if (document.querySelector(`script[data-src="${src}"]`)) {
+        // Already (being) loaded — short-poll for ready.
+        for (let i = 0; i < 200; i++) {
+          await new Promise(r => setTimeout(r, 25));
+          if (window.mermaid || window.G6) return;
+        }
+        return;
+      }
+      const s = document.createElement('script');
+      s.src = src;
+      s.dataset.src = src;
+      const ready = new Promise((resolve, reject) => {
+        s.onload = resolve;
+        s.onerror = () => reject(new Error(`failed to load ${src}`));
+      });
+      document.head.appendChild(s);
+      await ready;
+    },
+
+    async _renderMermaid() {
+      await this._loadScript('https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js');
+      if (!window.mermaid) {
+        this.diagramError = 'mermaid did not load';
+        return;
+      }
+      // Re-init in dark theme on each call so a re-render picks up
+      // styling correctly (mermaid caches per-page settings).
+      window.mermaid.initialize({ startOnLoad: false, theme: 'dark',
+                                  securityLevel: 'loose' });
+      const host = document.getElementById('diagram-mermaid-host');
+      if (!host) return;
+      // mermaid.render needs a unique id and the source string. The
+      // returned svg goes into the host. We wipe the host first so a
+      // re-render doesn't pile up SVGs.
+      host.innerHTML = '';
+      try {
+        const id = 'mmd-' + Math.random().toString(36).slice(2);
+        const { svg } = await window.mermaid.render(id, this.diagramSource);
+        host.innerHTML = svg;
+      } catch (e) {
+        // mermaid throws on parser error — surface so we can fix the
+        // generator without a silent failure.
+        this.diagramError = 'mermaid parse error: ' + (e.message || e);
+      }
+    },
+
+    async _renderG6() {
+      await this._loadScript('https://cdn.jsdelivr.net/npm/@antv/g6@4/dist/g6.min.js');
+      if (!window.G6) {
+        this.diagramError = 'G6 did not load';
+        return;
+      }
+      const host = document.getElementById('diagram-g6-host');
+      if (!host) return;
+      // Destroy previous instance before recreating — G6 leaks event
+      // listeners otherwise on scope/format toggles.
+      if (this._g6Instance) {
+        try { this._g6Instance.destroy(); } catch (e) {}
+        this._g6Instance = null;
+      }
+      host.innerHTML = '';
+      const width = host.clientWidth || 800;
+      const height = host.clientHeight || 480;
+      const graph = new window.G6.Graph({
+        container: host, width, height,
+        layout: { type: 'force', preventOverlap: true, nodeStrength: -100, edgeStrength: 0.4, linkDistance: 120 },
+        defaultNode: {
+          size: 32,
+          style: { fill: '#1f6feb44', stroke: '#58a6ff', lineWidth: 1.5 },
+          labelCfg: { style: { fill: '#c9d1d9', fontSize: 12, background: { fill: '#0d1117', padding: [2,4,2,4] } } },
+        },
+        defaultEdge: {
+          style: { stroke: '#8b949e', endArrow: true, opacity: 0.7 },
+          labelCfg: { autoRotate: true, style: { fill: '#8b949e', fontSize: 10 } },
+        },
+        nodeStateStyles: {
+          hover: { fill: '#1f6feb88', stroke: '#79c0ff', lineWidth: 2 },
+        },
+        modes: { default: ['drag-canvas', 'zoom-canvas', 'drag-node'] },
+      });
+      // Colour nodes by kind: agents vs systems.
+      const nodes = (this.diagramG6.nodes || []).map(n => ({
+        ...n,
+        style: n.kind === 'system'
+          ? { fill: '#56d36444', stroke: '#56d364', lineWidth: 1.5 }
+          : { fill: '#1f6feb44', stroke: '#58a6ff', lineWidth: 1.5 },
+      }));
+      // Edge labels show call count; thicker for hotter edges.
+      const edges = (this.diagramG6.edges || []).map(e => ({
+        ...e,
+        style: { stroke: '#8b949e', endArrow: true,
+                  opacity: 0.7,
+                  lineWidth: Math.min(1 + Math.log2(e.weight || 1), 6) },
+      }));
+      graph.data({ nodes, edges });
+      graph.render();
+      graph.on('node:mouseenter', e => graph.setItemState(e.item, 'hover', true));
+      graph.on('node:mouseleave', e => graph.setItemState(e.item, 'hover', false));
+      this._g6Instance = graph;
+    },
+
+    async copyDiagramSource() {
+      try {
+        await navigator.clipboard.writeText(this.diagramSource);
+        this._toast('✓ source copied');
+      } catch (e) {
+        this._toast('error: ' + (e.message || e));
+      }
+    },
+
+    // ── Resizable split divider ──────────────────────────────────────
     startDrag(e) {
       const self = this;
       const leftEl = e.target.previousElementSibling;
