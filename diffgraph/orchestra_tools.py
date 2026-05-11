@@ -185,10 +185,15 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         parameters={
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "Glob, e.g. '**/*.java'. Default '**/*' = everything."},
+                "pattern": {"type": "string", "description": "Glob, e.g. '**/*.java'. Default '**/*' = everything — call with no args to list every file."},
                 "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
             },
-            "required": ["pattern"],
+            # Neither field is required — Python defaults handle both.
+            # Marking pattern as required caused tool-schema validation
+            # to reject the typical opening call `diff_list_files()` and
+            # blocked reviewers that always orient themselves with an
+            # unfiltered first listing.
+            "required": [],
         },
     )
     def diff_list_files(pattern: str = "**/*", ref: str = "") -> str:
