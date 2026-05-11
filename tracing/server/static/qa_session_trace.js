@@ -73,6 +73,34 @@ document.addEventListener('alpine:init', () => {
     // Open a payload tab (call/result/messages) on the right panel.
     // url = API endpoint that returns the raw payload; msgIndex picks
     // out one message from a `messages` array if provided.
+    // One click on a step → three side-panel tabs auto-loaded:
+    //   request  → messages array sent to the LLM at step N
+    //              (`/api/runs/{id}/step/{agent}/{n}/messages`)
+    //   response → tool_calls / content the LLM returned
+    //              (`/api/runs/{id}/step/{agent}/{n}/call`)
+    //   history  → step N+1's request, which carries N's response
+    //              plus the tool_result message — IF the agent
+    //              survived step N (otherwise N+1 doesn't exist
+    //              and the tab cleanly shows `(end of conversation
+    //              — agent didn't reach step N+1)`).
+    // Existing manual tabs stay open; `openTab` dedupes by id.
+    async openStepDetails(agentId, step) {
+      const stem = `${(agentId || '').substring(0, 8)}/s${step}`;
+      const base = `${this.qaBase}/api/runs/${this.runId}/step/${agentId}`;
+      await Promise.all([
+        this.openTab(`req:${agentId}:${step}`,
+                     `${stem} request`,
+                     `${base}/${step}/messages`),
+        this.openTab(`resp:${agentId}:${step}`,
+                     `${stem} response`,
+                     `${base}/${step}/call`),
+        this.openTab(`hist:${agentId}:${step}`,
+                     `${stem} history`,
+                     `${base}/${step + 1}/messages`),
+      ]);
+      this.activeId = `req:${agentId}:${step}`;
+    },
+
     async openTab(id, title, url, msgIndex) {
       // De-dupe — if tab is already open, just activate it.
       if (this.tabs.find(t => t.id === id)) {
@@ -93,6 +121,19 @@ document.addEventListener('alpine:init', () => {
       try {
         const resp = await fetch(url);
         const raw = await resp.text();
+        if (!resp.ok) {
+          // 404 on `step/N+1/messages` typically means the agent
+          // didn't reach the next step (errored, killed, or this
+          // IS the last step). Pin a friendly hint instead of
+          // dumping the FastAPI JSON error blob.
+          if (resp.status === 404 && url.includes('/messages')) {
+            content = '(end of conversation — agent did not reach this step)';
+          } else {
+            content = `HTTP ${resp.status}\n\n${raw}`;
+          }
+          this._finishTab(id, content, null);
+          return;
+        }
         content = raw;
         if (msgIndex !== undefined && msgIndex !== null) {
           try {
@@ -125,23 +166,25 @@ document.addEventListener('alpine:init', () => {
         content = 'Error: ' + (e && e.message ? e.message : e);
       }
 
-      // Replace the tab slot in `this.tabs` instead of mutating the
-      // local reference. Alpine's reactive proxy wraps the array but
-      // the `tab` object we built before `push` is the un-proxied
-      // original — mutating its fields directly didn't trigger the
-      // re-render of `x-text="activeTab.content"`. Replacing the
-      // entry forces the array setter to fire so the panel updates
-      // as soon as the fetch resolves (no more "Loading…" stuck
-      // until you click another tab and back).
+      this._finishTab(id, content, rawJson);
+    },
+
+    // Replace the tab slot in `this.tabs` instead of mutating the
+    // local reference. Alpine's reactive proxy wraps the array but
+    // the original tab object (built before `push`) is un-proxied —
+    // mutating its fields directly didn't trigger re-render of
+    // `x-text="activeTab.content"`. Reassigning the array index
+    // forces the setter to fire so the panel updates as soon as
+    // the fetch resolves.
+    _finishTab(id, content, rawJson) {
       const i = this.tabs.findIndex(t => t.id === id);
-      if (i >= 0) {
-        this.tabs[i] = {
-          ...this.tabs[i],
-          content,
-          rawJson: (content === rawJson) ? null : rawJson,
-          loading: false,
-        };
-      }
+      if (i < 0) return;
+      this.tabs[i] = {
+        ...this.tabs[i],
+        content,
+        rawJson: (content === rawJson) ? null : rawJson,
+        loading: false,
+      };
     },
 
     closeTab(id) {

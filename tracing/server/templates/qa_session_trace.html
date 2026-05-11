@@ -8,7 +8,7 @@
   window.QA_BASE_PATH = "{{ base_path }}";
   window.RUN_ID = "{{ run_id }}";
 </script>
-<script defer src="{{ base_path }}/static/qa_session_trace.js?v=9"></script>
+<script defer src="{{ base_path }}/static/qa_session_trace.js?v=10"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
 body { padding: 16px; max-width: 1700px; margin: 0 auto; }
@@ -118,6 +118,12 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
 .auto-status { color: #56d364; font-weight: 600; }
 .d2-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 .d2-too-big { color: #d29922; font-size: 0.85em; cursor: help; }
+.step-open-all {
+  background: #21262d; color: #58a6ff; border: 1px solid #30363d;
+  padding: 1px 8px; border-radius: 3px; cursor: pointer;
+  font-size: 0.8em; margin-left: 6px;
+}
+.step-open-all:hover { background: #1f6feb22; border-color: #58a6ff; }
 .filter-chip {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 3px 8px; background: #f0883e22; border: 1px solid #f0883e;
@@ -297,6 +303,9 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
               <details class="llm-call">
                 <summary class="llm-header">
                   <span class="llm-step-num">step <span x-text="s.step"></span></span>
+                  <button type="button" class="step-open-all"
+                          title="open request + response + history in right pane"
+                          @click.stop.prevent="openStepDetails(agent.agent_id, s.step)">→ open</button>
 
                   <template x-if="s.resp && s.resp.tool_calls && s.resp.tool_calls.length">
                     <span class="llm-tools">
