@@ -64,7 +64,7 @@ class Event:
     arrows). Spawns and done's never collapse — each is a distinct
     control-flow handoff.
     """
-    ts: datetime
+    ts: Optional[datetime]  # assigned monotonically by the collector
     kind: str               # tool_call | tool_result | agent_spawn |
                             # agent_done | agent_text | judge_verdict
     actor: str              # "agent:<run_id>:<agent_id>" |
@@ -73,7 +73,13 @@ class Event:
     label: str              # short display string
     payload: dict = field(default_factory=dict)   # full data for click → side panel
     session_id: Optional[str] = None              # which run this belongs to
-    count: int = 1          # > 1 ⇒ collapsed parallel siblings
+    count: int = 1          # > 1 ⇒ collapsed parallel/adjacent siblings
+    step: Optional[int] = None  # LLM step within the *agent* that owns
+                                # this event. Per-agent counter, NOT
+                                # the global autonumber Mermaid would
+                                # produce. Renderers surface as
+                                # `[s<step>]` prefix so the reader can
+                                # cross-reference with the agent tree.
 
 
 # ── Tool → system bucket ──────────────────────────────────────────────────
@@ -190,20 +196,142 @@ def _ordered(conn: sqlite3.Connection, ids: set[str]) -> list[str]:
 # ── Event extraction from one run ─────────────────────────────────────────
 
 
-def events_from_runs(run_ids: list[str], db_path: str) -> list[Event]:
+def events_from_runs(run_ids: list[str], db_path: str,
+                     *, max_events: Optional[int] = None) -> list[Event]:
     """Build the canonical event stream for every run in scope, sort
     by timestamp. Each run's events are extracted independently — the
-    transitive closure happened in the resolver."""
+    transitive closure happened in the resolver.
+
+    `max_events` engages progressive fair-share collapsing: when the
+    combined stream is larger than the budget, each run's events are
+    folded down to its share `max_events / len(run_ids)`. Folding is
+    cross-step adjacent-pair: consecutive events with the same
+    (kind, actor, target, tool name) merge into one with `count`
+    summed. Runs whose natural size already fits their share are
+    untouched, so a chatty investigator doesn't starve a terse one."""
     out: list[Event] = []
     for rid in run_ids:
         out.extend(_events_from_run(rid, db_path))
-    return sorted(out, key=lambda e: e.ts)
+    out.sort(key=lambda e: e.ts)
+    if max_events and len(out) > max_events:
+        out = _fair_collapse(out, max_events)
+    return out
+
+
+def _name_stem(label: str) -> str:
+    """Strip args, ×N suffix, and [s<N>] prefix so we can compare
+    tool-name identity across events: `[s3] diff_read_file ×4` →
+    `diff_read_file`."""
+    s = label
+    if s.startswith("[s") and "] " in s:
+        s = s.split("] ", 1)[1]
+    if " ×" in s:
+        s = s.split(" ×", 1)[0]
+    if "(" in s:
+        s = s.split("(", 1)[0]
+    return s.strip()
+
+
+def _foldable(a: Event, b: Event) -> bool:
+    """Adjacent events fold together iff same direction, same actors,
+    same kind, same tool stem. Spawn/done/text never fold —
+    collapsing those erases control-flow milestones."""
+    if a.kind != b.kind:
+        return False
+    if a.kind in ("agent_spawn", "agent_done", "agent_text",
+                  "judge_verdict"):
+        return False
+    if a.actor != b.actor or a.target != b.target:
+        return False
+    return _name_stem(a.label) == _name_stem(b.label)
+
+
+def _fold_one_round(events: list[Event]) -> list[Event]:
+    """One pass: merge each adjacent foldable pair. Mutates fold targets
+    in place — count summed, label rewritten with ×N suffix."""
+    out: list[Event] = []
+    for e in events:
+        if out and _foldable(out[-1], e):
+            prev = out[-1]
+            prev.count += e.count
+            stem = _name_stem(prev.label)
+            prev.label = f"{stem} ×{prev.count}"
+            # Preserve all underlying payloads so click-through still
+            # surfaces the per-call detail.
+            prev_payload = prev.payload or {}
+            merged = list(prev_payload.get("merged", [prev_payload]))
+            merged.append(e.payload or {})
+            prev.payload = {**prev_payload, "merged": merged}
+            continue
+        out.append(e)
+    return out
+
+
+def _fair_collapse(events: list[Event], max_events: int) -> list[Event]:
+    """Fold per run, fair-share, progressive — each run gets
+    `max_events / N` slots; runs already inside their share aren't
+    touched. Three escalating stages until the group fits:
+
+      1. Adjacent same-stem fold (within run, across steps). Folds
+         `call(diff_read_file) → call(diff_read_file)` into one ×N.
+      2. Drop tool_result events. Real-life chatter alternates
+         call/result/call/result/… so adjacent fold can't merge
+         calls separated by a result. Once results are gone, stage 1
+         runs again and the remaining calls collapse.
+      3. If still over, give up gracefully — the renderer's own cap
+         truncates the tail with a Note.
+    """
+    from collections import defaultdict
+    groups: dict[str, list[Event]] = defaultdict(list)
+    order: list[str] = []
+    for e in events:
+        sid = e.session_id or ""
+        if sid not in groups:
+            order.append(sid)
+        groups[sid].append(e)
+    n_groups = max(1, len(groups))
+    target_per_run = max(8, max_events // n_groups)
+
+    def _fold_until_fixed(evs: list[Event]) -> list[Event]:
+        prev_len = len(evs) + 1
+        while len(evs) > target_per_run and len(evs) < prev_len:
+            prev_len = len(evs)
+            evs = _fold_one_round(evs)
+        return evs
+
+    for sid in order:
+        evs = _fold_until_fixed(groups[sid])
+        # Stage 2: drop results, re-fold.
+        if len(evs) > target_per_run:
+            evs = [e for e in evs if e.kind != "tool_result"]
+            evs = _fold_until_fixed(evs)
+        groups[sid] = evs
+
+    out: list[Event] = []
+    for sid in order:
+        out.extend(groups[sid])
+    out.sort(key=lambda e: e.ts)
+    return out
 
 
 def _events_from_run(run_id: str, db_path: str) -> list[Event]:
     """One run → list of Events. Reuses the prepared tree
-    (`orchestra.trace._prepare_agent`) so we don't reinvent pairing
-    of tool_calls with tool_results."""
+    (`orchestra.trace._prepare_agent`) for the agent hierarchy and
+    paired_step grouping, but pulls REAL per-event timestamps from
+    the `events` table so the diagram shows actual scope-open /
+    scope-close moments:
+
+      tool_call(step N)   → ts of agent_llm_response(agent, N)
+      tool_result(step N) → ts of agent_llm_request(agent, N+1)
+      agent_spawn         → ts of child's agent_started
+      agent_done (return) → ts of child's agent_done event
+      agent_text          → ts of agent_llm_response at that step
+      judge_verdict       → ts of judge's agent_done event
+
+    Missing timestamps fall back to the previous event's ts +
+    1 microsecond so the stream stays monotonic on degenerate data
+    (e.g., agent_done without a matching agent_started event).
+    """
     from orchestra.trace_db import TraceDBReader
     from orchestra.trace import _prepare_agent
 
@@ -219,33 +347,111 @@ def _events_from_run(run_id: str, db_path: str) -> list[Event]:
     if not prepared:
         return []
 
-    started_at = meta.get("started_at")
-    base_ts = _parse_ts(started_at) if started_at else datetime.now(timezone.utc)
     kind = meta.get("kind") or "agent"
+    ts_index = _load_real_ts(run_id, db_path)
 
     out: list[Event] = []
     _walk_agent(prepared, run_id=run_id, parent_actor=None,
-                base_ts=base_ts, out=out, run_kind=kind)
-    return out
+                out=out, run_kind=kind)
+    _assign_real_ts(out, ts_index)
+    # Drop events whose real timestamp wasn't available — typically
+    # `agent_done` arrows for children of a still-running session, or
+    # `tool_result` for the last in-flight step. Showing them with a
+    # synthesised ts piled them all at run-start, which made the
+    # timeline read inside-out.
+    return [e for e in out if e.ts is not None]
+
+
+def _load_real_ts(run_id: str, db_path: str) -> dict:
+    """Build (agent_id, step, event_type) → datetime + agent_id →
+    (started_at, done_at) bounds from the events table for `run_id`.
+
+    The events table is small per-run (tens to a few hundred rows)
+    so a single SELECT + dict build is the cheap path.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT agent_id, step, event_type, timestamp "
+            "FROM events WHERE run_id = ? ORDER BY id", (run_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    keyed: dict[tuple, datetime] = {}
+    bounds: dict[str, dict] = {}  # agent_id -> {"started", "done"}
+    for aid, step, etype, ts in rows:
+        if not ts:
+            continue
+        parsed = _parse_ts(ts)
+        keyed[(aid, step, etype)] = parsed
+        if etype == "agent_started":
+            bounds.setdefault(aid, {})["started"] = parsed
+        elif etype == "agent_done":
+            bounds.setdefault(aid, {})["done"] = parsed
+    return {"keyed": keyed, "bounds": bounds}
+
+
+def _agent_id_from_actor(actor: str) -> Optional[str]:
+    """Extract the agent_id segment from `agent:<run_id>:<agent_id>`."""
+    if not actor or not actor.startswith("agent:"):
+        return None
+    parts = actor.split(":")
+    return parts[2] if len(parts) >= 3 else None
+
+
+def _assign_real_ts(events: list[Event], ts_index: dict) -> None:
+    """Walk events in DFS-emission order; resolve each to a real ts
+    via `ts_index` based on its kind + actor + step. Events without
+    a real ts get `e.ts = None` — the caller filters those out so
+    nothing ends up at a synthesised "run start" position (which
+    used to bury the real timeline under a wall of placeholder
+    events at the top of the diagram)."""
+    keyed = ts_index["keyed"]
+    bounds = ts_index["bounds"]
+
+    for e in events:
+        aid = _agent_id_from_actor(e.actor)
+        tgt_aid = _agent_id_from_actor(e.target) if e.target else None
+        # tool_result events have actor=system:..., target=agent:... —
+        # the agent that received the result is the relevant one for
+        # ts lookup (its NEXT step's request carries the result).
+        agent_party = aid if aid else tgt_aid
+        resolved: Optional[datetime] = None
+
+        if e.kind == "tool_call" and aid and e.step is not None:
+            resolved = keyed.get((aid, e.step, "agent_llm_response"))
+        elif e.kind == "tool_result" and agent_party and e.step is not None:
+            resolved = (keyed.get((agent_party, e.step + 1,
+                                    "agent_llm_request"))
+                        or keyed.get((agent_party, e.step,
+                                       "agent_llm_response")))
+        elif e.kind == "agent_text" and aid and e.step is not None:
+            resolved = keyed.get((aid, e.step, "agent_llm_response"))
+        elif e.kind == "agent_spawn" and tgt_aid:
+            resolved = (bounds.get(tgt_aid, {}).get("started")
+                        or (keyed.get((aid, e.step, "agent_llm_response"))
+                            if aid and e.step is not None else None))
+        elif e.kind == "agent_done":
+            child_id = _agent_id_from_actor(e.actor)
+            if child_id:
+                resolved = bounds.get(child_id, {}).get("done")
+        elif e.kind == "judge_verdict" and aid:
+            resolved = bounds.get(aid, {}).get("done")
+
+        e.ts = resolved  # may be None — caller filters those out
 
 
 def _walk_agent(agent: dict, *, run_id: str,
                 parent_actor: Optional[str],
-                base_ts: datetime,
                 out: list[Event],
                 run_kind: str) -> None:
-    """Recurse the prepared tree; emit Events in step order. Each
-    event's ts is `base_ts + step_offset_ms` since per-step
-    timestamps aren't on the prepared tree — they're close enough
-    for ordering inside one run, and across runs the run-level
-    base_ts dominates."""
+    """Recurse the prepared tree, appending Events in emission order.
+    ts is left None — the caller assigns monotonic timestamps once
+    the whole walk is done."""
     aid = agent.get("agent_id") or "?"
-    aname = agent.get("agent_name") or "?"
     actor_self = f"agent:{run_id}:{aid}"
 
-    # Special-case judge runs: no tool calls, the verdict lives in
-    # `output`. Emit a single judge_verdict event so the diagram
-    # picks the judge phase up.
     if run_kind == "judge":
         verdict = agent.get("output") or {}
         if isinstance(verdict, dict):
@@ -257,39 +463,34 @@ def _walk_agent(agent: dict, *, run_id: str,
         else:
             label = "verdict"
         out.append(Event(
-            ts=base_ts, kind="judge_verdict",
+            ts=None, kind="judge_verdict",
             actor=actor_self, target=parent_actor,
             label=label, payload={"output": verdict},
             session_id=run_id,
         ))
         return
 
-    # Children indexed by name + id so spawn_agent calls can match.
     children_by_id = {
         (c.get("agent_id") or ""): c for c in (agent.get("children") or [])
     }
     children_in_order = list(agent.get("children") or [])
     spawn_used: set[str] = set()
-    step_offset_ms = 0
 
     for step in (agent.get("paired_steps") or []):
+        step_num = step.get("step")
         resp = step.get("resp") or {}
         tool_calls = resp.get("tool_calls") or []
         tool_results = step.get("tool_results") or []
 
-        # Group tool_calls within this step by tool name so parallel
-        # siblings collapse into a single arrow with `count`. Order
+        # Group parallel tool_calls within ONE step by name. Order
         # preserved by first occurrence so the timeline still reads
-        # naturally. Spawns NEVER group — each spawn picks a
-        # different child and the spawn arrow is the only place the
-        # focus argument is visible.
+        # naturally. Spawns never group — each spawn picks a different
+        # child and the focus arg is the only place that info appears.
         groups: list[tuple[str, list[tuple[int, dict]]]] = []
         by_name: dict[str, int] = {}
         for ti, tc in enumerate(tool_calls):
             tname = tc.get("name") or "?"
             if tname == "spawn_agent":
-                # Sentinel single-element group preserves spawn ordering
-                # relative to other tool calls in the same step.
                 groups.append((tname, [(ti, tc)]))
                 continue
             idx = by_name.get(tname)
@@ -300,11 +501,7 @@ def _walk_agent(agent: dict, *, run_id: str,
                 groups[idx][1].append((ti, tc))
 
         for tname, calls in groups:
-            step_offset_ms += 50
-            ts = base_ts + _ms(step_offset_ms)
-
             if tname == "spawn_agent":
-                # Single spawn per group by construction.
                 ti, tc = calls[0]
                 args_raw = tc.get("arguments") or ""
                 child = _match_spawn(args_raw, children_by_id,
@@ -314,91 +511,74 @@ def _walk_agent(agent: dict, *, run_id: str,
                     spawn_used.add(cid)
                     child_actor = f"agent:{run_id}:{cid}"
                     out.append(Event(
-                        ts=ts, kind="agent_spawn",
+                        ts=None, kind="agent_spawn",
                         actor=actor_self, target=child_actor,
                         label=_short_focus(args_raw),
                         payload={"arguments": args_raw},
-                        session_id=run_id,
+                        session_id=run_id, step=step_num,
                     ))
                     _walk_agent(child, run_id=run_id,
                                 parent_actor=actor_self,
-                                base_ts=ts, out=out, run_kind="agent")
+                                out=out, run_kind="agent")
                     out_payload = child.get("output")
-                    rlabel = _done_label(out_payload)
-                    step_offset_ms += 1
                     out.append(Event(
-                        ts=ts + _ms(1), kind="agent_done",
+                        ts=None, kind="agent_done",
                         actor=child_actor, target=actor_self,
-                        label=rlabel, payload={"output": out_payload},
-                        session_id=run_id,
+                        label=_done_label(out_payload),
+                        payload={"output": out_payload},
+                        session_id=run_id, step=step_num,
                     ))
                 continue
 
             if tname in ("reflect", "done"):
-                # Reflect/done are agent-self events. Multiple
-                # reflects in one step are extremely unusual; if it
-                # happens, just emit each individually so confidence
-                # progression stays visible.
                 for ti, tc in calls:
                     out.append(Event(
-                        ts=ts, kind="agent_text",
+                        ts=None, kind="agent_text",
                         actor=actor_self, target=actor_self,
                         label=tname,
                         payload={"arguments": tc.get("arguments") or ""},
-                        session_id=run_id,
+                        session_id=run_id, step=step_num,
                     ))
                 continue
 
             sys_actor = f"system:{_system_for(tname)}"
             n = len(calls)
             if n == 1:
-                # Single call — label with args as before.
                 args_raw = calls[0][1].get("arguments") or ""
                 call_label = f"{tname}({_short(args_raw, 40)})"
             else:
-                # Parallel-in-step siblings collapsed to one arrow.
-                # Drop the args since they differ per call; surface
-                # the count instead.
                 call_label = f"{tname} ×{n}"
             out.append(Event(
-                ts=ts, kind="tool_call",
+                ts=None, kind="tool_call",
                 actor=actor_self, target=sys_actor,
                 label=call_label,
                 payload={"tool": tname,
                           "arguments": [c[1].get("arguments") or "" for c in calls]},
-                session_id=run_id,
-                count=n,
+                session_id=run_id, count=n, step=step_num,
             ))
 
-            # Pair the results. tool_results is a flat list in step
-            # order; the indices we collapsed are stored in calls.
             paired_results = [tool_results[ti] for ti, _ in calls
                               if ti < len(tool_results)]
             if paired_results:
-                step_offset_ms += 1
-                if n == 1:
-                    res_label = _short(paired_results[0] or "", 60)
-                else:
-                    res_label = f"{len(paired_results)} results"
+                res_label = (_short(paired_results[0] or "", 60)
+                             if n == 1
+                             else f"{len(paired_results)} results")
                 out.append(Event(
-                    ts=ts + _ms(1), kind="tool_result",
+                    ts=None, kind="tool_result",
                     actor=sys_actor, target=actor_self,
                     label=res_label,
                     payload={"results": paired_results},
-                    session_id=run_id,
-                    count=len(paired_results),
+                    session_id=run_id, count=len(paired_results),
+                    step=step_num,
                 ))
 
-        # Plain text response — note on the lane.
         if not tool_calls and resp.get("content"):
-            step_offset_ms += 50
             out.append(Event(
-                ts=base_ts + _ms(step_offset_ms),
-                kind="agent_text",
+                ts=None, kind="agent_text",
                 actor=actor_self, target=actor_self,
                 label=_short(resp["content"], 80),
                 payload={"content": resp["content"]},
-                session_id=run_id,
+                session_id=run_id, step=step_num,
             ))
 
 
@@ -431,11 +611,6 @@ def _parse_ts(s: str) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
-
-
-def _ms(n: int):
-    from datetime import timedelta
-    return timedelta(milliseconds=n)
 
 
 def _short(s: str, n: int) -> str:
@@ -493,6 +668,14 @@ _PART_SAFE = re.compile(r"[^A-Za-z0-9_]")
 
 
 def _safe_id(actor: str) -> str:
+    """Diagram-engine-safe identifier for an actor URI.
+    `agent:<run_id>:<agent_id>` → `agent_<runprefix>_<aidprefix>`,
+    de-duplicated if run_id == agent_id (judge runs collapse the
+    two into one short id otherwise — uglier participant name)."""
+    parts = actor.split(":")
+    if parts[0] == "agent" and len(parts) >= 3 and parts[1] == parts[2]:
+        # run_id == agent_id (typical for judge runs): one prefix is enough.
+        actor = f"agent:{parts[1]}"
     return _PART_SAFE.sub("_", actor).strip("_") or "X"
 
 
@@ -535,49 +718,77 @@ def _participants_of(events: list[Event]) -> list[tuple[str, str]]:
 def _enrich_agent_labels(events: list[Event],
                          participants: list[tuple[str, str]],
                          db_path: str) -> list[tuple[str, str]]:
-    """Replace `agent(<short>)` with the actual agent_name from the
-    DB so the diagram has readable lanes (reviewer / investigator /
-    judge instead of opaque short ids)."""
-    # Map run_id → agent_name (one DB roundtrip).
-    run_ids = set()
+    """Replace the placeholder `agent(<short>)` label with the agent's
+    real name (reviewer / investigator / judge / dispatcher / …).
+
+    Names are keyed per `(run_id, agent_id)` — subagents share the
+    parent's run_id (they're spawned in the same cli.py process), so
+    looking up agent_name by run_id alone returns the ROOT agent's
+    name for every child. The `events` table is the source of truth
+    here: every `agent_started` event carries `(agent_id,
+    agent_name)`. One SELECT covers every agent in scope.
+
+    Multiple agents with the same name (3 investigators on one PR)
+    get `-N` suffixes in spawn order for disambiguation.
+    """
+    keys: set[tuple[str, str]] = set()
+    run_ids: set[str] = set()
     for u, _ in participants:
         if u.startswith("agent:"):
             parts = u.split(":")
             if len(parts) >= 3:
                 run_ids.add(parts[1])
+                keys.add((parts[1], parts[2]))
     if not run_ids:
         return participants
+
+    by_id: dict[tuple[str, str], tuple[str, str]] = {}
     conn = sqlite3.connect(db_path)
     try:
+        # Pull per-(run_id, agent_id) name from events. Kind comes
+        # from runs (judge vs agent — orthogonal to agent_name).
         qmarks = ",".join("?" for _ in run_ids)
-        rows = conn.execute(
-            f"SELECT id, agent_name, kind FROM runs WHERE id IN ({qmarks})",
+        runs_rows = conn.execute(
+            f"SELECT id, kind FROM runs WHERE id IN ({qmarks})",
             list(run_ids),
         ).fetchall()
+        kind_by_run = {r[0]: (r[1] or "agent") for r in runs_rows}
+        # Only `agent_started` events identify their own agent_name.
+        # `agent_spawned` writes the parent's agent_id with the child's
+        # name; mixing those in poisoned the lookup when an investigator
+        # was spawned by a reviewer.
+        events_rows = conn.execute(
+            f"SELECT DISTINCT run_id, agent_id, agent_name FROM events "
+            f"WHERE run_id IN ({qmarks}) AND event_type='agent_started' "
+            f"  AND agent_id IS NOT NULL AND agent_name IS NOT NULL "
+            f"  AND agent_name != ''",
+            list(run_ids),
+        ).fetchall()
+        for rid, aid, aname in events_rows:
+            knd = kind_by_run.get(rid, "agent")
+            by_id[(rid, aid)] = (aname, knd)
     finally:
         conn.close()
-    by_run = {r[0]: (r[1] or "?", r[2] or "agent") for r in rows}
 
     relabelled: list[tuple[str, str]] = []
     used: dict[str, int] = {}
-    for u, _ in participants:
-        if u.startswith("agent:"):
-            parts = u.split(":")
-            rid = parts[1] if len(parts) > 1 else ""
-            aname, knd = by_run.get(rid, ("agent", "agent"))
-            # Disambiguate multiple agents with the same name (e.g. 3
-            # investigators) by suffixing a number.
-            count = used.get(aname, 0) + 1
-            used[aname] = count
-            label = aname if count == 1 and aname not in by_run.values() else f"{aname}-{count}"
-            # Special-case judge — label as `judge` regardless of
-            # display, more discoverable.
-            if knd == "judge":
-                label = f"judge-{count}" if count > 1 else "judge"
-            relabelled.append((u, label))
+    for u, fallback_label in participants:
+        if not u.startswith("agent:"):
+            relabelled.append((u, fallback_label))
+            continue
+        parts = u.split(":")
+        rid = parts[1] if len(parts) > 1 else ""
+        aid = parts[2] if len(parts) > 2 else ""
+        aname, knd = by_id.get((rid, aid), ("agent", "agent"))
+        # Disambiguate sibling agents with the same name (e.g. four
+        # investigators) by suffixing `-N` in spawn order.
+        count = used.get(aname, 0) + 1
+        used[aname] = count
+        if knd == "judge":
+            label = f"judge-{count}" if count > 1 else "judge"
         else:
-            relabelled.append((u,
-                              [lbl for _u, lbl in participants if _u == u][0]))
+            label = f"{aname}-{count}" if count > 1 else aname
+        relabelled.append((u, label))
     return relabelled
 
 
@@ -593,36 +804,51 @@ def _mm_escape(s: str) -> str:
     return (s or "").translate(_MM_ESCAPE).strip()
 
 
-def to_mermaid(events: list[Event], db_path: str, *,
-               max_messages: int = 200) -> str:
-    """Mermaid sequenceDiagram source. Each tool_call / tool_result /
-    spawn / done becomes one arrow line. autonumber so steps are
-    labelled 1..N for cross-referencing with the LLM step list on
-    the trace page."""
+def _step_prefix(e: Event) -> str:
+    """Per-agent step number rendered as `[sN] ` prefix. Empty if
+    the event has no step (judge_verdict, synthesised done arrows)."""
+    return f"[s{e.step}] " if e.step is not None else ""
+
+
+def to_mermaid(events: list[Event], db_path: str) -> str:
+    """Mermaid sequenceDiagram source.
+
+    No global `autonumber` — events from different agents have
+    independent step indices, so labelling them with a single
+    running counter (1..N across all agents) is misleading. Each
+    event carries its per-agent step in the label as `[s<N>]`.
+
+    Budget enforcement is upstream in `events_from_runs` via
+    `max_events` — the renderer never truncates on its own."""
     if not events:
         return "sequenceDiagram\n  Note over Empty: no events in scope"
 
     participants = _participants_of(events)
     participants = _enrich_agent_labels(events, participants, db_path)
-    lines: list[str] = ["sequenceDiagram", "  autonumber"]
+    lines: list[str] = ["sequenceDiagram"]
     for uri, label in participants:
         lines.append(f"  participant {_safe_id(uri)} as {_mm_escape(label)}")
 
-    emitted = 0
+    # Mermaid's `+` / `-` syntax MUST be balanced — emitting a
+    # `-->>-` for a participant that was never `->>+`'d trips
+    # "Trying to inactivate an inactive participant" and the whole
+    # diagram refuses to parse. Track activation state explicitly
+    # and downgrade unmatched deactivations to plain arrows.
+    activated: set[str] = set()
     for e in events:
-        if emitted >= max_messages:
-            anchor = participants[0][0] if participants else "X"
-            lines.append(
-                f"  Note over {_safe_id(anchor)}: "
-                f"⋯ truncated at {max_messages} events ⋯"
-            )
-            break
         sa, ta = _safe_id(e.actor), _safe_id(e.target or e.actor)
-        label = _mm_escape(e.label)
+        label = _mm_escape(_step_prefix(e) + e.label)
         if e.kind == "agent_spawn":
             lines.append(f"  {sa}->>+{ta}: {label}")
+            activated.add(ta)
         elif e.kind == "agent_done":
-            lines.append(f"  {sa}-->>-{ta}: {label}")
+            if sa in activated:
+                lines.append(f"  {sa}-->>-{ta}: {label}")
+                activated.discard(sa)
+            else:
+                # Unbalanced (collapsed/truncated stream) — render as
+                # a regular dashed arrow so the parser is happy.
+                lines.append(f"  {sa}-->>{ta}: {label}")
         elif e.kind == "tool_call":
             lines.append(f"  {sa}->>{ta}: {label}")
         elif e.kind == "tool_result":
@@ -634,7 +860,13 @@ def to_mermaid(events: list[Event], db_path: str, *,
             lines.append(f"  Note over {sa}: {label}")
         else:
             lines.append(f"  Note over {sa}: {e.kind} · {label}")
-        emitted += 1
+
+    # Close any lanes that are still activated (no done arrived —
+    # e.g., the run is still running and the agent_done event
+    # hasn't fired yet). Without these synthetic close-outs Mermaid
+    # warns about open activations at end-of-diagram.
+    for aid in list(activated):
+        lines.append(f"  deactivate {aid}")
 
     return "\n".join(lines)
 
@@ -642,12 +874,14 @@ def to_mermaid(events: list[Event], db_path: str, *,
 # ── D2 renderer (source-only, savable text) ───────────────────────────────
 
 
-def to_d2(events: list[Event], db_path: str, *,
-          max_messages: int = 200) -> str:
+def to_d2(events: list[Event], db_path: str) -> str:
     """D2 source with `shape: sequence_diagram`. We ship this as text
     only — users copy to play.d2lang.com or `d2` CLI to render. The
     `save → reopen → edit` round-trip is the main reason D2 is here
-    (vs Mermaid which is render-only)."""
+    (vs Mermaid which is render-only).
+
+    Like `to_mermaid`, the renderer doesn't truncate — budget is
+    upstream."""
     if not events:
         return "# empty\nseq: { shape: sequence_diagram }"
 
@@ -662,20 +896,13 @@ def to_d2(events: list[Event], db_path: str, *,
         sid = _safe_id(uri)
         lines.append(f"  {sid}: {json.dumps(label)}")
 
-    emitted = 0
     for e in events:
-        if emitted >= max_messages:
-            lines.append(f"  # truncated at {max_messages} events")
-            break
         sa, ta = _safe_id(e.actor), _safe_id(e.target or e.actor)
-        label = e.label.replace('"', "'")
-        arrow = "->" if e.kind in ("tool_call", "agent_spawn",
-                                    "judge_verdict") else "->"
+        label = (_step_prefix(e) + e.label).replace('"', "'")
         if sa == ta:
             lines.append(f"  {sa}: {json.dumps(e.kind + ': ' + label)}")
         else:
-            lines.append(f"  {sa} {arrow} {ta}: {json.dumps(label)}")
-        emitted += 1
+            lines.append(f"  {sa} -> {ta}: {json.dumps(label)}")
     lines.append("}")
     return "\n".join(lines)
 
@@ -683,12 +910,12 @@ def to_d2(events: list[Event], db_path: str, *,
 # ── G6 renderer (node-edge, time-agnostic) ────────────────────────────────
 
 
-def to_g6(events: list[Event], db_path: str, *,
-          max_messages: int = 1000) -> dict:
+def to_g6(events: list[Event], db_path: str) -> dict:
     """AntV G6 expects `{nodes: [...], edges: [...]}`. We aggregate
     by (actor, target) pairs — edge weight is the number of times
-    that pair fires. Loses time order on purpose; useful for a
-    compact "who talks to whom" view on big scopes."""
+    that pair fires (with `count` from collapsed events summed in).
+    Loses time order on purpose; useful for a compact "who talks
+    to whom" view on big scopes."""
     nodes_by_id: dict[str, dict] = {}
     edges_by_key: dict[tuple[str, str], dict] = {}
 
@@ -699,10 +926,7 @@ def to_g6(events: list[Event], db_path: str, *,
         kind = (uri.split(":", 1)[0] if ":" in uri else "other")
         nodes_by_id[nid] = {"id": nid, "label": label, "kind": kind}
 
-    counted = 0
     for e in events:
-        if counted >= max_messages:
-            break
         if not e.target or e.actor == e.target:
             continue
         sa, ta = _safe_id(e.actor), _safe_id(e.target)
@@ -716,9 +940,8 @@ def to_g6(events: list[Event], db_path: str, *,
         if edge is None:
             edge = {"source": sa, "target": ta, "count": 0, "kinds": set()}
             edges_by_key[key] = edge
-        edge["count"] += 1
+        edge["count"] += max(1, e.count)
         edge["kinds"].add(e.kind)
-        counted += 1
 
     edges = []
     for (sa, ta), e in edges_by_key.items():
@@ -738,12 +961,22 @@ def to_g6(events: list[Event], db_path: str, *,
 # ── Top-level API ─────────────────────────────────────────────────────────
 
 
-def build_diagram(scope_uri: str, fmt: str, db_path: str):
+def build_diagram(scope_uri: str, fmt: str, db_path: str,
+                  *, max_events: int = 200):
     """Return (mime_type, body) for the given scope + format.
     Body is a string for mermaid/d2, a dict for g6 (route serialises).
+
+    `max_events` is the soft cap for the rendered diagram. The
+    collector applies fair-share progressive collapse to fit — when
+    the natural stream is bigger, runs over their share fold
+    adjacent-identical events until they're under it. Pass 0 to
+    disable collapsing entirely (e.g. for debugging the raw stream).
     """
     run_ids = resolve_runs(scope_uri, db_path)
-    events = events_from_runs(run_ids, db_path)
+    events = events_from_runs(
+        run_ids, db_path,
+        max_events=max_events if max_events > 0 else None,
+    )
     if fmt == "mermaid":
         return ("text/plain; charset=utf-8", to_mermaid(events, db_path))
     if fmt == "d2":

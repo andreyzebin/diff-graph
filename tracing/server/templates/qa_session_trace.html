@@ -8,7 +8,7 @@
   window.QA_BASE_PATH = "{{ base_path }}";
   window.RUN_ID = "{{ run_id }}";
 </script>
-<script defer src="{{ base_path }}/static/qa_session_trace.js?v=3"></script>
+<script defer src="{{ base_path }}/static/qa_session_trace.js?v=4"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
 body { padding: 16px; max-width: 1700px; margin: 0 auto; }
@@ -104,6 +104,12 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
 }
 .format-tab:hover { background: #30363d; }
 .format-tab.active { background: #1f6feb44; color: #58a6ff; border-color: #1f6feb; }
+.autorefresh-label {
+  display: flex; align-items: center; gap: 4px; font-size: 0.85em;
+  color: #8b949e; cursor: pointer; user-select: none;
+}
+.autorefresh-label input { margin: 0; cursor: pointer; }
+.auto-status { color: #56d364; font-weight: 600; }
 .d2-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 .diagram-output { padding: 14px; min-height: 120px; }
 .diagram-output #diagram-mermaid-host { overflow-x: auto; }
@@ -152,7 +158,7 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
     </span>
   </div>
 
-  <details class="diagram-block" :open="false" @toggle="$el.open && loadDiagram()">
+  <details class="diagram-block" :open="false" @toggle="onDiagramToggle($el)">
     <summary class="diagram-summary">
       <span>Interaction diagram</span>
       <span class="diagram-hint">click to expand · Mermaid · D2 source · G6 graph</span>
@@ -173,6 +179,11 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
                   x-text="f === 'mermaid' ? 'Mermaid' : (f === 'd2' ? 'D2 source' : 'G6 graph')"></button>
         </template>
       </div>
+      <label class="autorefresh-label" :title="meta.status === 'running' ? 'auto-refresh every 5s while the run is still going' : 'run already finished — auto-refresh is a no-op'">
+        <input type="checkbox" :checked="diagramAutoRefresh" @change="toggleAutoRefresh()">
+        auto-refresh
+        <span class="auto-status" x-show="diagramAutoRefresh && meta.status === 'running'">·  ● live</span>
+      </label>
       <template x-if="diagramFormat === 'd2'">
         <span class="d2-tools">
           <button type="button" class="toolbar-btn" @click="copyDiagramSource()">📋 Copy</button>

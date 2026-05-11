@@ -307,6 +307,196 @@ class TestParallelCollapse:
             raise AssertionError("no ×4 collapse event found")
 
 
+class TestTimestampOrdering:
+    """Sibling spawn-done arrows + child events emitted via DFS must
+    end up monotonically ordered after the collector assigns ts.
+    Previously the parent's `step_offset_ms` was local: a spawn at
+    parent ts=250 walked the child whose events ran to ts=1000+,
+    then the parent's done was written at ts≈251 and its NEXT
+    step at ts=300 — both BEFORE the child's last event. After
+    sorting that scrambled the autonumber on Mermaid."""
+
+    @pytest.fixture
+    def db_with_spawn(self, tmp_path):
+        db_path = str(tmp_path / "traces.db")
+        from orchestra.trace_db import TraceDBWriter
+        # Parent reviewer: 3 steps, in step 1 it spawns an
+        # investigator that itself runs 4 steps before done'ing.
+        w = TraceDBWriter(db_path=db_path, run_id="parent0001", kind="agent")
+        w.on_event("agent_started", agent_id="P", agent_name="reviewer")
+        # step 0
+        w.on_event("agent_llm_request", agent_id="P", agent_name="reviewer", step=0, messages=[])
+        w.on_event("agent_llm_response", agent_id="P", agent_name="reviewer", step=0,
+                   tool_calls=[{"name": "diff_list_files", "arguments": "{}"}])
+        # step 1 — request carries tool result for step 0, then a spawn_agent
+        w.on_event("agent_llm_request", agent_id="P", agent_name="reviewer", step=1,
+                   messages=[{"role": "tool", "content": "ok"}])
+        w.on_event("agent_spawned", agent_id="P", agent_name="reviewer", step=1,
+                   data={"child_id": "C", "parent_id": "P", "agent_name": "investigator"})
+        w.on_event("agent_llm_response", agent_id="P", agent_name="reviewer", step=1,
+                   tool_calls=[{"name": "spawn_agent",
+                                "arguments": '{"agent":"investigator","focus":"x"}'}])
+        # CHILD runs steps 0..3 — emitted before parent's step 2
+        for s in range(4):
+            w.on_event("agent_llm_request", agent_id="C", agent_name="investigator",
+                       step=s, messages=[])
+            w.on_event("agent_llm_response", agent_id="C", agent_name="investigator",
+                       step=s,
+                       tool_calls=[{"name": "diff_read_file",
+                                    "arguments": f'{{"path":"file{s}"}}'}])
+        w.on_event("agent_done", agent_id="C", agent_name="investigator", step=3,
+                   output=[{"file": "x", "line": 1,
+                             "severity": "MAJOR", "title": "t"}])
+        # PARENT step 2 — happens AFTER the child has finished
+        w.on_event("agent_llm_request", agent_id="P", agent_name="reviewer", step=2,
+                   messages=[])
+        w.on_event("agent_llm_response", agent_id="P", agent_name="reviewer", step=2,
+                   tool_calls=[{"name": "post_comment",
+                                "arguments": '{"text":"done"}'}])
+        w.on_event("agent_done", agent_id="P", agent_name="reviewer", step=3,
+                   output=[])
+        w.finish_run(model="m", status="completed")
+        w.close()
+        return db_path, "parent0001"
+
+    def test_events_monotonic_ts(self, db_with_spawn):
+        """Real timestamps are used; events emitted at the same
+        microsecond can have equal `ts`. Sort stability + DFS
+        emission order keeps the *visual* order correct without any
+        synthetic nudge — we just pin non-decreasing ts here."""
+        db_path, rid = db_with_spawn
+        events = events_from_runs([rid], db_path)
+        for a, b in zip(events, events[1:]):
+            assert a.ts <= b.ts, \
+                f"events ts not monotonic: {a.label} @ {a.ts} > {b.label} @ {b.ts}"
+
+    def test_child_events_between_spawn_and_done(self, db_with_spawn):
+        """The investigator's events MUST appear between the
+        reviewer's `agent_spawn` arrow and the corresponding
+        `agent_done` return. This pins the DFS ordering."""
+        db_path, rid = db_with_spawn
+        events = events_from_runs([rid], db_path)
+        spawn_idx = next(i for i, e in enumerate(events)
+                         if e.kind == "agent_spawn")
+        done_idx = next(i for i, e in enumerate(events)
+                        if e.kind == "agent_done"
+                        and e.target and "P" in e.target)
+        child_tool_calls = [i for i, e in enumerate(events)
+                            if e.kind == "tool_call"
+                            and "C" in e.actor]
+        assert child_tool_calls, "child made no tool calls?"
+        for i in child_tool_calls:
+            assert spawn_idx < i < done_idx, \
+                f"child event at idx {i} not bracketed by spawn={spawn_idx} done={done_idx}"
+
+    def test_parent_step_after_done_comes_after_child(self, db_with_spawn):
+        """The reviewer's `post_comment` (step 2, after spawn) MUST
+        come after the investigator's done — the bug we're fixing
+        was that it sorted ahead by milliseconds."""
+        db_path, rid = db_with_spawn
+        events = events_from_runs([rid], db_path)
+        # Find post_comment by parent
+        post_idx = next(i for i, e in enumerate(events)
+                        if "post_comment" in e.label)
+        done_idx = next(i for i, e in enumerate(events)
+                        if e.kind == "agent_done" and "C" in e.actor)
+        assert post_idx > done_idx, \
+            f"parent's post_comment at {post_idx} not after child's done at {done_idx}"
+
+
+class TestStepLabels:
+    def test_step_prefix_in_mermaid_label(self, db_two_runs):
+        db_path, agent_id, _ = db_two_runs
+        events = events_from_runs(
+            resolve_runs(f"session://{agent_id}", db_path), db_path,
+        )
+        out = to_mermaid(events, db_path)
+        # Every tool_call / tool_result arrow carries a [s<N>] prefix.
+        arrow_lines = [l for l in out.splitlines()
+                       if ("->>" in l or "-->>" in l) and l.split(": ", 1)[-1].strip()]
+        assert arrow_lines, "no arrows in mermaid output"
+        with_step = [l for l in arrow_lines if "[s" in l]
+        assert with_step, f"no [sN] prefix in any arrow: {arrow_lines[:3]}"
+
+    def test_no_global_autonumber(self, db_two_runs):
+        """We dropped Mermaid's `autonumber` so per-agent step
+        numbers (in labels) are the only counter visible to the
+        reader — preventing the misleading 'event #18 is after
+        event #16' confusion when sequences interleave."""
+        db_path, agent_id, _ = db_two_runs
+        events = events_from_runs(
+            resolve_runs(f"session://{agent_id}", db_path), db_path,
+        )
+        out = to_mermaid(events, db_path)
+        assert "autonumber" not in out, \
+            "Mermaid autonumber re-enabled — would conflict with per-agent step labels"
+
+
+class TestFairCollapse:
+    @pytest.fixture
+    def db_chatty(self, tmp_path):
+        """One run with 20 sequential diff_read_file calls across
+        20 steps — naturally produces 40 events (20 calls + 20
+        results), well above any reasonable max_events default."""
+        db_path = str(tmp_path / "traces.db")
+        from orchestra.trace_db import TraceDBWriter
+        w = TraceDBWriter(db_path=db_path, run_id="chatty0001", kind="agent")
+        w.on_event("agent_started", agent_id="A", agent_name="reviewer")
+        for s in range(20):
+            w.on_event("agent_llm_request", agent_id="A", agent_name="reviewer",
+                       step=s, messages=[])
+            w.on_event("agent_llm_response", agent_id="A", agent_name="reviewer",
+                       step=s,
+                       tool_calls=[{"name": "diff_read_file",
+                                    "arguments": f'{{"path":"f{s}"}}'}])
+        # Final request carries last tool result so step 19's call gets paired.
+        w.on_event("agent_llm_request", agent_id="A", agent_name="reviewer",
+                   step=20,
+                   messages=[{"role": "tool", "content": "result_19"}])
+        w.on_event("agent_done", agent_id="A", agent_name="reviewer", step=20,
+                   output=[])
+        w.finish_run(model="m", status="completed")
+        w.close()
+        return db_path, "chatty0001"
+
+    def test_collapse_to_budget(self, db_chatty):
+        db_path, rid = db_chatty
+        full = events_from_runs([rid], db_path)
+        assert len(full) >= 20, "expected many events without collapse"
+        collapsed = events_from_runs([rid], db_path, max_events=10)
+        assert len(collapsed) <= len(full)
+        # Should fold the 20 adjacent diff_read_file calls into one
+        # high-count event.
+        calls = [e for e in collapsed if e.kind == "tool_call"]
+        assert any(e.count >= 5 for e in calls), \
+            f"no ×N collapse fired: {[e.label for e in calls]}"
+
+    def test_no_collapse_under_budget(self, db_chatty):
+        """A small budget triggers folding; a generous one leaves
+        events alone."""
+        db_path, rid = db_chatty
+        evs_loose = events_from_runs([rid], db_path, max_events=10**6)
+        evs_default = events_from_runs([rid], db_path)
+        assert len(evs_loose) == len(evs_default)
+
+    def test_spawn_done_never_fold(self, db_chatty):
+        """Folding budget aggression must NOT erase agent_spawn /
+        agent_done / agent_text events. Pin with a very tight
+        budget."""
+        db_path, _ = db_chatty
+        # Use the spawn fixture instead for this — but reuse the
+        # mechanism. We're testing _fold_one_round's blacklist.
+        e_spawn = Event(ts=datetime.now(timezone.utc), kind="agent_spawn",
+                        actor="agent:r:p", target="agent:r:c",
+                        label="spawn(x)", count=1)
+        e_spawn2 = Event(ts=datetime.now(timezone.utc), kind="agent_spawn",
+                         actor="agent:r:p", target="agent:r:c",
+                         label="spawn(y)", count=1)
+        from tracing.server.diagram import _foldable
+        assert not _foldable(e_spawn, e_spawn2), \
+            "spawns folded — would lose distinct child focus arguments"
+
+
 class TestMermaid:
     def test_starts_with_sequence_diagram(self, db_two_runs):
         db_path, agent_id, _ = db_two_runs
@@ -315,7 +505,11 @@ class TestMermaid:
         )
         out = to_mermaid(events, db_path)
         assert out.startswith("sequenceDiagram"), out[:80]
-        assert "autonumber" in out
+        # NOTE: no `autonumber` directive — per-agent step numbers
+        # are surfaced as `[sN]` prefixes in each event label
+        # instead (see TestStepLabels). Mermaid's global counter
+        # was misleading when sequences from multiple agents
+        # interleave on the timeline.
 
     def test_participants_present(self, db_two_runs):
         db_path, agent_id, _ = db_two_runs
@@ -352,6 +546,43 @@ class TestMermaid:
         db_path, _, _ = db_two_runs
         out = to_mermaid([], db_path)
         assert out.startswith("sequenceDiagram"), out
+
+    def test_balanced_activation(self, db_two_runs):
+        """Mermaid trips on `Trying to inactivate an inactive
+        participant` when `-->>-` fires without a matching `->>+`.
+        Pin: every `-->>-` must be preceded by a `->>+` on the
+        same id earlier in the output."""
+        db_path, _, _ = db_two_runs
+        # Use a synthetic stream that has an agent_done with no
+        # matching agent_spawn — the renderer must downgrade it.
+        events = [
+            Event(ts=datetime.now(timezone.utc), kind="agent_done",
+                  actor="agent:r:orphan", target="agent:r:p",
+                  label="done", session_id="r"),
+        ]
+        out = to_mermaid(events, db_path)
+        # No `-->>-` should appear — unbalanced events get the
+        # plain dashed form instead.
+        assert "-->>-" not in out, \
+            f"unbalanced agent_done rendered as `-->>-`: {out}"
+
+    def test_open_activation_gets_closed(self, db_two_runs):
+        """If the run is mid-flight (spawn arrived but no done yet),
+        any still-activated lanes get a synthetic `deactivate` at
+        the end so Mermaid doesn't warn about open activations."""
+        db_path, _, _ = db_two_runs
+        ts = datetime.now(timezone.utc)
+        events = [
+            Event(ts=ts, kind="agent_spawn",
+                  actor="agent:r:p", target="agent:r:c",
+                  label="spawn(x)", session_id="r"),
+        ]
+        out = to_mermaid(events, db_path)
+        # Spawn produces `->>+` — the child lane is left open.
+        # The renderer should append a `deactivate <child>` at end.
+        assert "->>+" in out
+        # The synthetic close-out for the still-active child.
+        assert "deactivate " in out
 
 
 class TestD2:

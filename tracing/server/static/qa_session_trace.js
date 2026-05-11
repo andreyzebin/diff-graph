@@ -203,8 +203,67 @@ document.addEventListener('alpine:init', () => {
     diagramG6: null,
     diagramLoading: false,
     diagramError: '',
+    diagramOpen: false,          // <details> open state — drives auto-refresh
+    diagramAutoRefresh: true,    // user-toggleable; default on
     _diagramLoadedOnce: false,
+    _diagramTimer: null,
     _g6Instance: null,
+
+    onDiagramToggle(el) {
+      this.diagramOpen = !!el.open;
+      if (this.diagramOpen) {
+        this.loadDiagram();
+        this._maybeStartTimer();
+      } else {
+        this._stopTimer();
+      }
+    },
+
+    _maybeStartTimer() {
+      // Auto-refresh only while the underlying run is still going.
+      // Once status flips to completed/failed/cancelled the diagram
+      // is final; polling becomes pointless and just thrashes the
+      // mermaid/G6 renderer.
+      this._stopTimer();
+      if (!this.diagramAutoRefresh) return;
+      if (!this.diagramOpen) return;
+      if (this.meta.status && this.meta.status !== 'running') return;
+      this._diagramTimer = setInterval(() => {
+        this._refreshMetaAndDiagram();
+      }, 5000);
+    },
+
+    _stopTimer() {
+      if (this._diagramTimer) {
+        clearInterval(this._diagramTimer);
+        this._diagramTimer = null;
+      }
+    },
+
+    async _refreshMetaAndDiagram() {
+      // Refresh meta first — if the run finished, we'll render one
+      // last diagram and then stop the timer.
+      try {
+        const r = await fetch(`${this.qaBase}/api/runs/${this.runId}`);
+        if (r.ok) {
+          const m = await r.json();
+          if (m.data) this.meta = m.data;
+        }
+      } catch (e) { /* keep prior meta */ }
+      await this.loadDiagram();
+      if (this.meta.status && this.meta.status !== 'running') {
+        this._stopTimer();
+      }
+    },
+
+    toggleAutoRefresh() {
+      this.diagramAutoRefresh = !this.diagramAutoRefresh;
+      if (this.diagramAutoRefresh) {
+        this._maybeStartTimer();
+      } else {
+        this._stopTimer();
+      }
+    },
 
     async loadDiagram() {
       this._diagramLoadedOnce = true;
