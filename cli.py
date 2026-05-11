@@ -921,12 +921,26 @@ def run_unit(
                                             help="Provider profile from ~/repos/.llm_creds.toml (e.g. deepseek)"),
     timeout: int = typer.Option(300, "--timeout", "-t", help="Hard timeout for cli.py subprocess (seconds)"),
     keep_tmp: bool = typer.Option(False, "--keep-tmp", help="Don't delete the temp clone on success — useful for debugging the diff view"),
+    attempt_dir: Optional[str] = typer.Option(
+        None, "--attempt-dir",
+        help="Per-attempt trace directory (mirror integration tier's "
+             "attempt-NN/runs/{agent,judge}/ layout). When omitted, "
+             "auto-derived from BENCHMARK_TRACE_DIR if that env var is "
+             "set; otherwise no on-disk trace is written (SQLite trace "
+             "DB still gets the agent run row via cli.py defaults).",
+    ),
+    no_judge: bool = typer.Option(
+        False, "--no-judge",
+        help="Skip the LLM judge even when the fixture has expected_output. "
+             "Useful for quick agent-only smoke runs.",
+    ),
 ):
     """Run a unit-tier scenario against a local-cloned repo (orderflow-style).
 
-    Stage 1 of TODO §5e.14: just plumbing — invokes diff-graph cli.py
-    against a temp local clone of the fixture's source repo, prints
-    the agent's output and exit status. No LLM judge yet.
+    Stage 4 of TODO §5d.3 — when the fixture declares `expected_output`
+    AND `bench-config.judge` is set, runs an LLM judge after the agent
+    subprocess finishes. Judge trace lands under
+    attempt_dir/runs/judge/, score + verdict on the result row.
     """
     from runner.run_unit import run_unit_fixture
     p = Path(fixture).expanduser()
@@ -938,8 +952,35 @@ def run_unit(
         console.print(f"[red]fixture not found: {p}[/red]")
         raise typer.Exit(2)
 
-    result = run_unit_fixture(p, provider=provider, timeout=timeout,
-                              keep_tmp_on_success=keep_tmp)
+    # Auto-derive attempt_dir from BENCHMARK_TRACE_DIR (set by the qa
+    # planner when a plan fires this unit fixture). Lets the UI link
+    # the trace to the plan row without the planner having to thread
+    # an extra flag through bench_cmd.
+    resolved_attempt_dir = attempt_dir
+    if resolved_attempt_dir is None:
+        env_root = os.environ.get("BENCHMARK_TRACE_DIR", "").strip()
+        if env_root:
+            from datetime import datetime as _dt
+            stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+            safe_prov = (provider or "").replace("/", "_") or "default"
+            resolved_attempt_dir = str(
+                Path(env_root) / stamp / safe_prov / p.stem / "attempt-01"
+            )
+
+    # Load judge config from ~/.benchmark/config.yaml (same path as
+    # `bench run`). Unit runner uses the same judge profile so we don't
+    # fork the LLM-stack config per tier.
+    cfg = _expand_config(_load_config())
+    judge_cfg = cfg.get("judge", {}) if not no_judge else {}
+
+    result = run_unit_fixture(
+        p,
+        provider=provider,
+        timeout=timeout,
+        keep_tmp_on_success=keep_tmp,
+        attempt_dir=resolved_attempt_dir,
+        judge_cfg=judge_cfg or None,
+    )
     status_label = "[green]PASS[/green]" if result.exit_code == 0 else "[red]FAIL[/red]"
     console.print(f"\n{status_label}  {result.fixture_id}  agent=[cyan]{result.agent}[/cyan]  exit={result.exit_code}")
     console.print(f"  base={result.base_sha[:12]}  source={result.source_sha[:12]}")
@@ -977,6 +1018,22 @@ def run_unit(
                 console.print(f"    [yellow]react[/yellow] #{rec.get('comment_id')} {rec.get('emoticon')}")
             else:
                 console.print(f"    [dim]{kind}[/dim] {json.dumps(rec)[:120]}")
+    if result.judge_score is not None:
+        verdict_colour = {"pass": "green", "fail": "red"}.get(
+            (result.judge_verdict or "").lower(), "yellow"
+        )
+        console.print(
+            f"  [bold]judge:[/bold] "
+            f"score=[bold]{result.judge_score:.2f}[/bold] "
+            f"verdict=[{verdict_colour}]{result.judge_verdict}[/{verdict_colour}] "
+            f"run_id={result.judge_run_id or '?'}"
+        )
+        if result.judge_summary:
+            # Trim long summaries — full text is in the judge trace row.
+            head = result.judge_summary.replace("\n", " ")[:200]
+            console.print(f"  [dim]{head}[/dim]")
+    if result.attempt_dir is not None:
+        console.print(f"  attempt_dir: [dim]{result.attempt_dir}[/dim]")
     if result.exit_code != 0:
         console.print(f"\n[dim]stdout (tail):[/dim]\n{result.stdout_tail}")
         console.print(f"\n[dim]stderr (tail):[/dim]\n{result.stderr_tail}")
