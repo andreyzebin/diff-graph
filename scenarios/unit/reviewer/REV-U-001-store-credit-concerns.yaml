@@ -50,3 +50,58 @@ trigger:
   comment_id: 0
 
 agent_data: {}
+
+# ── Judge (concerns-only reviewer) ───────────────────────────────────────
+# The agent runs in concerns-only mode (see concerns-only.md), so it
+# never posts inline comments / sets verdict. All signal lives in
+# reflect(questions_remaining=[...]). The judge extracts those entries
+# from invocations.json and matches each concern_focuses keyword group
+# (AND-of-OR semantics: at least one keyword from the group must hit
+# the union of title+description across all reflect entries).
+#
+# Concerns chosen from the actual diff against AGENTS.md (master):
+#   • PR deletes AGENTS.md — the rule book for ownership / transactions /
+#     style. Major red flag a reviewer should call out.
+#   • redeemCredit(creditId, orderId) lacks ownership checks → IDOR.
+#     AGENTS.md mandates ownership verification on every endpoint.
+#   • isRedeemed() check inside @Transactional is not pessimistic-locked
+#     → two concurrent redeems can both pass. AGENTS.md flags "concurrency
+#     matters" for this multi-instance service.
+#   • credit.setRedeemed(true) is unconditional even when only part of
+#     the credit covers order.total → user loses the leftover.
+#
+# Threshold tuned conservatively (0.5) because the diff is large and a
+# reviewer hitting 2/4 groups is already a useful signal. Tighten after
+# we have a few attempt batches to calibrate.
+expected_output:
+  assert_via: [intended_concerns]
+  required_comments: []
+  forbidden_comments:
+    - description: "Inline comments — reviewer was told concerns-only; no posting allowed."
+  concern_focuses:
+    - id: agents-md-deletion
+      description_keywords: ["AGENTS.md", "deleted", "removed", "convention", "guideline", "rule"]
+      rationale: "PR deletes AGENTS.md — the project's authorization / transaction / style rule book. Reviewer should flag this prominently."
+    - id: redeem-authorization
+      description_keywords: ["authorization", "ownership", "currentUser", "IDOR", "auth check", "belong", "verify"]
+      rationale: "redeemCredit(creditId, orderId) does not verify that the credit or the order belong to the authenticated customer. AGENTS.md explicitly mandates ownership verification on every endpoint."
+    - id: concurrent-redeem
+      description_keywords: ["concurrent", "race", "pessimistic", "lock", "isRedeemed", "double-redeem", "atomic"]
+      rationale: "isRedeemed() check inside @Transactional is not pessimistic-locked. Two concurrent requests can both pass the check and redeem the same credit twice. AGENTS.md notes concurrency matters in this multi-instance service."
+    - id: partial-redemption
+      description_keywords: ["partial", "leftover", "remainder", "min(", "setRedeemed(true)", "fully consumed", "amount"]
+      rationale: "credit.setRedeemed(true) is unconditional even when credit.amount > order.total (`credit.amount.min(order.total)` applies only part). The remainder is silently lost."
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+  thresholds:
+    min_score: 0.5
+    min_required_found: 0
+    max_false_positives: 1
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: medium
+  scenario_type: agent_unit
+  capabilities: [reviewer, concern_forming, look_phase, agents_md_awareness, security_authz]

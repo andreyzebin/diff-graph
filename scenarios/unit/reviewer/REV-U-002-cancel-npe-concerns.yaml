@@ -54,3 +54,69 @@ trigger:
   comment_id: 0
 
 agent_data: {}
+
+# ── Judge (concerns-only reviewer) ───────────────────────────────────────
+# Hotfix wraps `order.getItems()` in `if (... != null)` before the
+# inventory-release loop. The fix is local and looks harmless — but
+# AGENTS.md (which this same PR happens to DELETE) explicitly bans null
+# guards on @OneToMany fields:
+#
+#   "All collections returned from JPA relations are never `null` —
+#    Hibernate initialises them as empty. Do not add `!= null` guards
+#    on `@OneToMany` fields; doing so hides mapping errors."
+#
+#   "If a non-JPA path can construct or persist the entity (legacy
+#    importer, raw JDBC, native query mapping rows by hand), defend
+#    the invariant at the *entity* with `@PostLoad`/`@PrePersist`
+#    callbacks rather than scattering null guards through every
+#    consumer."
+#
+# So the reviewer must catch:
+#   • The null guard violates a documented JPA convention.
+#   • The null is a SYMPTOM of a broken upstream mapping or a non-JPA
+#     construction path — fixing at the consumer hides the real bug.
+#   • AGENTS.md itself is being deleted in this PR (the very rule book
+#     that bans this fix shape). Reviewer should flag the deletion.
+#   • Build-system damage is bundled in (gradle wrapper / .gitignore
+#     deletions) and is out of scope for an NPE hotfix.
+#
+# This is a HARDER scenario than REV-U-001: the diff looks trivially
+# correct in isolation; only a project-aware reviewer who has read
+# AGENTS.md will catch it. Exactly the value statement we want to
+# measure — the difference between a generic Java reviewer and one
+# that integrates project conventions.
+expected_output:
+  assert_via: [intended_concerns]
+  required_comments: []
+  forbidden_comments:
+    - description: "Inline comments — reviewer was told concerns-only; no posting allowed."
+  concern_focuses:
+    - id: agents-md-jpa-rule
+      description_keywords: ["AGENTS.md", "@OneToMany", "Hibernate", "null guard", "JPA", "convention", "initialises"]
+      rationale: "AGENTS.md states @OneToMany collections are never null under Hibernate — null guards hide mapping errors. Reviewer must connect the documented rule to this exact diff."
+    - id: symptom-vs-cause
+      description_keywords: ["symptom", "root cause", "mapping", "upstream", "hide", "real bug", "@PostLoad", "@PrePersist", "entity boundary"]
+      rationale: "The null is a symptom of a broken upstream mapping or a non-JPA constructor path. Fixing at the consumer (loop site) hides the cause. AGENTS.md mandates defending the invariant at the entity boundary."
+    - id: agents-md-deletion
+      description_keywords: ["AGENTS.md", "deleted", "removed", "convention", "guideline", "rule"]
+      rationale: "PR deletes AGENTS.md — the rule book the hotfix violates. Reviewer should flag the deletion (independently of the fix shape concern)."
+    - id: scope-creep
+      description_keywords: ["scope", "gradle", "wrapper", "gradlew", "unrelated", ".gitignore", "build"]
+      rationale: "An NPE hotfix should touch one method. Bundling gradle wrapper + .gitignore deletions widens the blast radius unnecessarily."
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+  thresholds:
+    # Harder than REV-U-001 — most reviewers without project context
+    # will rubber-stamp the null guard. min_score is set low so we can
+    # see directional improvement as the reviewer prompt is tuned.
+    min_score: 0.5
+    min_required_found: 0
+    max_false_positives: 1
+
+metadata:
+  difficulty: hard
+  language: java
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [reviewer, concern_forming, look_phase, agents_md_awareness, root_cause]

@@ -31,4 +31,74 @@ agent_data:
     a deeper problem (mapping configuration, persistence layer)
     that the guard would silently hide.
 
-# Stage 2+: spawn_policy, budget, expected.rubric.
+# ── Judge (investigator standalone) ──────────────────────────────────────
+# Investigator runs its full LOOK→THINK→DONE loop on the given focus.
+# It does NOT post to the PR (no spawn, no post_comment). The judge
+# scores invocations.json — specifically the done(findings=[...]) call.
+# Each required_comments entry's description_keywords are matched
+# (AND-of-OR) against the union of finding.{description, location} for
+# all findings the investigator produced.
+#
+# A competent investigator should reach these conclusions on this
+# focus + this codebase:
+#
+#   • The null guard violates AGENTS.md's @OneToMany convention.
+#     A focused investigator must read AGENTS.md and connect the rule
+#     to this exact line. This is a hard skill the prompt explicitly
+#     trains for.
+#   • Root cause is upstream — either a broken Hibernate mapping or
+#     a non-JPA construction path (raw JDBC import, native query row
+#     mapping) that bypasses Hibernate's collection init.
+#   • Per AGENTS.md, the fix belongs at the entity boundary
+#     (@PostLoad / @PrePersist) — NOT at every consumer site.
+#   • Off-graph noise: investigator should NOT drift into unrelated
+#     subsystems (pricing, store credit, etc.). It stays on this
+#     single concern.
+#
+# assert_via: intended_findings — investigator's done(findings=[...])
+# is the canonical output channel for this agent. No PR comments to
+# match against.
+expected_output:
+  assert_via: [intended_findings]
+  required_comments:
+    - id: agents-md-jpa-violation
+      type: inline
+      severity: major
+      description_keywords: ["AGENTS.md", "@OneToMany", "Hibernate", "null guard", "convention", "never null"]
+      rationale: "AGENTS.md explicitly bans null guards on @OneToMany — investigator must surface this as the diff's primary problem."
+    - id: root-cause-upstream
+      type: inline
+      severity: major
+      description_keywords: ["root cause", "mapping", "upstream", "non-JPA", "raw JDBC", "import", "construct"]
+      rationale: "The null indicates a broken mapping or a non-JPA constructor path. Investigator should point upstream, not at the loop site."
+    - id: fix-at-entity
+      type: inline
+      severity: minor
+      description_keywords: ["@PostLoad", "@PrePersist", "entity", "boundary", "invariant", "consumer"]
+      rationale: "AGENTS.md mandates defending the invariant at the entity (@PostLoad/@PrePersist), not in every consumer. Investigator should recommend the correct fix location."
+  forbidden_comments:
+    # Incidental findings ON THE PATH are fine (e.g. while reading the
+    # entity/mapping the investigator notices a related JPA quirk, that
+    # earns no penalty). What we DO want to penalise is drift into
+    # subsystems disconnected from the null-items call/data graph —
+    # e.g. opening a separate line of inquiry on pricing, store credit,
+    # or controllers. The rule is "off-graph, requires a fresh
+    # investigation direction" — not "off-the-direct-line".
+    - description: "Findings that open a fresh investigation direction unrelated to the null-items call/data graph (pricing, discounts, store credit, controllers). Incidental findings encountered while reading the entity/mapping ARE allowed — only off-graph drift is penalised."
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+  thresholds:
+    # 3 required findings; min_required_found=2 means agent must hit
+    # at least two of (jpa-violation, root-cause-upstream, fix-at-entity)
+    # to pass. The third is bonus but increases score.
+    min_score: 0.55
+    min_required_found: 2
+    max_false_positives: 1
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [investigator, focus_stability, agents_md_awareness, root_cause]
