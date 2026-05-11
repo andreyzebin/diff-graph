@@ -222,16 +222,21 @@ document.addEventListener('alpine:init', () => {
     // Open a payload tab (call/result/messages) on the right panel.
     // url = API endpoint that returns the raw payload; msgIndex picks
     // out one message from a `messages` array if provided.
-    // One click on a step → three side-panel tabs auto-loaded:
-    //   request  → messages array sent to the LLM at step N
-    //              (`/api/runs/{id}/step/{agent}/{n}/messages`)
-    //   response → tool_calls / content the LLM returned
-    //              (`/api/runs/{id}/step/{agent}/{n}/call`)
-    //   history  → step N+1's request, which carries N's response
-    //              plus the tool_result message — IF the agent
-    //              survived step N (otherwise N+1 doesn't exist
-    //              and the tab cleanly shows `(end of conversation
-    //              — agent didn't reach step N+1)`).
+    // One click on a step → three side-panel tabs auto-loaded.
+    // Semantics are framed around the TOOL CALL — that's the unit
+    // the agent operates on per step:
+    //   request  → the tool the agent invoked (the parsed
+    //              `tool_calls` array from the LLM response).
+    //              `/api/runs/{id}/step/{agent}/{n}/call`
+    //   response → what the tool returned, post-execution.
+    //              `/api/runs/{id}/step/{agent}/{n}/result`
+    //   history  → the full messages context at step N+1 — that's
+    //              the moment when the tool result has been folded
+    //              back into the conversation. If the agent didn't
+    //              reach N+1 (crashed, ran out of budget, this IS
+    //              the last step), the tab shows `(end of
+    //              conversation — agent did not reach this step)`.
+    //              `/api/runs/{id}/step/{agent}/{n+1}/messages`
     // Existing manual tabs stay open; `openTab` dedupes by id.
     async openStepDetails(agentId, step) {
       const stem = `${(agentId || '').substring(0, 8)}/s${step}`;
@@ -239,10 +244,10 @@ document.addEventListener('alpine:init', () => {
       await Promise.all([
         this.openTab(`req:${agentId}:${step}`,
                      `${stem} request`,
-                     `${base}/${step}/messages`),
+                     `${base}/${step}/call`),
         this.openTab(`resp:${agentId}:${step}`,
                      `${stem} response`,
-                     `${base}/${step}/call`),
+                     `${base}/${step}/result`),
         this.openTab(`hist:${agentId}:${step}`,
                      `${stem} history`,
                      `${base}/${step + 1}/messages`),
@@ -271,16 +276,24 @@ document.addEventListener('alpine:init', () => {
         const resp = await fetch(url);
         const raw = await resp.text();
         if (!resp.ok) {
-          // 404 on `step/N+1/messages` typically means the agent
-          // didn't reach the next step (errored, killed, or this
-          // IS the last step). Pin a friendly hint instead of
-          // dumping the FastAPI JSON error blob.
-          if (resp.status === 404 && url.includes('/messages')) {
-            content = '(end of conversation — agent did not reach this step)';
-          } else {
-            content = `HTTP ${resp.status}\n\n${raw}`;
+          // 404 is expected for several legit cases — replace the
+          // raw FastAPI error blob with a friendly inline message
+          // per endpoint:
+          //   /messages on N+1 → agent didn't reach the next step
+          //                      (crashed, killed, or this is the
+          //                      last step).
+          //   /result on N     → step didn't produce a tool result
+          //                      (typical for control-flow steps
+          //                      like the final `done()` call).
+          let hint = `HTTP ${resp.status}\n\n${raw}`;
+          if (resp.status === 404) {
+            if (url.includes('/messages')) {
+              hint = '(end of conversation — agent did not reach this step)';
+            } else if (url.includes('/result')) {
+              hint = '(no tool result for this step — control-flow only)';
+            }
           }
-          this._finishTab(id, content, null);
+          this._finishTab(id, hint, null);
           return;
         }
         content = raw;
