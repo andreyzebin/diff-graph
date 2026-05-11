@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>QA · Queue</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="{{ base_path }}/static/trace.css">
+<script>window.QA_BASE_PATH = "{{ base_path }}";</script>
+<script defer src="{{ base_path }}/static/qa.js?v=fd003970"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
+<script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
+<style>
+[x-cloak] { display: none !important; }
+body { padding: 20px; max-width: 1600px; margin: 0 auto; }
+.qa-nav { margin-bottom: 16px; font-size: 0.9em; }
+.qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
+.qa-nav a:hover { text-decoration: underline; }
+.bar { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+       padding: 10px; margin: 10px 0; display: flex; gap: 8px;
+       flex-wrap: wrap; align-items: center; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #30363d;
+         vertical-align: top; }
+th { color: #8b949e; font-weight: normal; }
+tr:hover { background: #161b22; }
+.btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+       padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
+.btn:hover { background: #30363d; }
+.btn-primary { background: #1f6feb; border-color: #388bfd; color: white; }
+.btn-warn { background: #b16d0033; border-color: #b16d00; color: #d29922; }
+.btn-danger { background: #f8514933; border-color: #f85149; color: #f85149; }
+.mut { font-family: ui-monospace, monospace; color: #c9d1d9; }
+.muted { color: #8b949e; }
+.s-queued    { color: #58a6ff; }
+.s-leased    { color: #d29922; }
+.s-running   { color: #d29922; }
+.s-finished  { color: #56d364; }
+.s-error     { color: #f85149; }
+.s-cancelled { color: #8b949e; }
+.s-blocked   { color: #6e7681; }
+.res-chip { display: inline-block; padding: 1px 6px; margin: 1px;
+            background: #21262d; color: #8b949e; border-radius: 3px;
+            font-size: 0.75em; font-family: ui-monospace, monospace;
+            text-decoration: none; }
+.res-chip:hover { background: #30363d; color: #58a6ff; }
+.tag-chip { display: inline-block; padding: 1px 5px; margin: 0 2px 0 0;
+            background: #1f2a1f; color: #7ee787; border-radius: 3px;
+            font-size: 0.75em; }
+input[type="text"], select {
+  background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+  padding: 3px 6px; border-radius: 3px;
+}
+.fire-modal-backdrop { position: fixed; inset: 0; background: #000a;
+                       display: flex; align-items: center; justify-content: center;
+                       z-index: 100; }
+.fire-modal { background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+              padding: 18px; max-width: 700px; width: 90%; }
+</style>
+</head>
+<body hx-boost="true" hx-ext="head-support">
+{% include "_qa_nav.html" %}
+
+<h1>QA · Queue</h1>
+<p class="muted" style="font-size: 0.9em;">
+  Generic distributed task queue. Every row is one task; resources
+  (scenario / lineage / mutation / plan / session) are URIs you
+  click to jump to. Filter by state / queue / tag / resource
+  substring. Manual <b>retry</b> resets retry_count; <b>cancel</b>
+  forces terminal state. Auto-retry on transient errors is
+  separate (retry_count column).
+</p>
+
+<div x-data="queueView" x-init="load(); setInterval(() => load(true), 5000)">
+
+  <div class="bar">
+    <label>state
+      <select x-model="filters.state" @change="load()">
+        <option value="">all</option>
+        <option value="queued">queued</option>
+        <option value="leased">leased</option>
+        <option value="running">running</option>
+        <option value="finished">finished</option>
+        <option value="error">error</option>
+        <option value="cancelled">cancelled</option>
+        <option value="blocked">blocked</option>
+      </select>
+    </label>
+    <label>queue
+      <select x-model="filters.queue" @change="load()">
+        <option value="">all</option>
+        <template x-for="q in queueOptions" :key="q">
+          <option :value="q" x-text="q"></option>
+        </template>
+      </select>
+    </label>
+    <label style="flex:1;">filter
+      <input type="text" x-model="filters.q" placeholder="id / tag / resource URI substring"
+             @input.debounce.300ms="load()">
+    </label>
+    <button class="btn-primary btn" @click="openEnqueue()">▶ enqueue task…</button>
+    <span class="muted" x-text="meta"></span>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>id</th>
+        <th>state</th>
+        <th>queue</th>
+        <th>resources</th>
+        <th>tags</th>
+        <th>retry</th>
+        <th>enqueued</th>
+        <th>started</th>
+        <th>finished</th>
+        <th>error</th>
+        <th>actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      <template x-for="t in tasks" :key="t.id">
+        <tr>
+          <td>
+            <a class="mut" :href="`{{ base_path }}/qa/queue?id=${t.id}`" x-text="`#${t.id}`"></a>
+          </td>
+          <td><span :class="`s-${t.state}`" x-text="t.state"></span></td>
+          <td x-text="t.queue || t.provider"></td>
+          <td>
+            <template x-for="u in (t.resources || []).slice(0, 6)" :key="u">
+              <a class="res-chip" :href="uiPathFor(u)" :title="u" x-text="shortRes(u)"></a>
+            </template>
+          </td>
+          <td>
+            <template x-for="tag in (t.tags || [])" :key="tag">
+              <span class="tag-chip" x-text="tag"></span>
+            </template>
+          </td>
+          <td x-text="`${t.retry_count}/${t.max_retries}`"></td>
+          <td class="muted" x-text="fmtLocal(t.enqueued_at)"></td>
+          <td class="muted" x-text="fmtLocal(t.started_at)"></td>
+          <td class="muted" x-text="fmtLocal(t.finished_at)"></td>
+          <td class="muted" :title="t.error_class || ''" x-text="(t.error_class || '').slice(0, 32)"></td>
+          <td>
+            <template x-if="['error','finished','cancelled'].includes(t.state)">
+              <button class="btn btn-warn" @click="retry(t.id)">retry</button>
+            </template>
+            <template x-if="['queued','leased','running','blocked'].includes(t.state)">
+              <button class="btn btn-danger" @click="cancel(t.id)">cancel</button>
+            </template>
+          </td>
+        </tr>
+      </template>
+    </tbody>
+  </table>
+
+  <div class="bar" x-show="tasks.length === 0" style="justify-content:center;">
+    <span class="muted">no tasks for the current filter</span>
+  </div>
+
+  <!-- Enqueue modal -->
+  <div class="fire-modal-backdrop" x-show="enqueueModal.open" x-cloak
+       @click.self="enqueueModal.open = false">
+    <div class="fire-modal">
+      <h3 style="margin-top:0;">Enqueue generic task</h3>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <label>queue
+          <input type="text" x-model="enqueueModal.queue" placeholder="e.g. smoke, deepseek" style="width:100%;">
+        </label>
+        <label>cmd (shell)
+          <textarea x-model="enqueueModal.cmd"
+                    placeholder="echo hello; sleep 1"
+                    rows="3" style="width:100%; background:#0d1117;
+                                    border:1px solid #30363d; color:#c9d1d9;
+                                    padding:6px; border-radius:3px;
+                                    font-family: ui-monospace, monospace;
+                                    font-size: 0.85em;"></textarea>
+        </label>
+        <label>resources (one URI per line)
+          <textarea x-model="enqueueModal.resourcesText"
+                    placeholder="scenario://X&#10;lineage://master"
+                    rows="3" style="width:100%; background:#0d1117;
+                                    border:1px solid #30363d; color:#c9d1d9;
+                                    padding:6px; border-radius:3px;
+                                    font-family: ui-monospace, monospace;
+                                    font-size: 0.85em;"></textarea>
+        </label>
+        <label>tags (comma-separated)
+          <input type="text" x-model="enqueueModal.tagsText" style="width:100%;" placeholder="adhoc, smoke">
+        </label>
+        <div style="display:flex; gap:12px;">
+          <label>priority
+            <input type="number" x-model.number="enqueueModal.priority" style="width:80px;">
+          </label>
+          <label>max_retries
+            <input type="number" x-model.number="enqueueModal.maxRetries" style="width:80px;">
+          </label>
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
+        <button class="btn" @click="enqueueModal.open = false">cancel</button>
+        <button class="btn-primary btn"
+                :disabled="!enqueueModal.queue || !enqueueModal.cmd || enqueueModal.firing"
+                @click="enqueueSubmit()">
+          <span x-text="enqueueModal.firing ? 'enqueuing…' : 'enqueue'"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

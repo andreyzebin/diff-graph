@@ -959,6 +959,120 @@ document.addEventListener('alpine:init', () => {
     },
   }))
 
+  Alpine.data('queueView', () => ({
+    tasks: [],
+    queueOptions: [],
+    meta: '',
+    filters: { state: '', queue: '', q: '' },
+    enqueueModal: {
+      open: false, queue: '', cmd: '',
+      resourcesText: '', tagsText: '',
+      priority: 100, maxRetries: 3,
+      firing: false,
+    },
+    async load(silent) {
+      const base = window.QA_BASE_PATH || '';
+      const qs = new URLSearchParams();
+      if (this.filters.state) qs.append('state', this.filters.state);
+      if (this.filters.queue) qs.append('provider', this.filters.queue);
+      // filter by tag/resource is client-side; query a wide page,
+      // narrow in JS. Server's /api/qa/tasks doesn't speak `tag`
+      // or `resource` filter yet (TODO if list grows).
+      qs.append('limit', '200');
+      const url = `${base}/api/qa/tasks?` + qs.toString();
+      const t0 = performance.now();
+      const r = await fetch(url);
+      const j = await r.json();
+      let rows = j.data || [];
+      const q = (this.filters.q || '').trim().toLowerCase();
+      if (q) {
+        rows = rows.filter(t => {
+          const hay = (String(t.id) + ' ' +
+                       (t.tags || []).join(' ') + ' ' +
+                       (t.resources || []).join(' ') + ' ' +
+                       (t.error_class || '')).toLowerCase();
+          return hay.includes(q);
+        });
+      }
+      this.tasks = rows;
+      this.queueOptions = [...new Set((j.data || []).map(t => t.queue || t.provider).filter(Boolean))].sort();
+      this.meta = `${rows.length}/${(j.data || []).length} task(s) · ${(performance.now() - t0).toFixed(0)}ms`;
+    },
+    uiPathFor(uri) {
+      // Map URI to UI path locally — duplicates server's
+      // resources.py registry but keeps the chip non-blocking.
+      const m = /^([a-z]+):\/\/(.+)$/.exec(uri);
+      if (!m) return '#';
+      const [, kind, id] = m;
+      const base = window.QA_BASE_PATH || '';
+      const enc = encodeURIComponent(id);
+      switch (kind) {
+        case 'scenario': return `${base}/qa/scenarios?id=${enc}`;
+        case 'provider': return `${base}/qa/workers?provider=${enc}`;
+        case 'lineage':  return `${base}/qa/traces?lineage=${enc}`;
+        case 'mutation': return `${base}/qa/traces?mutation=${enc.slice(0,8)}`;
+        case 'plan':     return `${base}/qa/plans?id=${enc}`;
+        case 'task':     return `${base}/qa/queue?id=${enc}`;
+        case 'worker':   return `${base}/qa/workers?id=${enc}`;
+        case 'session':  return `${base}/qa/traces?session=${enc}`;
+        case 'trace':    return `${base}/qa/traces?trace_id=${enc}`;
+        default:         return '#';
+      }
+    },
+    shortRes(uri) {
+      const m = /^([a-z]+):\/\/(.+)$/.exec(uri);
+      if (!m) return uri;
+      const [, kind, id] = m;
+      const short = (kind === 'mutation' || kind === 'session')
+                    ? id.slice(0, 8) : id;
+      return `${kind}:${short}`;
+    },
+    async retry(taskId) {
+      if (!confirm(`Re-queue task #${taskId}?`)) return;
+      const base = window.QA_BASE_PATH || '';
+      const r = await fetch(`${base}/api/qa/tasks/${taskId}/retry`, {method: 'POST'});
+      const j = await r.json();
+      if (j.error) { alert(`error: ${j.error.message}`); return; }
+      await this.load();
+    },
+    async cancel(taskId) {
+      if (!confirm(`Cancel task #${taskId}?`)) return;
+      const base = window.QA_BASE_PATH || '';
+      const r = await fetch(`${base}/api/qa/tasks/${taskId}/cancel`, {method: 'POST'});
+      const j = await r.json();
+      if (j.error) { alert(`error: ${j.error.message}`); return; }
+      await this.load();
+    },
+    openEnqueue() {
+      this.enqueueModal.open = true;
+    },
+    async enqueueSubmit() {
+      const m = this.enqueueModal;
+      if (!m.queue || !m.cmd) return;
+      m.firing = true;
+      try {
+        const body = {
+          queue: m.queue, cmd: m.cmd,
+          resources: m.resourcesText.split('\n').map(s => s.trim()).filter(Boolean),
+          tags: m.tagsText.split(',').map(s => s.trim()).filter(Boolean),
+          priority: m.priority, max_retries: m.maxRetries,
+        };
+        const base = window.QA_BASE_PATH || '';
+        const r = await fetch(`${base}/api/qa/tasks/enqueue`, {
+          method: 'POST', headers: {'content-type': 'application/json'},
+          body: JSON.stringify(body),
+        });
+        const j = await r.json();
+        if (j.error) { alert(`error: ${j.error.message}`); return; }
+        m.open = false;
+        m.cmd = ''; m.resourcesText = ''; m.tagsText = '';
+        await this.load();
+      } finally {
+        m.firing = false;
+      }
+    },
+  }))
+
   Alpine.data('workersView', () => ({
     workers: [],
     leasedTasks: [],
