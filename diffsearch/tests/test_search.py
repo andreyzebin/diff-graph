@@ -195,3 +195,124 @@ class TestSearchVFS:
             assert "  --" in out or out.count("InventoryService") <= 2
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
+
+
+class TestSearchVFSRegex:
+    """`regex=True` must use extended regex (ERE) so `|`, `+`, `?`, `()`,
+    `{n,m}` work — `grep` defaults to basic regex (BRE) where those are
+    literal, and a query like `Foo|Bar` silently returns zero results.
+
+    These tests pin the contract for callers: regex=True ⇒ ERE,
+    regex=False ⇒ fixed-string (so dots and other regex metachars
+    don't accidentally match).
+    """
+
+    def test_alternation_finds_either_branch(self, rename_field_repo):
+        """`A|B` matches lines containing either A or B (the actual bug
+        we saw in plan 102: `store.credit|storeCredit|StoreCredit` was
+        returning '(no matches)' even though the diff had OrderService
+        and InventoryService in it)."""
+        repo, base, source = rename_field_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            out = search_vfs(vfs, "OrderService|InventoryService", regex=True)
+            log.info("regex alternation result:\n%s", out)
+            assert "no matches" not in out, \
+                "alternation `A|B` must match either side (was BRE-broken)"
+            assert "OrderService" in out or "InventoryService" in out
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_alternation_matches_both_sides(self, rename_field_repo):
+        """Both sides of an alternation produce hits when both occur."""
+        repo, base, source = rename_field_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            out = search_vfs(vfs, "OrderService|InventoryService", regex=True)
+            # Both names exist in this fixture — both should appear in
+            # the output (grouped by file).
+            assert "OrderService" in out
+            assert "InventoryService" in out
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_regex_dot_wildcard(self, rename_field_repo):
+        """`.` matches any single char under ERE — `Order.ervice`
+        finds `OrderService`."""
+        repo, base, source = rename_field_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            out = search_vfs(vfs, "Order.ervice", regex=True)
+            assert "OrderService" in out
+            assert "no matches" not in out
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_regex_quantifier(self, rename_field_repo):
+        """`?` (zero-or-one) is ERE-only — proves we're not on BRE."""
+        repo, base, source = rename_field_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            # `Inventory(Service|Client)?` matches "Inventory",
+            # "InventoryService", or "InventoryClient" — uses both
+            # alternation and `?`, ERE features.
+            out = search_vfs(vfs, "Inventory(Service|Client)?", regex=True)
+            assert "no matches" not in out
+            assert "Inventory" in out
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_regex_anchors(self, rename_field_repo):
+        """End-of-line anchor `$` works."""
+        repo, base, source = rename_field_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            # Match a `;` at end of line — pervasive in Java.
+            out = search_vfs(vfs, ";$", regex=True)
+            assert "no matches" not in out
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_fixed_string_does_not_match_dot_as_wildcard(self, rename_field_repo):
+        """regex=False ⇒ `-F` ⇒ `.` is literal. `Order.Service`
+        (with a literal dot) must NOT match `OrderService`."""
+        repo, base, source = rename_field_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            out = search_vfs(vfs, "Order.Service", regex=False)
+            assert "no matches" in out, \
+                f"fixed-string mode leaked regex semantics:\n{out}"
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_fixed_string_handles_pipe_literal(self, rename_field_repo):
+        """regex=False ⇒ pipe is literal; absent from this fixture ⇒
+        no matches. (Smoke test that we're really in -F mode.)"""
+        repo, base, source = rename_field_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            out = search_vfs(vfs, "Foo|Bar", regex=False)
+            assert "no matches" in out
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_regex_grouped_alternation_with_dots(self, rename_field_repo):
+        """The exact shape the agent sent in plan 102 — three
+        alternatives, one with a `.` wildcard. Must produce at least
+        one hit on a Java diff."""
+        repo, base, source = rename_field_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            # `order.service` (dot=wildcard) ⇒ matches "orderService",
+            # "OrderService" via case-insensitive grep, "Order.service"
+            # in import lines, etc. Combined with two literal variants
+            # via `|` — the exact shape that was silently failing.
+            out = search_vfs(
+                vfs,
+                "order.service|OrderService|orderRepository",
+                regex=True,
+            )
+            assert "no matches" not in out
+            assert "OrderService" in out
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)

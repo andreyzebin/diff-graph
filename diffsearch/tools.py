@@ -230,9 +230,16 @@ def search_vfs(
     """
     vfs = Path(vfs_dir)
 
-    # Use grep on the vfs directory
+    # Use grep on the vfs directory.
+    # `-E` (extended regex) when regex=True — plain `grep` defaults to BRE,
+    # where `|`/`+`/`?`/`()` are literal. Without `-E` a query like
+    # `store.credit|storeCredit|StoreCredit` matches zero lines because
+    # the `|` is treated as a literal pipe — a silent zero-result bug
+    # that looks like "nothing found" to the agent.
     cmd = ["grep", "-rni"]
-    if not regex:
+    if regex:
+        cmd.append("-E")  # extended regex (alternation, +, ?, (), {})
+    else:
         cmd.append("-F")  # fixed string
     # --include with grep uses shell glob (not **), so convert
     if glob and glob != "**/*":
