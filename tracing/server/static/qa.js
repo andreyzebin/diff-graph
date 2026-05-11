@@ -378,7 +378,11 @@ document.addEventListener('alpine:init', () => {
     async init() {
       const base = window.QA_BASE_PATH || '';
       const dims = (await (await fetch(`${base}/api/search/dimensions`)).json()).data || {};
-      this.availableScenarios = (dims.scenario_id || []).filter(Boolean).sort();
+      // Prefer the scoped list — scenarios with actual judge runs.
+      // Falls back to the full list for old deployments that don't
+      // expose `scenario_id_scored` yet.
+      const scenarios = dims.scenario_id_scored || dims.scenario_id || [];
+      this.availableScenarios = scenarios.filter(Boolean).sort();
       this.availableLineages = (dims.lineage || []).filter(Boolean).sort();
       // URL pre-pick: ?lineage=master&lineage=feature/X (multi); ?scenario=…
       const sp = new URLSearchParams(window.location.search);

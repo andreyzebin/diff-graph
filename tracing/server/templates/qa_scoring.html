@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=fd003975"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=fd003980"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -95,10 +95,24 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
 
   <template x-if="lineages.length > 0 && rows.length === 0 && status === 'no data'">
     <div class="empty">
-      no judge runs yet for these lineages — fire a plan from
-      /qa/mutations and wait. Old plans before the BENCHMARK_TRACE_DIR
-      fix did not record judge rows; only newly-fired plans surface
-      here.
+      <template x-if="scenario && (scenario.startsWith('REV-U-') || scenario.startsWith('INV-U-'))">
+        <div>
+          Unit-tier scenario (<code x-text="scenario"></code>) has no LLM
+          judge yet — its scoring lives inside <code>bench run-unit</code>'s
+          process and isn't written to the trace DB.
+          <br>Try a PR-tier scenario (REV-001, DISP-001, INV-001, …) to see
+          judge rows.
+        </div>
+      </template>
+      <template x-if="!scenario || (!scenario.startsWith('REV-U-') && !scenario.startsWith('INV-U-'))">
+        <div>
+          No judge runs for these lineages
+          <template x-if="scenario"><span>+ scenario <code x-text="scenario"></code></span></template>.
+          Fire a plan from /qa/mutations and wait. Old plans before the
+          <code>BENCHMARK_TRACE_DIR</code> fix did not record judge rows;
+          only newly-fired plans surface here.
+        </div>
+      </template>
     </div>
   </template>
 

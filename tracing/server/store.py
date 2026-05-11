@@ -515,18 +515,33 @@ class SQLiteTraceStore:
                         f"ORDER BY v"
                     ).fetchall()
                     out[col] = [r["v"] for r in rows]
-                # Lineage lives in qa_tasks (a scheduling concept), not
-                # in runs. Pull distinct values so the /qa/scoring lineage
-                # dropdown can populate.
+                # Lineage lives in qa_tasks.resources as a
+                # `lineage://<name>` URI (Stage B dropped the dedicated
+                # column). Pull distinct values out of the JSON array.
                 try:
-                    rows = c.execute(
-                        "SELECT DISTINCT lineage AS v FROM qa_tasks "
-                        "WHERE lineage IS NOT NULL AND lineage != '' "
-                        "ORDER BY v"
-                    ).fetchall()
-                    out["lineage"] = [r["v"] for r in rows]
+                    rows = c.execute("""
+                        SELECT DISTINCT substr(je.value, 11) AS v
+                          FROM qa_tasks, json_each(qa_tasks.resources) je
+                         WHERE je.value LIKE 'lineage://%'
+                         ORDER BY v
+                    """).fetchall()
+                    out["lineage"] = [r["v"] for r in rows if r["v"]]
                 except sqlite3.OperationalError:
                     out["lineage"] = []
+                # Scenarios that actually have judge runs. The
+                # /qa/scoring page's scenario dropdown filters to
+                # these so unit-tier fixtures (REV-U-*, INV-U-*) —
+                # which currently don't produce LLM-judged rows —
+                # don't appear as decoys that return empty results.
+                try:
+                    rows = c.execute(
+                        "SELECT DISTINCT scenario_id AS v FROM runs "
+                        "WHERE kind='judge' AND scenario_id IS NOT NULL "
+                        "  AND scenario_id != '' ORDER BY v"
+                    ).fetchall()
+                    out["scenario_id_scored"] = [r["v"] for r in rows]
+                except sqlite3.OperationalError:
+                    out["scenario_id_scored"] = []
         except FileNotFoundError:
             pass
         return out
