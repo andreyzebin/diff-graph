@@ -947,7 +947,19 @@ def run_unit(
         console.print(f"  tmp_repo: [dim]{result.tmp_repo}[/dim]")
     if result.cli_output is not None:
         console.print("  agent_output:")
-        console.print_json(json.dumps(result.cli_output, default=str)[:2000])
+        # Pass the dict via `data=` — rich serialises it internally.
+        # Don't pre-serialise + slice: `json.dumps(...)[:2000]` can cut
+        # a string literal mid-value, leaving an unterminated quote
+        # that rich's own `loads()` then chokes on with
+        # "Unterminated string starting at: line 1 column N (char N-1)".
+        # That used to crash the whole `run-unit` command and report
+        # exit=1 to the queue even after the agent itself passed.
+        try:
+            console.print_json(data=result.cli_output, default=str)
+        except Exception as exc:
+            console.print(f"  [yellow](could not pretty-print agent output: "
+                          f"{type(exc).__name__}: {exc})[/yellow]")
+            console.print(repr(result.cli_output)[:2000])
     if result.posted:
         console.print(f"  posted by agent ({len(result.posted)} actions):")
         for rec in result.posted:
