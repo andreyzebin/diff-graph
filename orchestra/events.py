@@ -30,6 +30,12 @@ class EventType(Enum):
     # LLM calls (full prompts and responses for tracing)
     AGENT_LLM_REQUEST = "agent_llm_request"
     AGENT_LLM_RESPONSE = "agent_llm_response"
+    # Emitted from the agent's LLM exception handler so the events
+    # table — and therefore /qa/sessions — has a terminal marker.
+    # Without it a dangling agent_llm_request is the LAST entry the
+    # UI sees, and the agent looks "still loading" even though the
+    # OTel span around the LLM call already recorded the failure.
+    AGENT_LLM_ERROR = "agent_llm_error"
     # Params
     PARAM_ADJUSTED = "param_adjusted"
     # Budget

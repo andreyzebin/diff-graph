@@ -366,6 +366,20 @@ class Agent:
                                              f"{type(exc).__name__}: {exc}"[:300]))
             except Exception:
                 pass
+            # Emit on the event bus too so /qa/sessions has a terminal
+            # marker. See the equivalent in _run_react for full rationale.
+            try:
+                self.event_bus.emit(
+                    EventType.AGENT_LLM_ERROR,
+                    agent_id=self.agent_id,
+                    agent_name=self.config.name,
+                    step=0,
+                    error_class=type(exc).__name__,
+                    error_message=f"{exc}"[:1000],
+                    model=self.llm_params.get("model", self.model),
+                )
+            except Exception:
+                pass
 
         return AgentResult(
             agent_id=self.agent_id,
@@ -488,6 +502,23 @@ class Agent:
                         _cur.record_exception(exc)
                         _cur.set_status(_Status(StatusCode.ERROR,
                                                  f"{type(exc).__name__}: {exc}"[:300]))
+                except Exception:
+                    pass
+                # Also emit on the event bus so the events table — and
+                # therefore /qa/sessions — gets a terminal marker. The
+                # OTel span captures the failure for /qa/traces, but
+                # the events stream is the diagram builder's source of
+                # truth; without this it just stops at agent_llm_request.
+                try:
+                    self.event_bus.emit(
+                        EventType.AGENT_LLM_ERROR,
+                        agent_id=self.agent_id,
+                        agent_name=self.config.name,
+                        step=step,
+                        error_class=type(exc).__name__,
+                        error_message=f"{exc}"[:1000],
+                        model=step_model,
+                    )
                 except Exception:
                     pass
                 break

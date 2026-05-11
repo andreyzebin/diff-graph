@@ -90,6 +90,46 @@ def _sweep_once(
                 """,
                 (now.isoformat(), run_id),
             )
+            # Synthetic terminal event — without one the UI shows a
+            # tool_call/llm_request with no closing arrow and the user
+            # can't tell "killed mid-step" apart from "still loading".
+            # We anchor it to whichever agent posted the last event so
+            # the sequence diagram renders one final ⚠ on the right
+            # actor. Best-effort: if the run had zero events (started_at
+            # set but never wrote a span) we skip the insert — there's
+            # no agent_id / step to anchor to.
+            try:
+                last = conn.execute(
+                    """
+                    SELECT agent_id, agent_name, step
+                      FROM events
+                     WHERE run_id=?
+                     ORDER BY id DESC
+                     LIMIT 1
+                    """,
+                    (run_id,),
+                ).fetchone()
+                if last:
+                    agent_id, agent_name, step = last
+                    conn.execute(
+                        """
+                        INSERT INTO events
+                          (run_id, agent_id, agent_name, timestamp,
+                           event_type, step, data_json)
+                        VALUES (?, ?, ?, ?, 'agent_orphaned', ?, ?)
+                        """,
+                        (
+                            run_id, agent_id, agent_name,
+                            now.isoformat(), int(step or 0),
+                            '{"reason":"sweeper: no activity for '
+                            f'{idle_grace_seconds}s; agent process likely '
+                            'died (SIGKILL / OOM / host reboot)"}',
+                        ),
+                    )
+            except sqlite3.OperationalError:
+                # events table missing or column mismatch on an old DB —
+                # the row update is still useful even without the marker.
+                pass
             closed += 1
         conn.commit()
         return closed
