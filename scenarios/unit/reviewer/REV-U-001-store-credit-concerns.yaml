@@ -6,10 +6,10 @@ tags: [tier:unit, agent:reviewer, isolation, concerns-only]
 # No tier-based dispatch in code — this yaml field is the single
 # source of truth for "how to run this fixture".
 bench_cmd: >
-  cd /home/andrey/repos/code-review-benchmarks && source .env
+  cd {bench_root} && source .env
   && unset ALL_PROXY all_proxy
   && .venv/bin/python -m benchmark.cli run-unit
-  benchmark/scenarios/unit/reviewer/REV-U-001-store-credit-concerns.yaml
+  {fixture_path}
   --provider={provider}
 
 # Reviewer in concerns-only mode against the store-credit feature

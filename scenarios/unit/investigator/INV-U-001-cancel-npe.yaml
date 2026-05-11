@@ -7,10 +7,10 @@ tags: [tier:unit, agent:investigator, isolation]
 # verbatim. This is the only place that knows "this fixture runs
 # via bench run-unit"; no tier-based dispatch in code.
 bench_cmd: >
-  cd /home/andrey/repos/code-review-benchmarks && source .env
+  cd {bench_root} && source .env
   && unset ALL_PROXY all_proxy
   && .venv/bin/python -m benchmark.cli run-unit
-  benchmark/scenarios/unit/investigator/INV-U-001-cancel-npe.yaml
+  {fixture_path}
   --provider={provider}
 
 # References real branches in the local orderflow repo. The runner
