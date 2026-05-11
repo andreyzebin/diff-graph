@@ -326,6 +326,18 @@ def run_unit_fixture(
             cmd, capture_output=True, text=True, env=env,
             timeout=timeout, cwd=str(diff_repo),
         )
+        # Bench-side orphan-catch — cli.py's try/finally fires on
+        # SIGTERM but NOT on SIGKILL / OOM / segfault. When the child
+        # died abruptly, its `runs` row stays at status='running',
+        # finished_at=NULL, and the global orphan-sweeper takes up to
+        # an hour to notice. We're the closest parent that SAW the
+        # subprocess die — close the row here, immediately, so /qa/
+        # sessions reflects the failure within seconds. Best-effort:
+        # cli.py may have already closed the row on its own normal
+        # path, in which case the WHERE clause makes this a no-op.
+        if proc.returncode != 0 and agent_dir is not None:
+            _close_agent_run_if_orphaned(agent_dir, exit_code=proc.returncode)
+
         cli_output: Any = None
         try:
             cli_output = json.loads(Path(out_path).read_text(encoding="utf-8"))
@@ -408,6 +420,85 @@ def run_unit_fixture(
 
 
 # ── Stage 4 helpers: UnitFixture → Scenario adapter + judge driver ───────
+
+
+def _close_agent_run_if_orphaned(agent_dir: Path, *, exit_code: int) -> None:
+    """Force-close the agent's `runs` row when the subprocess died
+    abnormally (SIGKILL / OOM / segfault). cli.py's own try/finally
+    handles SIGTERM and clean exits — but anything that bypasses
+    Python's signal handlers leaks orphans.
+
+    We discover the run_id via agent_dir/run.json (cli.py writes it
+    on startup, before any work). The UPDATE is guarded by
+    status='running' so a clean shutdown that beat us to the punch
+    doesn't get clobbered.
+
+    We also insert one `agent_orphaned` event so the trace UI shows
+    an explicit terminal point (a stray tool_call/llm_request with
+    no closing arrow is indistinguishable from "still loading"
+    otherwise).
+    """
+    run_json = Path(agent_dir) / "run.json"
+    if not run_json.exists():
+        return
+    try:
+        meta = json.loads(run_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    run_id = str(meta.get("run_id") or "").strip()
+    if not run_id:
+        return
+
+    # Same DB path cli.py and the trace server use.
+    import sqlite3
+    from datetime import datetime, timezone
+    db_path = Path.home() / ".diffgraph" / "traces.db"
+    if not db_path.exists():
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA busy_timeout=5000")
+        # Race-free close — only if the row IS still running. cli.py's
+        # exception handler may have beaten us here on a clean error.
+        cur = conn.execute(
+            "UPDATE runs SET status='failed', "
+            "finished_at=COALESCE(finished_at, ?) "
+            "WHERE id=? AND status='running'",
+            (now, run_id),
+        )
+        if cur.rowcount > 0:
+            # Anchor the synthetic event to the last real one so the
+            # sequence diagram puts the ⚠ on the right actor + step.
+            last = conn.execute(
+                "SELECT agent_id, agent_name, step FROM events "
+                "WHERE run_id=? ORDER BY id DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if last:
+                agent_id, agent_name, step = last
+                conn.execute(
+                    "INSERT INTO events (run_id, agent_id, agent_name, "
+                    " timestamp, event_type, step, data_json) "
+                    "VALUES (?, ?, ?, ?, 'agent_orphaned', ?, ?)",
+                    (
+                        run_id, agent_id, agent_name, now, int(step or 0),
+                        json.dumps({
+                            "reason": "bench-side orphan catch",
+                            "exit_code": int(exit_code),
+                            "detail": (
+                                "subprocess returned non-zero and the "
+                                "agent's runs row was still 'running' — "
+                                "cli.py likely killed by SIGKILL / OOM."
+                            ),
+                        }),
+                    ),
+                )
+        conn.commit()
+        conn.close()
+    except sqlite3.OperationalError:
+        # DB busy / schema mismatch — defer to global orphan sweeper.
+        pass
 
 
 def _build_scenario_from_unit_fixture(
