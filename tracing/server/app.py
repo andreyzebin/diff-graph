@@ -725,6 +725,18 @@ _qa_discovery = DiscoverySupervisor(_qa_auto, interval_seconds=60)
 # Reap stale leases on server start so kill -9 mid-run doesn't strand tasks.
 _qa_queue.reap_stale_leases(grace_seconds=0)
 
+# Reactive sweeper: close `runs` rows that stayed `status='running'`
+# because the cli.py process was SIGKILL'd / OOM-killed / host-rebooted
+# (the cli-side try/finally + signal handlers cover SIGTERM and
+# SystemExit, this is the safety net for everything else).
+from tracing.server.orphan_sweeper import OrphanRunSweeper, sweep_now as _sweep_now
+_orphan_sweeper = OrphanRunSweeper(
+    str(DEFAULT_DB_PATH),
+    interval_seconds=60,
+    max_run_age_seconds=3600,    # real runs finish in << 1h
+    idle_grace_seconds=600,      # tolerate slow LLM calls up to 10m
+)
+
 
 @app.on_event("startup")
 async def _start_qa_supervisors():
@@ -744,14 +756,28 @@ async def _start_qa_supervisors():
         import logging as _lg
         _lg.getLogger(__name__).exception(
             "schedules.yaml startup import failed")
+    # One eager sweep at boot so existing orphans get cleared before
+    # the UI loads — without this, the user sees stale "running"
+    # rows for up to `interval_seconds` after a restart.
+    try:
+        closed = await asyncio.to_thread(_sweep_now, str(DEFAULT_DB_PATH))
+        if closed:
+            import logging as _lg
+            _lg.getLogger(__name__).info(
+                "orphan-sweeper: startup pass force-failed %d stale run(s)", closed)
+    except Exception:
+        import logging as _lg
+        _lg.getLogger(__name__).exception("orphan-sweeper startup pass failed")
     _qa_supervisor.start()
     _qa_discovery.start()
+    _orphan_sweeper.start()
 
 
 @app.on_event("shutdown")
 async def _stop_qa_supervisors():
     await _qa_supervisor.stop()
     await _qa_discovery.stop()
+    await _orphan_sweeper.stop()
 
 
 class TaskCreatePayload(BaseModel):

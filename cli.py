@@ -400,63 +400,122 @@ def _run_with_dispatcher(
         task_id=os.environ.get("DIFFGRAPH_TASK_ID", ""),
         lineage=os.environ.get("DIFFGRAPH_LINEAGE", ""),
     )
-    with _otel_tracer.start_as_current_span("cli.session") as _otel_session:
-        _otel_session.set_attribute("diffgraph.run_id", _trace_db.run_id)
-        if effective_model:
-            _otel_session.set_attribute("diffgraph.model", effective_model)
-        if _scenario_id_env:
-            _otel_session.set_attribute("diffgraph.scenario_id", _scenario_id_env)
-        if _mutation_override:
-            _otel_session.set_attribute("diffgraph.mutation", _mutation_override)
-        result = run_agent(
-            agent_name=agent_name,
-            data=data,
-            llm=llm_client,
-            model=effective_model,
-            tool_registry=tool_registry,
-            on_event=_on_event,
-            trace_writer=_trace_writer,
-            prompt_resource=prompts,
-            tool_choice=llm_cfg.get("tool_choice", ""),
-            stream=llm_cfg.get("stream"),
-            extra_body=llm_cfg.get("extra_body"),
-            tool_mocks=tool_mocks,
-            user_message_override=user_message_override,
-        )
+    # Finalisation guard. Any exit path through this function — happy
+    # path, exception, SIGTERM, SIGINT — must:
+    #   1. Mark the `runs` row as completed/failed (not leave it
+    #      `running` forever, which used to accumulate orphans every
+    #      time a `timeout 300` killed a bench unit fixture).
+    #   2. Let the OTel `cli.session` span close via its own
+    #      ContextManager `__exit__` (which fires whenever Python
+    #      unwinds the stack — including SystemExit raised from a
+    #      signal handler).
+    # A reactive sweeper in tracing/server cleans up runs that we
+    # nevertheless miss (SIGKILL, OOM, host reboot).
+    import signal as _signal
+    _finalized = {"v": False}
 
-    # ── Post-run: post replies, findings, cleanup ─────────────────────────
-    review_ctx = ctx.review_context
-    findings = []
-    raw = result.get("findings", [])
-    if isinstance(raw, list):
-        from diffgraph.orchestrator import _parse_findings
-        findings = _parse_findings(raw)
+    def _finalize(status: str) -> None:
+        if _finalized["v"]:
+            return
+        _finalized["v"] = True
+        try:
+            _trace_db.finish_run(
+                model=effective_model,
+                pr_url=pr_url,
+                findings_count=len(_findings_ref.get("v", [])),
+                prompt_source=str(prompt_source),
+                prompt_hash=mutation,
+                status=status,
+            )
+        except Exception:
+            pass
+        try:
+            _trace_db.close()
+        except Exception:
+            pass
 
-    # SINGLE-mode agents (judge.*, etc.) put their verdict in the
-    # result dict and don't produce a `findings` array — write the
-    # whole result. ReAct agents have findings — write those.
-    if output:
-        if isinstance(result, dict) and result.get("findings") is None:
-            payload = result
-            label = "Output"
-        else:
-            payload = [f.to_dict() for f in findings]
-            label = f"Findings ({len(findings)} findings)"
-        Path(output).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        console.print(f"[green]{label} written to {output}[/green]")
+    def _on_signal(signum, _frame):
+        # Just raise SystemExit so the surrounding try/finally
+        # (and the `with start_as_current_span(...)`) unwinds
+        # normally — both span and DB row get closed.
+        import sys as _sys
+        _sys.exit(128 + signum)
 
-    _trace_db.finish_run(
-        model=effective_model,
-        pr_url=pr_url,
-        findings_count=len(findings),
-        prompt_source=str(prompt_source),
-        prompt_hash=mutation,
-    )
-    _trace_db.close()
-    console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")
+    _prev_term = _signal.signal(_signal.SIGTERM, _on_signal)
+    _prev_int = _signal.signal(_signal.SIGINT, _on_signal)
+    _findings_ref: dict = {"v": []}
+
+    try:
+        with _otel_tracer.start_as_current_span("cli.session") as _otel_session:
+            _otel_session.set_attribute("diffgraph.run_id", _trace_db.run_id)
+            if effective_model:
+                _otel_session.set_attribute("diffgraph.model", effective_model)
+            if _scenario_id_env:
+                _otel_session.set_attribute("diffgraph.scenario_id", _scenario_id_env)
+            if _mutation_override:
+                _otel_session.set_attribute("diffgraph.mutation", _mutation_override)
+            result = run_agent(
+                agent_name=agent_name,
+                data=data,
+                llm=llm_client,
+                model=effective_model,
+                tool_registry=tool_registry,
+                on_event=_on_event,
+                trace_writer=_trace_writer,
+                prompt_resource=prompts,
+                tool_choice=llm_cfg.get("tool_choice", ""),
+                stream=llm_cfg.get("stream"),
+                extra_body=llm_cfg.get("extra_body"),
+                tool_mocks=tool_mocks,
+                user_message_override=user_message_override,
+            )
+
+        # ── Post-run: post replies, findings, cleanup ─────────────────────────
+        review_ctx = ctx.review_context
+        findings = []
+        raw = result.get("findings", [])
+        if isinstance(raw, list):
+            from diffgraph.orchestrator import _parse_findings
+            findings = _parse_findings(raw)
+        _findings_ref["v"] = findings
+
+        # SINGLE-mode agents (judge.*, etc.) put their verdict in the
+        # result dict and don't produce a `findings` array — write the
+        # whole result. ReAct agents have findings — write those.
+        if output:
+            if isinstance(result, dict) and result.get("findings") is None:
+                payload = result
+                label = "Output"
+            else:
+                payload = [f.to_dict() for f in findings]
+                label = f"Findings ({len(findings)} findings)"
+            Path(output).write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            console.print(f"[green]{label} written to {output}[/green]")
+
+        _finalize("completed")
+        console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")
+    except (SystemExit, KeyboardInterrupt):
+        _finalize("failed")
+        raise
+    except Exception:
+        _finalize("failed")
+        raise
+    finally:
+        # Defensive: if we exited via an unexpected path (e.g. an
+        # exception during cleanup itself, before _finalize ran),
+        # still close the row + DB handle.
+        if not _finalized["v"]:
+            _finalize("failed")
+        # Restore prior signal handlers so a subsequent re-entry
+        # (tests, nested calls) gets default behaviour back.
+        try:
+            _signal.signal(_signal.SIGTERM, _prev_term)
+            _signal.signal(_signal.SIGINT, _prev_int)
+        except Exception:
+            pass
     if invocations_out:
         try:
             out_path = Path(invocations_out).expanduser()

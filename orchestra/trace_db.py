@@ -285,8 +285,15 @@ class TraceDBWriter:
 
     def finish_run(self, model: str = "", pr_url: str = "", diff_summary: str = "",
                    findings_count: int = 0, total_tokens_paid: int = 0,
-                   prompt_source: str = "", prompt_hash: str = ""):
-        """Mark run as completed."""
+                   prompt_source: str = "", prompt_hash: str = "",
+                   status: str = "completed"):
+        """Mark run as `completed` (default) or `failed` / `cancelled`.
+
+        Callers in cli.py's `finally` use status='failed' so a run
+        terminated by SIGTERM/Exception doesn't leave the row stuck
+        at status='running' forever (see the orphan sweeper in
+        tracing/server for the safety net on this same invariant).
+        """
         # Compute duration_ms from started_at (if present).
         duration_ms = None
         try:
@@ -313,7 +320,7 @@ class TraceDBWriter:
             # exists — never undoes an override.
             self.conn.execute(
                 "UPDATE runs SET finished_at=?, model=?, pr_url=?, diff_summary=?, "
-                "findings_count=?, total_tokens_paid=?, status='completed', "
+                "findings_count=?, total_tokens_paid=?, status=?, "
                 "prompt_source=COALESCE(NULLIF(?, ''), prompt_source), "
                 "prompt_hash=COALESCE(NULLIF(?, ''), prompt_hash), "
                 "generation=COALESCE(NULLIF(?, ''), generation), "
@@ -323,7 +330,7 @@ class TraceDBWriter:
                 "files_touched=COALESCE(NULLIF(?, '[]'), files_touched) "
                 "WHERE id=?",
                 (datetime.now(timezone.utc).isoformat(), model, pr_url, diff_summary,
-                 findings_count, total_tokens_paid,
+                 findings_count, total_tokens_paid, status,
                  prompt_source, prompt_hash, generation, prompt_hash,
                  duration_ms,
                  project,
