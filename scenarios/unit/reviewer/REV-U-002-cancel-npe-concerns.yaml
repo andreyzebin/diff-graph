@@ -60,6 +60,8 @@ trigger:
 
 agent_data: {}
 
+forbidden_tools: [spawn_agent, post_comment, react_to_comment, set_review_status]
+
 # ── Judge (concerns-only reviewer) ───────────────────────────────────────
 # Hotfix wraps `order.getItems()` in `if (... != null)` before the
 # inventory-release loop. The fix is local and looks harmless — but

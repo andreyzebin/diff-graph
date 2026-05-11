@@ -51,6 +51,11 @@ trigger:
 
 agent_data: {}
 
+# Hard backstop matching the user-message instruction ("identification
+# only — do not spawn / post / set_status"). Without this an LLM that
+# ignores the user message would still post and skew the test signal.
+forbidden_tools: [spawn_agent, post_comment, react_to_comment, set_review_status]
+
 # ── Judge (concerns-only reviewer) ───────────────────────────────────────
 # The agent runs in concerns-only mode (see concerns-only.md), so it
 # never posts inline comments / sets verdict. All signal lives in

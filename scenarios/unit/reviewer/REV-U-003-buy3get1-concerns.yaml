@@ -51,6 +51,8 @@ trigger:
 
 agent_data: {}
 
+forbidden_tools: [spawn_agent, post_comment, react_to_comment, set_review_status]
+
 # `cheapest` appears in BOTH the PR description (acceptance criterion
 # "the cheapest item is free") AND the concern's description_keywords.
 # That's not a leak — it's how real PRs work: the AC documents what

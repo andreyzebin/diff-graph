@@ -47,6 +47,8 @@ agent_data:
 # in the other keywords: "cheapest", "get(0)", "first item", "AGENTS.md".
 leak_allowlist: ["selectFreeItem"]
 
+forbidden_tools: [post_comment, react_to_comment, set_review_status, spawn_agent]
+
 expected_output:
   # Investigator returns findings via done() — it has no post_comment
   # tool. Match required_comments against intended_findings (done's

@@ -45,6 +45,14 @@ class UnitFixture:
     # dispatcher-tests can short-circuit spawn_agent(reviewer) with a
     # canned response instead of running the heavy chain.
     mocks: Optional[str] = None
+    # Tools that should error out when called — a hard backstop on
+    # top of the user-message-level "don't use X" instructions.
+    # Concerns-only reviewer fixtures forbid spawn / post / verdict;
+    # investigator standalone forbids post + verdict; dispatcher
+    # fixtures need NONE forbidden (post_comment + spawn_agent ARE
+    # the dispatcher's deliverable). Empty list (default) means no
+    # backstop — every tool the agent has is callable.
+    forbidden_tools: list[str] = field(default_factory=list)
     # Optional scenario-shape blocks — when present the runner can
     # invoke an LLM judge against the agent's invocations.json after
     # the subprocess finishes (TODO §5d.3 / §5e.14 Stage 4). Stored
@@ -129,6 +137,7 @@ def load_fixture(fixture_path: str | Path) -> UnitFixture:
         trigger=dict(raw.get("trigger") or {}),
         user_message_from=umf,
         mocks=mocks_resolved,
+        forbidden_tools=[str(t) for t in (raw.get("forbidden_tools") or [])],
         expected_output=dict(raw.get("expected_output") or {}),
         tags=list(raw.get("tags") or []),
         raw=raw,
@@ -294,14 +303,18 @@ def run_unit_fixture(
                 all_tags.append(t)
         env = {**os.environ,
                "DIFFGRAPH_SCENARIO_ID": fixture.fixture_id,
-               "DIFFGRAPH_SCENARIO_TAGS": ",".join(all_tags),
-               # Hard backstop — even if the user-message instructs
-               # the agent not to spawn / post / set_status, the LLM
-               # may not comply. Force these to error at dispatch
-               # time so the agent's response history reflects
-               # "tool unavailable" and it has to adjust.
-               "DIFFGRAPH_FORBIDDEN_TOOLS":
-                   "spawn_agent,post_comment,react_to_comment,set_review_status"}
+               "DIFFGRAPH_SCENARIO_TAGS": ",".join(all_tags)}
+        if fixture.forbidden_tools:
+            # Hard backstop — even if the user-message instructs the
+            # agent not to call X, the LLM may not comply. Forbidding
+            # at dispatch time makes the agent's response history
+            # reflect "tool unavailable" so it has to adjust.
+            #
+            # Per-fixture (not blanket): dispatcher fixtures NEED
+            # post_comment + spawn_agent — those are their entire
+            # deliverable. Blanket forbidding broke DISP-U-* with
+            # score=0.00 across every attempt.
+            env["DIFFGRAPH_FORBIDDEN_TOOLS"] = ",".join(fixture.forbidden_tools)
 
         # Fake-PR plumbing — runs for EVERY fixture, including those
         # without a `pr_state` block. Why: under cli.py's

@@ -40,6 +40,12 @@ agent_data:
     cause is properly understood — or whether something more
     fundamental about the Order entity is going wrong.
 
+# Investigator delivers via done(findings). It must NOT post inline
+# comments (that's the reviewer's job) and must NOT set verdict.
+# Spawning another investigator from inside an investigator is
+# scope-creep that we don't want to allow either.
+forbidden_tools: [post_comment, react_to_comment, set_review_status, spawn_agent]
+
 # ── Judge (investigator standalone) ──────────────────────────────────────
 # Investigator runs its full LOOK→THINK→DONE loop on the given focus.
 # It does NOT post to the PR (no spawn, no post_comment). The judge
