@@ -95,8 +95,11 @@ _SYSTEM_FOR: dict[str, str] = {
     "post_comment":      "bitbucket",
     "react_to_comment":  "bitbucket",
     "set_review_status": "bitbucket",
-    # reflect / done / spawn_agent are NOT system calls — they appear
-    # as agent_spawn / agent_done / agent_text events directly.
+    # Control-flow primitives don't route through a system lane:
+    #   spawn_agent       → agent_spawn event (parent → child)
+    #   done (child)      → agent_done event (child → parent),
+    #                       the same event as the spawn's return
+    #   done (root) / reflect → self-loop tool_call (actor == target)
 }
 
 
@@ -246,6 +249,20 @@ def _foldable(a: Event, b: Event) -> bool:
     return _name_stem(a.label) == _name_stem(b.label)
 
 
+def _foldable_pair(a: Event, b: Event) -> bool:
+    """Loose-fold: same (actor, target, kind) — collapses bundles
+    of different tool names that all go to the same system.
+    `agent → diff` carries `diff_read_file ×4` + `diff_search ×3` +
+    `diff_outline ×2` in successive emit slots; this predicate
+    lets them merge into one bundle event with a stacked label."""
+    if a.kind != b.kind:
+        return False
+    if a.kind in ("agent_spawn", "agent_done", "agent_text",
+                  "judge_verdict"):
+        return False
+    return a.actor == b.actor and a.target == b.target
+
+
 def _fold_one_round(events: list[Event]) -> list[Event]:
     """One pass: merge each adjacent foldable pair. Mutates fold targets
     in place — count summed, label rewritten with ×N suffix."""
@@ -262,6 +279,39 @@ def _fold_one_round(events: list[Event]) -> list[Event]:
             merged = list(prev_payload.get("merged", [prev_payload]))
             merged.append(e.payload or {})
             prev.payload = {**prev_payload, "merged": merged}
+            continue
+        out.append(e)
+    return out
+
+
+def _fold_pair_bundles(events: list[Event]) -> list[Event]:
+    """One pass: merge each adjacent same-(actor,target,kind) pair
+    regardless of tool name. Sub-labels accumulate in
+    `payload.bundle` so click-through and multi-line rendering
+    preserve detail; compact `e.label` shows `first + N more`.
+
+    Flattens nested bundles — if `e` itself is already a bundle,
+    its sub-labels are spliced in (otherwise `e.label` would be
+    `"X + 2 more"` and that compact string would appear as ONE
+    line in the parent bundle, hiding the underlying ops)."""
+    out: list[Event] = []
+    for e in events:
+        if out and _foldable_pair(out[-1], e):
+            prev = out[-1]
+            prev_payload = prev.payload or {}
+            bundle = list(prev_payload.get("bundle") or [prev.label])
+            e_payload = e.payload or {}
+            e_bundle = e_payload.get("bundle")
+            if e_bundle:
+                bundle.extend(e_bundle)
+            else:
+                bundle.append(e.label)
+            prev.count += e.count
+            first = _name_stem(bundle[0])
+            n_more = len(bundle) - 1
+            prev.label = (f"{first} + {n_more} more" if n_more
+                          else first)
+            prev.payload = {**prev_payload, "bundle": bundle}
             continue
         out.append(e)
     return out
@@ -292,19 +342,30 @@ def _fair_collapse(events: list[Event], max_events: int) -> list[Event]:
     n_groups = max(1, len(groups))
     target_per_run = max(8, max_events // n_groups)
 
-    def _fold_until_fixed(evs: list[Event]) -> list[Event]:
+    def _fold_until_fixed(evs: list[Event],
+                          pass_fn=_fold_one_round) -> list[Event]:
         prev_len = len(evs) + 1
         while len(evs) > target_per_run and len(evs) < prev_len:
             prev_len = len(evs)
-            evs = _fold_one_round(evs)
+            evs = pass_fn(evs)
         return evs
 
     for sid in order:
+        # Stage 1: adjacent same-stem fold.
         evs = _fold_until_fixed(groups[sid])
-        # Stage 2: drop results, re-fold.
+        # Stage 1.5: adjacent same-(actor,target,kind) bundle fold —
+        # different tool names that go to the same target lane in a
+        # row become one "bundle" event. Big wins when an agent
+        # pings a system with diff_read_file, diff_outline, diff_search
+        # in successive steps.
+        if len(evs) > target_per_run:
+            evs = _fold_until_fixed(evs, pass_fn=_fold_pair_bundles)
+        # Stage 2: drop results, re-fold (both strict and loose).
         if len(evs) > target_per_run:
             evs = [e for e in evs if e.kind != "tool_result"]
             evs = _fold_until_fixed(evs)
+            if len(evs) > target_per_run:
+                evs = _fold_until_fixed(evs, pass_fn=_fold_pair_bundles)
         # Stage 3: hard truncate. User asked for ≤ N events — at
         # this point folding has plateaued. Drop the tail and emit
         # a `Note over …: ⋯ truncated at N events ⋯` sentinel so
@@ -537,25 +598,68 @@ def _walk_agent(agent: dict, *, run_id: str,
                     _walk_agent(child, run_id=run_id,
                                 parent_actor=actor_self,
                                 out=out, run_kind="agent")
-                    out_payload = child.get("output")
+                    # Don't synthesise an agent_done here — the
+                    # child's own `done(...)` tool call is emitted
+                    # AS the return arrow inside the child's walk
+                    # (see the `done` branch below). One event per
+                    # control-flow handoff, not two.
+                continue
+
+            # `done` semantics:
+            #   - CHILD agent (spawned): the `done` call IS the
+            #     return arrow to the parent. Emit as `agent_done`
+            #     event (one event for both perspectives — call
+            #     side AND return side of the same control flow
+            #     handoff). spawn_agent's matching return is
+            #     handled here, NOT via a synthetic emit after the
+            #     child walk.
+            #   - ROOT agent (no parent_actor): no one to return
+            #     to. Render as a self-arrow `agent → agent: done`,
+            #     same as reflect — visually "interaction with
+            #     self".
+            if tname == "done":
+                args_raw = calls[0][1].get("arguments") or ""
+                try:
+                    parsed = json.loads(args_raw or "{}")
+                    findings = parsed.get("findings")
+                    if isinstance(findings, list):
+                        label = f"done({len(findings)} findings)"
+                    else:
+                        label = "done"
+                except Exception:
+                    label = "done"
+                if parent_actor is not None:
                     out.append(Event(
                         ts=None, kind="agent_done",
-                        actor=child_actor, target=actor_self,
-                        label=_done_label(out_payload),
-                        payload={"output": out_payload},
+                        actor=actor_self, target=parent_actor,
+                        label=label,
+                        payload={"arguments": args_raw},
+                        session_id=run_id, step=step_num,
+                    ))
+                else:
+                    out.append(Event(
+                        ts=None, kind="tool_call",
+                        actor=actor_self, target=actor_self,
+                        label=label,
+                        payload={"tool": tname, "arguments": args_raw},
                         session_id=run_id, step=step_num,
                     ))
                 continue
 
-            if tname in ("reflect", "done"):
-                for ti, tc in calls:
-                    out.append(Event(
-                        ts=None, kind="agent_text",
-                        actor=actor_self, target=actor_self,
-                        label=tname,
-                        payload={"arguments": tc.get("arguments") or ""},
-                        session_id=run_id, step=step_num,
-                    ))
+            # reflect — "interaction with self". Emit as a self-loop
+            # arrow (actor == target). Mermaid draws this as a tiny
+            # back-arc on the agent's lane; D2 surfaces it as a
+            # participant-self label.
+            if tname == "reflect":
+                args_raw = calls[0][1].get("arguments") or ""
+                out.append(Event(
+                    ts=None, kind="tool_call",
+                    actor=actor_self, target=actor_self,
+                    label=(f"reflect({_short(args_raw, 30)})"
+                           if args_raw else "reflect"),
+                    payload={"tool": tname, "arguments": args_raw},
+                    session_id=run_id, step=step_num,
+                ))
                 continue
 
             sys_actor = f"system:{_system_for(tname)}"
@@ -919,7 +1023,18 @@ def to_mermaid(events: list[Event], db_path: str) -> str:
     activated: set[str] = set()
     for e in events:
         sa, ta = _safe_id(e.actor), _safe_id(e.target or e.actor)
-        label = _mm_escape(_step_prefix(e) + e.label)
+        # If this event is a pair-bundle (multiple tool ops collapsed
+        # into one arrow), render the bundle as multi-line via
+        # mermaid's `<br/>` line break.
+        bundle = (e.payload or {}).get("bundle")
+        if bundle:
+            # Escape each piece individually so the `<br/>` line-break
+            # tag survives — `_mm_escape` strips `<`/`>` (would mangle
+            # the tag if we joined first).
+            parts = [_mm_escape(p) for p in bundle]
+            label = _mm_escape(_step_prefix(e)) + "<br/>".join(parts)
+        else:
+            label = _mm_escape(_step_prefix(e) + e.label)
         if e.kind == "agent_spawn":
             lines.append(f"  {sa}->>+{ta}: {label}")
             activated.add(ta)
@@ -1025,7 +1140,15 @@ def to_d2(events: list[Event], db_path: str) -> str:
     for e in events:
         sa = alias_for.get(e.actor, _safe_id(e.actor))
         ta = alias_for.get(e.target or e.actor, _safe_id(e.target or e.actor))
-        label = (_step_prefix(e) + e.label).replace('"', "'")
+        bundle = (e.payload or {}).get("bundle")
+        if bundle:
+            # Multi-line label: D2 honours newline characters inside
+            # quoted strings, json.dumps emits them as `\n` which D2
+            # un-escapes when rendering.
+            body = "\n".join(bundle)
+            label = (_step_prefix(e) + body).replace('"', "'")
+        else:
+            label = (_step_prefix(e) + e.label).replace('"', "'")
         if sa == ta:
             lines.append(f"  {sa}: {json.dumps(e.kind + ': ' + label)}")
         else:

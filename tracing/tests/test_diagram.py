@@ -250,20 +250,23 @@ class TestParallelCollapse:
     def test_parallel_calls_collapse_with_count(self, db_parallel):
         db_path, rid = db_parallel
         events = events_from_runs([rid], db_path)
-        calls = [e for e in events if e.kind == "tool_call"]
-        names = [e.label for e in calls]
+        # External tool calls (agent → system:X) — excludes the
+        # `reflect` self-loop (actor == target).
+        ext_calls = [e for e in events
+                     if e.kind == "tool_call" and e.actor != e.target]
+        names = [e.label for e in ext_calls]
         # diff_read_file ×4 + diff_outline ×2 = 2 arrows, not 6.
-        assert len(calls) == 2, f"expected 2 collapsed call events, got {names}"
-        labels = sorted(names)
-        assert "diff_outline ×2" in labels[0] or "diff_read_file ×4" in labels[0]
-        assert any("×4" in l for l in labels), labels
-        assert any("×2" in l for l in labels), labels
+        assert len(ext_calls) == 2, \
+            f"expected 2 collapsed external call events, got {names}"
+        assert any("×4" in l for l in names), names
+        assert any("×2" in l for l in names), names
 
     def test_collapsed_count_field(self, db_parallel):
         db_path, rid = db_parallel
         events = events_from_runs([rid], db_path)
-        calls = [e for e in events if e.kind == "tool_call"]
-        counts = sorted(e.count for e in calls)
+        ext_calls = [e for e in events
+                     if e.kind == "tool_call" and e.actor != e.target]
+        counts = sorted(e.count for e in ext_calls)
         assert counts == [2, 4]
 
     def test_results_aggregate_in_one_arrow(self, db_parallel):
@@ -278,16 +281,24 @@ class TestParallelCollapse:
         assert any("4 results" in l for l in labels), labels
         assert any("2 results" in l for l in labels), labels
 
-    def test_reflect_stays_individual(self, db_parallel):
-        """reflect / done are agent-self events — they don't fold
-        into the diff/bitbucket bucket and never get collapsed even
-        though their name is repeatable."""
+    def test_reflect_renders_as_self_loop(self, db_parallel):
+        """`reflect` is "interaction with self" — emits a tool_call
+        event whose `actor == target` so renderers draw it as a
+        self-arrow on the agent's lane (no `system:control`
+        participant gets created)."""
         db_path, rid = db_parallel
         events = events_from_runs([rid], db_path)
-        agent_text = [e for e in events if e.kind == "agent_text"]
-        assert len(agent_text) == 1
-        assert agent_text[0].label == "reflect"
-        assert agent_text[0].count == 1
+        reflects = [e for e in events
+                    if e.kind == "tool_call" and e.actor == e.target
+                    and "reflect" in e.label]
+        assert len(reflects) == 1, \
+            f"expected one reflect self-loop, got: {[(e.kind, e.label) for e in reflects]}"
+        r = reflects[0]
+        assert r.actor == r.target, f"reflect not a self-loop: actor={r.actor} target={r.target}"
+        # No system:control participant — reflect doesn't route there.
+        systems = {e.target for e in events if e.target
+                   and e.target.startswith("system:")}
+        assert "system:control" not in systems
 
     def test_payload_keeps_individual_args(self, db_parallel):
         """The collapsed Event's payload preserves each underlying
@@ -331,19 +342,34 @@ class TestTimestampOrdering:
         # step 1 — request carries tool result for step 0, then a spawn_agent
         w.on_event("agent_llm_request", agent_id="P", agent_name="reviewer", step=1,
                    messages=[{"role": "tool", "content": "ok"}])
-        w.on_event("agent_spawned", agent_id="P", agent_name="reviewer", step=1,
-                   data={"child_id": "C", "parent_id": "P", "agent_name": "investigator"})
+        # Production code emits `agent_spawned` with `child_id`,
+        # `parent_id`, and `agent_name` (the child's name) as flat
+        # kwargs — `get_run_trace` reads them off the top-level
+        # `data` dict, not from a nested `data` sub-key.
+        w.on_event("agent_spawned", parent_id="P",
+                   child_id="C", agent_name="investigator", step=1)
         w.on_event("agent_llm_response", agent_id="P", agent_name="reviewer", step=1,
                    tool_calls=[{"name": "spawn_agent",
                                 "arguments": '{"agent":"investigator","focus":"x"}'}])
-        # CHILD runs steps 0..3 — emitted before parent's step 2
-        for s in range(4):
+        # CHILD runs steps 0..3 — emitted before parent's step 2.
+        # The LAST step is a `done(findings=[…])` tool call — that
+        # call IS the return arrow back to the parent (handled as
+        # `agent_done` event), so the fixture must emit it for the
+        # spawn/done pair to balance.
+        for s in range(3):
             w.on_event("agent_llm_request", agent_id="C", agent_name="investigator",
                        step=s, messages=[])
             w.on_event("agent_llm_response", agent_id="C", agent_name="investigator",
                        step=s,
                        tool_calls=[{"name": "diff_read_file",
                                     "arguments": f'{{"path":"file{s}"}}'}])
+        # Final step: done(findings=[…])
+        w.on_event("agent_llm_request", agent_id="C", agent_name="investigator",
+                   step=3, messages=[])
+        w.on_event("agent_llm_response", agent_id="C", agent_name="investigator",
+                   step=3,
+                   tool_calls=[{"name": "done",
+                                "arguments": '{"findings":[{"file":"x"}]}'}])
         w.on_event("agent_done", agent_id="C", agent_name="investigator", step=3,
                    output=[{"file": "x", "line": 1,
                              "severity": "MAJOR", "title": "t"}])
@@ -471,44 +497,51 @@ class TestFairCollapse:
         assert any(e.count >= 5 for e in calls), \
             f"no ×N collapse fired: {[e.label for e in calls]}"
 
-    def test_hard_truncate_when_fold_plateaus(self, db_chatty):
-        """Final stage of fair-share: when folding can't reduce
-        further (e.g. all events have different stems), drop the
+    def test_hard_truncate_when_fold_plateaus(self):
+        """Final stage of fair-share: when even pair-bundle fold
+        can't reduce further (because the unfoldable kinds —
+        agent_spawn / agent_done / agent_text — dominate), drop the
         tail to fit the budget exactly and append a sentinel
         `agent_text` event with `⋯ truncated at N events ⋯` so the
-        diagram tells the reader it's incomplete."""
-        db_path, rid = db_chatty
-        # Tight budget — fold collapses 20 read_files into ~1 high-
-        # count event; result is ~3-5 events, well under 8 (the
-        # minimum per-run target). Use a different repro: many
-        # distinct tool names so adjacent-fold can't merge.
+        diagram tells the reader it's incomplete.
+
+        Constructing a stream of spawn events does the job — spawns
+        are excluded from all fold predicates, so 12 spawns under a
+        budget of 8 forces a real truncation."""
         from orchestra.trace_db import TraceDBWriter
-        from pathlib import Path
-        # New fixture inline
         import tempfile
         db2 = tempfile.mkdtemp() + "/t.db"
-        w = TraceDBWriter(db_path=db2, run_id="diverse001", kind="agent")
-        w.on_event("agent_started", agent_id="A", agent_name="reviewer")
-        for s in range(15):
-            w.on_event("agent_llm_request", agent_id="A",
-                       agent_name="reviewer", step=s, messages=[])
-            w.on_event(
-                "agent_llm_response", agent_id="A",
-                agent_name="reviewer", step=s,
-                tool_calls=[{"name": f"unique_tool_{s}", "arguments": "{}"}],
-            )
-        w.on_event("agent_llm_request", agent_id="A",
-                   agent_name="reviewer", step=15,
-                   messages=[{"role": "tool", "content": "r"}])
-        w.on_event("agent_done", agent_id="A", agent_name="reviewer",
-                   step=15, output=[])
+        w = TraceDBWriter(db_path=db2, run_id="spawn001", kind="agent")
+        w.on_event("agent_started", agent_id="P", agent_name="reviewer")
+        # 12 child agents spawned in one step — each agent_spawn
+        # event is unfoldable so the stream natively has 12+
+        # arrows that can't be collapsed.
+        for i in range(12):
+            cid = f"C{i}"
+            w.on_event("agent_spawned", parent_id="P",
+                       child_id=cid, agent_name="investigator",
+                       step=0)
+        w.on_event(
+            "agent_llm_request", agent_id="P", agent_name="reviewer",
+            step=0, messages=[],
+        )
+        w.on_event(
+            "agent_llm_response", agent_id="P", agent_name="reviewer",
+            step=0,
+            tool_calls=[
+                {"name": "spawn_agent",
+                 "arguments": f'{{"agent":"investigator","focus":"f{i}"}}'}
+                for i in range(12)
+            ],
+        )
         w.finish_run(model="m", status="completed")
         w.close()
 
-        evs = events_from_runs(["diverse001"], db2, max_events=8)
+        evs = events_from_runs(["spawn001"], db2, max_events=8)
         assert len(evs) <= 8, f"hard truncate failed: got {len(evs)} events"
-        # The sentinel should be the last event.
-        assert evs[-1].kind == "agent_text"
+        # Sentinel is the last event.
+        assert evs[-1].kind == "agent_text", \
+            f"sentinel not last: kinds={[e.kind for e in evs]}"
         assert "truncated" in evs[-1].label
         assert evs[-1].payload.get("truncated") is True
 
