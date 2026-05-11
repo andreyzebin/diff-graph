@@ -728,6 +728,22 @@ _qa_queue.reap_stale_leases(grace_seconds=0)
 
 @app.on_event("startup")
 async def _start_qa_supervisors():
+    # Import yaml-defined schedules (SCHEDULES_DIR env or
+    # <diff-graph>/schedules/) into qa_auto_plan_configs — yaml is
+    # the source of truth, DB row is just runtime mirror.
+    try:
+        from quality_api.schedules_yaml import reload_all
+        summary = reload_all(_qa_auto)
+        if summary.get("created") or summary.get("updated"):
+            import logging as _lg
+            _lg.getLogger(__name__).info(
+                "schedules.yaml: created=%s updated=%s errors=%s (from %s)",
+                summary.get("created"), summary.get("updated"),
+                summary.get("errors"), summary.get("schedules_dir"))
+    except Exception:
+        import logging as _lg
+        _lg.getLogger(__name__).exception(
+            "schedules.yaml startup import failed")
     _qa_supervisor.start()
     _qa_discovery.start()
 
@@ -982,6 +998,16 @@ async def api_qa_resolve_resource(uri: str):
         "display": info.display, "ui_path": info.ui_path,
         "ui_url": ui_url(info.uri) or "",
     }})
+
+
+@app.post("/api/qa/auto-plan/reload-yaml")
+async def api_qa_reload_schedule_yaml():
+    """Re-scan SCHEDULES_DIR (or <diff-graph>/schedules/) and upsert
+    every schedule yaml into the DB. Idempotent — safe to call
+    repeatedly. Returns the per-row created/updated/error breakdown."""
+    from quality_api.schedules_yaml import reload_all
+    summary = reload_all(_qa_auto)
+    return JSONResponse({"data": summary})
 
 
 @app.get("/api/qa/config")
