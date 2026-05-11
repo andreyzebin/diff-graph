@@ -719,9 +719,9 @@ document.addEventListener('alpine:init', () => {
         historyOpen: {},    // config_id → bool
         historyMeta: {},    // config_id → "N plans · M lineages"
         form: {
-          name: '', repo_path: '/home/andrey/repos/diff-graph',
+          name: '', repo_path: '',
           branch_pattern: 'master,feature/*',
-          bench_repo_path: '/home/andrey/repos/code-review-benchmarks',
+          bench_repo_path: '',
           providers: 'deepseek',
           scenarios: '',
           scenario_tags: 'tier:unit',
@@ -731,8 +731,18 @@ document.addEventListener('alpine:init', () => {
           attempts_min: 1,
         },
         async load() {
-          const r = await fetch(`${window.QA_BASE_PATH || ''}/api/qa/auto-plan/configs`);
+          const base = window.QA_BASE_PATH || '';
+          const r = await fetch(`${base}/api/qa/auto-plan/configs`);
           this.configs = (await r.json()).data || [];
+          // Prefill new-config form from server-resolved paths
+          // (env / repo-sibling discovery) — no hardcoded /home/...
+          if (!this.form.repo_path || !this.form.bench_repo_path) {
+            try {
+              const c = (await (await fetch(`${base}/api/qa/config`)).json()).data || {};
+              if (!this.form.repo_path) this.form.repo_path = c.diffgraph_repo_path || '';
+              if (!this.form.bench_repo_path) this.form.bench_repo_path = c.bench_repo_path || '';
+            } catch (e) { /* keep defaults */ }
+          }
         },
         async toggleHistory(configId) {
           this.historyOpen[configId] = !this.historyOpen[configId];

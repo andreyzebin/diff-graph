@@ -888,8 +888,8 @@ def tasks_reap(grace_seconds: int = typer.Option(30)):
 #    also honoured).
 
 def _server_url() -> str:
-    import os
-    return (os.environ.get("QA_SERVER_URL") or "http://localhost:8765").rstrip("/")
+    from quality_api.config import server_url
+    return server_url()
 
 
 def _api_call(method: str, path: str, *, json_body: Optional[dict] = None,
@@ -1048,12 +1048,10 @@ def worker_loop(
     provider: str = typer.Option(..., help="LLM provider this worker serves"),
     capacity: int = typer.Option(1, help="(reserved — single in-flight task for now)"),
     bench_cmd: str = typer.Option(
-        "cd /home/andrey/repos/code-review-benchmarks "
-        "&& source .env "
-        "&& unset ALL_PROXY all_proxy "
-        "&& .venv/bin/python benchmark/cli.py run -s {scenario} -p {provider}",
+        "",
         help="Shell command template; {scenario} and {provider} are substituted from the task. "
-             "Default invokes code-review-benchmarks; override to plug in a different runner.",
+             "Empty (default) uses the template resolved from quality_api.config — "
+             "honours BENCH_REPO_PATH env. Override to plug a different runner.",
     ),
     poll_seconds: int = typer.Option(3, help="poll interval when queue is empty"),
     lease_seconds: int = typer.Option(120, help="lease duration; heartbeat resets it"),
@@ -1091,6 +1089,11 @@ def worker_loop(
             signal.signal(sig, _stop)
         except Exception:
             pass
+
+    # Empty --bench-cmd → resolve via config (env / repo siblings).
+    if not bench_cmd:
+        from quality_api.config import default_bench_cmd_template
+        bench_cmd = default_bench_cmd_template()
 
     if not _Out.json_mode:
         _Out.console.print(f"[green]worker[/green] [cyan]{wid}[/cyan] · provider={provider} · pid={os.getpid()}")

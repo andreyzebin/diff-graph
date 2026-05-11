@@ -12,7 +12,6 @@ path we can add a watcher.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -35,19 +34,14 @@ class ScenarioEntry:
 
 
 def _bench_root() -> Optional[Path]:
-    """Locate the bench repo. Env var wins; fall back to the most
-    common dev layout. If we can't find it, return None — caller
-    decides what to do (typically: empty list)."""
-    env = os.environ.get("BENCH_REPO_PATH", "").strip()
-    if env:
-        p = Path(env).expanduser().resolve()
-        return p if (p / "benchmark" / "scenarios").is_dir() else None
-    # Common dev fallback — sibling of diff-graph
-    here = Path(__file__).resolve().parents[2]  # repos/
-    cand = here / "code-review-benchmarks"
-    if (cand / "benchmark" / "scenarios").is_dir():
-        return cand
-    return None
+    """Locate the bench repo via quality_api.config — single source
+    of truth for paths. Returns None if not found (caller decides
+    whether that's fatal; for listing UI an empty result is fine)."""
+    from . import config as _qa_config
+    p = _qa_config.bench_repo()
+    if p is None or not (p / "benchmark" / "scenarios").is_dir():
+        return None
+    return p
 
 
 def list_scenarios() -> list[ScenarioEntry]:
@@ -103,7 +97,22 @@ def find_scenario(scenario_id: str) -> Optional[ScenarioEntry]:
 
 
 def build_bench_cmd(entry: ScenarioEntry, *, scenario_id: str) -> str:
-    """Return whatever bench_cmd template the fixture's yaml
-    declares — empty means "use the worker pool's default cmd".
-    No code-side logic about tiers; the yaml decides."""
-    return entry.bench_cmd or ""
+    """Return the fixture's bench_cmd with server-resolvable
+    placeholders pre-expanded:
+        {bench_root}   → quality_api.config.bench_repo()
+        {fixture_path} → entry.path (absolute path to the yaml)
+        {scenario_id}  → scenario_id
+    Worker-side placeholders ({provider}, {scenario}, {lineage},
+    {mutation}, {attempt}) are left intact for the worker to fill
+    via str.format() at lease time.
+
+    Empty bench_cmd → empty return (worker uses pool default)."""
+    cmd = entry.bench_cmd or ""
+    if not cmd:
+        return ""
+    from . import config as _qa_config
+    bench = _qa_config.bench_repo()
+    cmd = cmd.replace("{bench_root}", str(bench) if bench else "")
+    cmd = cmd.replace("{fixture_path}", entry.path)
+    cmd = cmd.replace("{scenario_id}", scenario_id)
+    return cmd

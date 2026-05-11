@@ -984,6 +984,24 @@ async def api_qa_resolve_resource(uri: str):
     }})
 
 
+@app.get("/api/qa/config")
+async def api_qa_config():
+    """Server-resolved paths + defaults — UI form prefills, no
+    hardcoded /home/andrey/... literals anywhere on the client."""
+    from quality_api.config import (
+        bench_repo, diffgraph_repo, python_executable,
+        default_bench_cmd_template, server_url,
+    )
+    b = bench_repo()
+    return JSONResponse({"data": {
+        "bench_repo_path":    str(b) if b else "",
+        "diffgraph_repo_path": str(diffgraph_repo()),
+        "python_executable":   python_executable(),
+        "default_bench_cmd":   default_bench_cmd_template(),
+        "server_url":          server_url(),
+    }})
+
+
 @app.get("/api/qa/resources/kinds")
 async def api_qa_resource_kinds():
     """Enumerate known resource kinds so clients can render kind-aware

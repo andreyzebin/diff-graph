@@ -170,15 +170,20 @@ class PoolStore:
 
 # ── Supervisor ──────────────────────────────────────────────────────────────
 
-DEFAULT_BENCH_CMD = (
-    "cd /home/andrey/repos/code-review-benchmarks && source .env "
-    "&& unset ALL_PROXY all_proxy "
-    "&& .venv/bin/python benchmark/cli.py run -s {scenario} -p {provider}"
-)
+from . import config as _qa_config
 
-QUALITY_CLI_PATH = (
-    "/home/andrey/repos/diff-graph/.venv/bin/python -m quality_cli"
-)
+# Lazily resolved — re-evaluated on each access via the property-
+# like functions below so tests / runtime env changes propagate.
+def _default_bench_cmd() -> str:
+    return _qa_config.default_bench_cmd_template()
+
+def _quality_cli_path() -> str:
+    return _qa_config.quality_cli_path()
+
+# Module-level aliases for callers that already imported by name.
+# Resolve at import time too — supervisor uses these.
+DEFAULT_BENCH_CMD = _default_bench_cmd()
+QUALITY_CLI_PATH = _quality_cli_path()
 
 
 class WorkerSupervisor:
