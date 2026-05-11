@@ -72,7 +72,7 @@ document.addEventListener('alpine:init', () => {
       
   }))
 
-  Alpine.data('runsView', () => ({
+  Alpine.data('sessionsView', () => ({
     
         dims: { agent_name: [], model: [], scenario_id: [],
                 generation: [], project: [], status: [],
@@ -150,8 +150,12 @@ document.addEventListener('alpine:init', () => {
           const lim = sp.get('limit'); if (lim) this.filters.limit = parseInt(lim, 10);
           const off = sp.get('offset'); if (off) this.filters.offset = parseInt(off, 10);
         },
-        pushUrl() {
-          // Reflect filters into URL for shareable links / browser back.
+        // Build a URLSearchParams reflecting the active filters.
+        // Used by both `pushUrl()` (replace the address bar) and
+        // `runHref(r)` (build per-row deep-link URLs that carry the
+        // filter set into /qa/runs/{id} so the back-link can
+        // reconstruct this exact view).
+        _filtersToQs() {
           const qs = new URLSearchParams();
           const f = this.filters;
           const scalarOut = { agent: f.agent, model: f.model,
@@ -167,8 +171,22 @@ document.addEventListener('alpine:init', () => {
           if (f.scenario_tag_arr.length) qs.set('scenario_tag', f.scenario_tag_arr.join(','));
           if (f.limit !== 50)  qs.set('limit', String(f.limit));
           if (f.offset !== 0)  qs.set('offset', String(f.offset));
+          return qs;
+        },
+        pushUrl() {
+          const qs = this._filtersToQs();
           const url = window.location.pathname + (qs.toString() ? '?' + qs.toString() : '');
           window.history.replaceState({}, '', url);
+        },
+        // Per-row deep link: /qa/runs/{id}?from=<encoded current filters>.
+        // The session-trace page's `← back to filtered list` reads
+        // `from` and reconstructs the parent URL one-for-one.
+        sessionHref(r) {
+          const base = window.QA_BASE_PATH || '';
+          const id = r.session_id || r.id;
+          const fromStr = this._filtersToQs().toString();
+          const fromParam = fromStr ? `?from=${encodeURIComponent(fromStr)}` : '';
+          return `${base}/qa/sessions/${id}${fromParam}`;
         },
         addToList(key, value) {
           if (!value) return;
@@ -1046,13 +1064,13 @@ document.addEventListener('alpine:init', () => {
       switch (kind) {
         case 'scenario': return `${base}/qa/scenarios?id=${enc}`;
         case 'provider': return `${base}/qa/workers?provider=${enc}`;
-        case 'lineage':  return `${base}/qa/traces?lineage=${enc}`;
-        case 'mutation': return `${base}/qa/traces?mutation=${enc.slice(0,8)}`;
+        case 'lineage':  return `${base}/qa/sessions?lineage=${enc}`;
+        case 'mutation': return `${base}/qa/sessions?mutation=${enc.slice(0,8)}`;
         case 'plan':     return `${base}/qa/plans?id=${enc}`;
         case 'task':     return `${base}/qa/queue?id=${enc}`;
         case 'worker':   return `${base}/qa/workers?id=${enc}`;
-        case 'session':  return `${base}/qa/traces?session=${enc}`;
-        case 'trace':    return `${base}/qa/traces?trace_id=${enc}`;
+        case 'session':  return `${base}/qa/sessions?session=${enc}`;
+        case 'trace':    return `${base}/qa/sessions?trace_id=${enc}`;
         default:         return '#';
       }
     },

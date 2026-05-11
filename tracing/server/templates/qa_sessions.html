@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-<title>QA · Traces</title>
+<title>QA · Sessions</title>
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
@@ -40,10 +40,16 @@ body { padding: 20px; max-width: 1400px; margin: 0 auto; }
   border: 0; background: transparent; flex: 1; min-width: 80px;
   font-size: 0.85em; padding: 2px;
 }
-.runs-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
-.runs-table th, .runs-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #30363d; }
-.runs-table th { color: #8b949e; font-weight: normal; cursor: pointer; }
-.runs-table tr:hover { background: #161b22; }
+/* Wrap the wide table so horizontal scroll lives INSIDE this box —
+ * without this, ~20 columns push the page body wider than the
+ * viewport and create a horizontal scrollbar on <body>. The table
+ * itself keeps `width: 100%` so the layout is fluid; only the
+ * scroll wrapper is bounded to the parent. */
+.sessions-table-scroll { overflow-x: auto; max-width: 100%; }
+.sessions-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+.sessions-table th, .sessions-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #30363d; }
+.sessions-table th { color: #8b949e; font-weight: normal; cursor: pointer; }
+.sessions-table tr:hover { background: #161b22; }
 .run-link { color: #58a6ff; text-decoration: none; font-family: ui-monospace, monospace; }
 .run-link:hover { text-decoration: underline; }
 .status-completed { color: #56d364; }
@@ -75,9 +81,9 @@ tr.row-running    { background: #d2992211; }
 <body hx-boost="true" hx-ext="head-support">
 {% include "_qa_nav.html" %}
 
-<h1>QA · Traces</h1>
+<h1>QA · Sessions</h1>
 
-<div x-data="runsView" x-init="init(); setInterval(() => search(true), 5000)">
+<div x-data="sessionsView" x-init="init(); setInterval(() => search(true), 5000)">
   <div class="filter-grid">
     <label>agent
       <select x-model="filters.agent" @change="search()">
@@ -188,7 +194,8 @@ tr.row-running    { background: #d2992211; }
   </template>
 
   <template x-if="rows.length > 0">
-    <table class="runs-table">
+    <div class="sessions-table-scroll">
+    <table class="sessions-table">
       <thead>
         <tr>
           <th>status</th>
@@ -217,30 +224,29 @@ tr.row-running    { background: #d2992211; }
                     x-text="r.status === 'failed' ? '✗ failed' : (r.status === 'running' ? '⟳ running' : '✓')"></span>
               <template x-if="r.status === 'failed' && (r.span_id || r.trace_id)">
                 <a class="run-link" style="margin-left:6px;font-size:0.8em;"
-                   :href="`{{ base_path }}/runs/${r.session_id || r.id}/trace?agent=${r.agent_id || ''}`"
+                   :href="sessionHref(r)"
                    :title="r.error_message || 'open span detail (request/response/exception)'"
                    x-text="'response →'"></a>
               </template>
             </td>
             <td>
               <a class="run-link"
-                 :href="`{{ base_path }}/qa/traces?session=${r.session_id || r.id}`"
+                 :href="`{{ base_path }}/qa/sessions?session=${r.session_id || r.id}`"
                  :title="'show all sub-agents of this session'"
                  x-text="(r.session_id || r.id || '').slice(0,12)"></a>
             </td>
             <td>
               <template x-if="r.scenario_run_id">
                 <a class="run-link"
-                   :href="`{{ base_path }}/qa/traces?scenario_run=${r.scenario_run_id}`"
+                   :href="`{{ base_path }}/qa/sessions?scenario_run=${r.scenario_run_id}`"
                    :title="'show the agent + judge for this attempt (= one scenario × repeat in a plan)'"
                    x-text="(r.scenario_run_id || '').slice(0,8)"></a>
               </template>
             </td>
             <td>
               <a class="run-link"
-                 :href="r.agent_id ? `{{ base_path }}/runs/${r.session_id || r.id}/trace?agent=${r.agent_id}`
-                                   : `{{ base_path }}/runs/${r.session_id || r.id}`"
-                 :title="'open trace for this agent'"
+                 :href="sessionHref(r)"
+                 :title="'open per-step trace for this agent'"
                  x-text="(r.agent_id || '').slice(0,8) || '—'"></a>
             </td>
             <td x-text="r.agent_name || ''"></td>
@@ -251,7 +257,7 @@ tr.row-running    { background: #d2992211; }
             <td>
               <template x-if="r.plan_id">
                 <a class="run-link"
-                   :href="`{{ base_path }}/qa/traces?plan=${r.plan_id}`"
+                   :href="`{{ base_path }}/qa/sessions?plan=${r.plan_id}`"
                    x-text="`#${r.plan_id}`"
                    :title="'show all runs from this plan'"></a>
               </template>
@@ -259,7 +265,7 @@ tr.row-running    { background: #d2992211; }
             <td>
               <template x-if="r.task_id">
                 <a class="run-link"
-                   :href="`{{ base_path }}/qa/traces?task=${r.task_id}`"
+                   :href="`{{ base_path }}/qa/sessions?task=${r.task_id}`"
                    x-text="`#${r.task_id}`"
                    :title="'show all runs from this task'"></a>
               </template>
@@ -298,6 +304,7 @@ tr.row-running    { background: #d2992211; }
         </template>
       </tbody>
     </table>
+    </div>
   </template>
 
   <div style="margin-top: 12px;">

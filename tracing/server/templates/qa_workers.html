@@ -152,12 +152,12 @@ th { color: #8b949e; font-weight: normal; }
                 <template x-if="w.current_task">
                   <span>
                     <a class="task-link"
-                       :href="`{{ base_path }}/qa/traces?task=${w.current_task.id}`"
+                       :href="`{{ base_path }}/qa/sessions?task=${w.current_task.id}`"
                        :title="'show runs from this task'"
                        x-text="`task #${w.current_task.id}`"></a>
                     <span class="tag-chip" x-text="w.current_task.scenario_id"></span>
                     <span class="muted">state=<span x-text="w.current_task.state"></span> · plan=<a class="task-link"
-                       :href="`{{ base_path }}/qa/traces?plan=${w.current_task.plan_id}`"
+                       :href="`{{ base_path }}/qa/sessions?plan=${w.current_task.plan_id}`"
                        x-text="w.current_task.plan_id || '-'"></a></span>
                   </span>
                 </template>
@@ -186,7 +186,7 @@ th { color: #8b949e; font-weight: normal; }
             <tr>
               <td>
                 <a class="task-link"
-                   :href="`{{ base_path }}/qa/traces?task=${t.id}`"
+                   :href="`{{ base_path }}/qa/sessions?task=${t.id}`"
                    :title="'show runs from this task'"
                    x-text="`#${t.id}`"></a>
               </td>
@@ -196,7 +196,7 @@ th { color: #8b949e; font-weight: normal; }
                   x-text="(t.lease_owner || '').slice(0,12)"></td>
               <td>
                 <a class="task-link"
-                   :href="`{{ base_path }}/qa/traces?plan=${t.plan_id}`"
+                   :href="`{{ base_path }}/qa/sessions?plan=${t.plan_id}`"
                    x-text="t.plan_id ? `#${t.plan_id}` : '-'"></a>
               </td>
               <td class="muted" x-text="fmtLocalTime(t.started_at)"></td>

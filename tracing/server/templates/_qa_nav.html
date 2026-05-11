@@ -1,6 +1,7 @@
-{# Shared QA nav. Pass `active` ∈ {overview, schedules, plans, workers,
-   runs, mutations} so the current tab gets bolded. Identical layout
-   across all qa_* pages by construction. #}
+{# Shared QA nav. Pass `active` ∈ {overview, schedules, scenarios,
+   queue, plans, workers, sessions, mutations, scoring} so the
+   current tab gets bolded. Identical layout across all qa_* pages
+   by construction. #}
 <div class="qa-nav">
   {% set tabs = [
     ("overview",  "/qa/"),
@@ -9,7 +10,7 @@
     ("queue",     "/qa/queue"),
     ("plans",     "/qa/plans"),
     ("workers",   "/qa/workers"),
-    ("traces",    "/qa/traces"),
+    ("sessions",  "/qa/sessions"),
     ("mutations", "/qa/mutations"),
     ("scoring",   "/qa/scoring"),
   ] %}

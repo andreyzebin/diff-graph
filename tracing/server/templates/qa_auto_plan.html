@@ -158,14 +158,14 @@ th { color: #8b949e; font-weight: normal; }
                         <tr>
                           <td>
                             <a class="run-link"
-                               :href="`{{ base_path }}/qa/traces?plan=${h.plan_id}`"
+                               :href="`{{ base_path }}/qa/sessions?plan=${h.plan_id}`"
                                :title="'show all runs from this plan'"
                                x-text="`#${h.plan_id}`"></a>
                           </td>
                           <td x-text="h.lineage"></td>
                           <td>
                             <a class="run-link"
-                               :href="`{{ base_path }}/qa/traces?mutation=${h.sha}`"
+                               :href="`{{ base_path }}/qa/sessions?mutation=${h.sha}`"
                                style="font-family: ui-monospace, monospace;"
                                x-text="h.sha.slice(0, 7)"></a>
                           </td>
@@ -240,7 +240,7 @@ th { color: #8b949e; font-weight: normal; }
         <tbody>
           <template x-for="p in lastCreated" :key="p.plan_id">
             <tr>
-              <td><a class="run-link" :href="`{{ base_path }}/qa/traces?plan=${p.plan_id}`" x-text="`#${p.plan_id}`"></a></td>
+              <td><a class="run-link" :href="`{{ base_path }}/qa/sessions?plan=${p.plan_id}`" x-text="`#${p.plan_id}`"></a></td>
               <td x-text="p.config_name || `#${p.config_id}`"></td>
               <td x-text="p.lineage"></td>
               <td style="font-family: ui-monospace, monospace;" x-text="p.sha.slice(0, 7)"></td>

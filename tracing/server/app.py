@@ -104,11 +104,32 @@ async def api_runs():
 
 @app.get("/api/runs/{run_id}/json")
 async def api_run_json(run_id: str):
-    """Full trace data as JSON."""
+    """Full trace data as JSON in the *prepared* shape — same
+    paired_steps + tokens totals + sgr-by-step that the old Jinja
+    /runs/{id}/trace renderer used via orchestra.trace._prepare_agent.
+    The new SPA at /qa/runs/{id} consumes this directly so the agent
+    tree, LLM call pairings, and tool result association are computed
+    server-side (no JS pairing logic to maintain)."""
+    from orchestra.trace import _prepare_agent
     reader = _get_reader()
-    trace_data = reader.get_run_trace(run_id)
+    raw = reader.get_run_trace(run_id)
     reader.close()
-    return JSONResponse(content=trace_data)
+    return JSONResponse(content=_prepare_agent(raw, depth=0))
+
+
+@app.get("/api/runs/{run_id}")
+async def api_run_meta(run_id: str):
+    """Run-level metadata for the per-run header strip (scenario, plan,
+    model, status, agent_name, started/duration). Per-step / agent-tree
+    data lives at /api/runs/{run_id}/json — kept separate so the header
+    can render before the heavy tree payload finishes loading."""
+    # Lazy import to avoid top-of-file circular if store grows imports.
+    from tracing.server.store import SQLiteTraceStore as _SQLiteTraceStore, RunFilter as _RunFilter
+    f = _RunFilter(session_id=run_id, limit=1)
+    rows = _SQLiteTraceStore().list_runs(f)
+    if not rows:
+        return JSONResponse({"data": None}, status_code=404)
+    return JSONResponse({"data": rows[0]})
 
 
 # ── OpenTelemetry-shaped read API (Phase 0) ───────────────────────────────
@@ -1396,9 +1417,46 @@ async def qa_dashboard(request: Request):
     return templates.TemplateResponse(request, "qa_dashboard.html", {"active": "overview"})
 
 
-@app.get("/qa/traces", response_class=HTMLResponse)
-async def qa_traces_page(request: Request):
-    return templates.TemplateResponse(request, "qa_traces.html", {"active": "traces"})
+@app.get("/qa/sessions", response_class=HTMLResponse)
+async def qa_sessions_page(request: Request):
+    """Agent-session browser — rich-filter list of every cli.py
+    invocation that produced a `runs` row. Drill into a single
+    session via /qa/sessions/{run_id}."""
+    return templates.TemplateResponse(
+        request, "qa_sessions.html", {"active": "sessions"},
+    )
+
+
+@app.get("/qa/sessions/{run_id}", response_class=HTMLResponse)
+async def qa_session_trace_page(request: Request, run_id: str):
+    """Per-session drill-in. URL pattern `?from=<encoded filters>`
+    lets the back-link reconstruct the parent /qa/sessions filter
+    set verbatim. The old /runs/{id}/trace Jinja page stays alive
+    for inbound deep-links during the transition."""
+    return templates.TemplateResponse(
+        request, "qa_session_trace.html",
+        {"active": "sessions", "run_id": run_id},
+    )
+
+
+# Legacy URLs — older bookmarks / deep-links still in the wild.
+# Redirect rather than dual-mount so the address bar settles on the
+# canonical name. 308 preserves method + body (we only GET these).
+from fastapi.responses import RedirectResponse
+
+
+@app.get("/qa/traces")
+async def qa_traces_redirect(request: Request):
+    qs = request.url.query
+    target = "/qa/sessions" + (f"?{qs}" if qs else "")
+    return RedirectResponse(url=target, status_code=308)
+
+
+@app.get("/qa/runs/{run_id}")
+async def qa_run_redirect(request: Request, run_id: str):
+    qs = request.url.query
+    target = f"/qa/sessions/{run_id}" + (f"?{qs}" if qs else "")
+    return RedirectResponse(url=target, status_code=308)
 
 
 @app.get("/qa/plans", response_class=HTMLResponse)

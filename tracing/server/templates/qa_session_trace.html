@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>QA · Session · {{ run_id }}</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="{{ base_path }}/static/trace.css">
+<script>
+  window.QA_BASE_PATH = "{{ base_path }}";
+  window.RUN_ID = "{{ run_id }}";
+</script>
+<script defer src="{{ base_path }}/static/qa_session_trace.js?v=1"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+body { padding: 16px; max-width: 1700px; margin: 0 auto; }
+.qa-nav { margin-bottom: 12px; font-size: 0.9em; }
+.qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
+.qa-nav a:hover { text-decoration: underline; }
+
+.run-header {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 10px 14px; background: #161b22; border: 1px solid #30363d;
+  border-radius: 6px; margin-bottom: 12px;
+}
+.run-header h1 { margin: 0; font-size: 1.05em; font-weight: 600; }
+.run-header code { font-family: ui-monospace, monospace; color: #c9d1d9; }
+.run-header .meta-row { display: flex; gap: 10px; font-size: 0.85em; color: #8b949e; }
+.run-header .meta-row .sep { color: #444; }
+.run-header .back-link { font-size: 0.85em; color: #58a6ff; text-decoration: none; }
+.run-header .back-link:hover { text-decoration: underline; }
+.status-completed { color: #56d364; font-weight: 600; }
+.status-failed    { color: #f85149; font-weight: 600; }
+.status-running   { color: #d29922; font-weight: 600; }
+
+.split { display: flex; gap: 0; height: calc(100vh - 200px); min-height: 500px; }
+.split-left  { flex: 1 1 60%; overflow-y: auto; padding-right: 8px; }
+.split-divider {
+  width: 4px; background: #21262d; cursor: col-resize; flex-shrink: 0;
+}
+.split-divider:hover { background: #30363d; }
+.split-right { flex: 1 1 40%; min-width: 320px; overflow: hidden; display: flex; flex-direction: column; }
+
+.tab-bar {
+  display: flex; gap: 2px; flex-wrap: wrap; padding: 4px; background: #161b22;
+  border: 1px solid #30363d; border-radius: 6px 6px 0 0; min-height: 30px;
+}
+.tab-hint { color: #8b949e; font-size: 0.85em; padding: 4px; }
+.tab-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; background: #21262d; color: #c9d1d9; cursor: pointer;
+  border-radius: 4px; font-size: 0.85em; max-width: 200px;
+}
+.tab-btn.active { background: #1f6feb44; color: #58a6ff; }
+.tab-btn .tab-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tab-btn .tab-close { color: #8b949e; }
+.tab-btn .tab-close:hover { color: #f85149; }
+.tab-toolbar {
+  display: flex; gap: 4px; padding: 4px; background: #0d1117;
+  border-left: 1px solid #30363d; border-right: 1px solid #30363d;
+}
+.toolbar-btn {
+  background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+  padding: 2px 8px; cursor: pointer; border-radius: 3px; font-size: 0.8em;
+}
+.toolbar-btn:hover:not(:disabled) { background: #30363d; }
+.toolbar-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.toolbar-btn.active { background: #1f6feb44; color: #58a6ff; }
+.tab-pre {
+  flex: 1; margin: 0; padding: 10px; overflow: auto; background: #0d1117;
+  color: #c9d1d9; font-family: ui-monospace, monospace; font-size: 0.85em;
+  border: 1px solid #30363d; border-top: 0; border-radius: 0 0 6px 6px;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+.loading { color: #8b949e; padding: 40px; text-align: center; }
+</style>
+</head>
+<body>
+{% include "_qa_nav.html" %}
+
+<div x-data="sessionTraceView()" x-init="init()">
+  <div class="run-header">
+    <h1>Session <code x-text="runId.substring(0, 12)"></code></h1>
+    <div class="meta-row">
+      <span x-text="meta.agent_name || '?'"></span>
+      <span class="sep">·</span>
+      <span x-text="meta.scenario_id || '—'"></span>
+      <span class="sep">·</span>
+      <span x-text="meta.model || '—'"></span>
+      <span class="sep">·</span>
+      <span :class="`status-${meta.status || 'unknown'}`" x-text="meta.status || '?'"></span>
+      <template x-if="meta.plan_id">
+        <span>
+          <span class="sep">·</span>
+          <a class="back-link" :href="`${qaBase}/qa/plans?id=${meta.plan_id}`">plan #<span x-text="meta.plan_id"></span></a>
+        </span>
+      </template>
+      <template x-if="meta.duration_ms">
+        <span>
+          <span class="sep">·</span>
+          <span x-text="formatDuration(meta.duration_ms)"></span>
+        </span>
+      </template>
+    </div>
+    <span style="margin-left: auto;">
+      <template x-if="backHref">
+        <a class="back-link" :href="backHref">← back to filtered list</a>
+      </template>
+      <a class="back-link" :href="`${qaBase}/runs/${runId}/trace`" style="margin-left: 12px;" title="Old Jinja-rendered trace">legacy view ⧉</a>
+    </span>
+  </div>
+
+  <div class="split" x-show="tree">
+    <section class="split-left">
+      <template x-if="!tree">
+        <div class="loading">loading…</div>
+      </template>
+
+      <template x-for="agent in flatAgents" :key="agent.agent_id">
+        <details class="agent" :open="agent.is_root || agent.paired_steps.length > 0">
+          <summary class="agent-header">
+            <span class="agent-name" x-text="agent.agent_name"></span>
+            <template x-if="agent.parent_name">
+              <span class="agent-parent">← <span x-text="agent.parent_name"></span></span>
+            </template>
+            <span class="agent-meta">
+              <span x-text="agent.steps"></span> steps · ↑<span x-text="agent.total_in"></span>
+              ↓<span x-text="agent.total_out"></span>
+              <template x-if="agent.total_cached">
+                <span> ©<span x-text="agent.total_cached"></span></span>
+              </template>
+              · id:<span x-text="agent.agent_id.substring(0, 10)"></span>
+            </span>
+            <template x-if="agent.conf_trail && agent.conf_trail.length">
+              <span class="conf-trail">
+                <template x-for="(c, i) in agent.conf_trail" :key="i">
+                  <span :class="`conf-dot conf-${c}`" :title="c"></span>
+                </template>
+              </span>
+            </template>
+          </summary>
+
+          <template x-for="s in agent.paired_steps" :key="s.step">
+            <template x-if="s.resp || s.req">
+              <details class="llm-call">
+                <summary class="llm-header">
+                  <span class="llm-step-num">step <span x-text="s.step"></span></span>
+
+                  <template x-if="s.resp && s.resp.tool_calls && s.resp.tool_calls.length">
+                    <span class="llm-tools">
+                      <template x-for="(tc, i) in s.resp.tool_calls.slice(0, 3)" :key="i">
+                        <span>
+                          <template x-if="i > 0"><span>, </span></template>
+                          <span class="tool-name" x-text="tc.summary ? tc.summary.name : tc.name"></span>
+                          <template x-if="tc.summary && tc.summary.args">
+                            <span>(<span class="tool-args" x-text="tc.summary.args"></span>)</span>
+                          </template>
+                        </span>
+                      </template>
+                      <template x-if="s.resp.tool_calls.length > 3">
+                        <span> +<span x-text="s.resp.tool_calls.length - 3"></span></span>
+                      </template>
+                    </span>
+                  </template>
+
+                  <template x-if="s.resp && (!s.resp.tool_calls || !s.resp.tool_calls.length) && s.resp.content">
+                    <span class="llm-tools">
+                      <span class="tool-name">(text)</span>
+                      <span class="tool-args" x-text="s.resp.content.substring(0, 80).replace(/\n/g, ' ') + (s.resp.content.length > 80 ? '…' : '')"></span>
+                    </span>
+                  </template>
+
+                  <template x-if="s.resp && s.resp.usage">
+                    <span class="llm-usage">
+                      ↑<span x-text="(s.resp.usage.prompt_tokens || 0) - (s.resp.usage.cached_tokens || 0)"></span>
+                      ↓<span x-text="s.resp.usage.completion_tokens || 0"></span>
+                      <template x-if="s.resp.usage.cached_tokens">
+                        <span> ©<span x-text="s.resp.usage.cached_tokens"></span></span>
+                      </template>
+                    </span>
+                  </template>
+                </summary>
+
+                <template x-if="s.resp && s.resp.tool_calls && s.resp.tool_calls.length">
+                  <div class="llm-section">
+                    <template x-for="tc in s.resp.tool_calls" :key="tc.name + (tc.arguments || '')">
+                      <div class="resp-tc">
+                        <span x-text="tc.name"></span>(<span x-text="(tc.arguments || '').substring(0, 200) + ((tc.arguments || '').length > 200 ? '…' : '')"></span>)
+                        <span class="open-btn" @click="openTab(`call:${agent.agent_id}:${s.step}:${tc.name}`, `step ${s.step} Call: ${tc.name}`, `${qaBase}/api/runs/${runId}/step/${agent.agent_id}/${s.step}/call`)">⧉</span>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+
+                <template x-if="s.resp && (!s.resp.tool_calls || !s.resp.tool_calls.length) && s.resp.content">
+                  <div class="llm-section">
+                    <pre class="msg-content" x-text="s.resp.content.substring(0, 1000) + (s.resp.content.length > 1000 ? '…' : '')"></pre>
+                  </div>
+                </template>
+
+                <template x-if="s.tool_results && s.tool_results.length">
+                  <div class="llm-section">
+                    <div class="llm-section-title">Result</div>
+                    <template x-for="(r, ri) in s.tool_results" :key="ri">
+                      <pre class="msg-content" x-text="r"></pre>
+                    </template>
+                    <span class="open-btn" @click="openTab(`result:${agent.agent_id}:${s.step}`, `step ${s.step} Result`, `${qaBase}/api/runs/${runId}/step/${agent.agent_id}/${s.step}/result`)">⧉ full</span>
+                  </div>
+                </template>
+
+                <template x-if="s.req">
+                  <details class="llm-context">
+                    <summary class="llm-section-title">
+                      Context (<span x-text="(s.req.messages || []).length"></span> messages)
+                    </summary>
+                    <template x-for="(m, mi) in (s.req.messages || [])" :key="mi">
+                      <details class="msg-entry">
+                        <summary :class="`msg-role msg-${m.role}`">
+                          <span x-text="m.role"></span>:
+                          <template x-if="m.content">
+                            <span x-text="m.content.substring(0, 80).replace(/\n/g, '↵ ') + (m.content.length > 80 ? '…' : '')"></span>
+                          </template>
+                          <template x-if="!m.content && m.tool_calls">
+                            <span>→ <span x-text="(m.tool_calls || []).slice(0, 3).map(t => t.name).join(', ')"></span></span>
+                          </template>
+                          <template x-if="!m.content && !m.tool_calls">
+                            <span>(empty)</span>
+                          </template>
+                          <template x-if="m.content">
+                            <span class="open-btn" @click.stop="openTab(`msg:${agent.agent_id}:${s.step}:${mi}`, m.role, `${qaBase}/api/runs/${runId}/step/${agent.agent_id}/${s.step}/messages`, mi)">⧉</span>
+                          </template>
+                        </summary>
+                        <template x-if="m.content">
+                          <pre class="msg-content" x-text="m.content.substring(0, 1000) + (m.content.length > 1000 ? '…' : '')"></pre>
+                        </template>
+                        <template x-if="m.tool_calls">
+                          <template x-for="(tc, ti) in m.tool_calls" :key="ti">
+                            <div class="msg-tc">
+                              <span x-text="tc.name"></span>(<span x-text="(tc.args || '').substring(0, 200)"></span>)
+                            </div>
+                          </template>
+                        </template>
+                      </details>
+                    </template>
+                  </details>
+                </template>
+              </details>
+            </template>
+          </template>
+
+          <template x-if="agent.children && agent.children.length">
+            <div class="spawn-label">spawned <span x-text="agent.children.length"></span> agent(s)</div>
+          </template>
+        </details>
+      </template>
+    </section>
+
+    <div class="split-divider" @mousedown="startDrag($event)"></div>
+
+    <section class="split-right">
+      <div class="tab-bar">
+        <template x-if="tabs.length === 0">
+          <span class="tab-hint">Click [⧉] to open details</span>
+        </template>
+        <template x-for="t in tabs" :key="t.id">
+          <div class="tab-btn" :class="{ active: activeId === t.id }" @click="activeId = t.id">
+            <span class="tab-title" x-text="t.title.substring(0, 30)"></span>
+            <span class="tab-close" @click.stop="closeTab(t.id)">×</span>
+          </div>
+        </template>
+      </div>
+      <template x-if="activeTab">
+        <div class="tab-toolbar">
+          <button class="toolbar-btn" @click="copyActive()">📋 Copy</button>
+          <button class="toolbar-btn"
+                  :class="{ active: activeTab.jsonMode }"
+                  :disabled="!activeTab.rawJson"
+                  @click="toggleJson(activeTab)">{ } JSON</button>
+        </div>
+      </template>
+      <pre class="tab-pre" x-text="activeTab ? (activeTab.jsonMode && activeTab.rawJson ? activeTab.rawJson : activeTab.content) : ''"></pre>
+    </section>
+  </div>
+</div>
+
+</body>
+</html>
