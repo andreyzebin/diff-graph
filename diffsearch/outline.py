@@ -94,10 +94,18 @@ def parse_outline_vfs(
 
 
 def _parse_symbols(lines: list[str], path: str) -> list[Symbol] | None:
-    """Parse symbols from lines using tree-sitter. Returns None if unavailable."""
+    """Parse symbols from lines using tree-sitter. Returns None if unavailable.
+
+    Delegates to diffgraph.outline._get_parser, which prefers the
+    modern per-language packages (tree_sitter_java, _python, …)
+    and only falls back to the legacy tree_sitter_languages
+    aggregator when those aren't present. The legacy package is
+    incompatible with tree-sitter>=0.22 (Parser API change), so
+    relying on it alone breaks diff_outline on fresh installs.
+    """
     try:
         from diffgraph.lang import detect_lang
-        from diffgraph.outline import _CONTAINERS, _MEMBERS, _TS_LANG
+        from diffgraph.outline import _CONTAINERS, _MEMBERS, _TS_LANG, _get_parser
     except ImportError:
         return None
 
@@ -107,9 +115,10 @@ def _parse_symbols(lines: list[str], path: str) -> list[Symbol] | None:
         return None
 
     try:
-        from tree_sitter_languages import get_parser
-        parser = get_parser(ts_lang_name)
+        parser = _get_parser(ts_lang_name)
     except Exception:
+        return None
+    if parser is None:
         return None
 
     content = "\n".join(lines)
