@@ -80,30 +80,34 @@ _parser_cache: dict[str, object] = {}
 
 
 def _get_parser(lang_name: str):
-    """Get a tree-sitter parser. New API (per-language packages) or legacy fallback."""
+    """Get a tree-sitter parser via the per-language package
+    (tree_sitter_python, tree_sitter_java, …). Requires
+    tree-sitter>=0.23 — these are listed in requirements.txt.
+
+    Returns None if the package isn't installed or the language
+    isn't in `_TS_MODULES`. No legacy fallback to
+    tree_sitter_languages — that aggregator is incompatible with
+    tree-sitter>=0.22 (Parser API change) and shipping the dead
+    fallback silently produced 'tree-sitter unavailable' on every
+    outline call.
+    """
     if lang_name in _parser_cache:
         return _parser_cache[lang_name]
-
-    # Try new API: tree_sitter_python, tree_sitter_java, etc.
     mod_name = _TS_MODULES.get(lang_name)
-    if mod_name:
-        try:
-            import importlib
-            from tree_sitter import Language, Parser
-            mod = importlib.import_module(mod_name)
-            # Some packages use language_<name>() instead of language()
-            lang_fn = getattr(mod, "language", None) \
-                or getattr(mod, f"language_{lang_name}", None)
-            if lang_fn:
-                parser = Parser(Language(lang_fn()))
-                _parser_cache[lang_name] = parser
-                return parser
-        except (ImportError, TypeError, AttributeError):
-            pass
-
-    # Fallback: tree_sitter_languages (legacy, Python < 3.13)
-    from tree_sitter_languages import get_parser  # type: ignore
-    parser = get_parser(lang_name)
+    if not mod_name:
+        return None
+    import importlib
+    from tree_sitter import Language, Parser
+    try:
+        mod = importlib.import_module(mod_name)
+    except ImportError:
+        return None
+    # Some packages use language_<name>() instead of language()
+    lang_fn = (getattr(mod, "language", None)
+               or getattr(mod, f"language_{lang_name}", None))
+    if lang_fn is None:
+        return None
+    parser = Parser(Language(lang_fn()))
     _parser_cache[lang_name] = parser
     return parser
 
@@ -157,6 +161,13 @@ def get_outline(
     except Exception as exc:
         total = len(content.splitlines())
         result = f"# {path}  ({total} lines)\n(tree-sitter unavailable: {exc})\n"
+        if changed_lines is None:
+            _session_cache[cache_key] = result
+        return result
+    if parser is None:
+        total = len(content.splitlines())
+        result = (f"# {path}  ({total} lines)\n"
+                   f"(tree-sitter unavailable: no parser for '{ts_lang_name}')\n")
         if changed_lines is None:
             _session_cache[cache_key] = result
         return result

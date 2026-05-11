@@ -68,15 +68,27 @@ class TestListFilesVFS:
 
 class TestReadOutlineVFS:
 
-    def test_outline_returns_something(self, rename_field_repo):
-        """Outline produces output (even if tree-sitter unavailable)."""
+    def test_outline_extracts_symbols(self, rename_field_repo):
+        """tree-sitter must actually parse — `(tree-sitter unavailable)`
+        in the output means the parser stack is broken (typically a
+        diff-graph install where the per-language packages aren't
+        installed or the wrong tree-sitter version is loaded). This
+        used to be a tolerant 'something is returned' check, which
+        silently masked a real regression — diff_outline producing
+        '(tree-sitter unavailable)' on every Java file under bench
+        run-unit. Strict assertion: the class name appears AND the
+        unavailable sentinel does NOT.
+        """
         repo, base, source = rename_field_repo
         vfs = materialize_vfs(repo, base, source)
         try:
             out = read_outline_vfs(vfs, "src/OrderService.java", repo_path=repo)
             log.info("outline OrderService.java:\n%s", out)
             assert len(out) > 0
-            assert "OrderService" in out or "lines" in out
+            assert "tree-sitter unavailable" not in out, \
+                f"tree-sitter parser not loaded — output:\n{out}"
+            assert "OrderService" in out, \
+                f"class name missing from outline:\n{out}"
         finally:
             shutil.rmtree(vfs, ignore_errors=True)
 
