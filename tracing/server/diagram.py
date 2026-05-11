@@ -55,7 +55,15 @@ from typing import Any, Optional
 @dataclass
 class Event:
     """One thing that happens on the timeline. Scope-agnostic: the
-    same shape comes from session, scenario_run, plan, pr scopes."""
+    same shape comes from session, scenario_run, plan, pr scopes.
+
+    `count > 1` means this event represents N collapsed sibling
+    calls (parallel tool_calls within one LLM step that resolved to
+    the same tool name). Renderers SHOULD use `count` to annotate
+    the label (`diff_read_file × 3` instead of three identical
+    arrows). Spawns and done's never collapse — each is a distinct
+    control-flow handoff.
+    """
     ts: datetime
     kind: str               # tool_call | tool_result | agent_spawn |
                             # agent_done | agent_text | judge_verdict
@@ -65,6 +73,7 @@ class Event:
     label: str              # short display string
     payload: dict = field(default_factory=dict)   # full data for click → side panel
     session_id: Optional[str] = None              # which run this belongs to
+    count: int = 1          # > 1 ⇒ collapsed parallel siblings
 
 
 # ── Tool → system bucket ──────────────────────────────────────────────────
@@ -268,13 +277,36 @@ def _walk_agent(agent: dict, *, run_id: str,
         tool_calls = resp.get("tool_calls") or []
         tool_results = step.get("tool_results") or []
 
+        # Group tool_calls within this step by tool name so parallel
+        # siblings collapse into a single arrow with `count`. Order
+        # preserved by first occurrence so the timeline still reads
+        # naturally. Spawns NEVER group — each spawn picks a
+        # different child and the spawn arrow is the only place the
+        # focus argument is visible.
+        groups: list[tuple[str, list[tuple[int, dict]]]] = []
+        by_name: dict[str, int] = {}
         for ti, tc in enumerate(tool_calls):
             tname = tc.get("name") or "?"
-            args_raw = tc.get("arguments") or ""
-            step_offset_ms += 50  # synthesise monotonic micro-offsets
+            if tname == "spawn_agent":
+                # Sentinel single-element group preserves spawn ordering
+                # relative to other tool calls in the same step.
+                groups.append((tname, [(ti, tc)]))
+                continue
+            idx = by_name.get(tname)
+            if idx is None:
+                by_name[tname] = len(groups)
+                groups.append((tname, [(ti, tc)]))
+            else:
+                groups[idx][1].append((ti, tc))
+
+        for tname, calls in groups:
+            step_offset_ms += 50
             ts = base_ts + _ms(step_offset_ms)
 
             if tname == "spawn_agent":
+                # Single spawn per group by construction.
+                ti, tc = calls[0]
+                args_raw = tc.get("arguments") or ""
                 child = _match_spawn(args_raw, children_by_id,
                                      children_in_order, spawn_used)
                 if child is not None:
@@ -291,7 +323,6 @@ def _walk_agent(agent: dict, *, run_id: str,
                     _walk_agent(child, run_id=run_id,
                                 parent_actor=actor_self,
                                 base_ts=ts, out=out, run_kind="agent")
-                    # Child done — synthesise the return arrow.
                     out_payload = child.get("output")
                     rlabel = _done_label(out_payload)
                     step_offset_ms += 1
@@ -301,34 +332,61 @@ def _walk_agent(agent: dict, *, run_id: str,
                         label=rlabel, payload={"output": out_payload},
                         session_id=run_id,
                     ))
-                    continue
+                continue
 
-            # reflect / done as control events — keep them visible
             if tname in ("reflect", "done"):
-                out.append(Event(
-                    ts=ts, kind="agent_text",
-                    actor=actor_self, target=actor_self,
-                    label=tname, payload={"arguments": args_raw},
-                    session_id=run_id,
-                ))
+                # Reflect/done are agent-self events. Multiple
+                # reflects in one step are extremely unusual; if it
+                # happens, just emit each individually so confidence
+                # progression stays visible.
+                for ti, tc in calls:
+                    out.append(Event(
+                        ts=ts, kind="agent_text",
+                        actor=actor_self, target=actor_self,
+                        label=tname,
+                        payload={"arguments": tc.get("arguments") or ""},
+                        session_id=run_id,
+                    ))
                 continue
 
             sys_actor = f"system:{_system_for(tname)}"
+            n = len(calls)
+            if n == 1:
+                # Single call — label with args as before.
+                args_raw = calls[0][1].get("arguments") or ""
+                call_label = f"{tname}({_short(args_raw, 40)})"
+            else:
+                # Parallel-in-step siblings collapsed to one arrow.
+                # Drop the args since they differ per call; surface
+                # the count instead.
+                call_label = f"{tname} ×{n}"
             out.append(Event(
                 ts=ts, kind="tool_call",
                 actor=actor_self, target=sys_actor,
-                label=f"{tname}({_short(args_raw, 40)})",
-                payload={"tool": tname, "arguments": args_raw},
+                label=call_label,
+                payload={"tool": tname,
+                          "arguments": [c[1].get("arguments") or "" for c in calls]},
                 session_id=run_id,
+                count=n,
             ))
-            if ti < len(tool_results):
+
+            # Pair the results. tool_results is a flat list in step
+            # order; the indices we collapsed are stored in calls.
+            paired_results = [tool_results[ti] for ti, _ in calls
+                              if ti < len(tool_results)]
+            if paired_results:
                 step_offset_ms += 1
+                if n == 1:
+                    res_label = _short(paired_results[0] or "", 60)
+                else:
+                    res_label = f"{len(paired_results)} results"
                 out.append(Event(
                     ts=ts + _ms(1), kind="tool_result",
                     actor=sys_actor, target=actor_self,
-                    label=_short(tool_results[ti] or "", 60),
-                    payload={"result": tool_results[ti]},
+                    label=res_label,
+                    payload={"results": paired_results},
                     session_id=run_id,
+                    count=len(paired_results),
                 ))
 
         # Plain text response — note on the lane.

@@ -192,6 +192,121 @@ class TestEvents:
 # ── Renderers ─────────────────────────────────────────────────────────────
 
 
+class TestParallelCollapse:
+    """Parallel tool_calls within ONE LLM step that target the same
+    tool name collapse to a single Event with `count`. Spawns and
+    reflects never collapse."""
+
+    @pytest.fixture
+    def db_parallel(self, tmp_path):
+        """One reviewer run, step 0 fires 4 parallel diff_read_file
+        calls + 2 diff_outline calls + 1 reflect."""
+        db_path = str(tmp_path / "traces.db")
+        from orchestra.trace_db import TraceDBWriter
+        w = TraceDBWriter(db_path=db_path, run_id="par00000001", kind="agent")
+        w.on_event("agent_started", agent_id="ag", agent_name="reviewer")
+        # step 0 — parallel calls
+        w.on_event(
+            "agent_llm_request", agent_id="ag", agent_name="reviewer", step=0,
+            messages=[{"role": "user", "content": "go"}],
+        )
+        w.on_event(
+            "agent_llm_response", agent_id="ag", agent_name="reviewer", step=0,
+            tool_calls=[
+                {"name": "diff_read_file", "arguments": '{"path":"a"}'},
+                {"name": "diff_read_file", "arguments": '{"path":"b"}'},
+                {"name": "diff_read_file", "arguments": '{"path":"c"}'},
+                {"name": "diff_read_file", "arguments": '{"path":"d"}'},
+                {"name": "diff_outline",   "arguments": '{"path":"e"}'},
+                {"name": "diff_outline",   "arguments": '{"path":"f"}'},
+                {"name": "reflect",        "arguments": "{}"},
+            ],
+        )
+        # step 1 — feeds back 6 tool results for the 6 diff_* calls
+        # (reflect is agent-self, no result message).
+        w.on_event(
+            "agent_llm_request", agent_id="ag", agent_name="reviewer", step=1,
+            messages=[
+                {"role": "user", "content": "go"},
+                {"role": "assistant", "tool_calls": [{"name": "diff_read_file"}] * 4
+                                                    + [{"name": "diff_outline"}] * 2
+                                                    + [{"name": "reflect"}]},
+                {"role": "tool", "content": "a result"},
+                {"role": "tool", "content": "b result"},
+                {"role": "tool", "content": "c result"},
+                {"role": "tool", "content": "d result"},
+                {"role": "tool", "content": "e outline"},
+                {"role": "tool", "content": "f outline"},
+            ],
+        )
+        w.on_event(
+            "agent_done", agent_id="ag", agent_name="reviewer", step=1,
+            output=[],
+        )
+        w.finish_run(model="m", status="completed")
+        w.close()
+        return db_path, "par00000001"
+
+    def test_parallel_calls_collapse_with_count(self, db_parallel):
+        db_path, rid = db_parallel
+        events = events_from_runs([rid], db_path)
+        calls = [e for e in events if e.kind == "tool_call"]
+        names = [e.label for e in calls]
+        # diff_read_file ×4 + diff_outline ×2 = 2 arrows, not 6.
+        assert len(calls) == 2, f"expected 2 collapsed call events, got {names}"
+        labels = sorted(names)
+        assert "diff_outline ×2" in labels[0] or "diff_read_file ×4" in labels[0]
+        assert any("×4" in l for l in labels), labels
+        assert any("×2" in l for l in labels), labels
+
+    def test_collapsed_count_field(self, db_parallel):
+        db_path, rid = db_parallel
+        events = events_from_runs([rid], db_path)
+        calls = [e for e in events if e.kind == "tool_call"]
+        counts = sorted(e.count for e in calls)
+        assert counts == [2, 4]
+
+    def test_results_aggregate_in_one_arrow(self, db_parallel):
+        """4 diff_read_file + 2 diff_outline = 6 results in step 1's
+        tool messages. The collapsed view emits ONE result arrow per
+        call group, not six."""
+        db_path, rid = db_parallel
+        events = events_from_runs([rid], db_path)
+        results = [e for e in events if e.kind == "tool_result"]
+        assert len(results) == 2, f"expected 2 collapsed result events, got {[r.label for r in results]}"
+        labels = [r.label for r in results]
+        assert any("4 results" in l for l in labels), labels
+        assert any("2 results" in l for l in labels), labels
+
+    def test_reflect_stays_individual(self, db_parallel):
+        """reflect / done are agent-self events — they don't fold
+        into the diff/bitbucket bucket and never get collapsed even
+        though their name is repeatable."""
+        db_path, rid = db_parallel
+        events = events_from_runs([rid], db_path)
+        agent_text = [e for e in events if e.kind == "agent_text"]
+        assert len(agent_text) == 1
+        assert agent_text[0].label == "reflect"
+        assert agent_text[0].count == 1
+
+    def test_payload_keeps_individual_args(self, db_parallel):
+        """The collapsed Event's payload preserves each underlying
+        argument, so click-through still surfaces the per-call detail
+        (even though the diagram label only shows the count)."""
+        db_path, rid = db_parallel
+        events = events_from_runs([rid], db_path)
+        for e in events:
+            if e.kind == "tool_call" and "×4" in e.label:
+                args = e.payload.get("arguments")
+                assert isinstance(args, list)
+                assert len(args) == 4
+                # Each preserved as raw JSON string.
+                assert all('"path"' in a for a in args)
+                break
+        else:
+            raise AssertionError("no ×4 collapse event found")
+
+
 class TestMermaid:
     def test_starts_with_sequence_diagram(self, db_two_runs):
         db_path, agent_id, _ = db_two_runs
