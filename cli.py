@@ -108,15 +108,31 @@ def _run_with_dispatcher(
     invocations_out: Optional[str] = None,
     user_message_override: Optional[str] = None,
     output: Optional[str] = None,
+    repo: str = "",
+    base: str = "",
+    source: str = "",
 ) -> None:
     """
-    Run any agent with lazy repo init.
+    Run any agent.
 
-    Repo clone + diff happen lazily only when a domain tool is first
-    called — empty `pr_url` is fine when the agent (e.g. judge.raw)
-    doesn't use repo tools at all. PR-side helpers (get_pr_info,
-    get_pr_comments, _publish_to_pr) are wrapped in try/except or
-    short-circuit on empty pr_url.
+    Two repo-context modes:
+
+      1. `pr_url` is set ⇒ **lazy mode**. Repo clone + diff happen
+         lazily only when a domain tool is first called — empty
+         `pr_url` is fine when the agent (e.g. judge.raw) doesn't
+         use repo tools at all. PR-side helpers (get_pr_info,
+         get_pr_comments, _publish_to_pr) are wrapped in try/except
+         or short-circuit on empty pr_url.
+
+      2. `repo` + `base` + `source` all set, `pr_url` empty ⇒
+         **eager local mode**. We resolve refs and compute the diff
+         up front (no clone, no PR fetch). Used by unit fixtures
+         without `pr_state` — investigator scenarios that get their
+         repo from a local checkout and don't need a fake PR.
+
+    Mixing the two (`pr_url` + local refs) is not supported — the
+    PR fetch wins, since cloning gives us the canonical (base,
+    source) tuple anyway.
     """
     from diffgraph.bitbucket import (
         get_comment_thread, reply_to_pr_comment, get_pr_info,
@@ -197,31 +213,64 @@ def _run_with_dispatcher(
         active_thread_root_id=active_root_id,
     )
 
-    # ── Lazy ctx: clone happens on first domain tool call ─────────────────
+    # ── Ctx construction: eager local OR lazy PR-clone ────────────────────
     _cleanup_fn = {"fn": None}
 
-    ctx = _Ctx(
-        diff_text="", diff_result=DiffResult(files={}, changed_files=[], changed_lines={}),
-        repo_path="", existing_comments=existing_comments,
-        review_context=ReviewContext(),
-        _pr_url=pr_url, _initialized=False,
-    )
-
-    def _lazy_init(c: _Ctx) -> None:
-        """Clone repo, compute diff — called on first domain tool access."""
-        console.print(f"[dim]  cloning repo (lazy)...[/dim]")
-        diff_text, repo_path, cleanup_fn, pr_meta = fetch_pr(
-            pr_url,
-            on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+    # Eager local mode: --repo + --base + --source provided, no PR URL.
+    # We resolve refs and compute the diff up front; no _init_fn needed,
+    # so the first domain tool call doesn't try to `fetch_pr("")`.
+    if (not pr_url) and repo and base and source:
+        import subprocess as _sp
+        repo_path = str(Path(repo).resolve())
+        try:
+            base_sha = _sp.run(
+                ["git", "rev-parse", base], cwd=repo_path,
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            source_sha = _sp.run(
+                ["git", "rev-parse", source], cwd=repo_path,
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+        except _sp.CalledProcessError as exc:
+            console.print(f"[red]Failed to resolve refs: "
+                          f"{exc.stderr.strip()}[/red]")
+            raise typer.Exit(1)
+        diff_text = _sp.run(
+            ["git", "diff", f"{base_sha}...{source_sha}"],
+            cwd=repo_path, capture_output=True, text=True,
+        ).stdout
+        ctx = _Ctx(
+            diff_text=diff_text, diff_result=parse_diff(diff_text),
+            repo_path=repo_path, existing_comments=existing_comments,
+            review_context=ReviewContext(),
+            base_ref=base_sha, source_ref=source_sha,
+            _pr_url="", _initialized=True,
         )
-        _cleanup_fn["fn"] = cleanup_fn
-        c.diff_text = diff_text
-        c.diff_result = parse_diff(diff_text)
-        c.repo_path = repo_path
-        c.base_ref = pr_meta.get("base_ref", "")
-        c.source_ref = pr_meta.get("source_ref", "")
+    else:
+        # Lazy mode: clone+diff deferred to first domain tool call.
+        ctx = _Ctx(
+            diff_text="", diff_result=DiffResult(files={}, changed_files=[], changed_lines={}),
+            repo_path="", existing_comments=existing_comments,
+            review_context=ReviewContext(),
+            _pr_url=pr_url, _initialized=False,
+        )
 
-    ctx._init_fn = _lazy_init
+        def _lazy_init(c: _Ctx) -> None:
+            """Clone repo, compute diff — called on first domain tool access."""
+            console.print(f"[dim]  cloning repo (lazy)...[/dim]")
+            diff_text, repo_path, cleanup_fn, pr_meta = fetch_pr(
+                pr_url,
+                on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+            )
+            _cleanup_fn["fn"] = cleanup_fn
+            c.diff_text = diff_text
+            c.diff_result = parse_diff(diff_text)
+            c.repo_path = repo_path
+            c.base_ref = pr_meta.get("base_ref", "")
+            c.source_ref = pr_meta.get("source_ref", "")
+
+        ctx._init_fn = _lazy_init
+
     ctx._bot_user = bot_user
     ctx._subject_pattern = pat
 
@@ -782,6 +831,9 @@ def run(
             invocations_out=invocations_out,
             user_message_override=user_message_override,
             output=output,
+            repo=repo or "",
+            base=base or "",
+            source=source or "",
         )
         raise typer.Exit(0)
 
