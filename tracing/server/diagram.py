@@ -952,26 +952,62 @@ def to_d2(events: list[Event], db_path: str) -> str:
 
     participants = _enrich_agent_labels(events,
                                         _participants_of(events), db_path)
-    lines: list[str] = ["# diff-graph interaction diagram",
-                        "# scope: see /api/diagram endpoint",
-                        "",
-                        "seq: {",
-                        "  shape: sequence_diagram"]
+
+    # Short alias per participant — `r` for reviewer, `i1..N` for
+    # investigators, `j1..N` for judges, `diff` / `bb` / etc. for
+    # systems. The full `agent_<run>_<aid>` ids appear 80+ times in
+    # message arrows on big sessions; swapping to 2-3 char aliases
+    # is the difference between fitting under play.d2lang.com's
+    # ~8KB URL limit and not.
+    _ROLE_PREFIX = {
+        "reviewer": "r", "investigator": "i", "judge": "j",
+        "dispatcher": "d", "tools": "t", "agent": "a",
+    }
+    _SYSTEM_ALIAS = {"diff": "diff", "bitbucket": "bb", "control": "ctrl"}
+    used_roles: list[str] = []
+    seen: set[str] = set()
+    actors_meta: list[tuple[str, str, str, str]] = []  # (uri, alias, label, role)
+    counts: dict[str, int] = {}
     for uri, label in participants:
-        sid = _safe_id(uri)
         role = _role_for(uri, label)
+        if role not in seen:
+            seen.add(role)
+            used_roles.append(role)
+        if uri.startswith("system:"):
+            sys_name = uri.split(":", 1)[1]
+            alias = _SYSTEM_ALIAS.get(sys_name, sys_name)
+        else:
+            prefix = _ROLE_PREFIX.get(role, "a")
+            counts[role] = counts.get(role, 0) + 1
+            alias = f"{prefix}{counts[role]}" if counts[role] > 1 or role != "reviewer" else prefix
+        actors_meta.append((uri, alias, label, role))
+
+    # alias lookup: full URI → short alias (used by the arrow loop).
+    alias_for: dict[str, str] = {uri: alias for uri, alias, _, _ in actors_meta}
+
+    # `classes:` block defines the palette once; each participant
+    # references its class. Compresses style declarations from
+    # 5-lines-per-actor to a single `class:` reference.
+    lines: list[str] = ["classes: {"]
+    for role in used_roles:
         fill, stroke = _ROLE_PALETTE.get(role, _ROLE_PALETTE["agent"])
-        # D2 expects 6-digit hex (no alpha). Drop the alpha channel
-        # — D2 actor lanes don't honour translucent fills cleanly.
         fill6 = fill[:7]
-        lines.append(f"  {sid}: {{")
-        lines.append(f"    label: {json.dumps(label)}")
-        lines.append(f"    style.fill: {json.dumps(fill6)}")
-        lines.append(f"    style.stroke: {json.dumps(stroke)}")
-        lines.append(f"  }}")
+        lines.append(
+            f'  {role}: {{style: {{fill: {json.dumps(fill6)}; '
+            f'stroke: {json.dumps(stroke)}}}}}'
+        )
+    lines.append("}")
+    lines.append("")
+    lines.append("seq: {")
+    lines.append("  shape: sequence_diagram")
+    for _uri, alias, label, role in actors_meta:
+        lines.append(
+            f'  {alias}: {{label: {json.dumps(label)}; class: {role}}}'
+        )
 
     for e in events:
-        sa, ta = _safe_id(e.actor), _safe_id(e.target or e.actor)
+        sa = alias_for.get(e.actor, _safe_id(e.actor))
+        ta = alias_for.get(e.target or e.actor, _safe_id(e.target or e.actor))
         label = (_step_prefix(e) + e.label).replace('"', "'")
         if sa == ta:
             lines.append(f"  {sa}: {json.dumps(e.kind + ': ' + label)}")

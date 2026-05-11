@@ -8,7 +8,7 @@
   window.QA_BASE_PATH = "{{ base_path }}";
   window.RUN_ID = "{{ run_id }}";
 </script>
-<script defer src="{{ base_path }}/static/qa_session_trace.js?v=5"></script>
+<script defer src="{{ base_path }}/static/qa_session_trace.js?v=6"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
 body { padding: 16px; max-width: 1700px; margin: 0 auto; }
@@ -117,6 +117,7 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
 .autorefresh-label input { margin: 0; cursor: pointer; }
 .auto-status { color: #56d364; font-weight: 600; }
 .d2-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.d2-too-big { color: #d29922; font-size: 0.85em; cursor: help; }
 .diagram-output { padding: 14px; min-height: 120px; }
 .diagram-output #diagram-mermaid-host { overflow-x: auto; }
 .diagram-output #diagram-mermaid-host svg { max-width: 100%; height: auto; }
@@ -198,8 +199,15 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
       <template x-if="diagramFormat === 'd2'">
         <span class="d2-tools">
           <button type="button" class="toolbar-btn" @click="copyDiagramSource()">📋 Copy</button>
-          <a class="back-link" :href="`https://play.d2lang.com/?script=${encodeURIComponent(diagramSource || '')}`"
-             target="_blank" rel="noopener">↗ open in play.d2lang.com</a>
+          <template x-if="d2PlayHref">
+            <a class="back-link" :href="d2PlayHref"
+               target="_blank" rel="noopener">↗ open in play.d2lang.com</a>
+          </template>
+          <template x-if="!d2PlayHref && diagramSource">
+            <span class="d2-too-big" title="diagram source too large for play.d2lang.com URL (CloudFront limits requests to ~8KB); use Copy and paste manually">
+              ✂ too large for URL — use Copy
+            </span>
+          </template>
         </span>
       </template>
     </div>

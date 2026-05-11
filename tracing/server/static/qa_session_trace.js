@@ -210,6 +210,22 @@ document.addEventListener('alpine:init', () => {
     _diagramTimer: null,
     _g6Instance: null,
 
+    // play.d2lang.com is fronted by CloudFront which rejects URLs
+    // > ~8KB with 414. Encoded source can balloon — return empty
+    // when over the safe threshold so the UI shows a "too large
+    // for URL" hint instead of a link that won't open.
+    get d2PlayHref() {
+      if (!this.diagramSource) return '';
+      const encoded = encodeURIComponent(this.diagramSource);
+      const url = `https://play.d2lang.com/?script=${encoded}`;
+      // Total URL bytes (UTF-8). CloudFront caps requests at
+      // ~8192 bytes; leave a small margin for header/cookie
+      // overhead. If the diagram source exceeds, the user gets a
+      // hint to use Copy and paste into play.d2lang.com manually,
+      // or shrinks via the `−` budget button.
+      return url.length <= 8000 ? url : '';
+    },
+
     bumpBudget(direction) {
       // Geometric steps so the value scales naturally — small
       // adjustments at the low end, bigger jumps at the high end.

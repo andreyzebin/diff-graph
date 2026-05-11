@@ -584,17 +584,29 @@ class TestMermaid:
         ends  = sum(1 for l in out.splitlines() if l.strip() == "end")
         assert boxes == ends, f"unbalanced box/end: {boxes} boxes vs {ends} ends"
 
-    def test_d2_per_actor_style(self, db_two_runs):
-        """D2 actors carry per-participant `style.fill` /
-        `style.stroke` so the diagram renders with role colours
-        instead of D2's plain default lanes."""
+    def test_d2_uses_classes_for_palette(self, db_two_runs):
+        """D2 declares role palette as `classes:` and each actor
+        carries `class: <role>` — references not inlined per actor.
+        Critical for compactness: inline style on every participant
+        blew the play.d2lang.com URL past CloudFront's 8KB cap.
+        Pin: `classes:` block present, each actor line has `class:`,
+        no inlined `style.fill` on actors."""
         db_path, agent_id, _ = db_two_runs
         events = events_from_runs(
             resolve_runs(f"scenario_run://{agent_id}", db_path), db_path,
         )
         out = to_d2(events, db_path)
-        assert "style.fill" in out
-        assert "style.stroke" in out
+        assert "classes: {" in out
+        assert "fill:" in out  # inside the classes block
+        assert "stroke:" in out
+        # Actor lines (inside seq: {…}) reference the class, NOT inline
+        # style. A single actor line shape: `<alias>: {label: "…"; class: <role>}`.
+        actor_lines = [l for l in out.splitlines()
+                       if "{label:" in l and "class:" in l]
+        assert actor_lines, "no actor lines with class:"
+        for l in actor_lines:
+            assert "style.fill" not in l, \
+                f"actor line still has inline style: {l}"
 
     def test_g6_nodes_carry_role_colors(self, db_two_runs):
         """G6 nodes get `fill` and `stroke` from the shared palette
