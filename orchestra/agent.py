@@ -1167,9 +1167,19 @@ class Agent:
         # __init__ (override > config.user_prompt). Frontmatter is
         # already stripped; what reaches the LLM is the prose +
         # interpolated placeholders.
+        #
+        # Two sources of placeholder values:
+        #   data_scope  — resolved @data fields (pr_title, commits,
+        #                 focus, message, etc.) populated by
+        #                 resolve_agent_data + cli.py.
+        #   prompt_vars — caller-supplied extras (rare; legacy path).
+        # For the override branch, config.user_prompt's pre-interpolation
+        # by resolve_agent_data doesn't apply — the override skips that
+        # path, so we have to interpolate here against data_scope.
         user_text = self._fm_body
-        if user_text and self.prompt_vars:
-            user_text = interpolate(user_text, **self.prompt_vars)
+        merged_vars = {**(self.data_scope or {}), **(self.prompt_vars or {})}
+        if user_text and merged_vars:
+            user_text = interpolate(user_text, **merged_vars)
 
         # Some endpoints reject requests without a user-role message;
         # this is a defensive fallback that never fires for our agents

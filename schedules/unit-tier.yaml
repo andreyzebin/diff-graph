@@ -7,7 +7,7 @@ name:           diff-graph-unit-tier
 repo_path:      ""                       # → server resolves diff-graph checkout
 bench_repo_path: "${BENCH_REPO_PATH}"
 branch_pattern: master
-providers:      [deepseek]
+providers:      [deepseek, qwen3-6]
 scenario_tags:  [tier:unit]
 attempts_min:   1
 pacing:         aggressive
