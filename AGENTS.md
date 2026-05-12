@@ -209,7 +209,7 @@ Tree-sitter structural outline of a source file. Returns plain text:
 2. `git clone --filter=blob:none --single-branch` of the source branch
 3. Auth baked into repo config for lazy blob fetches
 4. `git fetch --filter=blob:none origin <toRef_sha>` for merge-base
-5. `git diff toRef...fromRef` (three-dot = merge-base diff matching PR UI)
+5. `git diff toRef...fromRef` (three-dot = merge-base diff matching PR UI). The diff-VFS in `diffsearch/` (driving `diff_list_files` / `diff_read_file` / `diff_search` / `diff_outline`) uses the same three-dot scope — see [`diffsearch/README.md`](diffsearch/README.md) for why.
 
 `post_review_comments(pr_url, comments, changed_lines?)`:
 - Snaps each comment's line to nearest changed line for valid Bitbucket anchor

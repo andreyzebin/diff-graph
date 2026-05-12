@@ -18,6 +18,20 @@ All tools accept a `ref` parameter that controls the view:
 
 **Lazy materialization:** VFS is created on the first tool call with a `..` ref. Subsequent calls with the same ref reuse the cached VFS. Different refs create separate VFS instances. All cleaned up on exit.
 
+### Scope: three-dot diff (`base...source`)
+
+Even though the public `ref` parameter is spelled with two dots (`base..source`), every underlying git invocation uses **three-dot** semantics (`git diff base...source` — changes the source branch contributed since its merge-base with base). Two-dot would also pick up anything the base branch did after the fork point, surfacing files the PR never touched (e.g. a file `master` deleted upstream while the feature branch was in flight). Three-dot matches what Bitbucket's PR UI shows as "the PR's changes" and what the orchestrator passes to the LLM as `diff_text` — every layer of the diff view stays consistent.
+
+Concretely:
+
+- `get_changed_files`  → `git diff --name-only base...source`
+- `get_path_status`    → `git diff --name-status base...source`
+- `build_virtual_file` → `git diff -U99999 base...source -- <path>`
+
+The two-dot spelling in `ref="base..source"` is preserved only as the LLM-facing label. If a caller ever needs literal two-dot semantics (compare two arbitrary refs without a common ancestor, etc.) it must shell out to git directly; the VFS API only exposes three-dot.
+
+Regression coverage: `diffsearch/tests/test_three_dot_scope.py` builds a repo where master deletes a file after the feature branch is cut and asserts none of `get_changed_files` / `get_path_status` / `build_virtual_file` / `list_files_vfs` surface that phantom deletion.
+
 ### Three coordinate systems
 
 When `ref` is a range (contains `..`), each line in a virtual file has:
