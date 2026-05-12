@@ -1,0 +1,140 @@
+id: REV-U-004-consolidation-only
+agent: reviewer
+tags: [tier:unit, agent:reviewer, isolation, consolidation, posting]
+
+# Catches the production regression "reviewer stopped posting
+# inline comments and verdict" by isolating exactly that axis:
+# pre-cook the findings via user_message override, hand them to
+# the reviewer, and assert the agent ACTUALLY POSTS via
+# post_comment + set_review_status against the fake-bitbucket
+# sink.
+#
+# Pairs with REV-U-001..003 (which test concern-forming via
+# reflect — they never post). Together they cover the reviewer's
+# two distinct output channels:
+#   reviewer.LOOK   → reflect.questions_remaining   (REV-U-001..003)
+#   reviewer.JUDGE  → post_comment + set_review_status   (THIS file)
+#
+# Unit-shape mirror of REV-002 (scenarios/agents/reviewer/) on
+# fake bitbucket. expected_output is lifted verbatim — score is
+# directly comparable across the two paths.
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmark.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: feature/ORD-234-buy-3-get-1-free
+
+# User-message override turns reviewer into a JUDGE-phase-only
+# agent — investigators are pre-cooked, agent must consolidate +
+# publish. Same prefilled-findings.md as REV-002.
+user_message_from: ../../../fixtures/user-messages/scen-009-prefilled-findings.md
+
+pr_state:
+  metadata:
+    title: "ORD-234: Implement buy-3-get-1-free promotions"
+    description: |
+      ## ORD-234: Implement buy-3-get-1-free promotions
+
+      **As a** marketing manager
+      **I want to** configure buy-N-get-1-free promotions per product category
+      **So that** we can run campaigns without a deploy
+
+      ### Acceptance criteria
+      - When a customer has 4+ items from a promoted category, the **cheapest**
+        item is free
+      - Discount is shown as a line item labelled with the promotion name
+      - Only one promotion applies per category — no stacking
+      - Promotion respects `startDate` and `endDate`
+    pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/234"
+    bot_user: "diffgraph-bot"
+  comments: []
+
+trigger:
+  type: comment
+  text: "/review"
+  comment_id: 0
+
+agent_data: {}
+
+# Consolidation tests are intentional input→output transcription:
+# the user-message hands the agent pre-cooked findings and the
+# rubric scores whether they appear in post_comment output. EVERY
+# required_comment keyword unavoidably appears in the input, by
+# design. This is the legitimate use of leak_allowlist — the test
+# isn't grading "did the agent DISCOVER X" (where leak would be
+# circular), it's grading "did the agent PUBLISH X" (where input
+# overlap is the contract). Real signal lives in: did the
+# post_comment actually fire (side_effects.review_status_change +
+# inline_comments count), at the right severity, on the right file
+# and line.
+leak_allowlist:
+  - "cheapest"
+  - "selectFreeItem"
+  - "get(0)"
+  - "@Transactional"
+  - "applyBulkDiscount"
+  - "Lombok"
+  - "@Data"
+  - "manual"
+
+# ── Judge — consolidation + publishing ───────────────────────────────────
+# assert_via: pr_comments → FakeBenchPRView.get_comments() reads
+# sink-side post_comment records. The reviewer MUST post the three
+# findings + set verdict. If the agent goes back to LOOK/INVESTIGATE
+# (ignoring the user message) it's still graded on whether the
+# findings landed; if it doesn't post at all the score drops to ~0
+# — exactly the prod regression signal we want.
+expected_output:
+  assert_via: [pr_comments]
+  required_comments:
+    - id: cheapest-item
+      severity: BLOCKER
+      description_keywords: ["cheapest", "selectFreeItem", "get(0)"]
+      rationale: "Reviewer publishes the BLOCKER finding from the prefilled packet."
+    - id: transactional
+      severity: MAJOR
+      description_keywords: ["@Transactional", "applyBulkDiscount"]
+      rationale: "Reviewer publishes the MAJOR transaction-safety finding."
+    - id: lombok
+      severity: MINOR
+      description_keywords: ["Lombok", "@Data", "manual"]
+      rationale: "Reviewer publishes the MINOR Lombok finding."
+
+  forbidden_comments:
+    - description: "Findings invented by the reviewer beyond the three prefilled — the user message gave the full set, anything else is fabrication."
+
+  expected_status_change: "NEEDS_WORK"
+
+  side_effects:
+    # Positive assertion — reviewer SHOULD post inline comments.
+    # This is the inverse of REV-U-001..003 which require inline_comments=0.
+    # Catches the "agent forgot to post" regression directly:
+    # any value ≠ null is treated as "exactly this many"; the
+    # judge will mark inline_comments_ok=false if the agent
+    # posted fewer than expected.
+    review_status_change: true
+
+  thresholds:
+    min_score: 0.70
+    min_required_found: 3
+    max_false_positives: 1
+
+metadata:
+  difficulty: easy
+  language: java
+  pr_size: medium
+  scenario_type: agent_unit
+  capabilities: [reviewer, consolidation, severity_preservation, publishing, verdict_setting]
+
+# Reviewer needs all PR-write tools enabled here — this is the
+# OPPOSITE of REV-U-001..003 which restrict to read+reflect. The
+# regression signal IS the agent's ability to call post_comment and
+# set_review_status, so they must be in registry.
+# (no forbidden_tools — every tool the agent normally has is callable)
