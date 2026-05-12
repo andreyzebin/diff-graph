@@ -31,6 +31,7 @@ from orchestra.budget import (
     ReflectCadencePusher,
     StepContext,
     TimeBudgetPusher,
+    TokenBudgetPusher,
     TracingHandler,
 )
 from orchestra.events import EventBus, EventType
@@ -321,6 +322,109 @@ class TestTimeBudgetPusher:
         ]
 
 
+class TestTokenBudgetPusher:
+    """Token-spend escalation on `state.token_ratio`. Same shape as
+    TimeBudgetPusher (inherits from RatioEscalationPusher) — these
+    tests cover the token-specific instance + the inherited contract
+    against a different `state` axis."""
+
+    def _ctx_with_tokens(self, tokens_used: int, tokens_max: int = 1000) -> StepContext:
+        """A StepContext whose token_ratio is `tokens_used / tokens_max`."""
+        state = BudgetState(
+            original_tokens=tokens_max,
+            original_steps=1_000_000,    # huge → step_ratio ≈ 0
+            cumulative_paid=tokens_used,
+            wall_start=0.0,
+        )
+        return _ctx(state=state)
+
+    def test_default_kind(self):
+        assert TokenBudgetPusher.kind == "token-budget"
+        assert TokenBudgetPusher.ratio_attr == "token_ratio"
+
+    def test_under_first_threshold_no_action(self):
+        pusher = TokenBudgetPusher()
+        ctx = self._ctx_with_tokens(tokens_used=300, tokens_max=1000)  # 0.30
+        pusher.apply(ctx)
+        assert ctx.actions == []
+
+    def test_crosses_nudge_at_50pct(self):
+        pusher = TokenBudgetPusher()
+        ctx = self._ctx_with_tokens(tokens_used=550, tokens_max=1000)  # 0.55
+        pusher.apply(ctx)
+        assert len(ctx.actions) == 1
+        a = ctx.actions[0]
+        assert a.type == PusherType.NUDGE
+        assert a.kind == "token-budget"
+        assert a.threshold == pytest.approx(0.5)
+        assert a.ratio == pytest.approx(0.55, abs=0.05)
+        # And the message must mention tokens specifically — agents
+        # need to know which dimension is pressing, not a generic
+        # "budget gone" line.
+        assert "token" in a.message.lower()
+
+    def test_escalates_through_three_levels(self):
+        pusher = TokenBudgetPusher()
+        seen: list[PusherType] = []
+        for used in [300, 600, 800, 1050]:
+            ctx = self._ctx_with_tokens(tokens_used=used, tokens_max=1000)
+            pusher.apply(ctx)
+            seen.extend(a.type for a in ctx.actions)
+        assert seen == [
+            PusherType.NUDGE,         # crossed 0.5 at used=600
+            PusherType.FORCE_REFLECT, # crossed 0.75 at used=800
+            PusherType.FORCE_DONE,    # crossed 1.0 at used=1050 (clamped to 1.0)
+        ]
+
+    def test_no_re_arm(self):
+        """Token usage only goes up; latches stay fired forever."""
+        pusher = TokenBudgetPusher()
+        ctx = self._ctx_with_tokens(tokens_used=600, tokens_max=1000)
+        pusher.apply(ctx)
+        ctx2 = self._ctx_with_tokens(tokens_used=650, tokens_max=1000)
+        pusher.apply(ctx2)
+        assert ctx2.actions == []  # still under 0.75 → silent
+
+    def test_messages_distinguish_dimensions(self):
+        """Token vs time nudges carry different copy so the model
+        can tell which budget axis is pressuring it."""
+        assert (
+            TokenBudgetPusher.DEFAULT_NUDGE_MSG
+            != TimeBudgetPusher.DEFAULT_NUDGE_MSG
+        )
+        assert "token" in TokenBudgetPusher.DEFAULT_NUDGE_MSG.lower()
+        assert "wall-clock" in TimeBudgetPusher.DEFAULT_NUDGE_MSG.lower()
+
+    def test_messages_are_tool_agnostic(self):
+        """Different agents have different tools — the framework's
+        budget pusher messages must not mention any specific tool by
+        name. Use generic "submit your final output" / "wrap up"
+        phrasing instead of `done()` / `post_comment()` etc.
+        Agent-specific wrap-up wording is the prompt's job.
+
+        Pinned tool names that historically leaked into pusher
+        messages (and would silently mislead an agent that doesn't
+        have that tool):
+        """
+        agent_tools = (
+            "done()", "reflect()", "post_comment", "set_review_status",
+            "spawn_agent", "list_threads", "read_thread",
+            "text_answer", "diff_read_file", "diff_search",
+        )
+        for cls in (TokenBudgetPusher, TimeBudgetPusher):
+            for label, msg in (
+                ("NUDGE", cls.DEFAULT_NUDGE_MSG),
+                ("FORCE_DONE", cls.DEFAULT_FORCE_DONE_MSG),
+            ):
+                msg_lower = msg.lower()
+                leaked = [t for t in agent_tools if t.lower() in msg_lower]
+                assert not leaked, (
+                    f"{cls.__name__}.{label} mentions tool name(s) "
+                    f"{leaked}; pusher messages must be tool-agnostic. "
+                    f"Got: {msg!r}"
+                )
+
+
 # ── ApplyActionsHandler ──────────────────────────────────────────────────────
 
 
@@ -436,14 +540,22 @@ class TestBudgetTrackerChain:
     def test_default_chain_has_apply_and_trace_consumers(self):
         t = self._tracker()
         kinds = [h.kind for h in t.handlers]
+        # The default chain ships with the counter handler, both
+        # always-on per-dimension escalation pushers (token + time),
+        # the legacy max_ratio RatioPusher (empty user config), and
+        # the two consumers.
+        assert "counter" in kinds
         assert "ratio" in kinds
+        assert "token-budget" in kinds
         assert "time-budget" in kinds
         assert "apply" in kinds
         assert "trace" in kinds
-        # Order matters: producers (ratio, time-budget) before apply,
-        # apply before trace.
-        assert kinds.index("ratio") < kinds.index("apply")
-        assert kinds.index("time-budget") < kinds.index("apply")
+        # Counter writes ctx.steps_since_reflect → must precede any
+        # reader.
+        assert kinds.index("counter") < kinds.index("apply")
+        # Producers before consumers.
+        for k in ("ratio", "token-budget", "time-budget"):
+            assert kinds.index(k) < kinds.index("apply")
         assert kinds.index("apply") < kinds.index("trace")
 
     def test_configure_reflect_pushers_adds_reflect_producer(self):

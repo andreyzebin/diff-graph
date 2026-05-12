@@ -290,63 +290,62 @@ class RatioPusher:
             ))
 
 
-class TimeBudgetPusher:
-    """Wall-clock budget escalation: NUDGE → FORCE_REFLECT → FORCE_DONE
-    at configurable fractions of `max_wall_time`.
+class RatioEscalationPusher:
+    """One-axis budget escalation: NUDGE → FORCE_REFLECT → FORCE_DONE
+    at configurable fractions of one BudgetState ratio attribute.
 
-    Distinct from `RatioPusher` (which fires on `state.max_ratio` =
-    max of token / step / wall ratios) — this producer reads
-    `wall_ratio` specifically. Use when you want wall-time-specific
-    escalation that doesn't compete with token/step thresholds.
+    Reads `state.<ratio_attr>` (e.g. `token_ratio` or `wall_ratio`).
+    The attribute must return a 0..1 float or None (None = the
+    dimension isn't configured → handler is a no-op). Each threshold
+    latches once per run; ratios only climb so we never re-arm.
 
-    No-op if `max_wall_time` is unset (`wall_ratio` is None).
-
-    Each threshold latches once per run (wall time only goes up;
-    no need to re-arm).
+    Subclassed below as `TokenBudgetPusher` and `TimeBudgetPusher`
+    with axis-appropriate default messages.
     """
-    kind = "time-budget"
+    kind: str = ""
+    ratio_attr: str = ""
 
     DEFAULT_NUDGE_AT: float = 0.5
     DEFAULT_FORCE_REFLECT_AT: float = 0.75
     DEFAULT_FORCE_DONE_AT: float = 1.0
 
-    DEFAULT_NUDGE_MSG = (
-        "Half of your wall-clock budget is gone. Consolidate what "
-        "you've learned (reflect) and start wrapping toward done()."
-    )
-    DEFAULT_FORCE_DONE_MSG = (
-        "Wall-clock budget exhausted. Submit done(findings) now — "
-        "partial findings beat no findings."
-    )
+    # Subclass overrides — what gets put in front of the model when
+    # this dimension's threshold trips.
+    DEFAULT_NUDGE_MSG: str = ""
+    DEFAULT_FORCE_DONE_MSG: str = ""
 
     def __init__(
         self,
         *,
-        nudge_at: float = DEFAULT_NUDGE_AT,
-        force_reflect_at: float = DEFAULT_FORCE_REFLECT_AT,
-        force_done_at: float = DEFAULT_FORCE_DONE_AT,
-        nudge_message: str = DEFAULT_NUDGE_MSG,
-        force_done_message: str = DEFAULT_FORCE_DONE_MSG,
+        nudge_at: Optional[float] = None,
+        force_reflect_at: Optional[float] = None,
+        force_done_at: Optional[float] = None,
+        nudge_message: Optional[str] = None,
+        force_done_message: Optional[str] = None,
     ) -> None:
         # Sorted by ascending ratio so escalation always fires in order
-        # (NUDGE → FORCE_REFLECT → FORCE_DONE). A handler config that
-        # puts FORCE_DONE before NUDGE silently sorts itself sane.
+        # even if a misconfigured instance lists FORCE_DONE before
+        # NUDGE.
         self._levels: list[tuple[float, PusherType, str]] = sorted([
-            (nudge_at, PusherType.NUDGE, nudge_message),
-            (force_reflect_at, PusherType.FORCE_REFLECT, ""),
-            (force_done_at, PusherType.FORCE_DONE, force_done_message),
+            (nudge_at if nudge_at is not None else self.DEFAULT_NUDGE_AT,
+             PusherType.NUDGE,
+             nudge_message if nudge_message is not None else self.DEFAULT_NUDGE_MSG),
+            (force_reflect_at if force_reflect_at is not None else self.DEFAULT_FORCE_REFLECT_AT,
+             PusherType.FORCE_REFLECT, ""),
+            (force_done_at if force_done_at is not None else self.DEFAULT_FORCE_DONE_AT,
+             PusherType.FORCE_DONE,
+             force_done_message if force_done_message is not None else self.DEFAULT_FORCE_DONE_MSG),
         ], key=lambda x: x[0])
-        # Per-level latches; index aligns with self._levels.
         self._fired: list[bool] = [False] * len(self._levels)
 
     def apply(self, ctx: StepContext) -> None:
-        wr = ctx.state.wall_ratio
-        if wr is None:
+        ratio = getattr(ctx.state, self.ratio_attr, None)
+        if ratio is None:
             return
         for idx, (at, ptype, msg) in enumerate(self._levels):
             if self._fired[idx]:
                 continue
-            if wr < at:
+            if ratio < at:
                 continue
             self._fired[idx] = True
             ctx.actions.append(PusherAction(
@@ -354,8 +353,48 @@ class TimeBudgetPusher:
                 message=msg,
                 kind=self.kind,
                 threshold=at,
-                ratio=wr,
+                ratio=ratio,
             ))
+
+
+class TokenBudgetPusher(RatioEscalationPusher):
+    """Token-spend escalation on `state.token_ratio`
+    (= cumulative_paid / max_tokens, capped at 1.0). Always-on; the
+    ratio is 0 when no tokens have been spent so the handler stays
+    silent on cheap runs.
+
+    Messages are deliberately generic — no role-specific wording
+    ("post findings", "consolidate review") and no tool-specific
+    wording ("call done()"). The FORCE_DONE action narrows the
+    tool surface for us; the message only needs to motivate
+    "wrap up now". Agent-specific wrap-up phrasing lives in the
+    prompt.
+    """
+    kind = "token-budget"
+    ratio_attr = "token_ratio"
+
+    DEFAULT_NUDGE_MSG = (
+        "Half of your token budget is used. Plan what's left so you "
+        "finish before it runs out."
+    )
+    DEFAULT_FORCE_DONE_MSG = (
+        "Token budget exhausted. Submit your final output now."
+    )
+
+
+class TimeBudgetPusher(RatioEscalationPusher):
+    """Wall-clock escalation on `state.wall_ratio`. No-op if
+    `max_wall_time` is unset (wall_ratio returns None)."""
+    kind = "time-budget"
+    ratio_attr = "wall_ratio"
+
+    DEFAULT_NUDGE_MSG = (
+        "Half of your wall-clock budget is used. Plan what's left "
+        "so you finish before it runs out."
+    )
+    DEFAULT_FORCE_DONE_MSG = (
+        "Wall-clock budget exhausted. Submit your final output now."
+    )
 
 
 class ReflectCadencePusher:
@@ -505,18 +544,28 @@ class BudgetTracker:
         # - ReflectCadenceCounter — owns `steps_since_reflect`. Apply
         #                           writes the counter into ctx; the
         #                           counter itself is mutated in
-        #                           `on_step_done` based on what tools
-        #                           ran. Must come first so downstream
-        #                           cadence pushers see a fresh value.
-        # - RatioPusher           — `BudgetConfig.pushers` against
-        #                           `state.max_ratio`.
-        # - TimeBudgetPusher      — always-on, no-op without
-        #                           `max_wall_time`. Wall-clock
-        #                           escalation 0.5/0.75/1.0 →
-        #                           NUDGE/FORCE_REFLECT/FORCE_DONE.
+        #                           `on_step_done`. Must come first so
+        #                           downstream cadence pushers see a
+        #                           fresh value.
+        # - RatioPusher           — user-configurable thresholds on
+        #                           `state.max_ratio`. Empty by
+        #                           default (per-dimension escalation
+        #                           is handled by the dedicated
+        #                           pushers below).
+        # - TokenBudgetPusher     — always-on, NUDGE 0.5 →
+        #                           FORCE_REFLECT 0.75 → FORCE_DONE
+        #                           1.0 on `state.token_ratio`.
+        # - TimeBudgetPusher      — same shape on `state.wall_ratio`,
+        #                           no-op without `max_wall_time`.
+        # Step budget is intentionally NOT a separate escalation axis
+        # — `token_ratio` covers the same "agent is overrunning"
+        # signal in practice (each step costs roughly bounded
+        # tokens), and `max_steps` still acts as the hard cap via
+        # `state.exhausted` in the agent loop.
         self._producers: list[PusherHandler] = [
             ReflectCadenceCounter(),
             RatioPusher(config.pushers),
+            TokenBudgetPusher(),
             TimeBudgetPusher(),
         ]
         self._consumers: list[PusherHandler] = [

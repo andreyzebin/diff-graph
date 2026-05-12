@@ -294,8 +294,9 @@ Per-step middleware chain (`orchestra/budget.py`) that nudges the agent toward p
 | Handler | Source signal | Behavior |
 |---|---|---|
 | `ReflectCadenceCounter` | `ctx.step_outcomes` | Owns `steps_since_reflect`. Resets to 0 on a successful `reflect` (validation passed → handler ran); increments per non-reflect non-done tool. Writes the counter into `ctx.steps_since_reflect` in phase 1 so downstream cadence readers see a consistent snapshot. |
-| `RatioPusher` | `state.max_ratio` (token / step / wall) | One-shot per threshold from `BudgetConfig.pushers`. |
-| `TimeBudgetPusher` | `state.wall_ratio` | 0.5 → NUDGE, 0.75 → FORCE_REFLECT, 1.0 → FORCE_DONE (no-op without `wall_time`). |
+| `RatioPusher` | `state.max_ratio` (max of token / step / wall) | User-configurable thresholds from `BudgetConfig.pushers`. Empty by default — per-dimension pushers below cover the default escalation. |
+| `TokenBudgetPusher` | `state.token_ratio` | Always-on. 0.5 → NUDGE, 0.75 → FORCE_REFLECT, 1.0 → FORCE_DONE. Messages mention "token budget" so the model can tell which axis is pressing. |
+| `TimeBudgetPusher` | `state.wall_ratio` | Same shape as token, no-op without `max_wall_time`. Messages mention "wall-clock budget". |
 | `ReflectCadencePusher` | `ctx.steps_since_reflect` | Enabled by `reflect_interval: N` — NUDGE at N steps without reflect, FORCE_REFLECT at 2N, re-arms each reflect cycle. |
 | `ApplyActionsHandler` | `ctx.actions` | Applies each pending action: NUDGE appends a user message; FORCE_REFLECT / FORCE_DONE narrows `current_tools`. |
 | `TracingHandler` | `ctx.actions` | Emits `BUDGET_THRESHOLD_HIT` per action, tagged with the producer's `kind`. |

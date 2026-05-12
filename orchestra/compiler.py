@@ -563,16 +563,18 @@ def _parse_budget_header(value: str) -> BudgetConfig:
                 val = float(num.group(1))
                 wall_time = val * 60 if part.endswith("m") else val
 
-    from .prompts import load_internal
+    # Default 0.5 / 0.75 / 1.0 escalation is provided by the always-on
+    # TokenBudgetPusher (and TimeBudgetPusher when `wall_time` is set)
+    # in `BudgetTracker._producers` — no need to seed
+    # `BudgetConfig.pushers` here. Leaving the list empty means the
+    # legacy max_ratio-based RatioPusher only fires when a prompt
+    # explicitly adds entries (custom dimensions / CUSTOM Python
+    # callbacks).
     return BudgetConfig(
         max_tokens=tokens,
         max_steps=steps,
         max_wall_time=wall_time,
-        pushers=[
-            PusherConfig(at=0.75, type=PusherType.NUDGE,
-                         message=load_internal("pushers/nudge")),
-            PusherConfig(at=1.0, type=PusherType.FORCE_DONE),
-        ],
+        pushers=[],
     )
 
 
