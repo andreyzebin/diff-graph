@@ -17,10 +17,9 @@ tools:
   - reflect
   - done
 
-data:
-  commits:
-    type: string
-    from: pr_context.commits
+# Interface-specific data (commits source, PR title/description, …)
+# lives in reviewer.user.md / test_prompts. System layer is methodology
+# only — no fields here today.
 
 budget:
   tokens: 50000

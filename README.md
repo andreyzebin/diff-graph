@@ -429,10 +429,12 @@ Every agent ships as **two sibling files** under `diffgraph/prompts/`:
 
 | File | Layer | What lives here |
 |---|---|---|
-| `<agent>.system.md` | **system / methodology** | Stable agent identity: metadata, base `tools:` (minimum surface), data schema, guards, budget. Body = abstract *how-to* (severity rubric, finding shape, diff-view contract). |
-| `<agent>.user.md` | **user / task** | Per-call task wording (PR placeholders + the literal request). Optional YAML frontmatter declares per-task extensions: `tools_add`, `extra_tools`, `dispatch_mode`. |
+| `<agent>.system.md` | **system / methodology** | What the agent *is*, independent of the invocation surface: base `tools:`, `summary:`, `budget:`, `reflect_interval:`, `llm:`, methodology guards (e.g. `text_response`), and the methodology body (severity rubric, finding shape, diff-view contract). |
+| `<agent>.user.md` | **user / interface** | How the agent is *invoked* in a concrete environment: `tools_add:` (interface tools — `post_comment`, `set_review_status`, …), `data:` (spawn-time args from the surface), interface guards (e.g. `require_tool:post_comment`), `extra_tools:`, `dispatch_mode`, and the per-call task wording with `{placeholder}` interpolation. |
 
-The system layer is the **closed-for-modification base class**; the user layer is the **open-for-extension** task wrapper — the prompt-side Liskov / Open–Closed split. The same `reviewer.system.md` is shared by production, by every isolated test prompt, and by every consolidation/concerns-text fixture; only the user layer changes per call.
+The system layer is the **closed-for-modification base class** (methodology); the user layer is the **open-for-extension** interface wrapper. The same `reviewer.system.md` is shared by production Bitbucket, every isolated test prompt, and every consolidation/concerns-text fixture — only the user layer changes per call.
+
+The compiler **merges** `data:` and `guards:` from both layers into one `AgentRegistryEntry`. A key declared in both layers is a hard error so a rename can't silently shadow the other side.
 
 ```yaml
 # diffgraph/prompts/reviewer.system.md  (stable methodology + base toolkit)
@@ -453,10 +455,8 @@ tools:
   - reflect
   - done
 
-data:
-  commits:
-    type: string
-    from: pr_context.commits
+# `data:` is interface-specific and lives in user.md — methodology
+# here is independent of the invocation surface.
 
 budget:
   tokens: 50000
@@ -483,6 +483,19 @@ tools_add:
   - spawn_agent
   - post_comment
   - set_review_status
+
+# Interface contract — data the reviewer receives at spawn time
+# under the Bitbucket-PR-comment surface.
+data:
+  pr_title:
+    type: string
+    description: "PR title"
+  pr_description:
+    type: string
+    description: "PR description"
+  commits:
+    type: string
+    from: pr_context.commits
 ---
 PR: {pr_title}
 {pr_description}

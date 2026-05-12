@@ -356,6 +356,47 @@ def _parse_prompt_file(
 
     headers, input_schema, guards = _from_yaml_headers(yaml_headers)
 
+    # The user.md layer is the interface contract — `data:` and
+    # `guards:` declared there describe the concrete invocation surface
+    # (PR comment trigger, CLI auto-trigger, etc.). System.md's `data:`
+    # is reserved for framework-injected identity fields (e.g.
+    # `generation` / `mutation`); methodology-level guards (e.g.
+    # `text_response`) stay in system.md.
+    #
+    # Merge both layers into one input_schema / guards dict; reject
+    # duplicate keys so a rename in one layer can't silently shadow
+    # the other.
+    if user_template:
+        from .prompts.frontmatter import parse as _fm_parse
+        user_fm = _fm_parse(user_template)
+        user_meta = user_fm.meta or {}
+
+        user_data = user_meta.get("data") or {}
+        if isinstance(user_data, dict) and user_data:
+            user_schema = _parse_data_schema(user_data)
+            conflicts = sorted(set(user_schema) & set(input_schema))
+            if conflicts:
+                raise ValueError(
+                    f"prompt {headers.get('agent') or base_stem or filepath}: "
+                    f"`data:` fields declared in both system.md and user.md "
+                    f"frontmatter — {conflicts}. Declare each field in only "
+                    f"one layer (interface-specific fields belong in user.md)."
+                )
+            input_schema.update(user_schema)
+
+        user_guards = user_meta.get("guards") or {}
+        if isinstance(user_guards, dict) and user_guards:
+            conflicts = sorted(set(user_guards) & set(guards))
+            if conflicts:
+                raise ValueError(
+                    f"prompt {headers.get('agent') or base_stem or filepath}: "
+                    f"`guards:` triggers declared in both system.md and "
+                    f"user.md frontmatter — {conflicts}. Declare each "
+                    f"trigger in only one layer."
+                )
+            for trigger, msg in user_guards.items():
+                guards[str(trigger)] = str(msg)
+
     if not headers.get("agent"):
         if filepath:
             headers["agent"] = base_stem or filepath.stem
@@ -455,11 +496,25 @@ def _from_yaml_headers(y: dict) -> tuple[dict[str, str], dict[str, dict[str, str
     elif isinstance(lm, dict):
         h["llm"] = ", ".join(f"{k}={v}" for k, v in lm.items())
 
-    # data: dict {field: {type, description, from}}
-    # `from` is "tool.field" — split into from_tool / from_field for
-    # the data-provider resolver in orchestra/agent.py.
-    input_schema: dict[str, dict[str, str]] = {}
-    for field_name, spec in (y.get("data") or {}).items():
+    input_schema = _parse_data_schema(y.get("data") or {})
+
+    # guards: dict {trigger: message}
+    guards: dict[str, str] = {}
+    for trigger, msg in (y.get("guards") or {}).items():
+        guards[str(trigger)] = str(msg)
+
+    return h, input_schema, guards
+
+
+def _parse_data_schema(data: dict) -> dict[str, dict[str, str]]:
+    """Normalize a YAML `data:` block into the canonical input_schema
+    shape: `{field: {type, description?, from_tool?, from_field?}}`.
+
+    `from: tool.field` is split into `from_tool` / `from_field` for the
+    data-provider resolver in `orchestra/agent.py`.
+    """
+    schema: dict[str, dict[str, str]] = {}
+    for field_name, spec in data.items():
         if isinstance(spec, dict):
             entry: dict[str, str] = {}
             for k in ("type", "description"):
@@ -470,16 +525,10 @@ def _from_yaml_headers(y: dict) -> tuple[dict[str, str], dict[str, dict[str, str
                 tool, _, field_id = from_v.partition(".")
                 entry["from_tool"] = tool
                 entry["from_field"] = field_id
-            input_schema[str(field_name)] = entry
+            schema[str(field_name)] = entry
         elif isinstance(spec, str):
-            input_schema[str(field_name)] = {"type": spec}
-
-    # guards: dict {trigger: message}
-    guards: dict[str, str] = {}
-    for trigger, msg in (y.get("guards") or {}).items():
-        guards[str(trigger)] = str(msg)
-
-    return h, input_schema, guards
+            schema[str(field_name)] = {"type": spec}
+    return schema
 
 
 def _parse_list(value: str) -> list[str]:

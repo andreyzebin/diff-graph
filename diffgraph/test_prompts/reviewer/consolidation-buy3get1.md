@@ -9,6 +9,19 @@ tools_add:
   - react_to_comment
   - post_comment
   - set_review_status
+
+# Interface contract for this test prompt — same Bitbucket-PR shape
+# as production reviewer.user.md.
+data:
+  pr_title:
+    type: string
+    description: "PR title"
+  pr_description:
+    type: string
+    description: "PR description"
+  commits:
+    type: string
+    from: pr_context.commits
 ---
 PR: {pr_title}
 {pr_description}

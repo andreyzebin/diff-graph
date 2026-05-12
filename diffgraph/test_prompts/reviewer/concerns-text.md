@@ -17,6 +17,19 @@ extra_tools:
           description: "Concerns list, plain text, one per line as `- <short title>: <one-sentence question>`."
       required:
         - text
+
+# Interface contract for this test prompt — same Bitbucket-PR shape
+# as production reviewer.user.md.
+data:
+  pr_title:
+    type: string
+    description: "PR title"
+  pr_description:
+    type: string
+    description: "PR description"
+  commits:
+    type: string
+    from: pr_context.commits
 ---
 PR: {pr_title}
 {pr_description}

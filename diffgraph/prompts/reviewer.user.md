@@ -10,6 +10,19 @@ tools_add:
   - spawn_agent
   - post_comment
   - set_review_status
+
+# Interface contract — Bitbucket-PR data the reviewer receives
+# from its parent (dispatcher) at spawn time.
+data:
+  pr_title:
+    type: string
+    description: "PR title"
+  pr_description:
+    type: string
+    description: "PR description"
+  commits:
+    type: string
+    from: pr_context.commits
 ---
 PR: {pr_title}
 {pr_description}

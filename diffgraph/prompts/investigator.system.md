@@ -19,13 +19,8 @@ tools:
   - reflect
   - done
 
-data:
-  commits:
-    type: string
-    from: pr_context.commits
-  focus:
-    type: string
-    description: "high-level concern to investigate (from lead)"
+# Interface-specific data (commits source, focus from spawn arg) lives
+# in investigator.user.md. System layer is methodology only.
 
 budget:
   tokens: 15000

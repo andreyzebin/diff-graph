@@ -1,3 +1,13 @@
+---
+# Interface contract — data the investigator receives at spawn time.
+data:
+  commits:
+    type: string
+    from: pr_context.commits
+  focus:
+    type: string
+    description: "high-level concern to investigate (from lead)"
+---
 # Your concern
 
 {focus}

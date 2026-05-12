@@ -40,15 +40,17 @@ tools:                              # full base toolkit, flat list
   - tool_a
   - tool_b
 
-data:                               # input schema + template variables + discovery
-  <field>:                          # triple duty (see below)
+# data: lives in user.md by default — it's the interface contract.
+# System.md only carries framework-injected identity fields here
+# (e.g. generation / mutation). See "Methodology vs interface split"
+# below.
+data:
+  <framework_field>:
     type: string
     description: "..."
-    # OR: from: <provider>.<field>  # auto-resolve via cached data-provider tools
 
-guards:                             # optional: reactive interventions
-  text_response:        "<message>"
-  require_tool:<tool>:  "<message>"
+guards:                             # methodology guards only (e.g. text_response).
+  text_response:        "<message>" # Interface guards (require_tool:X) live in user.md.
 
 budget:                             # run constraints
   tokens: N
@@ -85,9 +87,37 @@ extra_tools:                        # optional: capture-style tools registered p
         - text
 dispatch_mode: native | meta        # default native (direct tool calls);
                                     # meta = list_tools/call_tool MCP-style
+
+# Interface contract — the data the agent receives at spawn time
+# under THIS invocation surface (Bitbucket-PR comment, CLI, Slack, …).
+# Different user.md files reuse the same system base with different
+# data schemas.
+data:
+  pr_title:    {type: string, description: "..."}
+  comment_id:  {type: integer, description: "..."}
+  commits:     {type: string, from: pr_context.commits}
+
+# Interface-half of the guards block. Methodology guards live in
+# system.md. The compiler merges both layers into one guards dict;
+# a trigger declared in both layers is a compile error.
+guards:
+  require_tool:post_comment: "..."
 ---
 <user body — per-call task wording with {placeholder} interpolation>
 ```
+
+### Methodology vs interface split
+
+The two layers split along a **methodology / interface** seam:
+
+| Layer | Carries | Examples |
+|---|---|---|
+| `system.md` | **Methodology** — what the agent IS, independent of the invocation surface | `tools:` (base capability), `summary:`, `budget:`, `reflect_interval:`, `llm:`, `guards: text_response`, methodology body |
+| `user.md` | **Interface** — how the agent is invoked in a concrete environment | `tools_add:` (interface tools — `post_comment`, `set_review_status`, …), `data:` (spawn-time args from the surface), `guards: require_tool:X` (interface guards), task wording |
+
+Effect: the same `reviewer.system.md` can be reused under multiple `*.user.md` files (production Bitbucket, CLI, test prompts) — each declares its own interface contract without touching the methodology.
+
+The compiler **merges** `data:` and `guards:` from both layers into one `AgentRegistryEntry`. A key that appears in both layers is a hard error so a rename can't silently shadow the other side.
 
 ### `data:` triple duty
 

@@ -16,31 +16,17 @@ tools:
   - spawn_agent
   - done
 
+# Framework-injected identity fields. Interface-specific data
+# (message, comment_id, comment_thread, pr_*) lives in dispatcher.user.md
+# — same agent under a different invocation surface (e.g. CLI / Slack)
+# would swap the user layer and redeclare its interface schema.
 data:
-  message:
-    type: string
-    description: "full user message; may contain /command or plain text. Empty when no PR-comment context."
-  comment_id:
-    type: integer
-    description: "invoking comment ID. 0 = no comment context (CLI / auto-trigger / benchmark)."
-  comment_thread:
-    type: string
-    description: "thread from root to invoking comment, or '(no thread)' when comment_id is 0."
-  pr_title:
-    type: string
-    description: "PR title"
-  pr_description:
-    type: string
-    description: "PR description"
   generation:
     type: string
     description: "current prompt generation name"
   mutation:
     type: string
     description: "prompt content hash (short)"
-
-guards:
-  require_tool:post_comment: "You stopped without replying. The user can only see post_comment() output. Call post_comment(text=..., parent_id={comment_id}) once, then finish with done()."
 
 budget:
   tokens: 30000
