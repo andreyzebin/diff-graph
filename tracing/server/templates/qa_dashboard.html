@@ -53,7 +53,7 @@ th { color: #8b949e; font-weight: normal; }
     <h2>by provider</h2>
     <table>
       <thead><tr>
-        <th>model</th><th class="tn">runs</th><th class="tn">avg dur ms</th>
+        <th>model</th><th class="tn">runs</th><th class="tn">avg dur</th>
         <th class="tn">completed</th><th class="tn">errored</th>
       </tr></thead>
       <tbody>
@@ -61,7 +61,8 @@ th { color: #8b949e; font-weight: normal; }
           <tr>
             <td x-text="p.model"></td>
             <td class="tn" x-text="p.runs"></td>
-            <td class="tn" x-text="Math.round(p.avg_duration_ms || 0)"></td>
+            <td class="tn" :title="(p.avg_duration_ms || 0) + ' ms'"
+                x-text="fmtDuration(p.avg_duration_ms)"></td>
             <td class="tn" x-text="p.completed"></td>
             <td class="tn" x-text="p.errored"></td>
           </tr>
@@ -74,14 +75,15 @@ th { color: #8b949e; font-weight: normal; }
     <h2>by scenario</h2>
     <table>
       <thead><tr>
-        <th>scenario</th><th class="tn">runs</th><th class="tn">avg dur ms</th><th class="tn">completed</th>
+        <th>scenario</th><th class="tn">runs</th><th class="tn">avg dur</th><th class="tn">completed</th>
       </tr></thead>
       <tbody>
         <template x-for="s in byScenario" :key="s.scenario_id">
           <tr>
             <td><a class="run-link" :href="`{{ base_path }}/qa/sessions?scenario=${s.scenario_id}`" x-text="s.scenario_id"></a></td>
             <td class="tn" x-text="s.runs"></td>
-            <td class="tn" x-text="Math.round(s.avg_duration_ms || 0)"></td>
+            <td class="tn" :title="(s.avg_duration_ms || 0) + ' ms'"
+                x-text="fmtDuration(s.avg_duration_ms)"></td>
             <td class="tn" x-text="s.completed"></td>
           </tr>
         </template>

@@ -40,6 +40,41 @@ window.fmtLocalTime = function (iso) {
   const pad = n => String(n).padStart(2, '0');
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
+// Adaptive: today → HH:MM:SS, same year → MM-DD HH:MM,
+// other year → YYYY-MM-DD HH:MM. Use this in dense lists where the
+// "everything is from today" common case wastes column width.
+window.fmtLocalSmart = function (iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  const pad = n => String(n).padStart(2, '0');
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear() &&
+                  d.getMonth() === now.getMonth() &&
+                  d.getDate() === now.getDate();
+  if (sameDay) {
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+  if (d.getFullYear() === now.getFullYear()) {
+    return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ` +
+           `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ` +
+         `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+// Adaptive duration: sub-second → "Nms", under a minute → "N.Ns",
+// over a minute → "NmSSs". Same shape as
+// qa_session_trace.js#formatDuration so the two views agree.
+window.fmtDuration = function (ms) {
+  if (ms === null || ms === undefined || ms === '') return '';
+  const n = Number(ms);
+  if (!isFinite(n) || n < 0) return '';
+  if (n < 1000)   return `${Math.round(n)}ms`;
+  if (n < 60000)  return `${(n / 1000).toFixed(1)}s`;
+  const m = Math.floor(n / 60000);
+  const s = Math.floor((n % 60000) / 1000);
+  return `${m}m${String(s).padStart(2, '0')}s`;
+};
 
 document.addEventListener('alpine:init', () => {
 

@@ -254,6 +254,7 @@ class SQLiteTraceStore:
               json_extract(p.attributes, '$."diffgraph.scenario_id"') AS scenario_id,
               json_extract(p.attributes, '$."diffgraph.mutation"')    AS mutation,
               json_extract(p.attributes, '$."diffgraph.generation"')  AS generation,
+              json_extract(p.attributes, '$."diffgraph.lineage"')     AS lineage,
               CAST(json_extract(p.attributes, '$."diffgraph.plan_id"') AS INTEGER) AS plan_id,
               CAST(json_extract(p.attributes, '$."diffgraph.task_id"') AS INTEGER) AS task_id,
               json_extract(p.attributes, '$."diffgraph.run_id"')      AS scenario_run_id,

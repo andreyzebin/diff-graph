@@ -228,7 +228,8 @@ th { color: #8b949e; font-weight: normal; }
               <td><span x-html="axisBar(scoring[m.mutation], 'soft_skill')"></span></td>
               <td><span x-html="axisBar(scoring[m.mutation], 'methodology')"></span></td>
               <td class="tn" x-text="passRate(scoring[m.mutation])"></td>
-              <td class="tn" x-text="Math.round(m.avg_duration_ms || 0)"></td>
+              <td class="tn" :title="(m.avg_duration_ms || 0) + ' ms'"
+                  x-text="fmtDuration(m.avg_duration_ms)"></td>
               <td style="color:#8b949e;"
                   x-text="fmtLocal(m.last_seen || m.last_planned)"></td>
             </tr>
@@ -305,8 +306,10 @@ th { color: #8b949e; font-weight: normal; }
               <td x-text="cell.provider"></td>
               <td class="tn" x-text="cell.a_runs || 0"></td>
               <td class="tn" x-text="cell.b_runs || 0"></td>
-              <td class="tn" x-text="Math.round(cell.a_avg_dur || 0)"></td>
-              <td class="tn" x-text="Math.round(cell.b_avg_dur || 0)"></td>
+              <td class="tn" :title="(cell.a_avg_dur || 0) + ' ms'"
+                  x-text="fmtDuration(cell.a_avg_dur)"></td>
+              <td class="tn" :title="(cell.b_avg_dur || 0) + ' ms'"
+                  x-text="fmtDuration(cell.b_avg_dur)"></td>
               <td class="tn"
                   :class="deltaClass(cell.a_avg_dur, cell.b_avg_dur)"
                   x-text="deltaText(cell.a_avg_dur, cell.b_avg_dur)"></td>
