@@ -20,6 +20,7 @@ Multi-agent PR code reviewer powered by the **Orchestra** framework. All agents 
 - [Running as systemd services on RHEL](#running-as-systemd-services-on-rhel)
 - [Docker](docker/README.md)
 - [Webhook router & health checks](webhook/README.md)
+- [Quality management architecture](docs/qa-architecture.md) — how bench (unit + integration tiers) and pr-analytics (merge_acceptance_rate) form a closed improvement loop
 
 ### Three commands, three roles
 

@@ -1,5 +1,11 @@
 # Orchestra — Planned Improvements
 
+> Quality-management architecture overview: [docs/qa-architecture.md](docs/qa-architecture.md).
+> That doc is the single place describing how the unit / integration / production
+> loops fit together, what merge_acceptance_rate is, and how select-golden bridges
+> prod data into bench scenarios. This file (TODO.md) lists open work items;
+> the qa-architecture doc describes the steady state.
+
 ## Done (implemented)
 
 - ~~3.1 Concerns instead of questions~~ — lead uses 3-5 concerns, reviewer breaks into sub-questions
@@ -27,6 +33,13 @@
 - ~~Webhook router~~ — Bitbucket webhook with A/B routing, forward/command modes, sample cascade, 31 tests
 - ~~Resource providers~~ — file:// and bitbucket:// for prompt loading, --prompts CLI flag
 - ~~Prompt generations in runs UI~~ — prompt_source + prompt_hash (commit SHA or content md5) in trace DB, visible in runs list
+- ~~Stage A: qa_tasks.resources dual-write~~ — URIs (`scenario://`, `lineage://`, `mutation://`, …) alongside legacy columns, 1222 historic rows backfilled
+- ~~Stage B: drop legacy qa_tasks columns~~ — scenario_id / lineage / mutation_hash gone, queue renamed from provider, all readers use `json_each(resources)`
+- ~~Stage 4: LLMJudge wiring for unit tier~~ — `bench run-unit` invokes the judge after the agent subprocess via FakeBenchPRView + UnitFixture→Scenario adapter; SQLite `runs` row with `kind='judge'` lights up /qa/scoring for unit fixtures
+- ~~§5d.3 Phase A: per-agent unit fixtures with expected_output~~ — REV-U-001/002/003, INV-U-001/002, DISP-U-001/002 (all in `code-review-benchmarks/benchmark/scenarios/unit/`)
+- ~~§5d.3 Phase B: unit-shape mirrors of legacy tier:unit scenarios~~ — REV-001 / INV-001 / DISP-001/002 / REV-002 mirrored under scenarios/unit/* on fake bitbucket
+- ~~Leak detection~~ — tests/test_prompts_no_fixture_leak.py + benchmark/tests/test_unit_fixture_leak_check.py auto-derive forbidden keyword lists from fixtures; caught 7 real leaks in the May-2026 cleanup
+- ~~Trend chart on /qa/scoring uses equal-spaced ordinal mutations~~ — was temporal, score "waves" got smeared by attempt-count density
 
 ---
 
