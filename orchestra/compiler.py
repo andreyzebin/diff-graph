@@ -44,13 +44,12 @@ class AgentRegistryEntry:
     budget: BudgetConfig
     llm_params: LLMParamsConfig
     sgr: bool
-    sgr_interval: int
+    reflect_interval: int
     prompt_template: str  # SYSTEM body with {placeholders} — stable across calls
     user_template: str = ""  # USER message template; empty → caller fills it
     guards: dict[str, str] = field(default_factory=dict)  # {trigger: message}
     source_file: str = ""
     source_hash: str = ""
-    time_reflect_interval: float = 0.0  # seconds; 0 = disabled
 
     def to_agent_config(self) -> AgentConfig:
         """Convert to AgentConfig. tools is a single flat list — the
@@ -75,8 +74,7 @@ class AgentRegistryEntry:
             system_prompt=self.prompt_template,
             user_prompt=self.user_template,
             mode=self.mode,
-            sgr_interval=self.sgr_interval,
-            time_reflect_interval=self.time_reflect_interval,
+            reflect_interval=self.reflect_interval,
             tools=tools,
             budget=self.budget,
             llm_params=self.llm_params,
@@ -379,8 +377,7 @@ def _parse_prompt_file(
     budget = _parse_budget_header(headers.get("budget", ""))
     llm_params = _parse_llm_header(headers.get("llm", ""))
     sgr = "sgr" in capabilities
-    sgr_interval = int(headers.get("sgr_interval", "3"))
-    time_reflect_interval = float(headers.get("time_reflect_interval", "0") or "0")
+    reflect_interval = int(headers.get("reflect_interval", "3"))
     summary = headers.get("summary", "").strip()
 
     return AgentRegistryEntry(
@@ -394,8 +391,7 @@ def _parse_prompt_file(
         budget=budget,
         llm_params=llm_params,
         sgr=sgr,
-        sgr_interval=sgr_interval,
-        time_reflect_interval=time_reflect_interval,
+        reflect_interval=reflect_interval,
         prompt_template=body.strip(),
         user_template=user_template.strip(),
         source_file=str(filepath) if filepath else "",
@@ -424,8 +420,7 @@ def _from_yaml_headers(y: dict) -> tuple[dict[str, str], dict[str, dict[str, str
     if "agent" in y:    h["agent"] = str(y["agent"])
     if "mode" in y:     h["mode"] = str(y["mode"])
     if "summary" in y:  h["summary"] = str(y["summary"]).strip()
-    if "sgr_interval" in y: h["sgr_interval"] = str(y["sgr_interval"])
-    if "time_reflect_interval" in y: h["time_reflect_interval"] = str(y["time_reflect_interval"])
+    if "reflect_interval" in y: h["reflect_interval"] = str(y["reflect_interval"])
 
     raw_tools = y.get("tools") or []
     if isinstance(raw_tools, list):

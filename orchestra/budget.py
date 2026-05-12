@@ -12,9 +12,16 @@ The chain has two layers:
 - **Producers** — read `ctx.state` and the cadence counters, append
   `PusherAction`s to `ctx.actions`. Stateful (cycle latches), pure
   with respect to messages / tools.
-  - `RatioPusher`            : `BudgetConfig.pushers` (one-shot/threshold)
-  - `ReflectCadencePusher(kind="sgr")`  : step-count reflect cadence
-  - `ReflectCadencePusher(kind="time")` : wall-clock reflect cadence
+  - `RatioPusher`           : `BudgetConfig.pushers` — one-shot per
+                              threshold against `state.max_ratio`.
+  - `TimeBudgetPusher`      : NUDGE → FORCE_REFLECT → FORCE_DONE at
+                              configured fractions of `max_wall_time`.
+                              No-op when no wall budget is set.
+  - `ReflectCadencePusher`  : counter + threshold → NUDGE then escalate
+                              (kind="reflect")  to FORCE_REFLECT, re-arms each reflect
+                              cycle. Step-count cadence by default; the
+                              class is generic so a custom user could
+                              wire it to any monotonic counter.
 
 - **Consumers** — always last in the chain, in this order:
   - `ApplyActionsHandler`   : translate each pending action into a
@@ -206,6 +213,74 @@ class RatioPusher:
             ))
 
 
+class TimeBudgetPusher:
+    """Wall-clock budget escalation: NUDGE → FORCE_REFLECT → FORCE_DONE
+    at configurable fractions of `max_wall_time`.
+
+    Distinct from `RatioPusher` (which fires on `state.max_ratio` =
+    max of token / step / wall ratios) — this producer reads
+    `wall_ratio` specifically. Use when you want wall-time-specific
+    escalation that doesn't compete with token/step thresholds.
+
+    No-op if `max_wall_time` is unset (`wall_ratio` is None).
+
+    Each threshold latches once per run (wall time only goes up;
+    no need to re-arm).
+    """
+    kind = "time-budget"
+
+    DEFAULT_NUDGE_AT: float = 0.5
+    DEFAULT_FORCE_REFLECT_AT: float = 0.75
+    DEFAULT_FORCE_DONE_AT: float = 1.0
+
+    DEFAULT_NUDGE_MSG = (
+        "Half of your wall-clock budget is gone. Consolidate what "
+        "you've learned (reflect) and start wrapping toward done()."
+    )
+    DEFAULT_FORCE_DONE_MSG = (
+        "Wall-clock budget exhausted. Submit done(findings) now — "
+        "partial findings beat no findings."
+    )
+
+    def __init__(
+        self,
+        *,
+        nudge_at: float = DEFAULT_NUDGE_AT,
+        force_reflect_at: float = DEFAULT_FORCE_REFLECT_AT,
+        force_done_at: float = DEFAULT_FORCE_DONE_AT,
+        nudge_message: str = DEFAULT_NUDGE_MSG,
+        force_done_message: str = DEFAULT_FORCE_DONE_MSG,
+    ) -> None:
+        # Sorted by ascending ratio so escalation always fires in order
+        # (NUDGE → FORCE_REFLECT → FORCE_DONE). A handler config that
+        # puts FORCE_DONE before NUDGE silently sorts itself sane.
+        self._levels: list[tuple[float, PusherType, str]] = sorted([
+            (nudge_at, PusherType.NUDGE, nudge_message),
+            (force_reflect_at, PusherType.FORCE_REFLECT, ""),
+            (force_done_at, PusherType.FORCE_DONE, force_done_message),
+        ], key=lambda x: x[0])
+        # Per-level latches; index aligns with self._levels.
+        self._fired: list[bool] = [False] * len(self._levels)
+
+    def apply(self, ctx: StepContext) -> None:
+        wr = ctx.state.wall_ratio
+        if wr is None:
+            return
+        for idx, (at, ptype, msg) in enumerate(self._levels):
+            if self._fired[idx]:
+                continue
+            if wr < at:
+                continue
+            self._fired[idx] = True
+            ctx.actions.append(PusherAction(
+                type=ptype,
+                message=msg,
+                kind=self.kind,
+                threshold=at,
+                ratio=wr,
+            ))
+
+
 class ReflectCadencePusher:
     """Generic reflect-cadence producer: counter + threshold → NUDGE,
     escalate to FORCE_REFLECT, re-armed every reflect cycle.
@@ -348,7 +423,16 @@ class BudgetTracker:
         self._event_bus = event_bus
         # Two-tier chain so adding producers via configure_reflect_pushers
         # always slots them BEFORE apply + trace.
-        self._producers: list[PusherHandler] = [RatioPusher(config.pushers)]
+        #
+        # Default producers:
+        # - RatioPusher        : `BudgetConfig.pushers` (max_ratio thresholds)
+        # - TimeBudgetPusher   : always-on, no-op without `max_wall_time`
+        #                        — wall-clock escalation NUDGE→FORCE_REFLECT
+        #                        →FORCE_DONE at 0.5/0.75/1.0 by default.
+        self._producers: list[PusherHandler] = [
+            RatioPusher(config.pushers),
+            TimeBudgetPusher(),
+        ]
         self._consumers: list[PusherHandler] = [
             ApplyActionsHandler(),
             TracingHandler(),
@@ -367,36 +451,27 @@ class BudgetTracker:
         """Slot a new producer before the consumers."""
         self._producers.append(handler)
 
-    def configure_reflect_pushers(
-        self,
-        sgr_interval: int = 0,
-        time_reflect_interval: float = 0.0,
-    ) -> None:
-        """Append reflect-cadence producers to the chain. Idempotent in
-        the sense that the agent calls this once during __init__ after
-        parsing config. Zero/negative intervals leave that handler off."""
-        if sgr_interval > 0:
+    def configure_reflect_pushers(self, reflect_interval: int = 0) -> None:
+        """Append the step-cadence reflect producer to the chain.
+        Idempotent in the sense that the agent calls it once during
+        __init__ after parsing config. `reflect_interval <= 0` is a
+        no-op.
+
+        Wall-clock reflect pressure is handled by the always-on
+        `TimeBudgetPusher` (NUDGE/FORCE_REFLECT/FORCE_DONE at fractions
+        of max_wall_time) — a fixed-interval cadence on wall clock
+        proved redundant with that escalation.
+        """
+        if reflect_interval > 0:
             self.add_producer(ReflectCadencePusher(
-                kind="sgr",
-                threshold=float(sgr_interval),
+                kind="reflect",
+                threshold=float(reflect_interval),
                 counter_attr="steps_since_reflect",
                 nudge_template=(
                     "You've taken {threshold:.0f} steps without calling reflect(). "
                     "Pause and call reflect(confidence=…, learned=…, "
                     "questions_remaining=[…]) — consolidate what you've learned, "
                     "what's still open, and what's resolved. Then continue."
-                ),
-            ))
-        if time_reflect_interval > 0:
-            self.add_producer(ReflectCadencePusher(
-                kind="time",
-                threshold=float(time_reflect_interval),
-                counter_attr="seconds_since_reflect",
-                nudge_template=(
-                    "More than {threshold:.0f}s have passed without a reflect() "
-                    "call. Pause now and call reflect(confidence=…, learned=…, "
-                    "questions_remaining=[…]) — slow tools are burning wall "
-                    "time, consolidate before the next move."
                 ),
             ))
 

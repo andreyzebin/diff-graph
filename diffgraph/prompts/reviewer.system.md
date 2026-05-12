@@ -11,7 +11,10 @@ tools: [diff_read_file, diff_outline, diff_list_files, diff_search,
 budget:
   tokens: 50000
   steps: 50
-sgr_interval: 5
+# Step-cadence reflect — NUDGE at 5 steps without reflect,
+# FORCE_REFLECT at 10. Wall-clock pressure is handled by the always-on
+# TimeBudgetPusher (set wall budget in `budget` above to engage it).
+reflect_interval: 5
 llm:
   temperature: 0.2
 data:

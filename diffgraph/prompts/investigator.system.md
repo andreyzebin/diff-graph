@@ -9,7 +9,7 @@ tools: [diff_list_files, diff_read_file, diff_outline, diff_search,
 budget:
   tokens: 15000
   steps: 20
-sgr_interval: 3
+reflect_interval: 3
 llm:
   temperature: 0
 data:

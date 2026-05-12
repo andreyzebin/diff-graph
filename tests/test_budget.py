@@ -30,6 +30,7 @@ from orchestra.budget import (
     RatioPusher,
     ReflectCadencePusher,
     StepContext,
+    TimeBudgetPusher,
     TracingHandler,
 )
 from orchestra.events import EventBus, EventType
@@ -47,7 +48,6 @@ def _fake_tools(*names: str) -> list[dict]:
 
 def _ctx(state: BudgetState | None = None,
          steps_since_reflect: int = 0,
-         seconds_since_reflect: float = 0.0,
          tools: list[str] | None = None,
          event_bus: EventBus | None = None) -> StepContext:
     """Construct a StepContext with sensible defaults for a single test."""
@@ -58,7 +58,6 @@ def _ctx(state: BudgetState | None = None,
     return StepContext(
         state=state,
         steps_since_reflect=steps_since_reflect,
-        seconds_since_reflect=seconds_since_reflect,
         messages=[],
         all_tools=schema,
         current_tools=list(schema),
@@ -131,7 +130,7 @@ class TestStepCadencePusher:
 
     def _pusher(self, threshold=5):
         return ReflectCadencePusher(
-            kind="sgr", threshold=threshold,
+            kind="reflect", threshold=threshold,
             counter_attr="steps_since_reflect",
             nudge_template="N={threshold:.0f}",
         )
@@ -144,7 +143,7 @@ class TestStepCadencePusher:
 
     def test_negative_threshold_disabled(self):
         pusher = ReflectCadencePusher(
-            kind="sgr", threshold=-1,
+            kind="reflect", threshold=-1,
             counter_attr="steps_since_reflect", nudge_template="x",
         )
         ctx = _ctx(steps_since_reflect=10)
@@ -165,7 +164,7 @@ class TestStepCadencePusher:
         assert len(ctx.actions) == 1
         assert ctx.actions[0].type == PusherType.NUDGE
         assert ctx.actions[0].message == "N=5"
-        assert ctx.actions[0].kind == "sgr"
+        assert ctx.actions[0].kind == "reflect"
         assert ctx.actions[0].ratio == pytest.approx(1.0)
 
     def test_nudge_fires_once_per_cycle(self):
@@ -212,58 +211,114 @@ class TestStepCadencePusher:
         assert ctx.actions[0].type == PusherType.NUDGE
 
 
-# ── ReflectCadencePusher (time cadence) ──────────────────────────────────────
+# ── TimeBudgetPusher ─────────────────────────────────────────────────────────
 
 
-class TestTimeCadencePusher:
-    """Same class, `counter_attr="seconds_since_reflect"`, float counter."""
+class TestTimeBudgetPusher:
+    """Wall-clock budget escalation: NUDGE → FORCE_REFLECT → FORCE_DONE
+    at configured fractions of max_wall_time."""
 
-    def _pusher(self, threshold=10.0):
-        return ReflectCadencePusher(
-            kind="time", threshold=threshold,
-            counter_attr="seconds_since_reflect",
-            nudge_template="more than {threshold:.0f}s",
+    def _ctx_with_wall(self, wall_used: float, wall_max: float = 100.0) -> StepContext:
+        """A StepContext whose wall_ratio is `wall_used / wall_max`."""
+        state = BudgetState(
+            original_tokens=1_000_000,    # huge → token_ratio ≈ 0
+            original_steps=1_000_000,
+            original_wall_time=wall_max,
+            wall_start=__import__("time").time() - wall_used,  # backdate
         )
+        return _ctx(state=state)
 
-    def test_zero_threshold_disabled(self):
-        pusher = self._pusher(threshold=0.0)
-        ctx = _ctx(seconds_since_reflect=999.0)
+    def test_no_wall_budget_is_no_op(self):
+        """Without max_wall_time, wall_ratio is None → handler skips."""
+        pusher = TimeBudgetPusher()
+        state = BudgetState(
+            original_tokens=1000, original_steps=10,
+            original_wall_time=None,  # ← no wall budget
+            wall_start=0.0,
+        )
+        ctx = _ctx(state=state)
         pusher.apply(ctx)
         assert ctx.actions == []
 
-    def test_crosses_threshold_continuously(self):
-        """Float counter doesn't land exactly on N — fire when crossing."""
-        pusher = self._pusher(threshold=10.0)
-        ctx = _ctx(seconds_since_reflect=10.5)
+    def test_under_first_threshold_no_action(self):
+        pusher = TimeBudgetPusher()
+        ctx = self._ctx_with_wall(wall_used=30, wall_max=100)  # ratio 0.30
+        pusher.apply(ctx)
+        assert ctx.actions == []
+
+    def test_crosses_nudge_at_50pct(self):
+        pusher = TimeBudgetPusher()
+        ctx = self._ctx_with_wall(wall_used=55, wall_max=100)  # ratio 0.55
         pusher.apply(ctx)
         assert len(ctx.actions) == 1
-        assert ctx.actions[0].type == PusherType.NUDGE
-        assert ctx.actions[0].kind == "time"
+        a = ctx.actions[0]
+        assert a.type == PusherType.NUDGE
+        assert a.kind == "time-budget"
+        assert a.threshold == pytest.approx(0.5)
+        assert a.ratio == pytest.approx(0.55, abs=0.05)
 
-    def test_force_at_double_threshold(self):
-        pusher = self._pusher(threshold=10.0)
-        # Cross NUDGE first
-        ctx = _ctx(seconds_since_reflect=10.5)
-        pusher.apply(ctx)
-        # Cross FORCE later
-        ctx = _ctx(seconds_since_reflect=20.7)
-        pusher.apply(ctx)
-        assert ctx.actions[0].type == PusherType.FORCE_REFLECT
-
-    def test_rearm_on_counter_drop(self):
-        pusher = self._pusher(threshold=10.0)
-        # First cycle: walk past 10 and 20
-        for t in [5.0, 10.5, 20.5]:
-            ctx = _ctx(seconds_since_reflect=t)
+    def test_escalates_through_three_levels(self):
+        """Walk wall_ratio through 0.3, 0.6, 0.8, 1.05. Each new level
+        fires once; below-threshold ticks emit nothing."""
+        pusher = TimeBudgetPusher()
+        seen: list[PusherType] = []
+        for wall_used in [30, 60, 80, 105]:
+            ctx = self._ctx_with_wall(wall_used=wall_used, wall_max=100)
             pusher.apply(ctx)
-        # Counter resets to ~0
-        ctx = _ctx(seconds_since_reflect=0.1)
-        pusher.apply(ctx)
-        assert ctx.actions == []
-        # Next cycle past 10 → nudge again
-        ctx = _ctx(seconds_since_reflect=11.0)
-        pusher.apply(ctx)
-        assert ctx.actions[0].type == PusherType.NUDGE
+            seen.extend(a.type for a in ctx.actions)
+        assert seen == [
+            PusherType.NUDGE,         # crossed 0.5 at wall_used=60
+            PusherType.FORCE_REFLECT, # crossed 0.75 at wall_used=80
+            PusherType.FORCE_DONE,    # crossed 1.0 at wall_used=105
+        ]
+
+    def test_no_re_arm(self):
+        """Wall time only goes up; latches stay fired forever."""
+        pusher = TimeBudgetPusher()
+        ctx = self._ctx_with_wall(wall_used=60, wall_max=100)
+        pusher.apply(ctx)  # fires NUDGE
+        ctx2 = self._ctx_with_wall(wall_used=60, wall_max=100)
+        pusher.apply(ctx2)  # same level → silent
+        assert ctx2.actions == []
+
+    def test_custom_thresholds(self):
+        pusher = TimeBudgetPusher(
+            nudge_at=0.3, force_reflect_at=0.6, force_done_at=0.9,
+        )
+        seen: list[PusherType] = []
+        for wall_used in [25, 35, 65, 95]:
+            ctx = self._ctx_with_wall(wall_used=wall_used, wall_max=100)
+            pusher.apply(ctx)
+            seen.extend(a.type for a in ctx.actions)
+        assert seen == [
+            PusherType.NUDGE,         # crossed 0.3 at wall_used=35
+            PusherType.FORCE_REFLECT, # crossed 0.6 at wall_used=65
+            PusherType.FORCE_DONE,    # crossed 0.9 at wall_used=95
+        ]
+
+    def test_levels_sorted_even_if_misconfigured(self):
+        """Defensive: if author puts FORCE_DONE before NUDGE in the
+        constructor, the handler reorders them so escalation still
+        fires in ascending threshold order."""
+        pusher = TimeBudgetPusher(
+            nudge_at=0.9,            # ← intentionally swapped
+            force_reflect_at=0.5,
+            force_done_at=0.7,
+        )
+        seen: list[tuple[float, PusherType]] = []
+        for wall_used in [55, 75, 95]:
+            ctx = self._ctx_with_wall(wall_used=wall_used, wall_max=100)
+            pusher.apply(ctx)
+            seen.extend((a.threshold, a.type) for a in ctx.actions)
+        # Sorted by threshold ascending: 0.5, 0.7, 0.9
+        # At wall_used=55 → ratio 0.55 → only 0.5 threshold fires.
+        # At wall_used=75 → ratio 0.75 → only 0.7 threshold fires (0.5 already latched).
+        # At wall_used=95 → ratio 0.95 → only 0.9 threshold fires.
+        assert seen == [
+            (0.5, PusherType.FORCE_REFLECT),
+            (0.7, PusherType.FORCE_DONE),
+            (0.9, PusherType.NUDGE),
+        ]
 
 
 # ── ApplyActionsHandler ──────────────────────────────────────────────────────
@@ -336,7 +391,7 @@ class TestApplyActionsHandler:
 class TestTracingHandler:
     def test_silent_without_event_bus(self):
         ctx = _ctx()  # no event_bus
-        ctx.actions.append(PusherAction(type=PusherType.NUDGE, kind="sgr",
+        ctx.actions.append(PusherAction(type=PusherType.NUDGE, kind="reflect",
                                         threshold=5, ratio=1.0))
         # Just shouldn't raise.
         TracingHandler().apply(ctx)
@@ -348,26 +403,26 @@ class TestTracingHandler:
                       lambda **kw: seen.append(kw))
         ctx = _ctx(event_bus=bus)
         ctx.actions = [
-            PusherAction(type=PusherType.NUDGE, kind="sgr",
+            PusherAction(type=PusherType.NUDGE, kind="reflect",
                          threshold=5, ratio=1.0),
-            PusherAction(type=PusherType.FORCE_REFLECT, kind="time",
-                         threshold=10, ratio=2.0),
+            PusherAction(type=PusherType.FORCE_DONE, kind="time-budget",
+                         threshold=1.0, ratio=1.05),
         ]
         TracingHandler().apply(ctx)
         assert len(seen) == 2
         assert seen[0]["action_type"] == "nudge"
-        assert seen[0]["kind"] == "sgr"
+        assert seen[0]["kind"] == "reflect"
         assert seen[0]["at"] == 5
-        assert seen[1]["action_type"] == "force_reflect"
-        assert seen[1]["kind"] == "time"
-        assert seen[1]["at"] == 10
+        assert seen[1]["action_type"] == "force_done"
+        assert seen[1]["kind"] == "time-budget"
+        assert seen[1]["at"] == 1.0
 
 
 # ── BudgetTracker end-to-end ─────────────────────────────────────────────────
 
 
 class TestBudgetTrackerChain:
-    def _tracker(self, *, sgr=0, time_=0.0,
+    def _tracker(self, *, reflect_interval: int = 0,
                  pushers: list[PusherConfig] | None = None,
                  event_bus: EventBus | None = None):
         cfg = BudgetConfig(
@@ -375,68 +430,67 @@ class TestBudgetTrackerChain:
             pushers=pushers or [],
         )
         t = BudgetTracker(cfg, event_bus=event_bus)
-        t.configure_reflect_pushers(sgr_interval=sgr, time_reflect_interval=time_)
+        t.configure_reflect_pushers(reflect_interval=reflect_interval)
         return t
 
     def test_default_chain_has_apply_and_trace_consumers(self):
         t = self._tracker()
         kinds = [h.kind for h in t.handlers]
         assert "ratio" in kinds
+        assert "time-budget" in kinds
         assert "apply" in kinds
         assert "trace" in kinds
-        # Order matters: apply before trace, both after producers.
-        assert kinds.index("apply") < kinds.index("trace")
+        # Order matters: producers (ratio, time-budget) before apply,
+        # apply before trace.
         assert kinds.index("ratio") < kinds.index("apply")
+        assert kinds.index("time-budget") < kinds.index("apply")
+        assert kinds.index("apply") < kinds.index("trace")
 
-    def test_configure_reflect_pushers_adds_sgr_and_time(self):
-        t = self._tracker(sgr=5, time_=30.0)
+    def test_configure_reflect_pushers_adds_reflect_producer(self):
+        t = self._tracker(reflect_interval=5)
         kinds = [h.kind for h in t.handlers]
-        assert kinds.count("sgr") == 1
-        assert kinds.count("time") == 1
-        # Producers come before apply.
-        assert kinds.index("sgr") < kinds.index("apply")
-        assert kinds.index("time") < kinds.index("apply")
+        assert kinds.count("reflect") == 1
+        assert kinds.index("reflect") < kinds.index("apply")
 
     def test_configure_reflect_pushers_skips_disabled(self):
-        t = self._tracker(sgr=0, time_=0.0)
+        t = self._tracker(reflect_interval=0)
         kinds = [h.kind for h in t.handlers]
-        assert "sgr" not in kinds
-        assert "time" not in kinds
+        assert "reflect" not in kinds
 
-    def test_end_to_end_sgr_nudge_appends_message(self):
+    def test_end_to_end_reflect_nudge_appends_message(self):
         bus = EventBus()
         seen: list[dict] = []
         bus.subscribe(EventType.BUDGET_THRESHOLD_HIT,
                       lambda **kw: seen.append(kw))
-        t = self._tracker(sgr=3, event_bus=bus)
+        t = self._tracker(reflect_interval=3, event_bus=bus)
         ctx = _ctx(steps_since_reflect=3, event_bus=bus)
         t.apply_handlers(ctx)
         # NUDGE applied → message appended.
         assert len(ctx.messages) == 1
         assert "3 steps without calling reflect" in ctx.messages[0]["content"]
-        # Telemetry emitted, tagged sgr.
+        # Telemetry emitted, tagged reflect.
         assert len(seen) == 1
-        assert seen[0]["kind"] == "sgr"
+        assert seen[0]["kind"] == "reflect"
         assert seen[0]["action_type"] == "nudge"
 
-    def test_end_to_end_sgr_force_narrows_tools(self):
-        t = self._tracker(sgr=3)
+    def test_end_to_end_reflect_force_narrows_tools(self):
+        t = self._tracker(reflect_interval=3)
         ctx = _ctx(steps_since_reflect=6,
                    tools=["reflect", "done", "diff_read_file"])
         t.apply_handlers(ctx)
         names = [td["function"]["name"] for td in ctx.current_tools]
         assert names == ["reflect"]
 
-    def test_end_to_end_ratio_and_cadence_compose(self):
-        """Both a ratio-based pusher and the SGR cadence fire in the
-        same step — they share the same actions queue, both get applied,
-        both get traced."""
+    def test_end_to_end_ratio_and_reflect_compose(self):
+        """Both a ratio-based pusher and the reflect cadence fire in
+        the same step — they share the same actions queue, both get
+        applied, both get traced."""
         bus = EventBus()
         seen: list[dict] = []
         bus.subscribe(EventType.BUDGET_THRESHOLD_HIT,
                       lambda **kw: seen.append(kw))
         t = self._tracker(
-            sgr=3,
+            reflect_interval=3,
             pushers=[PusherConfig(at=0.5, type=PusherType.NUDGE,
                                   message="halfway through budget")],
             event_bus=bus,
@@ -446,10 +500,8 @@ class TestBudgetTrackerChain:
         t.apply_handlers(ctx)
         # Both nudges appended.
         contents = [m["content"] for m in ctx.messages]
-        assert contents == ["halfway through budget"] or contents == [
-            "halfway through budget",
-            contents[1] if len(contents) > 1 else "",
-        ]
-        # Two BUDGET_THRESHOLD_HIT events with distinct kinds.
+        assert "halfway through budget" in contents
+        # BUDGET_THRESHOLD_HIT events from both kinds.
         kinds = sorted(s["kind"] for s in seen)
-        assert kinds == ["ratio", "sgr"]
+        assert "ratio" in kinds
+        assert "reflect" in kinds

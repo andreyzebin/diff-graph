@@ -14,7 +14,6 @@ import json
 import logging
 import re
 import threading
-import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -212,15 +211,16 @@ class Agent:
 
         # Budget
         self.budget_tracker = BudgetTracker(config.budget, self.event_bus)
-        # Slot reflect-cadence producers (step + wall-clock) into the
-        # pusher pipeline; no-ops when the corresponding interval is 0.
+        # Slot the step-cadence reflect producer into the pusher
+        # pipeline; no-op when reflect_interval <= 0 or the agent has
+        # no reflect tool. Wall-clock reflect-pressure is handled by
+        # the always-on TimeBudgetPusher (NUDGE/FORCE_REFLECT/FORCE_DONE
+        # at fractions of max_wall_time), not a fixed-interval cadence
+        # on wall clock.
         self.budget_tracker.configure_reflect_pushers(
-            sgr_interval=config.sgr_interval if self.sgr else 0,
-            time_reflect_interval=config.time_reflect_interval if self.sgr else 0.0,
+            reflect_interval=config.reflect_interval if self.sgr else 0,
         )
         self.budget_state: Optional[BudgetState] = None
-        # Wall-clock anchor for time-cadence pusher. Reset every reflect.
-        self._last_reflect_ts: float = time.time()
 
         # Mutable LLM params — can be changed at any time by self or parent
         self.llm_params = self._init_llm_params()
@@ -559,16 +559,16 @@ class Agent:
             self._drain_injected(messages)
 
             # Pusher pipeline (see orchestra/budget.py). Build a step
-            # context, hand it to the chain. Producers (ratio / sgr /
-            # time) append actions; ApplyActionsHandler mutates
-            # `messages` and `ctx.current_tools` in place;
-            # TracingHandler emits BUDGET_THRESHOLD_HIT events. We
-            # then read `ctx.current_tools` for the LLM call.
+            # context, hand it to the chain. Producers (ratio,
+            # time-budget, sgr-cadence) append actions;
+            # ApplyActionsHandler mutates `messages` and
+            # `ctx.current_tools` in place; TracingHandler emits
+            # BUDGET_THRESHOLD_HIT events. We then read
+            # `ctx.current_tools` for the LLM call.
             from .budget import StepContext as _StepContext
             ctx = _StepContext(
                 state=self.budget_state,
                 steps_since_reflect=steps_since_reflect,
-                seconds_since_reflect=time.time() - self._last_reflect_ts,
                 messages=messages,
                 all_tools=tools_schema,
                 current_tools=list(tools_schema),
@@ -756,10 +756,10 @@ class Agent:
                         self.event_bus.emit(EventType.AGENT_REFLECT,
                                            agent_id=self.agent_id, agent_name=self.config.name,
                                            step=step, **args)
-                        # Reset both cadence counters — ReflectCadencePusher
-                        # detects the drop and re-arms its latches.
+                        # Reset counter — ReflectCadencePusher detects
+                        # the drop and re-arms its latches for the
+                        # next cycle.
                         steps_since_reflect = 0
-                        self._last_reflect_ts = time.time()
                 elif tc.function.name != "done":
                     steps_since_reflect += 1
 
