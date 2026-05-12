@@ -1,8 +1,24 @@
-Investigators have already examined this PR for you and returned the
-following findings. The LOOK and INVESTIGATE phases are done; you are
-in the JUDGE phase. Your job: consolidate, dedupe, and publish.
+---
+tools_add: [post_comment, set_review_status]
+---
+PR: {pr_title}
+{pr_description}
 
-INVESTIGATOR FINDINGS:
+Commits *(oldest → newest)*:
+
+{commits}
+
+Existing threads on this PR:
+
+{existing_comments}
+
+Investigators returned the findings below. Consolidate them
+(merge duplicates, keep the higher severity, drop anything already
+covered in an open thread), publish each via post_comment(file,
+line, severity, text), set the verdict via set_review_status, and
+finish with done(findings).
+
+FINDINGS:
 
   [BLOCKER] src/main/java/com/flowmart/orders/service/PricingService.java:95
   selectFreeItem returns get(0) — picks the first item, not the cheapest.
@@ -26,8 +42,3 @@ INVESTIGATOR FINDINGS:
   (@Data @Builder @NoArgsConstructor @AllArgsConstructor). Every other
   entity in com.flowmart.orders.model uses Lombok; Promotion is the odd
   one out.
-
-CONSOLIDATE these findings into post_comment calls — one per
-finding, each with the right file/line/severity. Skip LOOK and
-INVESTIGATE; you have the evidence already. Then set_review_status,
-then done().
