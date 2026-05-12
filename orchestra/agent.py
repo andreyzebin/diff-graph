@@ -142,6 +142,7 @@ class Agent:
         agent_registry: Any = None,  # AgentRegistry from compiler
         tool_mocks: Any = None,      # ToolMocks; intercepts _handle_tool_call generically
         user_message_override: Optional[str] = None,
+        task_message_override: Optional[str] = None,
     ) -> None:
         self.config = config
         self.registry = tool_registry
@@ -164,7 +165,44 @@ class Agent:
         # by parent spawns that want to reframe the child's task. None
         # means "use config.user_prompt".
         self.user_message_override = user_message_override
+        # Optional per-run override of the task body — the smaller-
+        # blast-radius testing extension point. When set, the
+        # `{task}` placeholder in config.user_prompt is filled with
+        # this value instead of config.task_prompt. Environment
+        # framing (PR meta, diff hint, commits) in user_prompt
+        # stays shared with production. Mutually safe with
+        # user_message_override: if user_message_override is set it
+        # wins completely (legacy full-message swap).
+        self.task_message_override = task_message_override
         self.data_scope: dict[str, str] = {}  # resolved @data values for inheritance
+
+        # Parse frontmatter on whichever user message is active for
+        # this run (override > config). Captures dispatch_mode +
+        # tool subset + extra_tools (capture-style schemas). The
+        # body becomes the user-facing prompt; the meta drives
+        # _build_tool_names and registry extras below.
+        from .prompts.frontmatter import parse as _fm_parse, validate as _fm_validate
+        _src = (self.user_message_override
+                if self.user_message_override is not None
+                else (self.config.user_prompt or ""))
+        try:
+            _fm = _fm_parse(_src)
+            _fm_validate(_fm)
+        except ValueError as exc:
+            log.error("frontmatter error on agent %s: %s", self.config.name, exc)
+            raise
+        self._fm_meta: dict = _fm.meta
+        self._fm_body: str = _fm.body
+
+        # Register extra_tools as capture-style tools in the agent's
+        # registry. Idempotent — re-registering the same name on a
+        # spawned child just overwrites.
+        for spec in self._fm_meta.get("extra_tools", []) or []:
+            self.registry.register_capture_tool(
+                name=spec["name"],
+                description=spec["description"],
+                parameters=spec["parameters"],
+            )
 
         # SGR
         self.sgr = SGRTracker(config.sgr_extensions) if "reflect" in config.tools else None
@@ -1125,16 +1163,13 @@ class Agent:
         messages = [{"role": "system", "content": system_text}]
         messages.extend(self.context_messages)
 
-        # User: per-call template. user_message_override (set by a
-        # parent spawn or a unit-test override) wins over the agent's
-        # default user_prompt template.
-        user_text = ""
-        if self.user_message_override is not None:
-            user_text = self.user_message_override
-        elif self.config.user_prompt:
-            user_text = self.config.user_prompt
-            if self.prompt_vars:
-                user_text = interpolate(user_text, **self.prompt_vars)
+        # User message — the body of whichever source we parsed in
+        # __init__ (override > config.user_prompt). Frontmatter is
+        # already stripped; what reaches the LLM is the prose +
+        # interpolated placeholders.
+        user_text = self._fm_body
+        if user_text and self.prompt_vars:
+            user_text = interpolate(user_text, **self.prompt_vars)
 
         # Some endpoints reject requests without a user-role message;
         # this is a defensive fallback that never fires for our agents
@@ -1146,13 +1181,72 @@ class Agent:
         return messages
 
     def _build_tool_names(self) -> list[str]:
-        # Single source of truth: AgentConfig.tools holds every tool the
-        # agent should see. The registry knows which handler to call for
-        # each name (domain closure vs framework meta).
-        names = [t for t in self.config.tools if self.registry.has(t)]
+        # Single source of truth: AgentConfig.tools is the agent's
+        # default toolset. User-message frontmatter can subset it
+        # (declared `tools:`) and/or pivot to meta-dispatch
+        # (`dispatch_mode: meta`).
+        default_names = [t for t in self.config.tools if self.registry.has(t)]
+
+        # `extra_tools` from frontmatter are already registered in
+        # __init__ — include them in the candidate pool so frontmatter
+        # `tools:` can reference them.
+        extra_names = [
+            spec["name"] for spec in self._fm_meta.get("extra_tools", []) or []
+            if self.registry.has(spec["name"])
+        ]
+        candidate_pool = set(default_names) | set(extra_names)
+
+        fm_tools = self._fm_meta.get("tools")
+        fm_tools_add = self._fm_meta.get("tools_add")
+        if isinstance(fm_tools, list):
+            # Full replace: agent's runtime tool set is exactly the
+            # list. Strict — every name must resolve, fixture typos
+            # fail loud.
+            unknown = [n for n in fm_tools if n not in candidate_pool]
+            if unknown:
+                raise ValueError(
+                    f"frontmatter.tools references names not in agent's "
+                    f"@tools or extra_tools: {unknown}. Candidate pool: "
+                    f"{sorted(candidate_pool)}"
+                )
+            names = list(fm_tools)
+        elif isinstance(fm_tools_add, list):
+            # Extension: default + extras. The defaults stay intact,
+            # which is exactly what "extending the agent's normal
+            # surface" should mean.
+            unknown = [
+                n for n in fm_tools_add
+                if n not in candidate_pool and not self.registry.has(n)
+            ]
+            if unknown:
+                raise ValueError(
+                    f"frontmatter.tools_add references names not in agent's "
+                    f"@tools or extra_tools and not in the registry: "
+                    f"{unknown}. Either declare them in extra_tools or "
+                    f"verify the name."
+                )
+            names = list(default_names)
+            for n in fm_tools_add:
+                if n not in names:
+                    names.append(n)
+        else:
+            names = default_names
+
         # Hide spawn_agent at max depth so we don't recurse infinitely.
         if self.depth >= self.config.max_depth:
             names = [t for t in names if t != "spawn_agent"]
+
+        # Meta dispatch — replace the LLM-visible schema with the two
+        # meta-tools (list_tools / call_tool), which themselves expose
+        # the `names` subset internally. The LLM sees a stable schema
+        # regardless of the subset; the registry still has the real
+        # tools for call_tool to dispatch to.
+        if self._fm_meta.get("dispatch_mode") == "meta":
+            from .tools.meta import build_meta_tools
+            list_td, call_td = build_meta_tools(self.registry, allowed=set(names))
+            self.registry.register_tool_def(list_td)
+            self.registry.register_tool_def(call_td)
+            return ["list_tools", "call_tool"]
         return names
 
     def _drain_injected(self, messages: list[dict]) -> None:

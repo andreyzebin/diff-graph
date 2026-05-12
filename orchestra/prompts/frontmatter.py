@@ -5,9 +5,20 @@ Standard frontmatter format::
 
     ---
     dispatch_mode: native | meta            # how tools are exposed to the LLM
-    tools: [name1, name2, ...]              # subset of agent's @tools for this run
+    tools: [name1, name2, ...]              # full replace: agent's runtime
+                                             # tool set is exactly this list.
+                                             # Use when the prompt fully
+                                             # specifies its needed surface.
+    tools_add: [name1, name2, ...]          # EXTENSION over default @tools.
+                                             # Use when the prompt wants
+                                             # everything the agent normally
+                                             # has plus a few extras (e.g.
+                                             # bring in submit_answer for a
+                                             # test without restating the
+                                             # full default toolkit).
+                                             # Mutually exclusive with tools.
     extra_tools:                            # additional capture-style tools
-      - name: submit_answer
+      - name: submit_answer                  # registered into the registry
         description: "Submit your final text. Call once."
         parameters:
           type: object
@@ -143,17 +154,27 @@ def validate(fm: Frontmatter) -> None:
                 f"{sorted(_VALID_DISPATCH_MODES)}, got {dm!r}"
             )
 
-    if "tools" in meta:
-        t = meta["tools"]
+    for field_name in ("tools", "tools_add"):
+        if field_name not in meta:
+            continue
+        t = meta[field_name]
         if not isinstance(t, list):
             raise ValueError(
-                f"frontmatter.tools: expected list of strings, got {type(t).__name__}"
+                f"frontmatter.{field_name}: expected list of strings, "
+                f"got {type(t).__name__}"
             )
         for i, n in enumerate(t):
             if not isinstance(n, str) or not n.strip():
                 raise ValueError(
-                    f"frontmatter.tools[{i}]: expected non-empty string, got {n!r}"
+                    f"frontmatter.{field_name}[{i}]: expected non-empty "
+                    f"string, got {n!r}"
                 )
+
+    if "tools" in meta and "tools_add" in meta:
+        raise ValueError(
+            "frontmatter: `tools` (full replace) and `tools_add` "
+            "(additive) are mutually exclusive — pick one."
+        )
 
     if "extra_tools" in meta:
         et = meta["extra_tools"]

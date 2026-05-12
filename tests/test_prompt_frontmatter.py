@@ -133,6 +133,19 @@ class TestValidate:
             }],
         }))
 
+    def test_tools_add_validated_like_tools(self):
+        validate(Frontmatter(meta={"tools_add": ["submit_answer", "echo"]}))
+        with pytest.raises(ValueError, match=r"tools_add: "):
+            validate(Frontmatter(meta={"tools_add": "not-a-list"}))
+        with pytest.raises(ValueError, match=r"tools_add\[0\]"):
+            validate(Frontmatter(meta={"tools_add": [""]}))
+
+    def test_tools_and_tools_add_are_mutex(self):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            validate(Frontmatter(meta={
+                "tools": ["a"], "tools_add": ["b"]
+            }))
+
     def test_unknown_fields_pass(self):
         # Forward-compat: future fields can land without us updating
         # this validator; the contract is only "known fields have
