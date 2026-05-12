@@ -28,10 +28,28 @@ def register_builtins(
     If agent is provided, meta-tools are registered with real handlers
     (agent._meta_spawn_agent, etc.) so they go through registry.dispatch()
     and get schema validation. Otherwise, placeholder handlers are used.
+
+    The effective tool set is the UNION of `agent_config.tools` and any
+    `tools_add` extension declared in the agent's parsed user-message
+    frontmatter (`agent._fm_meta`). Without this union we'd silently
+    skip registering tools that the user prompt asks for as extensions
+    — e.g. reviewer's @tools is now [diff_*, reflect, done] and
+    spawn_agent / list_agents live only in reviewer.user.md tools_add.
+    Without the union the spawned reviewer's child registry would
+    never get those builtins and _build_tool_names would raise.
     """
 
+    # Effective tool set = base @tools UNION user-prompt frontmatter
+    # `tools_add`. Computed once and shared by every builtin below;
+    # see register_builtins docstring for the why.
+    tool_names = set(agent_config.tools or [])
+    fm_meta = getattr(agent, "_fm_meta", None) or {}
+    fm_tools_add = fm_meta.get("tools_add")
+    if isinstance(fm_tools_add, list):
+        tool_names |= {n for n in fm_tools_add if isinstance(n, str)}
+
     # ── reflect ───────────────────────────────────────────────────────────
-    if "reflect" in (agent_config.tools or []) and sgr_tracker:
+    if "reflect" in tool_names and sgr_tracker:
         schema = sgr_tracker.build_reflect_schema()
         registry.register_tool_def(ToolDef(
             name="reflect",
@@ -45,7 +63,7 @@ def register_builtins(
         ))
 
     # ── done ──────────────────────────────────────────────────────────────
-    if "done" in (agent_config.tools or []):
+    if "done" in tool_names:
         done_params: dict[str, Any] = {
             "type": "object",
             "properties": {
@@ -72,10 +90,6 @@ def register_builtins(
         ))
 
     # ── Framework tools (schemas only — Agent handles execution) ──────────
-    # Single source of truth: AgentConfig.tools holds every tool the agent
-    # can call. The names below resolve to internal Agent methods rather
-    # than to closures registered by the domain layer.
-    tool_names = set(agent_config.tools or [])
 
     def _meta_handler(method_name: str) -> Callable:
         """Return agent's meta-method as handler, or placeholder if no agent.
