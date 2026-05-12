@@ -382,7 +382,14 @@ guards:
 
 ### Pusher pipeline
 
-Per-step middleware chain that nudges the agent toward progress. Producers (budget ratios, time-budget escalation, reflect cadence) emit `PusherAction`s into a step context; consumers (apply + trace) mutate the conversation and emit telemetry. See `orchestra/budget.py` for the chain shape; per-prompt config: `reflect_interval` (step cadence) and optional wall-time budget (drives `TimeBudgetPusher` 0.5/0.75/1.0 → NUDGE/FORCE_REFLECT/FORCE_DONE).
+Per-step middleware chain that nudges the agent toward progress. Two phases share one `StepContext`:
+
+1. **Phase 1 — `apply(ctx)`** runs before every LLM call. Producers (`ReflectCadenceCounter`, `RatioPusher`, `TimeBudgetPusher`, `ReflectCadencePusher`) read state and write `PusherAction`s onto `ctx.actions`; consumers (`ApplyActionsHandler`, `TracingHandler`) translate actions into `ctx.messages` / `ctx.current_tools` mutations + `BUDGET_THRESHOLD_HIT` events.
+2. **Phase 2 — `on_step_done(ctx)`** runs after the LLM's tools dispatch. Stateful handlers (e.g. `ReflectCadenceCounter`) inspect `ctx.step_outcomes` (the names + `is_error` flags of every tool that ran) and update internal state for the next step.
+
+This split keeps the agent loop free of per-tool counter mechanics — `reflect` flows through `registry.dispatch` like every other tool, validation rejects malformed args, and `ReflectCadenceCounter.on_step_done` decides whether to reset the cadence counter based on whether reflect actually ran (validation passed) or merely tried (validation rejected, model sees the error in its tool_result and can self-correct).
+
+Per-prompt config: `reflect_interval` (step cadence) and optional wall-time budget (drives `TimeBudgetPusher` 0.5 / 0.75 / 1.0 → NUDGE / FORCE_REFLECT / FORCE_DONE). See `orchestra/budget.py` for the chain shape.
 
 ### Lazy clone
 

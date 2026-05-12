@@ -149,13 +149,28 @@ class PusherAction:
 class StepContext:
     """Per-step middleware context.
 
-    The pipeline writes to `actions` (producers), then to `messages` /
-    `current_tools` (apply), then emits events (tracing). The agent
-    loop reads `current_tools` and the (mutated) `messages` for the
-    next LLM call.
+    Lifecycle (single ctx, two phases):
+
+    1. **Pre-LLM** — agent loop builds ctx, calls
+       `tracker.apply_handlers(ctx)`. Producers append actions,
+       consumers translate them into `messages` / `current_tools`
+       mutations + telemetry. Agent then calls the LLM and dispatches
+       tools.
+
+    2. **Post-dispatch** — agent loop populates `step_outcomes` (the
+       names + is_error flags of every tool call this step ran) and
+       calls `tracker.notify_step_done(ctx)`. Stateful counters
+       (e.g. `ReflectCadenceCounter`) update their internal state
+       here, ready to surface a fresh value in the next step's
+       phase-1 apply.
+
+    `step_outcomes` is empty in phase 1 and populated in phase 2;
+    handlers that only react to phase 1 can ignore it.
     """
     state: BudgetState
-    # Counters reset by the agent loop when reflect actually fires.
+    # Counters resolved by handlers in phase 1 apply (e.g. the
+    # ReflectCadenceCounter writes its tally here so cadence pushers
+    # downstream can read it).
     steps_since_reflect: int = 0
     seconds_since_reflect: float = 0.0
     # Mutable IO — handlers append to messages and narrow current_tools.
@@ -164,6 +179,11 @@ class StepContext:
     current_tools: list[dict] = field(default_factory=list)
     # Producer output / consumer input.
     actions: list[PusherAction] = field(default_factory=list)
+    # Phase 2 input — populated by the agent loop after dispatch.
+    # Each entry is `(tool_name, is_error)` where is_error is True
+    # for a registry.dispatch validation failure (handler did not
+    # run). Counter / cadence handlers read this in on_step_done.
+    step_outcomes: list[tuple[str, bool]] = field(default_factory=list)
     # Telemetry attribution.
     event_bus: Optional[EventBus] = None
     agent_id: str = ""
@@ -174,13 +194,70 @@ class StepContext:
 
 
 class PusherHandler(Protocol):
-    """One pipeline stage. Reads / mutates `ctx`, returns None."""
+    """One pipeline stage. Reads / mutates `ctx`, returns None.
+
+    Two optional phases per step:
+
+    - `apply(ctx)`         — pre-LLM. Runs in pipeline order. Producers
+                             write to `ctx.actions`, consumers translate
+                             them into `messages` / `current_tools`
+                             mutations + telemetry.
+    - `on_step_done(ctx)`  — post-dispatch. Stateful handlers (e.g. the
+                             reflect-cadence counter) inspect
+                             `ctx.step_outcomes` and update their
+                             internal state for the next step. Default
+                             no-op (handlers that don't need it just
+                             omit the method).
+    """
     kind: str
 
     def apply(self, ctx: StepContext) -> None: ...
 
 
 # ── Producers ────────────────────────────────────────────────────────────────
+
+
+class ReflectCadenceCounter:
+    """Stateful counter for "tool calls since the last successful
+    reflect". Owns the value; the agent loop never tracks it
+    directly.
+
+    Phase 1 (`apply`): write the current counter into
+    `ctx.steps_since_reflect` so the cadence pusher and any other
+    downstream reader see a consistent snapshot.
+
+    Phase 2 (`on_step_done`): inspect `ctx.step_outcomes`. A reflect
+    call that ran successfully (handler executed, no schema validation
+    error) resets the counter to zero before adding any other tools
+    from the same step. A reflect call that failed validation is
+    silently ignored — it doesn't pretend to reset the counter, so
+    the next cadence threshold still fires and the model sees the
+    "validation error: …" string in its tool_result.
+    """
+    kind = "counter"
+
+    def __init__(self) -> None:
+        self._counter: int = 0
+
+    def apply(self, ctx: StepContext) -> None:
+        ctx.steps_since_reflect = self._counter
+
+    def on_step_done(self, ctx: StepContext) -> None:
+        # `done` is the terminal action — counter is irrelevant after
+        # it. Other non-reflect tools each move the model one step
+        # further from its last reflect.
+        non_reflect = sum(
+            1 for name, _err in ctx.step_outcomes
+            if name not in ("reflect", "done")
+        )
+        reflected_ok = any(
+            name == "reflect" and not err
+            for name, err in ctx.step_outcomes
+        )
+        if reflected_ok:
+            self._counter = non_reflect
+        else:
+            self._counter += non_reflect
 
 
 class RatioPusher:
@@ -424,12 +501,21 @@ class BudgetTracker:
         # Two-tier chain so adding producers via configure_reflect_pushers
         # always slots them BEFORE apply + trace.
         #
-        # Default producers:
-        # - RatioPusher        : `BudgetConfig.pushers` (max_ratio thresholds)
-        # - TimeBudgetPusher   : always-on, no-op without `max_wall_time`
-        #                        — wall-clock escalation NUDGE→FORCE_REFLECT
-        #                        →FORCE_DONE at 0.5/0.75/1.0 by default.
+        # Default producers (in pipeline order):
+        # - ReflectCadenceCounter — owns `steps_since_reflect`. Apply
+        #                           writes the counter into ctx; the
+        #                           counter itself is mutated in
+        #                           `on_step_done` based on what tools
+        #                           ran. Must come first so downstream
+        #                           cadence pushers see a fresh value.
+        # - RatioPusher           — `BudgetConfig.pushers` against
+        #                           `state.max_ratio`.
+        # - TimeBudgetPusher      — always-on, no-op without
+        #                           `max_wall_time`. Wall-clock
+        #                           escalation 0.5/0.75/1.0 →
+        #                           NUDGE/FORCE_REFLECT/FORCE_DONE.
         self._producers: list[PusherHandler] = [
+            ReflectCadenceCounter(),
             RatioPusher(config.pushers),
             TimeBudgetPusher(),
         ]
@@ -512,11 +598,22 @@ class BudgetTracker:
         state._prev_step_paid = current_step_paid
 
     def apply_handlers(self, ctx: StepContext) -> None:
-        """Walk producers → consumers. Each handler may mutate `ctx`."""
+        """Phase 1: pre-LLM. Walk producers → consumers, each handler
+        may mutate `ctx` (append actions, narrow current_tools,
+        append messages, emit events)."""
         if ctx.event_bus is None:
             ctx.event_bus = self._event_bus
         for handler in self.handlers:
             handler.apply(ctx)
+
+    def notify_step_done(self, ctx: StepContext) -> None:
+        """Phase 2: post-dispatch. Handlers that implement
+        `on_step_done` update their internal state based on what tools
+        ran this step (see `ctx.step_outcomes`)."""
+        for handler in self.handlers:
+            hook = getattr(handler, "on_step_done", None)
+            if hook is not None:
+                hook(ctx)
 
     def allocate_child(self, parent: BudgetState, fraction: float = 0.5) -> BudgetConfig:
         """Create a child budget config from parent's remaining budget."""

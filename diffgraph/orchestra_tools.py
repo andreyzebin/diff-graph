@@ -39,17 +39,28 @@ def _path_from_listing_row(row: str) -> str:
     return (body[:cut] if cut > 0 else body).rstrip()
 
 
-def _filter_and_cap_listing(text: str, limit: int) -> str:
-    """Drop rows whose path is inside a skip-dir, then cap to `limit`
-    rows. Path-width alignment from list_files_vfs is preserved — we
-    only filter and slice, never re-align (column widths are sized
-    once at format time, so trimming rows just leaves consistent
-    trailing whitespace, which is fine in monospace)."""
+def _filter_and_page_listing(text: str, start: int, n: int) -> str:
+    """Drop rows whose path is inside a skip-dir, then slice
+    `[start : start+n]`. Path-width alignment from list_files_vfs is
+    preserved — we only filter and slice, never re-align (column
+    widths are sized once at format time, so trimming rows just
+    leaves consistent trailing whitespace, which is fine in
+    monospace). Appends a pagination footer when there are more rows
+    than the page shows."""
     if not text:
         return ""
     rows = [r for r in text.splitlines()
             if not _skip_dir(_path_from_listing_row(r))]
-    return "\n".join(rows[:limit])
+    total = len(rows)
+    page = rows[start : start + n]
+    out = "\n".join(page)
+    # Footer when there's more to see — agent knows to paginate.
+    if total > start + n or start > 0:
+        out += (
+            f"\n\n[showing {start}..{start + len(page) - 1} of {total} — "
+            f"call with start={start + n} to see the next page]"
+        )
+    return out
 
 
 def _format_plain_listing(paths: list[str], repo_path: str) -> str:
@@ -180,34 +191,58 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "(= what `diff_read_file(path)` returns without a range); "
             "`+N/-M` = added/removed line counts (omitted for "
             "unchanged files, where both are zero); bytes = file size. "
-            "Capped at 50 rows."
+            "\n\n"
+            "Paginated: `start` (offset) + `n` (page size, default 50). "
+            "When more rows exist than fit on the page a footer lists "
+            "the total and the `start` value for the next call. "
+            "`changes_only=true` (default) drops unchanged context "
+            "files — call with `changes_only=false` to also see the "
+            "unchanged surroundings."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "description": "Glob, e.g. '**/*.java'. Default '**/*' = everything — call with no args to list every file."},
                 "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
+                "changes_only": {"type": "boolean", "description": "Default true — only files with status M/A/D/R/C/T. Set false to also include unchanged context files."},
+                "start": {"type": "integer", "description": "Pagination offset (default 0)."},
+                "n": {"type": "integer", "description": "Page size (default 50)."},
             },
-            # Neither field is required — Python defaults handle both.
-            # Marking pattern as required caused tool-schema validation
-            # to reject the typical opening call `diff_list_files()` and
-            # blocked reviewers that always orient themselves with an
-            # unfiltered first listing.
+            # Nothing is required — every field has a sensible default.
+            # Marking pattern as required earlier caused tool-schema
+            # validation to reject the typical opening call
+            # `diff_list_files()` and blocked reviewers that always
+            # orient themselves with an unfiltered first listing.
             "required": [],
         },
     )
-    def diff_list_files(pattern: str = "**/*", ref: str = "") -> str:
+    def diff_list_files(
+        pattern: str = "**/*",
+        ref: str = "",
+        changes_only: bool = True,
+        start: int = 0,
+        n: int = 50,
+    ) -> str:
         _ensure()
         ref = ref or _default_ref()
         vfs_dir = _get_vfs(ctx, ref)
         if vfs_dir:
             from diffsearch.tools import list_files_vfs
-            text = list_files_vfs(vfs_dir, pattern)
-            return _filter_and_cap_listing(text, limit=50)
-        # Plain mode (no VFS, no diff metadata) — format with size only.
+            text = list_files_vfs(vfs_dir, pattern, changes_only=changes_only)
+            return _filter_and_page_listing(text, start=start, n=n)
+        # Plain mode (no VFS, no diff metadata) — no status info, so
+        # `changes_only` is a no-op here. Paginate against the raw list.
         files = _list_files_impl(pattern, ctx.repo_path)
-        files = [f for f in files if not _skip_dir(f)][:50]
-        return _format_plain_listing(files, ctx.repo_path)
+        files = [f for f in files if not _skip_dir(f)]
+        total = len(files)
+        page = files[start : start + n]
+        out = _format_plain_listing(page, ctx.repo_path)
+        if total > start + n or start > 0:
+            out += (
+                f"\n\n[showing {start}..{start + len(page) - 1} of {total} — "
+                f"call with start={start + n} to see the next page]"
+            )
+        return out
 
     @registry.register(
         name="diff_read_file",

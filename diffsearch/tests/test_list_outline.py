@@ -129,6 +129,79 @@ class TestListFilesVFS:
             shutil.rmtree(vfs, ignore_errors=True)
 
 
+class TestChangesOnly:
+    """`changes_only=true` filter — drops unchanged context files
+    (status=` `). Drives the default for `diff_list_files` so the
+    agent's "show me what changed" intent is the default behaviour
+    and unchanged files don't crowd out M/A/D rows under truncation."""
+
+    def test_default_includes_unchanged(self, rename_field_repo):
+        """Without changes_only the listing is "everything" — both
+        changed and unchanged files appear."""
+        repo, base, source = rename_field_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            rows = _parse_rows(list_files_vfs(vfs))
+            statuses = {r["status"] for r in rows}
+            assert "M" in statuses
+            assert " " in statuses, "expected at least one unchanged file"
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_changes_only_drops_unchanged(self, rename_field_repo):
+        repo, base, source = rename_field_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            rows = _parse_rows(list_files_vfs(vfs, changes_only=True))
+            assert rows, "expected at least one changed file"
+            statuses = {r["status"] for r in rows}
+            assert " " not in statuses, (
+                "changes_only=true must filter blank-status rows"
+            )
+            assert statuses <= {"M", "A", "D", "R", "C", "T"}
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_changes_only_keeps_added(self, new_file_repo):
+        repo, base, source = new_file_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            rows = _parse_rows(list_files_vfs(vfs, changes_only=True))
+            paths_by_status = {r["path"]: r["status"] for r in rows}
+            assert paths_by_status.get("src/AuditLog.java") == "A"
+            # Unchanged sibling must be excluded.
+            assert "src/Order.java" not in paths_by_status
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_changes_only_keeps_deleted(self, deleted_file_repo):
+        repo, base, source = deleted_file_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            rows = _parse_rows(list_files_vfs(vfs, changes_only=True))
+            statuses = {r["path"]: r["status"] for r in rows}
+            assert "src/LegacyService.java" in statuses
+            assert statuses["src/LegacyService.java"] == "D"
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+    def test_glob_and_changes_only_compose(self, rename_field_repo):
+        """The glob filter and the changes_only filter are independent —
+        narrowing by extension AND by status both apply."""
+        repo, base, source = rename_field_repo
+        vfs = materialize_vfs(repo, base, source)
+        try:
+            rows = _parse_rows(
+                list_files_vfs(vfs, "**/*.java", changes_only=True)
+            )
+            assert rows, "expected at least one matching changed .java file"
+            for r in rows:
+                assert r["path"].endswith(".java")
+                assert r["status"] != " "
+        finally:
+            shutil.rmtree(vfs, ignore_errors=True)
+
+
 class TestListFilesStatusMarkers:
     """Status code per file mirrors the +/-/space line markers
     elsewhere — pinned per fixture so a refactor that collapses a

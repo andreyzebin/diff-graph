@@ -8,6 +8,7 @@ Materializes to a temp directory for grep/search compatibility.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,6 +16,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -224,6 +227,24 @@ def materialize_vfs(
         cwd=repo_path, capture_output=True, text=True, check=True,
     )
     all_files = [f for f in all_files_out.stdout.strip().splitlines() if f]
+
+    # Diagnostic: `git diff` returned an empty change set, yet the
+    # source tree has files. Almost always means the base ref was
+    # fetched incomplete (partial / blobless without proper server
+    # support) — `git diff --name-status BASE SOURCE` silently emits
+    # nothing and we'd end up with a VFS where every file looks
+    # unchanged. Log loudly so the symptom doesn't masquerade as
+    # "this PR has no changes".
+    if not changed and not status_by_path and all_files:
+        log.warning(
+            "materialize_vfs: empty diff between base=%s source=%s but "
+            "source has %d files. Likely cause: base ref was fetched "
+            "partially (server may not support uploadpack.allowFilter). "
+            "list_files_vfs will show every file with a blank status "
+            "marker and no +N/-N counts — agents will treat the PR as "
+            "having no changes.",
+            base_ref[:12], source_ref[:12], len(all_files),
+        )
 
     # Also get files only in base (deleted files)
     base_files_out = subprocess.run(

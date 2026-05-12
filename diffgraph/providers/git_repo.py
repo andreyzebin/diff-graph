@@ -51,7 +51,32 @@ class GitRepoProvider(RepoProvider):
         self._run(cmd)
 
     def fetch(self, repo_path: str, ref: str) -> None:
+        # Bitbucket Server typically rejects `--filter=blob:none`
+        # (emits `warning: filtering not recognized by server`) and
+        # returns an incomplete object set — subsequent
+        # `git diff --name-status BASE SOURCE` then silently produces
+        # empty output, so the VFS materialisation reports zero
+        # changed files. Try the blobless fetch first for speed on
+        # servers that DO support it; if the trees we just fetched
+        # don't actually contain anything useful, retry without the
+        # filter. The cheap probe: `git ls-tree -- <ref>` lists the
+        # top-level entries of that commit's tree. An empty result
+        # means the trees weren't fetched, even though `cat-file -t`
+        # might happily report `commit`.
         self._run(["git", "fetch", "--filter=blob:none", "origin", ref], cwd=repo_path)
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        probe = subprocess.run(
+            ["git", "ls-tree", "--name-only", ref],
+            env=env, cwd=repo_path,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+        )
+        if probe.returncode != 0 or not probe.stdout.strip():
+            log.info(
+                "git fetch: blobless %s landed with empty/missing tree "
+                "(rc=%d) — retrying full fetch", ref[:12], probe.returncode,
+            )
+            self._run(["git", "fetch", "origin", ref], cwd=repo_path)
 
     def diff(self, repo_path: str, base: str, source: str) -> str:
         return self._run(["git", "diff", f"{base}...{source}"], cwd=repo_path)

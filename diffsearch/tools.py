@@ -369,7 +369,12 @@ def _fmt_bytes(n: int) -> str:
     return f"{n/(1024*1024):.1f}MB"
 
 
-def list_files_vfs(vfs_dir: str, glob_pattern: str = "**/*") -> str:
+def list_files_vfs(
+    vfs_dir: str,
+    glob_pattern: str = "**/*",
+    *,
+    changes_only: bool = False,
+) -> str:
     """List files in the virtual FS as plain text, one row per file:
 
         M  src/OrderService.java  (68L · +12/-8 · 2.4kB)
@@ -414,6 +419,12 @@ def list_files_vfs(vfs_dir: str, glob_pattern: str = "**/*") -> str:
         if rel.startswith(".diffmeta"):
             continue
         st = statuses.get(rel, " ")
+        # `changes_only=true` drops unchanged context files (status=` `).
+        # They're often the bulk of the listing on big repos with small
+        # PRs — without this filter the meaningful M/A/D rows can fall
+        # past any downstream truncation cap.
+        if changes_only and st == " ":
+            continue
         try:
             size = p.stat().st_size
         except OSError:

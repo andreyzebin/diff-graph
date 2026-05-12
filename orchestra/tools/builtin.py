@@ -12,6 +12,7 @@ import json
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from .registry import ToolDef, ToolRegistry
+from ..events import EventType
 
 if TYPE_CHECKING:
     from ..sgr import SGRTracker
@@ -51,6 +52,45 @@ def register_builtins(
     # ── reflect ───────────────────────────────────────────────────────────
     if "reflect" in tool_names and sgr_tracker:
         schema = sgr_tracker.build_reflect_schema()
+
+        # Handler runs ONLY when registry.dispatch's `_validate_args`
+        # accepts the call — schema-invalid arguments short-circuit
+        # with a "validation error: ..." string that the model sees as
+        # the tool result. Side effects (SGR record, AGENT_REFLECT
+        # event, cadence-counter reset) therefore happen only on a
+        # well-formed reflect, not on malformed ones. Before this
+        # consolidation the agent loop ran sgr.record + counter reset
+        # inline BEFORE dispatch, so malformed reflects (e.g.
+        # qwen3-6 stuffing JSON into a single `learned` string) were
+        # silently treated as successful — driving reflect-spam
+        # loops where the model kept retrying because it never saw
+        # an error and the cadence pusher's nudges kept firing.
+        _captured_sgr = sgr_tracker
+        _captured_agent = agent
+
+        def _reflect_handler(**kw):
+            # Validation already passed (registry.dispatch's
+            # `_validate_args` ran before us). Side effects fire only
+            # on well-formed reflects; malformed ones short-circuit
+            # at validation and the model sees the error in its
+            # tool_result. The cadence counter is owned by
+            # `ReflectCadenceCounter` in the pusher pipeline — it
+            # observes this step's `step_outcomes` in phase 2 and
+            # resets itself on a successful reflect. We don't touch
+            # the counter from here.
+            if _captured_agent is not None:
+                step = getattr(_captured_agent, "_current_step", -1)
+                _captured_sgr.record(step, kw)
+                if _captured_agent.event_bus is not None:
+                    _captured_agent.event_bus.emit(
+                        EventType.AGENT_REFLECT,
+                        agent_id=_captured_agent.agent_id,
+                        agent_name=_captured_agent.config.name,
+                        step=step,
+                        **kw,
+                    )
+            return "Reflection noted."
+
         registry.register_tool_def(ToolDef(
             name="reflect",
             description=(
@@ -58,7 +98,7 @@ def register_builtins(
                 "avoid going in circles, and plan the next action."
             ),
             parameters=schema,
-            handler=lambda **kw: "Reflection noted.",
+            handler=_reflect_handler,
             is_builtin=True,
         ))
 

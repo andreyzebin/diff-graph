@@ -50,6 +50,38 @@ def tiny_repo_with_diff():
     shutil.rmtree(repo, ignore_errors=True)
 
 
+@pytest.fixture
+def multi_file_repo():
+    """Two-commit repo with several modified + several unchanged
+    files. Used to exercise `changes_only` filtering and pagination
+    (`start`/`n`) on a realistic mix where the cap can hide changes."""
+    repo = tempfile.mkdtemp(prefix="multi-")
+    _git(["init"], repo)
+    _git(["config", "user.email", "t@t"], repo)
+    _git(["config", "user.name", "t"], repo)
+    # Base: 6 unchanged + 6 to-be-modified files. Unchanged files
+    # sort alphabetically BEFORE the modified ones (`uctx_*` < `mod_*`
+    # is FALSE — we picked `aaa_*` for context and `zzz_*` for changes
+    # so the modified files land at the END of an alphabetical listing,
+    # mirroring the mediaplanner symptom where M/A/D rows fall past
+    # the truncation cap).
+    for i in range(6):
+        (Path(repo) / f"aaa_ctx_{i}.txt").write_text(f"context {i}\n")
+    for i in range(6):
+        (Path(repo) / f"zzz_mod_{i}.txt").write_text(f"original {i}\n")
+    _git(["add", "."], repo)
+    _git(["commit", "-m", "base"], repo)
+    base = _git(["rev-parse", "HEAD"], repo)
+    # Modify the zzz_* files
+    for i in range(6):
+        (Path(repo) / f"zzz_mod_{i}.txt").write_text(f"changed {i}\nadded line\n")
+    _git(["add", "."], repo)
+    _git(["commit", "-m", "source"], repo)
+    source = _git(["rev-parse", "HEAD"], repo)
+    yield repo, base, source
+    shutil.rmtree(repo, ignore_errors=True)
+
+
 def _ctx_and_registry(repo: str, base: str, source: str):
     from diffgraph.orchestrator import _Ctx, ReviewContext
     from diffgraph.diff_parser import DiffResult
@@ -136,3 +168,133 @@ class TestOtherDiffTools:
         _, reg = _ctx_and_registry(repo, base, source)
         schema = _schema(reg, "diff_search")
         assert schema.get("required") == ["query"]
+
+
+class TestDiffListFilesChangesOnly:
+    """`changes_only` default = true so the agent's "show me what
+    changed" intent is the default behaviour. Unchanged context files
+    appear only when explicitly requested. This is what closes the
+    mediaplanner-style symptom where M/A/D rows fell past the
+    truncation cap and the agent (rationally) started grep'ing for
+    `^+`/`^M` from desperation."""
+
+    def test_default_excludes_unchanged(self, multi_file_repo):
+        repo, base, source = multi_file_repo
+        _, reg = _ctx_and_registry(repo, base, source)
+        out = reg.dispatch("diff_list_files", {})
+        # All 6 unchanged context files must be hidden by default.
+        for i in range(6):
+            assert f"aaa_ctx_{i}.txt" not in out, (
+                f"aaa_ctx_{i}.txt leaked into default output — "
+                f"changes_only=true should hide unchanged files.\n"
+                f"output:\n{out}"
+            )
+        # All 6 modified files must be present.
+        for i in range(6):
+            assert f"zzz_mod_{i}.txt" in out
+
+    def test_changes_only_false_includes_context(self, multi_file_repo):
+        repo, base, source = multi_file_repo
+        _, reg = _ctx_and_registry(repo, base, source)
+        out = reg.dispatch(
+            "diff_list_files", {"changes_only": False}
+        )
+        # Both context and modified files appear.
+        assert "aaa_ctx_0.txt" in out
+        assert "zzz_mod_0.txt" in out
+
+    def test_changes_only_in_schema(self, multi_file_repo):
+        """The flag must be exposed in the tool schema so models
+        can discover and use it."""
+        repo, base, source = multi_file_repo
+        _, reg = _ctx_and_registry(repo, base, source)
+        schema = _schema(reg, "diff_list_files")
+        assert "changes_only" in schema["properties"]
+        # Still not required — has a default.
+        assert "changes_only" not in (schema.get("required") or [])
+
+
+class TestDiffListFilesPagination:
+    """`start` + `n` pagination so callers can scroll past the page
+    cap. Footer announces the total so the model knows whether to
+    paginate."""
+
+    def test_pagination_in_schema(self, multi_file_repo):
+        repo, base, source = multi_file_repo
+        _, reg = _ctx_and_registry(repo, base, source)
+        schema = _schema(reg, "diff_list_files")
+        assert "start" in schema["properties"]
+        assert "n" in schema["properties"]
+        # Neither is required (defaults handle it).
+        required = schema.get("required") or []
+        assert "start" not in required
+        assert "n" not in required
+
+    def test_default_page_covers_small_listing(self, multi_file_repo):
+        """When everything fits on one page (< n rows), the footer
+        is suppressed and the caller sees the whole list cleanly."""
+        repo, base, source = multi_file_repo
+        _, reg = _ctx_and_registry(repo, base, source)
+        out = reg.dispatch("diff_list_files", {})  # 6 changed files, default n=50
+        assert "[showing" not in out, (
+            f"single-page listing should not show pagination footer; got:\n{out}"
+        )
+
+    def test_paginates_when_more_than_page(self, multi_file_repo):
+        """6 changed files but n=2 → first page = 2, footer announces
+        the total and the `start` for the next page."""
+        repo, base, source = multi_file_repo
+        _, reg = _ctx_and_registry(repo, base, source)
+        out = reg.dispatch("diff_list_files", {"n": 2})
+        # First two zzz_mod_* files present.
+        assert "zzz_mod_0.txt" in out
+        assert "zzz_mod_1.txt" in out
+        # Files after the page are NOT present.
+        assert "zzz_mod_2.txt" not in out
+        # Footer points at the next page.
+        assert "of 6" in out
+        assert "start=2" in out
+
+    def test_next_page(self, multi_file_repo):
+        """start=2, n=2 returns rows 2..3."""
+        repo, base, source = multi_file_repo
+        _, reg = _ctx_and_registry(repo, base, source)
+        out = reg.dispatch("diff_list_files", {"start": 2, "n": 2})
+        assert "zzz_mod_2.txt" in out
+        assert "zzz_mod_3.txt" in out
+        # Rows outside this page absent.
+        assert "zzz_mod_0.txt" not in out
+        assert "zzz_mod_1.txt" not in out
+        assert "zzz_mod_4.txt" not in out
+        # Footer still shown (pagination is active even mid-listing).
+        assert "of 6" in out
+
+    def test_last_page_still_shows_footer_when_started_past_zero(
+        self, multi_file_repo,
+    ):
+        """Even if a request covers the tail of the listing, the
+        footer should still surface — otherwise the caller wouldn't
+        know whether more rows exist past their window."""
+        repo, base, source = multi_file_repo
+        _, reg = _ctx_and_registry(repo, base, source)
+        out = reg.dispatch("diff_list_files", {"start": 4, "n": 10})
+        # Last two files are visible.
+        assert "zzz_mod_4.txt" in out
+        assert "zzz_mod_5.txt" in out
+        # Footer announces position (start>0 → footer even if no next page).
+        assert "of 6" in out
+
+    def test_pagination_with_changes_only_false(self, multi_file_repo):
+        """Pagination respects the changes_only filter — `total` counts
+        rows AFTER status filter, not before."""
+        repo, base, source = multi_file_repo
+        _, reg = _ctx_and_registry(repo, base, source)
+        # 12 total files (6 ctx + 6 mod), n=5 → footer says "of 12".
+        out = reg.dispatch(
+            "diff_list_files",
+            {"changes_only": False, "n": 5},
+        )
+        assert "of 12" in out
+        # 6 changed files, n=5, changes_only default true → footer says "of 6".
+        out2 = reg.dispatch("diff_list_files", {"n": 5})
+        assert "of 6" in out2

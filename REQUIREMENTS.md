@@ -286,23 +286,30 @@ Agents use their own per-prompt budget (declared in `budget:` frontmatter, not p
 
 ### Pusher pipeline
 
-Per-step middleware chain (`orchestra/budget.py`) that nudges the agent toward progress. Producers emit `PusherAction`s into a shared `StepContext`; consumers (apply + trace) mutate the conversation and emit telemetry.
+Per-step middleware chain (`orchestra/budget.py`) that nudges the agent toward progress. One `StepContext` flows through every handler in two phases:
 
-| Producer | Source signal | Default behavior |
+- **Phase 1 — `apply(ctx)`** runs *before* the LLM call. Producers emit `PusherAction`s; consumers translate them into `messages` / `current_tools` mutations + telemetry.
+- **Phase 2 — `on_step_done(ctx)`** runs *after* tool dispatch. Stateful handlers inspect `ctx.step_outcomes` (the `(tool_name, is_error)` pair for each call that ran) and update internal state for the next step.
+
+| Handler | Source signal | Behavior |
 |---|---|---|
-| `RatioPusher` | `state.max_ratio` (token / step / wall) | One-shot per threshold from `BudgetConfig.pushers` |
-| `TimeBudgetPusher` | `state.wall_ratio` | 0.5 → NUDGE, 0.75 → FORCE_REFLECT, 1.0 → FORCE_DONE (no-op without `wall_time`) |
-| `ReflectCadencePusher` | `steps_since_reflect` | Enabled by `reflect_interval: N` — NUDGE at N steps without reflect, FORCE_REFLECT at 2N, re-arms each reflect cycle |
+| `ReflectCadenceCounter` | `ctx.step_outcomes` | Owns `steps_since_reflect`. Resets to 0 on a successful `reflect` (validation passed → handler ran); increments per non-reflect non-done tool. Writes the counter into `ctx.steps_since_reflect` in phase 1 so downstream cadence readers see a consistent snapshot. |
+| `RatioPusher` | `state.max_ratio` (token / step / wall) | One-shot per threshold from `BudgetConfig.pushers`. |
+| `TimeBudgetPusher` | `state.wall_ratio` | 0.5 → NUDGE, 0.75 → FORCE_REFLECT, 1.0 → FORCE_DONE (no-op without `wall_time`). |
+| `ReflectCadencePusher` | `ctx.steps_since_reflect` | Enabled by `reflect_interval: N` — NUDGE at N steps without reflect, FORCE_REFLECT at 2N, re-arms each reflect cycle. |
+| `ApplyActionsHandler` | `ctx.actions` | Applies each pending action: NUDGE appends a user message; FORCE_REFLECT / FORCE_DONE narrows `current_tools`. |
+| `TracingHandler` | `ctx.actions` | Emits `BUDGET_THRESHOLD_HIT` per action, tagged with the producer's `kind`. |
 
 | Action | Effect (applied by `ApplyActionsHandler`) |
 |---|---|
-| `nudge` | Append a user-role message to the conversation |
-| `force_reflect` | Narrow tools_schema to `reflect` only for the next step |
-| `force_done` | Narrow tools_schema to `done` only for the next step |
-| `custom` | Call a custom handler with `(messages, state)` |
+| `nudge` | Append a user-role message to the conversation. |
+| `force_reflect` | Narrow `current_tools` to `reflect` only for the next LLM call. |
+| `force_done` | Narrow `current_tools` to `done` only for the next LLM call. |
+| `custom` | Call a custom Python hook with `(messages, state)`. |
 
-Adding a new producer = one subclass of `PusherHandler`, plug into `BudgetTracker._producers`. Apply + trace consumers stay untouched.
-| `custom` | Python hook |
+`reflect` itself flows through `registry.dispatch` like every other tool — JSON-Schema validation runs first. Malformed reflect args (e.g. when a model emits broken JSON and the parser salvages only one field) return a `validation error: …` string as the tool_result; the model sees the error in its next LLM turn and self-corrects. The cadence counter only resets on a reflect call where the handler actually executed (validation passed), so a malformed reflect doesn't pretend to satisfy the cadence and the next NUDGE / FORCE_REFLECT still fires on schedule.
+
+Adding a new producer = one class with `kind` + `apply(ctx)` (and optionally `on_step_done(ctx)`), plug into `BudgetTracker._producers`. Apply + trace consumers stay untouched.
 
 ### Message condensation
 

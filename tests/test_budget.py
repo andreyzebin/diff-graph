@@ -457,13 +457,25 @@ class TestBudgetTrackerChain:
         kinds = [h.kind for h in t.handlers]
         assert "reflect" not in kinds
 
+    def _bump_counter(self, tracker, ctx, n_non_reflect: int) -> None:
+        """Simulate `n_non_reflect` non-reflect tool calls happening
+        between phases, so ReflectCadenceCounter's internal counter
+        climbs accordingly. Mirrors what the agent loop does after
+        each step's dispatch."""
+        ctx.step_outcomes = [("diff_read_file", False)] * n_non_reflect
+        tracker.notify_step_done(ctx)
+        ctx.step_outcomes = []  # reset for next phase-1 apply
+
     def test_end_to_end_reflect_nudge_appends_message(self):
         bus = EventBus()
         seen: list[dict] = []
         bus.subscribe(EventType.BUDGET_THRESHOLD_HIT,
                       lambda **kw: seen.append(kw))
         t = self._tracker(reflect_interval=3, event_bus=bus)
-        ctx = _ctx(steps_since_reflect=3, event_bus=bus)
+        # 3 non-reflect tool calls have run → counter now at 3 →
+        # next phase-1 apply should fire NUDGE.
+        ctx = _ctx(event_bus=bus)
+        self._bump_counter(t, ctx, 3)
         t.apply_handlers(ctx)
         # NUDGE applied → message appended.
         assert len(ctx.messages) == 1
@@ -475,8 +487,10 @@ class TestBudgetTrackerChain:
 
     def test_end_to_end_reflect_force_narrows_tools(self):
         t = self._tracker(reflect_interval=3)
-        ctx = _ctx(steps_since_reflect=6,
-                   tools=["reflect", "done", "diff_read_file"])
+        # 6 non-reflect tool calls run → counter at 6 = 2× threshold →
+        # FORCE_REFLECT next step.
+        ctx = _ctx(tools=["reflect", "done", "diff_read_file"])
+        self._bump_counter(t, ctx, 6)
         t.apply_handlers(ctx)
         names = [td["function"]["name"] for td in ctx.current_tools]
         assert names == ["reflect"]
@@ -495,8 +509,9 @@ class TestBudgetTrackerChain:
                                   message="halfway through budget")],
             event_bus=bus,
         )
-        ctx = _ctx(steps_since_reflect=3, event_bus=bus)
+        ctx = _ctx(event_bus=bus)
         ctx.state.cumulative_paid = 800  # token_ratio = 0.8
+        self._bump_counter(t, ctx, 3)
         t.apply_handlers(ctx)
         # Both nudges appended.
         contents = [m["content"] for m in ctx.messages]
@@ -505,3 +520,58 @@ class TestBudgetTrackerChain:
         kinds = sorted(s["kind"] for s in seen)
         assert "ratio" in kinds
         assert "reflect" in kinds
+
+    def test_counter_resets_on_successful_reflect(self):
+        """ReflectCadenceCounter resets on a reflect outcome where
+        is_error=False (validation passed, handler ran)."""
+        t = self._tracker(reflect_interval=3)
+        ctx = _ctx()
+        # Walk counter to 5.
+        self._bump_counter(t, ctx, 5)
+        # Then a step containing a successful reflect + 0 other tools.
+        ctx.step_outcomes = [("reflect", False)]
+        t.notify_step_done(ctx)
+        ctx.step_outcomes = []
+        # Next phase-1 apply should see counter=0.
+        t.apply_handlers(ctx)
+        assert ctx.steps_since_reflect == 0
+
+    def test_counter_does_not_reset_on_failed_reflect(self):
+        """A reflect outcome with is_error=True (schema validation
+        rejected the args) must NOT reset the counter — otherwise
+        the model gets a free pass for malformed reflects and
+        cadence pressure never escalates."""
+        t = self._tracker(reflect_interval=3)
+        ctx = _ctx()
+        self._bump_counter(t, ctx, 5)
+        # Step containing only a failed reflect (is_error=True).
+        ctx.step_outcomes = [("reflect", True)]
+        t.notify_step_done(ctx)
+        ctx.step_outcomes = []
+        t.apply_handlers(ctx)
+        assert ctx.steps_since_reflect == 5  # unchanged
+
+    def test_counter_reset_then_increment_in_same_step(self):
+        """A step with [reflect_ok, diff_read_file] should land at
+        counter=1 (reset + one non-reflect tool)."""
+        t = self._tracker(reflect_interval=3)
+        ctx = _ctx()
+        self._bump_counter(t, ctx, 5)
+        ctx.step_outcomes = [("reflect", False), ("diff_read_file", False)]
+        t.notify_step_done(ctx)
+        ctx.step_outcomes = []
+        t.apply_handlers(ctx)
+        assert ctx.steps_since_reflect == 1
+
+    def test_done_outcome_does_not_count(self):
+        """`done` is the terminal action — it shouldn't move the
+        cadence counter."""
+        t = self._tracker(reflect_interval=3)
+        ctx = _ctx()
+        self._bump_counter(t, ctx, 2)
+        # Step with only `done` — counter should stay at 2.
+        ctx.step_outcomes = [("done", False)]
+        t.notify_step_done(ctx)
+        ctx.step_outcomes = []
+        t.apply_handlers(ctx)
+        assert ctx.steps_since_reflect == 2

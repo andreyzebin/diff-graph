@@ -222,6 +222,14 @@ class Agent:
         )
         self.budget_state: Optional[BudgetState] = None
 
+        # Latest in-flight step number. Set at the top of every loop
+        # iteration so tool handlers (reflect → AGENT_REFLECT emit,
+        # ...) can stamp step on their events without threading it
+        # through argument lists. The reflect-cadence counter itself
+        # lives on `ReflectCadenceCounter` in the pusher pipeline
+        # (orchestra/budget.py) — not on the agent.
+        self._current_step: int = -1
+
         # Mutable LLM params — can be changed at any time by self or parent
         self.llm_params = self._init_llm_params()
         self._params_lock = threading.Lock()
@@ -540,13 +548,18 @@ class Agent:
 
         tool_names = self._build_tool_names()
         tools_schema = self.registry.to_openai_schema(tool_names)
-        steps_since_reflect = 0
         self._natural_stop = False
         _guard_retries: dict[str, int] = {}  # guard_name → retry count
         _MAX_GUARD_RETRIES = 2
         _called_tools: set[str] = set()  # track all tools called during this run
 
         for step in range(self.config.budget.max_steps):
+            # Stash the current step for tool handlers that need it
+            # (reflect → SGR record, AGENT_REFLECT event, …). Tool
+            # handlers in tools/builtin.py read `agent._current_step`
+            # rather than receiving step through args, so all tools
+            # share the same `handler(**args)` signature.
+            self._current_step = step
             if self.budget_state.exhausted:
                 self.event_bus.emit(EventType.AGENT_FORCED_DONE,
                                    agent_id=self.agent_id, agent_name=self.config.name, reason="token limit",
@@ -565,10 +578,13 @@ class Agent:
             # `ctx.current_tools` in place; TracingHandler emits
             # BUDGET_THRESHOLD_HIT events. We then read
             # `ctx.current_tools` for the LLM call.
+            # `steps_since_reflect` is written into ctx by
+            # ReflectCadenceCounter's `apply` (it owns the counter
+            # state across steps). We just construct ctx with the
+            # default 0 and let the handler chain populate it.
             from .budget import StepContext as _StepContext
             ctx = _StepContext(
                 state=self.budget_state,
-                steps_since_reflect=steps_since_reflect,
                 messages=messages,
                 all_tools=tools_schema,
                 current_tools=list(tools_schema),
@@ -744,25 +760,6 @@ class Agent:
                 self._natural_stop = True
                 break
 
-            # Emit reflect events
-            for tc in msg.tool_calls:
-                if tc.function.name == "reflect":
-                    try:
-                        args = json.loads(tc.function.arguments or "{}")
-                    except json.JSONDecodeError:
-                        args = {}
-                    if self.sgr:
-                        self.sgr.record(step, args)
-                        self.event_bus.emit(EventType.AGENT_REFLECT,
-                                           agent_id=self.agent_id, agent_name=self.config.name,
-                                           step=step, **args)
-                        # Reset counter — ReflectCadencePusher detects
-                        # the drop and re-arms its latches for the
-                        # next cycle.
-                        steps_since_reflect = 0
-                elif tc.function.name != "done":
-                    steps_since_reflect += 1
-
             # Parallel dispatch of domain tools
             dispatch_results: dict[str, Any] = {}
             if dispatch_tcs:
@@ -782,6 +779,9 @@ class Agent:
             # Process each tool result
             step_record = StepRecord(step=step, llm_params=step_params)
             findings_from_done = None
+            # Outcomes collected per tool call for handler post-dispatch
+            # update (see ReflectCadenceCounter.on_step_done).
+            step_outcomes: list[tuple[str, bool]] = []
 
             for tool_seq, tc in enumerate(msg.tool_calls, start=1):
                 try:
@@ -843,6 +843,14 @@ class Agent:
                     "content": clean_content,
                 })
 
+                # Per-tool outcome — read by handler `on_step_done`
+                # hooks (e.g. ReflectCadenceCounter decides whether to
+                # reset the counter based on `reflect` outcomes).
+                step_outcomes.append((
+                    tc.function.name,
+                    isinstance(content, str) and content.startswith("validation error"),
+                ))
+
                 if tc.function.name == "done":
                     # Trust registry.dispatch's JSON-Schema validation. If
                     # `content` came back as a "validation error: ..." string,
@@ -881,6 +889,12 @@ class Agent:
                                        result_preview=result_preview,
                                        result_count=r_count)
                     step_record.tool_calls.append({"name": tc.function.name})
+
+            # Phase 2 of the pusher pipeline — let stateful handlers
+            # (ReflectCadenceCounter, future ones) update themselves
+            # based on what tools actually ran this step.
+            ctx.step_outcomes = step_outcomes
+            self.budget_tracker.notify_step_done(ctx)
 
             if response.usage:
                 step_record.tokens_in = response.usage.prompt_tokens

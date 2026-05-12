@@ -216,65 +216,43 @@ Don't include gradle wrapper, binary files, and other noise in diff_summary. Fil
 **Where:** `diffgraph/orchestrator.py` `_make_diff_summary`.
 **Effort:** Small.
 
-### 3.4 Diff-view mental model: markers are metadata, not content
+### ~~3.4 Diff-view mental model — fixed via `changes_only` + fetch fallback~~
 
-The reviewer/investigator system prompts describe `diff_list_files` /
-`diff_read_file` / `diff_search` as operating on a virtual filesystem
-where "each line is **annotated** with `+`/`-`/` `". Models read that
-as "the `+`/`-` characters are baked into the line text", which
-produces two characteristic failure modes:
+**Root cause** wasn't the prompt's "annotated" wording. It was a
+combination of two tool-side bugs that left the agent staring at
+output with no diff signal, after which `diff_search(^+)` and
+`^M ` greps were a rational fallback ("I see files but no change
+indicators — let me grep the content for diff markers"):
 
-- `diff_search(query="^+", regex=true)` returns 0 results across every
-  glob — the agent assumes "this PR has no added lines" or "the diff
-  is empty", which it isn't. Seen on the SBLOOM-142 run (2026-05-12,
-  trace `2473d2ef4520`, step 12: 6 successive `^+`/`^-` searches all
-  with 0 hits before the agent gave up).
-- Agent treats `diff_list_files` output as a mix of "files with actual
-  changes" and "files without" — and spends steps trying to filter
-  to the former. In reality every entry in the result IS a change;
-  there is no filterable status column. Seen on the same run
-  (step 4: "The diff_list_files output was truncated. Let me get the
-  full list and identify which files have actual changes"); previously
-  on trace `4c996666d52d` where the agent burned 11 consecutive steps
-  on `diff_search(query="^M ")` looking for an imaginary M-status
-  column.
+1. `diff_list_files` capped at 50 rows, sorted alphabetically, with
+   no `changes_only` filter. On large repos the M/A/D rows fell past
+   the cap; the agent saw 50 blank-marker rows and assumed nothing
+   had changed.
+2. `--filter=blob:none` fetch against Bitbucket Server silently
+   returned incomplete trees, so `git diff --name-status BASE
+   SOURCE` produced zero output and `materialize_vfs` recorded
+   every file as unchanged.
 
-What's actually true (per `diffsearch/tools.py:search_vfs` and
-`diffgraph/orchestra_tools.py:diff_search`):
+Both fixed in this commit:
 
-- The materialized VFS contains **pure source text** for each diff'd
-  file — no `+`/`-` prefixes inside the file content.
-- `+`/`-`/` ` markers and the (L, old, new) coordinates are
-  **separate metadata** in `.diffmeta/`, attached to each hit in the
-  tool's *output*, not searchable in the *input*.
-- `diff_search` runs grep on the source content; to find added code,
-  search for the substantive content (a method name, a class
-  declaration, a literal string) and the result will show via the
-  marker which hits landed on `+` lines.
-- `diff_list_files` returns only files that participate in the diff.
-  Every entry is a change — there is no "trivially changed vs
-  substantively changed" split available from this tool.
+- `diff_list_files` gains `changes_only` (default `true`), `start`,
+  and `n` pagination. Agents now get only the meaningful M/A/D rows
+  by default and a pagination footer (`[showing X..Y of N — call
+  with start=Z to see the next page]`) when more exist. Verified on
+  the SBLOOM-142 run: `diff_list_files(changes_only=True)` returned
+  exactly 2 changed files; the reviewer went straight to
+  `diff_read_file` on each — zero `^+` grep fallbacks.
+- `GitClient.fetch` retries without `--filter=blob:none` when a
+  probe (`git ls-tree --name-only REF`) shows the trees didn't
+  actually land — Bitbucket Server's partial-clone rejection
+  surfaces instead of silently corrupting the diff.
+- `materialize_vfs` logs a WARNING when `git diff` returns empty
+  but the source tree is non-empty, so future regressions don't
+  masquerade as "this PR has no changes".
 
-**Fixes:**
-
-- **Prompt-level (small):** rewrite the "Diff view" section in
-  `reviewer.system.md` + `investigator.system.md` to say
-  "metadata-tagged" instead of "annotated", add one positive example
-  (`diff_search(query="OrderService")` → result with `+` marker on
-  hits) and one negative (`diff_search(query="^+")` → 0 results,
-  don't do this), and call out that `diff_list_files` entries are
-  all changes (no need to filter).
-- **Tool-level (medium):** include lines-added / lines-removed counts
-  in `diff_list_files` output (`PricingService.java (+47/-3)`),
-  giving the agent a quantitative signal of "amount of substantive
-  change per file" so it doesn't try to grep for it. Hook is
-  `DiffResult.files[path].after_changed_lines` (already tracks the
-  set of `+` line numbers) — sum and render.
-
-**Where:** `diffgraph/prompts/reviewer.system.md`,
-`diffgraph/prompts/investigator.system.md`,
-`diffgraph/orchestra_tools.py` (`diff_list_files` rendering),
-`diffsearch/tools.py` (`list_files_vfs`).
+Coverage added in `tests/test_diff_tool_schemas.py`
+(`TestDiffListFilesChangesOnly` + `TestDiffListFilesPagination`)
+and `diffsearch/tests/test_list_outline.py` (`TestChangesOnly`).
 
 ### 3.5 `react_to_comment` reactions don't appear in Bitbucket
 
