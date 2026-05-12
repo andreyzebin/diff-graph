@@ -102,6 +102,11 @@ class AgentConfig:
     user_prompt: str = ""
     mode: AgentMode = AgentMode.REACT  # single | react
     sgr_interval: int = 3
+    # Wall-clock reflect cadence (seconds). 0 = disabled. Parallel to
+    # sgr_interval but driven by elapsed time, so a step hanging on a
+    # slow tool still gets pushed to reflect even if it never increments
+    # the step counter.
+    time_reflect_interval: float = 0.0
     sgr_extensions: Optional[dict[str, Any]] = None  # extra reflect() fields
     # Every tool the agent can call — domain (post_comment, read_file, …)
     # and framework (spawn_agent, reflect, list_agents). The presence of

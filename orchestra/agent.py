@@ -14,13 +14,14 @@ import json
 import logging
 import re
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from .types import AgentConfig, AgentMode, BudgetConfig, LLMParamsConfig, PusherType
-from .budget import BudgetTracker, BudgetState, PusherAction
+from .types import AgentConfig, AgentMode, BudgetConfig, LLMParamsConfig
+from .budget import BudgetTracker, BudgetState
 from .events import EventBus, EventType
 from .sgr import SGRTracker, SGREntry
 from .condensation import get_condenser, should_condense
@@ -211,7 +212,15 @@ class Agent:
 
         # Budget
         self.budget_tracker = BudgetTracker(config.budget, self.event_bus)
+        # Slot reflect-cadence producers (step + wall-clock) into the
+        # pusher pipeline; no-ops when the corresponding interval is 0.
+        self.budget_tracker.configure_reflect_pushers(
+            sgr_interval=config.sgr_interval if self.sgr else 0,
+            time_reflect_interval=config.time_reflect_interval if self.sgr else 0.0,
+        )
         self.budget_state: Optional[BudgetState] = None
+        # Wall-clock anchor for time-cadence pusher. Reset every reflect.
+        self._last_reflect_ts: float = time.time()
 
         # Mutable LLM params — can be changed at any time by self or parent
         self.llm_params = self._init_llm_params()
@@ -549,13 +558,26 @@ class Agent:
             # Drain injected messages from parent
             self._drain_injected(messages)
 
-            # Check pushers
-            actions = self.budget_tracker.check_pushers(self.budget_state)
-            current_tools_schema = tools_schema
-            for action in actions:
-                current_tools_schema = self._apply_pusher(
-                    action, messages, tools_schema, current_tools_schema
-                )
+            # Pusher pipeline (see orchestra/budget.py). Build a step
+            # context, hand it to the chain. Producers (ratio / sgr /
+            # time) append actions; ApplyActionsHandler mutates
+            # `messages` and `ctx.current_tools` in place;
+            # TracingHandler emits BUDGET_THRESHOLD_HIT events. We
+            # then read `ctx.current_tools` for the LLM call.
+            from .budget import StepContext as _StepContext
+            ctx = _StepContext(
+                state=self.budget_state,
+                steps_since_reflect=steps_since_reflect,
+                seconds_since_reflect=time.time() - self._last_reflect_ts,
+                messages=messages,
+                all_tools=tools_schema,
+                current_tools=list(tools_schema),
+                event_bus=self.event_bus,
+                agent_id=self.agent_id,
+                agent_name=self.config.name,
+            )
+            self.budget_tracker.apply_handlers(ctx)
+            current_tools_schema = ctx.current_tools
 
             # Get current LLM params (may have been adjusted by parent)
             with self._params_lock:
@@ -734,7 +756,10 @@ class Agent:
                         self.event_bus.emit(EventType.AGENT_REFLECT,
                                            agent_id=self.agent_id, agent_name=self.config.name,
                                            step=step, **args)
+                        # Reset both cadence counters — ReflectCadencePusher
+                        # detects the drop and re-arms its latches.
                         steps_since_reflect = 0
+                        self._last_reflect_ts = time.time()
                 elif tc.function.name != "done":
                     steps_since_reflect += 1
 
@@ -1292,24 +1317,6 @@ class Agent:
                     tc = futures[future]
                     results[tc.id] = f"error: {e}"
         return results
-
-    # ── Budget pushers ────────────────────────────────────────────────────────
-
-    def _apply_pusher(self, action: PusherAction, messages: list[dict],
-                      all_tools: list[dict], current_tools: list[dict]) -> list[dict]:
-        if action.type == PusherType.NUDGE:
-            messages.append({"role": "user", "content": action.message})
-            return current_tools
-        elif action.type == PusherType.FORCE_REFLECT:
-            return [t for t in all_tools if t["function"]["name"] == "reflect"]
-        elif action.type == PusherType.FORCE_DONE:
-            return [t for t in all_tools if t["function"]["name"] == "done"]
-        elif action.type == PusherType.CUSTOM and action.handler:
-            try:
-                action.handler(messages, self.budget_state)
-            except Exception as e:
-                log.warning("custom pusher failed: %s", e)
-        return current_tools
 
     # ── Condensation ──────────────────────────────────────────────────────────
 

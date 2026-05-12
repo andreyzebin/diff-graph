@@ -50,6 +50,7 @@ class AgentRegistryEntry:
     guards: dict[str, str] = field(default_factory=dict)  # {trigger: message}
     source_file: str = ""
     source_hash: str = ""
+    time_reflect_interval: float = 0.0  # seconds; 0 = disabled
 
     def to_agent_config(self) -> AgentConfig:
         """Convert to AgentConfig. tools is a single flat list — the
@@ -75,6 +76,7 @@ class AgentRegistryEntry:
             user_prompt=self.user_template,
             mode=self.mode,
             sgr_interval=self.sgr_interval,
+            time_reflect_interval=self.time_reflect_interval,
             tools=tools,
             budget=self.budget,
             llm_params=self.llm_params,
@@ -378,6 +380,7 @@ def _parse_prompt_file(
     llm_params = _parse_llm_header(headers.get("llm", ""))
     sgr = "sgr" in capabilities
     sgr_interval = int(headers.get("sgr_interval", "3"))
+    time_reflect_interval = float(headers.get("time_reflect_interval", "0") or "0")
     summary = headers.get("summary", "").strip()
 
     return AgentRegistryEntry(
@@ -392,6 +395,7 @@ def _parse_prompt_file(
         llm_params=llm_params,
         sgr=sgr,
         sgr_interval=sgr_interval,
+        time_reflect_interval=time_reflect_interval,
         prompt_template=body.strip(),
         user_template=user_template.strip(),
         source_file=str(filepath) if filepath else "",
@@ -421,6 +425,7 @@ def _from_yaml_headers(y: dict) -> tuple[dict[str, str], dict[str, dict[str, str
     if "mode" in y:     h["mode"] = str(y["mode"])
     if "summary" in y:  h["summary"] = str(y["summary"]).strip()
     if "sgr_interval" in y: h["sgr_interval"] = str(y["sgr_interval"])
+    if "time_reflect_interval" in y: h["time_reflect_interval"] = str(y["time_reflect_interval"])
 
     raw_tools = y.get("tools") or []
     if isinstance(raw_tools, list):
