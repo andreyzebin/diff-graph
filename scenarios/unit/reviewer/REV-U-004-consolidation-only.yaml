@@ -34,7 +34,7 @@ repo:
 # User-message override turns reviewer into a JUDGE-phase-only
 # agent — investigators are pre-cooked, agent must consolidate +
 # publish. Same prefilled-findings.md as REV-002.
-user_message_from: ../../../fixtures/user-messages/scen-009-prefilled-findings.md
+user_message_from: ../../../prompts/reviewer/consolidation-buy3get1.md
 
 pr_state:
   metadata:

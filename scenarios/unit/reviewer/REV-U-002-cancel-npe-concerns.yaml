@@ -29,7 +29,7 @@ repo:
 # Custom user-message — turns the reviewer into a one-shot
 # concerns-extractor (list concerns via reflect(), done(empty)).
 # Same file REV-U-001 uses; generic, no scenario-specific hints.
-user_message_from: ../../../fixtures/user-messages/concerns-only.md
+user_message_from: ../../../prompts/reviewer/concerns-only.md
 
 pr_state:
   metadata:

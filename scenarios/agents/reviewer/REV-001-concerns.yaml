@@ -44,7 +44,7 @@ input:
   trigger:
     type: auto
     agent: reviewer
-    user_message_from: "../../../fixtures/user-messages/concerns-only.md"
+    user_message_from: "../../../prompts/reviewer/concerns-only.md"
 
 expected_output:
   # Concerns-only mode: reviewer doesn't post or even necessarily

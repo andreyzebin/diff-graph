@@ -40,6 +40,12 @@ class UnitFixture:
     pr_state: dict[str, Any] = field(default_factory=dict)
     trigger: dict[str, Any] = field(default_factory=dict)
     user_message_from: Optional[str] = None
+    # Task-only override — preferred for per-agent unit tests because
+    # it keeps the environment framing (PR meta, diff hint, commits)
+    # shared with production. Plumbed as `--task-from` to diff-graph
+    # cli.py; the agent's `{task}` placeholder is filled with this
+    # content instead of the default `<name>.task.md` body.
+    task_from: Optional[str] = None
     # Optional ToolMocks fixture path — same shape integration tier
     # uses via setup.mocks. Plumbed as --mocks to cli.py so e.g.
     # dispatcher-tests can short-circuit spawn_agent(reviewer) with a
@@ -104,6 +110,17 @@ def load_fixture(fixture_path: str | Path) -> UnitFixture:
                 f"{p}: user_message_from -> {umf_path} does not exist"
             )
         umf = str(umf_path)
+    # task_from — same resolution path; preferred over user_message_from
+    # for per-agent unit tests (smaller blast radius — keeps PR framing).
+    tf_raw = raw.get("task_from")
+    tf: Optional[str] = None
+    if tf_raw:
+        tf_path = (p.parent / str(tf_raw)).resolve()
+        if not tf_path.exists():
+            raise FileNotFoundError(
+                f"{p}: task_from -> {tf_path} does not exist"
+            )
+        tf = str(tf_path)
     # mocks path — resolved relative to the fixture yaml, same as
     # scenario_loader does for setup.mocks. Fail loudly on missing
     # files so a typo doesn't silently run the agent against a real
@@ -128,6 +145,7 @@ def load_fixture(fixture_path: str | Path) -> UnitFixture:
         pr_state=dict(raw.get("pr_state") or {}),
         trigger=dict(raw.get("trigger") or {}),
         user_message_from=umf,
+        task_from=tf,
         mocks=mocks_resolved,
         expected_output=dict(raw.get("expected_output") or {}),
         tags=list(raw.get("tags") or []),
@@ -274,6 +292,8 @@ def run_unit_fixture(
             cmd.extend(["--provider", provider])
         if fixture.user_message_from:
             cmd.extend(["--user-message-from", fixture.user_message_from])
+        if fixture.task_from:
+            cmd.extend(["--task-from", fixture.task_from])
         if fixture.mocks:
             # cli.py --mocks=<path> ⇒ orchestra.ToolMocks intercepts the
             # named tool calls (e.g. spawn_agent → canned reviewer

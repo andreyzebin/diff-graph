@@ -22,7 +22,7 @@ repo:
   base_branch: master
   source_branch: feature/ORD-234-buy-3-get-1-free
 
-user_message_from: ../../../fixtures/user-messages/concerns-only.md
+user_message_from: ../../../prompts/reviewer/concerns-only.md
 
 pr_state:
   metadata:
