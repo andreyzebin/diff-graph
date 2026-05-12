@@ -163,12 +163,27 @@ def compile_prompts(
     registry = AgentRegistry(source_hash=combined_hash)
     log.info("compiling %d prompt files from %s", len(files), prompt_path)
 
+    # File classification per stem:
+    #   <name>.md          → primary, when present
+    #   <name>.system.md   → primary IFF <name>.md doesn't exist
+    #                        (consolidated 2-file layout: frontmatter
+    #                         lives on the system file itself)
+    #   <name>.user.md     → body fragment, never primary
+    primary_md_stems = {f.stem for f in files
+                        if not (f.stem.endswith(".system")
+                                or f.stem.endswith(".user"))}
+
     for filepath in files:
-        # Skip sibling files: <name>.system.md / <name>.user.md hold
-        # body fragments referenced by <name>.md, not standalone agents.
         stem = filepath.stem
-        if stem.endswith(".system") or stem.endswith(".user"):
+        if stem.endswith(".user"):
             continue
+        if stem.endswith(".system"):
+            # Promote .system.md to primary only when no plain .md
+            # sibling exists — otherwise the plain .md is the source
+            # of truth and this file is its body fragment.
+            base_stem = stem[: -len(".system")]
+            if base_stem in primary_md_stems:
+                continue
         try:
             text = filepath.read_text(encoding="utf-8")
             entry = _parse_prompt_file(text, filepath, llm, model)
@@ -310,15 +325,31 @@ def _parse_prompt_file(
     if len(user_parts) == 2:
         body, user_template = user_parts
 
-    # Convention-based external override: if `<name>.system.md` /
-    # `<name>.user.md` exist next to the file, they REPLACE whatever
-    # the body parsed above. Lets prompt authors keep methodology and
-    # per-call template in their own files without ceremony — the
-    # main file becomes a tiny YAML-frontmatter metadata block.
+    # Convention-based external override + base-stem normalization.
+    # Two file layouts supported:
+    #
+    # (a) Three-file: <name>.md (frontmatter), <name>.system.md (body
+    #     fragment replacing methodology), <name>.user.md (body
+    #     fragment replacing per-call template). The compile iteration
+    #     processes <name>.md as primary; siblings are convention-
+    #     based body overrides.
+    #
+    # (b) Two-file: <name>.system.md (frontmatter + methodology in
+    #     one file), <name>.user.md (frontmatter + per-call body).
+    #     The iteration promotes <name>.system.md to primary when no
+    #     <name>.md exists. Sibling lookup must search for
+    #     <name>.user.md (the BASE stem) rather than
+    #     <name>.system.user.md.
+    base_stem = filepath.stem if filepath else ""
+    if base_stem.endswith(".system"):
+        base_stem = base_stem[: -len(".system")]
     if filepath is not None:
-        sib_system = filepath.with_name(f"{filepath.stem}.system.md")
-        sib_user = filepath.with_name(f"{filepath.stem}.user.md")
-        if sib_system.exists():
+        sib_system = filepath.with_name(f"{base_stem}.system.md")
+        sib_user = filepath.with_name(f"{base_stem}.user.md")
+        # In two-file layout sib_system IS the file we're parsing —
+        # reading it back into body is a no-op. In three-file layout
+        # the sibling holds the real methodology body.
+        if sib_system.exists() and sib_system != filepath:
             body = sib_system.read_text(encoding="utf-8")
         if sib_user.exists():
             user_template = sib_user.read_text(encoding="utf-8")
@@ -327,7 +358,7 @@ def _parse_prompt_file(
 
     if not headers.get("agent"):
         if filepath:
-            headers["agent"] = filepath.stem
+            headers["agent"] = base_stem or filepath.stem
         else:
             return None
 
