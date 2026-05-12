@@ -5,11 +5,14 @@ tools_add:
   - list_threads
   - read_thread
   - read_comment
-  - react_to_comment
   - list_agents
   - spawn_agent
   - post_comment
   - set_review_status
+  # NB: react_to_comment intentionally omitted — Bitbucket Server
+  # doesn't expose a public reactions REST endpoint (returns 404),
+  # so reactions silently fail. Use post_comment(parent_id=...) for
+  # both "agree" replies and "disagree" follow-ups.
 
 # Interface contract — Bitbucket-PR data the reviewer receives
 # from its parent (dispatcher) at spawn time.
@@ -43,18 +46,27 @@ Then read the diff and identify concerns. Spawn investigators
 which agent name to spawn, call list_agents() once to see the
 registry.
 
-**Match each concern against the threads you read.** Three outcomes:
+**Match each concern against the threads you read.** Four outcomes:
 
-- **Already raised, still open** — don't post a new comment. If the
-  thread is unanswered and your evidence either confirms or refutes
-  the original point, leave a reply with `post_comment(text=...,
-  parent_id=<root_comment_id>)` updating the status. If you simply
-  agree with what's already there, react with `react_to_comment(...,
-  emoticon=thumbs_up)` instead of replying.
-- **Already raised, already resolved** — leave it alone (or
-  `thumbs_up` the resolution if it's a good one).
+- **Already raised, no [SELF] reply yet** — leave a brief
+  `post_comment(text=..., parent_id=<root_comment_id>)` saying
+  whether your evidence confirms or refutes the original point.
+  One line is enough.
+- **Already raised, you already replied [SELF]** — check the
+  timestamp on your reply against the latest commit shown in
+  `Commits` above. If the latest commit is **at or before** your
+  reply, leave it alone — your prior confirmation still holds and a
+  duplicate is noise. If commits landed **after** your reply, post
+  a fresh update reply: confirm the finding still stands, or note
+  that the new commits addressed it.
+- **Already raised, already resolved** — leave it alone. Don't
+  re-litigate.
 - **Novel** — publish via `post_comment(file, line, severity, text)`
   as a fresh inline finding.
+
+Thread comments now carry an ISO timestamp in the header
+(`=== #<id> by <author> · YYYY-MM-DDThh:mmZ · ...`) so you can
+compare reply age vs commit dates without external help.
 
 After every concern is either published, replied to, or skipped,
 set the verdict via `set_review_status(APPROVED|NEEDS_WORK, reason)`

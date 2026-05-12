@@ -425,6 +425,12 @@ def get_pr_comments(
             while stack:
                 node, parent_id, depth = stack.pop()
                 author_obj = node.get("author", {})
+                # Bitbucket Server returns `createdDate` as
+                # milliseconds since epoch (UTC). Surface it so the
+                # comment renderer can show timestamps and downstream
+                # logic can compare against commit times for staleness
+                # checks ("is my prior SELF reply older than the latest
+                # commit on this PR?").
                 comments.append({
                     "id":          node.get("id"),
                     "parent_id":   parent_id,
@@ -436,6 +442,7 @@ def get_pr_comments(
                     "author_slug": author_obj.get("slug", author_obj.get("name", "")),
                     "resolved":    node.get("state", "") == "RESOLVED",
                     "anchored":    bool(anchor.get("path")),
+                    "created_ms":  node.get("createdDate"),
                 })
                 # Reverse so that when popped from stack, replies are seen
                 # in chronological order. Bitbucket returns replies in
@@ -688,7 +695,30 @@ def react_to_pr_comment(
         f"{server_url}/rest/api/1.0/projects/{project}/repos/{repo}"
         f"/pull-requests/{pr_id}/comments/{comment_id}/reactions/{name}"
     )
-    _api_post(endpoint, token, ca_bundle, client_cert, {})
+    try:
+        _api_post(endpoint, token, ca_bundle, client_cert, {})
+    except HTTPError as exc:
+        if exc.code == 404:
+            # Bitbucket Server doesn't expose a public reactions REST
+            # endpoint (the feature is Cloud-only; on Server the UI
+            # has reactions on newer versions but they're not in the
+            # documented REST API). Surface a structured, actionable
+            # error so the calling agent can fall back to a reply
+            # via `post_comment(parent_id=...)` instead of raising
+            # an opaque HTTPError up the stack.
+            raise ReactionsUnsupportedError(
+                f"reactions API not available on this Bitbucket "
+                f"instance (404 on {endpoint}). Use "
+                f"post_comment(parent_id={comment_id}, text=...) for "
+                f"a textual reply instead."
+            ) from exc
+        raise
+
+
+class ReactionsUnsupportedError(RuntimeError):
+    """Raised when the Bitbucket reactions endpoint returns 404 —
+    server doesn't expose the API. Agents should fall back to a
+    reply comment."""
 
 
 def post_pr_comment(

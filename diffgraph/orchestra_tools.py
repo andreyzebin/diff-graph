@@ -561,12 +561,29 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                     "message": "no pr_url on ctx; running locally — reaction not posted"}
         if not comment_id:
             return {"status": "error", "message": "comment_id is required"}
-        from diffgraph.bitbucket import react_to_pr_comment
+        from diffgraph.bitbucket import (
+            react_to_pr_comment,
+            ReactionsUnsupportedError,
+        )
         try:
             react_to_pr_comment(pr_url, int(comment_id), emoticon)
             return {"status": "posted",
                     "comment_id": int(comment_id),
                     "emoticon": emoticon.strip().strip(":")}
+        except ReactionsUnsupportedError as exc:
+            # Bitbucket Server: no public reactions API. Tell the
+            # agent to use a textual reply instead of an emoji —
+            # status "unsupported" so the agent doesn't retry with a
+            # different emoticon hoping it'll succeed.
+            return {
+                "status": "unsupported",
+                "comment_id": int(comment_id),
+                "message": str(exc),
+                "hint": (
+                    "Use post_comment(parent_id=<comment_id>, text=...) "
+                    "to leave a reply instead of a reaction."
+                ),
+            }
         except Exception as exc:
             return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
 

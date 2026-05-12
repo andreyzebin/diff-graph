@@ -254,54 +254,40 @@ Coverage added in `tests/test_diff_tool_schemas.py`
 (`TestDiffListFilesChangesOnly` + `TestDiffListFilesPagination`)
 and `diffsearch/tests/test_list_outline.py` (`TestChangesOnly`).
 
-### 3.5 `react_to_comment` reactions don't appear in Bitbucket
+### ~~3.5 `react_to_comment` on Bitbucket Server — fixed via graceful 404~~
 
-Tool returns success in invocations.json but the reaction does not
-show on the Bitbucket Server PR. Seen on the SBLOOM-142 run
-(2026-05-12, trace `2473d2ef4520`): 8 `react_to_comment(thumbs_down)`
-calls on existing threads, all logged as completed at the orchestra
-layer; none of them visible to the human on the actual PR.
+Diagnosed: Bitbucket Server does **not** expose a public reactions
+REST endpoint. Calls to `/rest/api/1.0/.../comments/<id>/reactions/
+<emoticon>` return 404 across the SBLOOM instance (confirmed via
+direct invocation 2026-05-12 on PR 80). The feature exists in the
+UI on Data Center 8.x+ but is not in the documented REST API.
 
-Observations from the trace:
+Fixed in three places so the failure mode is loud but not fatal:
 
-- First 5 calls (step 18) logged `→ 4 lines` (a stringified result
-  body was returned), last 3 (step 19) logged no return arrow at all
-  — suggests at least the latter half hit an error path silently.
-- The reviewer's own brand-new findings were posted via
-  `post_comment` (5 of them, all visible on PR) — so the underlying
-  Bitbucket auth + comment endpoint works. The reactions endpoint
-  is the broken part.
+- `bitbucket.react_to_pr_comment` catches `HTTPError(code=404)`
+  specifically and re-raises as a new
+  `ReactionsUnsupportedError(RuntimeError)` subclass with an
+  actionable message pointing at `post_comment(parent_id=...)`.
+- `orchestra_tools.react_to_comment` translates that exception into
+  a structured `{"status": "unsupported", "hint": "...", ...}`
+  result. Non-404 errors still surface as `{"status": "error"}` so
+  generic transport blips aren't silently misclassified.
+- `reviewer.user.md` drops `react_to_comment` from `tools_add`
+  entirely for production. The companion staleness rule (timestamps
+  on every read_thread / list_threads header) gives reviewer a
+  concrete way to use `post_comment(parent_id=...)` for both
+  agree-with-existing-finding and refute-existing-finding paths —
+  emoji reactions would have been a thinner signal anyway.
 
-**Likely causes** (investigate one at a time):
+Coverage: `tests/test_react_unsupported.py` (4 tests) pins the 404→
+unsupported translation and confirms non-404 errors still get the
+generic `error` status.
 
-1. Bitbucket Server's reactions API is **not** the public REST path
-   we're calling — reactions on Server may be an undocumented
-   internal endpoint or unavailable on this version. Check the
-   server's Atlassian docs version and confirm a public reactions
-   endpoint exists.
-2. We hit the right endpoint but with the wrong emoticon ID —
-   `thumbs_down` is a name from the LLM-facing schema; the API may
-   expect a canonical emoji key like `:thumbsdown:` or a numeric
-   reaction-type ID.
-3. Bot account lacks the permission to react on comments authored
-   by the PR author. Same auth works for posting comments because
-   posting is a different scope.
-
-**Fixes:**
-
-- **Reproduce first** — manual `curl` against the Bitbucket reactions
-  endpoint with the bot's bearer token. If 404/403 → diagnose at the
-  API level.
-- **Then** either: fix the request shape (`providers/bitbucket_pr.py`
-  reaction call), surface the error from the tool result (currently
-  silent on failure), or remove `react_to_comment` from the agent's
-  tool surface if Bitbucket Server doesn't support it.
-
-**Where:** `diffgraph/providers/bitbucket_pr.py` (reaction call),
-`diffgraph/orchestra_tools.py` (`react_to_comment` registration —
-needs to propagate errors back to the agent so it doesn't keep
-trying), reviewer/dispatcher prompts (consider dropping the tool if
-the API is genuinely absent).
+If we ever need reactions on Cloud (Bitbucket Cloud DOES expose a
+reactions API), re-add `react_to_comment` to the user-layer
+`tools_add` for that environment specifically — the framework code
+stays as-is, the prompt-level extension surface lets us turn it on
+without touching the registry.
 
 ---
 

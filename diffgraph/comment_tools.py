@@ -26,7 +26,30 @@ threads keep working unchanged.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Optional
+
+
+def _fmt_created(c: dict) -> str:
+    """Render a comment's `created_ms` (milliseconds since UTC epoch,
+    as returned by Bitbucket Server) as a compact ISO date+time the
+    LLM can compare against commit timestamps to detect stale prior
+    replies ("my SELF comment from 2026-05-01 is older than the
+    latest commit on 2026-05-10 → my confirmation may not still hold").
+
+    Returns "" when `created_ms` is missing/unparsable — older fakes
+    or benches that don't populate the field render unchanged.
+    """
+    ms = c.get("created_ms")
+    if ms is None:
+        return ""
+    try:
+        dt = datetime.fromtimestamp(int(ms) / 1000.0, tz=timezone.utc)
+        # ISO-8601 to the minute, UTC. Seconds are noise for staleness
+        # decisions; commit times have similar resolution.
+        return dt.strftime("%Y-%m-%dT%H:%MZ")
+    except (TypeError, ValueError):
+        return ""
 
 from .authors import resolve_author
 
@@ -113,6 +136,14 @@ def list_threads(
             resolve_author(c, bot_user=bot_user, subject_pattern=subject_pattern).is_self
             for c in group
         )
+        # Latest activity in the subtree — `created_ms` is the
+        # comment-creation timestamp. Use the max across the root +
+        # all replies so the listing reflects when the thread was
+        # LAST touched, not when it was opened.
+        latest_ms = max(
+            (c.get("created_ms") for c in group if c.get("created_ms") is not None),
+            default=None,
+        )
         anchor = ""
         if root.get("file"):
             anchor = f" @ {root['file']}:{root.get('line') or 0}"
@@ -123,6 +154,7 @@ def list_threads(
             "n_replies": n_replies,
             "has_self": has_self_in_subtree,
             "anchor": anchor,
+            "latest_ts": _fmt_created({"created_ms": latest_ms}),
         })
 
     if sort == "most_active":
@@ -152,7 +184,8 @@ def list_threads(
             else (f"{s['n_replies']} reply" if s["n_replies"] == 1
                   else f"{s['n_replies']} replies")
         )
-        out.append(f"#{s['id']} by {s['author']} · {replies_str}{s['anchor']}{self_tag}")
+        ts_part = f" · last {s['latest_ts']}" if s["latest_ts"] else ""
+        out.append(f"#{s['id']} by {s['author']} · {replies_str}{s['anchor']}{self_tag}{ts_part}")
         out.append(f"  {s['first_line']}")
 
     has_more = start + len(page) < total
@@ -236,9 +269,11 @@ def read_thread(
         if c.get("file"):
             anchor = f" @ {c['file']}:{c.get('line') or 0}"
         focus_marker = " ← FOCUS" if c["id"] == comment_id else ""
+        ts = _fmt_created(c)
+        ts_part = f" · {ts}" if ts else ""
 
         out.append(
-            f"=== #{c['id']} by {author_label} · {position} · "
+            f"=== #{c['id']} by {author_label}{ts_part} · {position} · "
             f"{replies_str}{anchor}{focus_marker} ==="
         )
         if len(body) > per_comment_cap_chars:
@@ -289,4 +324,6 @@ def read_comment(
     anchor = ""
     if c.get("file"):
         anchor = f" @ {c['file']}:{c.get('line') or 0}"
-    return f"=== #{c['id']} by {author_label} · {position}{anchor} ===\n{body}"
+    ts = _fmt_created(c)
+    ts_part = f" · {ts}" if ts else ""
+    return f"=== #{c['id']} by {author_label}{ts_part} · {position}{anchor} ===\n{body}"
