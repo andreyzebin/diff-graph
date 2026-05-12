@@ -1,9 +1,6 @@
 ---
 dispatch_mode: native
-tools: [diff_list_files, diff_read_file, diff_outline, diff_search,
-        list_threads, read_thread, read_comment,
-        post_comment, react_to_comment, set_review_status,
-        spawn_agent, reflect, done]
+tools_add: [spawn_agent, post_comment, set_review_status]
 ---
 PR: {pr_title}
 {pr_description}
