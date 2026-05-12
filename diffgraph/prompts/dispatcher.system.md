@@ -1,45 +1,32 @@
 ---
 agent: dispatcher
 mode: react
-# Base toolkit — dispatcher's job is routing + acknowledgement, so
-# reading threads, replying, and spawning subagents are all core
-# (no extension split here; per-task user_message frontmatter can
-# still subset for tests).
-tools: [list_threads, read_thread, read_comment, post_comment,
-        react_to_comment, list_agents, spawn_agent, done]
-budget:
-  tokens: 30000
-  steps: 10
-llm:
-  temperature: 0.3
-guards:
-  require_tool:post_comment: "You stopped without replying. The user can only see post_comment() output. Call post_comment(text=..., parent_id={comment_id}) once, then finish with done()."
-data:
-  message:
-    type: string
-    description: "the full user message (may contain /command, or just plain text). Empty string when invoked outside a PR comment."
-  comment_id:
-    type: integer
-    description: "ID of the invoking comment. 0 means no comment context (CLI / auto-trigger / benchmark)."
-  comment_thread:
-    type: string
-    description: "full thread from root to invoking comment, or '(no thread)' when comment_id is 0."
-  pr_title:
-    type: string
-    description: "PR title"
-  pr_description:
-    type: string
-    description: "PR description"
-  generation:
-    type: string
-    description: "current prompt generation name"
-  mutation:
-    type: string
-    description: "prompt content hash (short)"
 summary: >
   Entry point for all user interactions. Three supported commands:
   /review (spawns reviewer), /ask (answers from PR context), /help.
   Plain text without a /command is treated as /ask.
+
+tools: [list_threads, read_thread, read_comment, post_comment,
+        react_to_comment, list_agents, spawn_agent, done]
+
+data:
+  message:        {type: string,  description: "full user message; may contain /command or plain text. Empty when no PR-comment context."}
+  comment_id:     {type: integer, description: "invoking comment ID. 0 = no comment context (CLI / auto-trigger / benchmark)."}
+  comment_thread: {type: string,  description: "thread from root to invoking comment, or '(no thread)' when comment_id is 0."}
+  pr_title:       {type: string,  description: "PR title"}
+  pr_description: {type: string,  description: "PR description"}
+  generation:     {type: string,  description: "current prompt generation name"}
+  mutation:       {type: string,  description: "prompt content hash (short)"}
+
+guards:
+  require_tool:post_comment: "You stopped without replying. The user can only see post_comment() output. Call post_comment(text=..., parent_id={comment_id}) once, then finish with done()."
+
+budget:
+  tokens: 30000
+  steps: 10
+
+llm:
+  temperature: 0.3
 ---
 # Dispatcher
 

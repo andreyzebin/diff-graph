@@ -1,28 +1,27 @@
 ---
 agent: investigator
 mode: react
-# Base toolkit — reading + thinking + finishing. Investigator
-# never posts to the PR (the reviewer publishes its findings)
-# and doesn't spawn — investigators return findings via done().
-tools: [diff_list_files, diff_read_file, diff_outline, diff_search,
-        list_threads, read_thread, read_comment, reflect, done]
-budget:
-  tokens: 15000
-  steps: 20
-reflect_interval: 3
-llm:
-  temperature: 0
-data:
-  commits:
-    type: string
-    from: pr_context.commits
-  focus:
-    type: string
-    description: "high-level concern to investigate (from lead)"
 summary: >
   Focused code reviewer. Receives a high-level concern, investigates
   with tools, uses SGR to track reasoning, returns findings with
   evidence.
+
+# Reading + thinking + finishing. Investigator never posts (reviewer
+# publishes) and never spawns — findings flow back via done().
+tools: [diff_list_files, diff_read_file, diff_outline, diff_search,
+        list_threads, read_thread, read_comment, reflect, done]
+
+data:
+  commits: {type: string, from: pr_context.commits}
+  focus:   {type: string, description: "high-level concern to investigate (from lead)"}
+
+budget:
+  tokens: 15000
+  steps: 20
+reflect_interval: 3
+
+llm:
+  temperature: 0
 ---
 # Investigator
 

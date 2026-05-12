@@ -1,30 +1,27 @@
 ---
 agent: reviewer
 mode: react
-# Base toolkit — minimum surface every reviewer task needs: read
-# the diff, track working memory, finish. Everything else (thread
-# reading, publishing, delegation, verdict) is per-task via the
-# user message's `tools_add:` frontmatter — including reviewer.user.md
-# for production.
-tools: [diff_read_file, diff_outline, diff_list_files, diff_search,
-        reflect, done]
-budget:
-  tokens: 50000
-  steps: 50
-# Step-cadence reflect — NUDGE at 5 steps without reflect,
-# FORCE_REFLECT at 10. Wall-clock pressure is handled by the always-on
-# TimeBudgetPusher (set wall budget in `budget` above to engage it).
-reflect_interval: 5
-llm:
-  temperature: 0.2
-data:
-  commits:
-    type: string
-    from: pr_context.commits
 summary: >
   Code review lead. Analyzes a PR diff, identifies concerns scaled
   to diff size, spawns focused investigators, consolidates findings.
   Three-phase methodology: analyze, investigate (one round), judge.
+
+# Minimum surface every reviewer task needs. Thread reading,
+# delegation, publishing, and verdict opt in per-task via the user
+# message's `tools_add:` — reviewer.user.md adds the production set.
+tools: [diff_read_file, diff_outline, diff_list_files, diff_search,
+        reflect, done]
+
+data:
+  commits: {type: string, from: pr_context.commits}
+
+budget:
+  tokens: 50000
+  steps: 50
+reflect_interval: 5
+
+llm:
+  temperature: 0.2
 ---
 # Reviewer
 
