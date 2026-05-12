@@ -422,26 +422,82 @@ Prompt-defined agent framework. Agents defined by Markdown files with YAML front
 
 **Agent isolation for testing.** `--mocks <fixture.yaml>` short-circuits any `spawn_agent` / `read_file` / etc. tool call with a canned response (Mockito-style). `--user-message-from <file>` overrides the agent's default user template, so the same reviewer can be tested against different task framings (concerns-only, consolidation-only, full pipeline) without changing the system prompt. `--invocations-out <path>` captures every tool call to a JSON file for the test judge to verify against. See `orchestra/tool_mocks.py` for the fixture format.
 
-### Prompt file format
+### Prompt architecture — layered, extension-friendly
 
-```
-@agent: investigator
-@mode: react
-@capabilities: sgr
-@tools: find_files, read_file, search
-@budget: 15000 tokens, 20 steps
-@llm: temperature=0
-@guards:
-  text_response: "Use tools to investigate, don't just return text."
-@data:
-  diff_summary: string -- from:pr_context.diff_summary
-  focus: string -- specific concern to investigate
-@summary: Investigates one aspect of a PR with tools and SGR.
+Every agent ships as **two sibling files** under `diffgraph/prompts/`:
+
+| File | Layer | What lives here |
+|---|---|---|
+| `<agent>.system.md` | **system / methodology** | Stable agent identity: metadata, base `@tools` (minimum surface), data schema, guards, budget. Body = abstract *how-to* (severity rubric, finding shape, diff-view contract). |
+| `<agent>.user.md` | **user / task** | Per-call task wording (PR placeholders + the literal request). Optional YAML frontmatter declares per-task extensions: `tools_add`, `extra_tools`, `dispatch_mode`. |
+
+The system layer is the **closed-for-modification base class**; the user layer is the **open-for-extension** task wrapper — the prompt-side Liskov / Open–Closed split. The same `reviewer.system.md` is shared by production, by every isolated test prompt, and by every consolidation/concerns-text fixture; only the user layer changes per call.
+
+```yaml
+# diffgraph/prompts/reviewer.system.md  (stable methodology + base toolkit)
 ---
-You are investigating a specific concern in a code review.
-{diff_summary}
-YOUR TASK: {focus}
+agent: reviewer
+mode: react
+# Minimum surface every reviewer task needs. Per-task extensions
+# (publishing, delegation, verdict) opt in via the user layer.
+tools: [diff_read_file, diff_outline, diff_list_files, diff_search,
+        reflect, done]
+budget: { tokens: 50000, steps: 50 }
+data:
+  commits: { type: string, from: pr_context.commits }
+---
+Code review lead. Execute the task described in the user message.
+Diff view, severity rubric, finding shape, … (the *how*).
 ```
+
+```yaml
+# diffgraph/prompts/reviewer.user.md  (production task layer)
+---
+# Extension points — additive only. `tools:` (full-replace) is
+# rejected by the compiler at this layer to stop a per-task prompt
+# from silently overriding the agent's base contract.
+tools_add: [list_threads, read_thread, list_agents, spawn_agent,
+            post_comment, set_review_status]
+---
+PR: {pr_title}
+{pr_description}
+
+Review this PR end-to-end. Spawn investigators for any concern that
+needs depth; consolidate; publish via post_comment; verdict via
+set_review_status; finish with done(findings).
+```
+
+```yaml
+# diffgraph/test_prompts/reviewer/concerns-text.md  (test task layer)
+---
+# Replace the publishing extension with a capture-style text channel.
+# Works on tool_choice=required providers (DeepSeek) that can't emit
+# a tool-less text turn. The judge reads `text_answer.text` back
+# via assert_via=[intended_text].
+tools_add: [text_answer]
+extra_tools:
+  - name: text_answer
+    description: "Submit your final concerns list. Plain text, one per line."
+    parameters:
+      type: object
+      properties: { text: { type: string } }
+      required: [text]
+---
+PR: {pr_title}
+{pr_description}
+
+Identify the concerns this diff raises and submit them via
+text_answer(text=...). Then call done(findings=[]).
+```
+
+#### Why two layers, not one
+
+- **Isolation**: a unit test swaps the user layer (`--user-message-from <file>`) and runs the same reviewer system prompt against a different task framing — concerns-text, consolidation-only, full pipeline — without touching production methodology. The `concerns-only` regression-test fixture, the `consolidation-buy3get1` consolidation fixture, and the production review all share **one** system prompt.
+- **Testability**: extension points are explicit (`tools_add`, `extra_tools`, `dispatch_mode`), so each test prompt declares the exact surface it needs and the compiler validates it. No hidden inheritance, no monkey-patching.
+- **Compose, don't override**: `tools_add` is additive — the base toolkit is always present. A user-layer `tools:` (full-replace) raises at compile time: it would silently mask the agent's base contract, which is exactly the class of bug the layered model exists to prevent.
+- **Capture tools as a per-task channel**: `extra_tools` declares one-off tools (e.g. `text_answer`, `submit_answer`) registered into the registry just for this run. Their handler echoes args, so the judge can read the agent's intended deliverable back from `invocations.json` without a side-channel.
+
+The same model extends to dispatcher and investigator: `<agent>.system.md` defines the methodology contract; every concrete task — production or test — extends it through a `<agent>.user.md` (or `test_prompts/<agent>/<case>.md`) with frontmatter-declared extensions.
 
 ### Key features
 
@@ -493,16 +549,17 @@ diffgraph/                   Code review domain
 +-- providers/
     +-- bitbucket_pr.py      Bitbucket REST API
     +-- git_repo.py          Git clone/fetch/diff (header | ssh)
-+-- prompts/
-    +-- dispatcher.md          YAML frontmatter (metadata)
-    +-- dispatcher.system.md   Routing rules + thread/SELF awareness
++-- prompts/                   Two-file layout per agent: system + user
+    +-- dispatcher.system.md   Frontmatter (@tools, budget) + routing/thread methodology
     +-- dispatcher.user.md     Per-call template ({comment_thread}, {message}, …)
-    +-- reviewer.md            YAML frontmatter
-    +-- reviewer.system.md     Tools as capabilities + severity + AGENTS.md rule
-    +-- reviewer.user.md       Default task: end-to-end review
-    +-- investigator.md        YAML frontmatter
-    +-- investigator.system.md Tools + reflect rules + finding shape
+    +-- reviewer.system.md     Frontmatter + severity rubric + finding shape + AGENTS.md rule
+    +-- reviewer.user.md       Production task: tools_add publishing+delegation, end-to-end review
+    +-- investigator.system.md Frontmatter + reflect rules + investigation methodology
     +-- investigator.user.md   Default task: investigate one focused concern
++-- test_prompts/              Sibling test-only user layers (same system base)
+    +-- reviewer/
+        +-- concerns-text.md       tools_add text_answer — concerns-as-text deliverable
+        +-- consolidation-*.md     tools_add publishing — hardcoded findings → publish
 
 diffsearch/                  Virtual unified diff filesystem
 webhook/                     Bitbucket webhook router with A/B routing
