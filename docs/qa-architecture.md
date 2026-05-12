@@ -278,6 +278,91 @@ score axis.
   Fire `select-golden` over the deploy window, mine the
   rejection-heavy PRs.
 
+## Trace data model — uniform across agent modes
+
+Every agent in the system — reviewer, investigator, dispatcher,
+judge, lead — runs through the same five-event lifecycle in the
+trace `events` table. The trace UI (`/qa/sessions/<run_id>`) and
+the diagram builder (`tracing/server/diagram.py`) are
+kind-agnostic: they don't branch on agent name or `runs.kind` or
+the LLM provider. They just walk the events.
+
+### Two step shapes
+
+A step in any agent's run is one of two shapes:
+
+```
+   TOOL step                           TEXT step
+   ─────────                           ─────────
+   agent → system:<X>: call(args)      agent → system:human: <text>
+   system:<X> → agent: result          (no paired result)
+
+   The LLM dispatched one or more       The LLM returned only text —
+   tools at this step (`done`,          no tool_calls. This is how
+   `diff_read_file`, `post_comment`,    mode:single agents (judges,
+   `spawn_agent`, …). Each call has     lead agents that don't loop)
+   a matching result on the next        deliver their output. Text
+   step's request (or — for control-    "to the human" is treated as
+   flow tools like `done` /             a tool call to a virtual
+   `reflect` / `spawn_agent` — a        `system:human` target —
+   self-arrow or parent-bound arrow).   same renderer path, no
+                                        kind-special case.
+```
+
+The diagram speaks four event kinds — `tool_call`, `tool_result`,
+`agent_spawn`, `agent_done`. **That's it.** Previously there were
+also `agent_text` and `judge_verdict` kinds; both got folded into
+`tool_call` to `system:human` so single-shot agents render with
+the same code path as anything else.
+
+### Five lifecycle events in `events` table
+
+```
+   agent_started          one per run, no step
+   ┌── agent_llm_request   step N — what we sent to the LLM
+   │   agent_llm_response  step N — what the LLM returned (content
+   │                                + tool_calls, possibly empty)
+   │   agent_step          step N — high-level marker (tools=...,
+   │                                text_preview, token usage)
+   │   agent_tool_request  step N — per-tool dispatch (one per
+   │                                tool_call in the response)
+   │   agent_tool_response step N — per-tool result
+   │   agent_tool_result   step N — terminal tool-side event
+   ├── ... (next step repeats the same block)
+   agent_done             one per run, no step
+```
+
+`_run_react` (loop) and `_run_single` (one-shot) share one
+helper — `Agent._observe_llm_call(step, messages, tools, do_call,
+mode)` — which owns the `llm.request` OTel span, payload
+stashing, and usage stamping. Both modes emit the same
+AGENT_LLM_REQUEST / AGENT_LLM_RESPONSE / AGENT_STEP / AGENT_DONE
+events. Single-shot just doesn't loop after step 0.
+
+This is why **a judge's run looks like a one-step agent in
+`/qa/sessions`**: it goes through `_run_single` → emits the
+canonical five events → the diagram walks them like any other
+agent. No fixture-side adapter, no kind detection in the
+renderer.
+
+### Step API contract (UI consumers)
+
+The three `/api/runs/{run_id}/step/{agent_id}/{step}/*` endpoints
+return a uniform shape regardless of step kind:
+
+| Endpoint | Returns | Always-present for |
+|---|---|---|
+| `/messages` | full `messages` array — system + user + prior tool history. Same source for "request history" tab. | every step that emitted AGENT_LLM_REQUEST |
+| `/call` | `{content, tool_calls}` envelope — the LLM's full assistant message. UI renders whichever is non-empty (tool args list for tool steps, text body for text-only steps). | every step that emitted AGENT_LLM_RESPONSE |
+| `/result` | delta tool messages from the NEXT step's request — what the tools returned. 404 + "(no tool result for this step)" is the legit case for text-only steps and final-step `done`. | every step that had a successor step |
+
+The session UI's `openStepDetails(agentId, step)` opens three
+parallel-loaded tabs against these endpoints. History is the
+step's OWN messages — what the agent saw when deciding step N —
+so it works for the LAST step too (final `done` / final text
+step). Previously it fetched step N+1's messages, which 404'd
+for the last step.
+
 ## Repository topology
 
 The QA system spans **four sibling repositories** under

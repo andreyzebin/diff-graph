@@ -200,6 +200,61 @@ TRACE_BASE_PATH=/evo/traces-ui python cli.py serve
 
 All template URLs (static, API, WebSocket, links) use the prefix automatically.
 
+## Trace data model
+
+Every agent — reviewer, investigator, dispatcher, judge, lead —
+writes the same five lifecycle events to `events`:
+
+```
+   agent_started          one per run, no step
+   agent_llm_request      step N — what was sent to the LLM
+   agent_llm_response     step N — content + tool_calls (either
+                                    can be empty)
+   agent_step             step N — high-level marker
+   agent_tool_request /
+   agent_tool_response /
+   agent_tool_result      step N — only when tool_calls non-empty
+   agent_done             one per run, no step
+```
+
+`orchestra.Agent._run_single` and `Agent._run_react` go through
+the shared `Agent._observe_llm_call(...)` helper, so single-shot
+agents (mode:single — judges, lead agents that don't loop) emit
+the same step shape as one step of a ReAct loop.
+
+The diagram builder (`server/diagram.py`) walks events into 4
+canonical kinds:
+
+```
+   tool_call        agent → system:<X>     dispatched a tool
+   tool_result      system:<X> → agent     tool returned
+   agent_spawn      parent → child         spawn_agent()
+   agent_done       child → parent         done() from a child
+```
+
+That's it — no `agent_text`, no `judge_verdict`. A text-only step
+(LLM returned content but no tool_calls — judges, mode:single
+agents) emits a `tool_call` to `system:human` with the text as
+label. The renderer doesn't branch on agent kind; everything goes
+through the same four-kind path.
+
+### Two step shapes
+
+| Shape | Events | Endpoint behavior |
+|---|---|---|
+| **TOOL step** | tool_call → tool_result | `/call` returns `{tool_calls: [...]}`; `/result` returns the tool delta |
+| **TEXT step** | tool_call (no result) | `/call` returns `{content: "..."}`; `/result` 404s with `"(no tool result for this step)"` |
+
+The `/api/runs/{run_id}/step/{agent_id}/{step}/call` endpoint
+returns the assistant message envelope `{content, tool_calls}`
+for every step — UI renders whichever the LLM produced. Same
+endpoint shape for text-only and tool-bearing steps.
+
+The `/messages` endpoint returns the step's OWN LLM request
+(system + user + prior tool history) — that's what `/qa/sessions`
+shows in the "history" tab. Works for the last step too, including
+final `done` and final text-only steps.
+
 ## Python API
 
 ```python
