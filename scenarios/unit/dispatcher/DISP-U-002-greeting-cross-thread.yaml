@@ -55,20 +55,38 @@ pr_state:
   # the user's reproducer. Comment id=100 lives at parent_id=0 (root)
   # — completely separate from our trigger comment.
   comments:
+    # Sibling thread — alice's /review request in a SEPARATE root.
+    # The dispatcher must NOT see this when handling the greeting
+    # below; if it does, the "no thread crosstalk" invariant breaks.
     - id: 100
       parent_id: 0
       text: "/review"
       author:
         name: "alice"
         slug: "alice"
+    # The greeting itself — the trigger comment. Non-zero id so the
+    # production dispatcher correctly classifies this as a real
+    # comment trigger ("user posted `hi!` and waited for a reply")
+    # rather than `comment_id=0` (auto-trigger / CLI / benchmark =
+    # the dispatcher's spawn-the-reviewer path). Without the
+    # non-zero id qwen3-6 follows the auto-trigger branch verbatim
+    # ("call spawn_agent when comment_id is 0") and the test
+    # mis-pins a routing decision the production prompt explicitly
+    # ASKS for in the auto-trigger case.
+    - id: 200
+      parent_id: 0
+      text: "hi!"
+      author:
+        name: "alice"
+        slug: "alice"
 
 trigger:
-  # Fresh root comment, plain text — neither @mention nor /command.
-  # Trigger comment id explicitly NOT a reply to comment 100 — it's
-  # a fresh root, so the trigger thread does NOT contain /review.
+  # Real comment trigger (id=200) — not auto-trigger. The
+  # dispatcher's "auto-trigger → spawn reviewer" rule must NOT fire
+  # because we ARE handling a user-posted comment.
   type: comment
   text: "hi!"
-  comment_id: 0
+  comment_id: 200
 
 agent_data: {}
 
