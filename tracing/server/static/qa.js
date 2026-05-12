@@ -19,24 +19,32 @@ document.addEventListener('htmx:afterSettle', (e) => {
 });
 
 // ── Time formatting ─────────────────────────────────────────────────
-// Server stores all timestamps in UTC ISO (e.g. 2026-05-09T16:59:30+00:00);
-// these helpers render them in the BROWSER's locale and timezone so
-// the user always sees their wall-clock time. fmtLocal returns
-// "YYYY-MM-DD HH:MM:SS" in local tz; fmtLocalTime returns "HH:MM:SS"
-// only — used for in-day cells like lease_expires_at.
+// Server stores timestamps in two shapes:
+//   - ISO-T:   '2026-05-09T16:59:30+00:00'  (qa_tasks, qa_plans, …)
+//   - SQLite:  '2026-05-12 20:55:37'        (datetime() output, e.g. spans)
+// The SQLite shape has no TZ marker and Safari refuses to parse it.
+// `_parseUtc` normalises both: space→T, append `Z` if no offset, so
+// the value is unambiguously UTC before we render in browser-local tz.
+window._parseUtc = function (iso) {
+  if (!iso) return null;
+  let s = String(iso);
+  if (!s.includes('T')) s = s.replace(' ', 'T');
+  // Anything ending in a digit (no Z, no offset) is UTC by convention here.
+  if (!/[zZ]$/.test(s) && !/[+-]\d{2}:?\d{2}$/.test(s)) s += 'Z';
+  const d = new Date(s);
+  return isNaN(d) ? null : d;
+};
 window.fmtLocal = function (iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d)) return iso;
+  const d = window._parseUtc(iso);
+  if (!d) return iso || '';
   // YYYY-MM-DD HH:MM:SS in local tz, no seconds-fraction, no offset.
   const pad = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ` +
          `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
 window.fmtLocalTime = function (iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d)) return iso;
+  const d = window._parseUtc(iso);
+  if (!d) return iso || '';
   const pad = n => String(n).padStart(2, '0');
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
@@ -44,9 +52,8 @@ window.fmtLocalTime = function (iso) {
 // other year → YYYY-MM-DD HH:MM. Use this in dense lists where the
 // "everything is from today" common case wastes column width.
 window.fmtLocalSmart = function (iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d)) return iso;
+  const d = window._parseUtc(iso);
+  if (!d) return iso || '';
   const pad = n => String(n).padStart(2, '0');
   const now = new Date();
   const sameDay = d.getFullYear() === now.getFullYear() &&
