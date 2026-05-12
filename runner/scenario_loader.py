@@ -8,6 +8,29 @@ from typing import Any
 import yaml
 import jsonschema
 
+
+# ── Path resolution: relative-to-yaml or diffgraph:<path> ─────────────────
+#
+# Mirrors `runner/run_unit.py:_resolve_prompt_path`. Two URI shapes:
+#   - plain relative path → relative to the scenario yaml's directory
+#   - `diffgraph:<path>`  → relative to diff-graph repo root (env
+#                            DIFFGRAPH_REPO, default /home/andrey/...)
+#
+# The diffgraph: shape lets task prompts live in diff-graph next to
+# production agent prompts (diffgraph/test_prompts/<agent>/<file>.md)
+# so unit + integration scenarios + production share one source of
+# truth, avoiding drift.
+
+
+_DIFFGRAPH_REPO_DEFAULT = "/home/andrey/repos/diff-graph"
+
+
+def _resolve_prompt_path(spec: str, fixture_dir: Path) -> Path:
+    if spec.startswith("diffgraph:"):
+        repo = os.environ.get("DIFFGRAPH_REPO", _DIFFGRAPH_REPO_DEFAULT)
+        return Path(repo).expanduser() / spec[len("diffgraph:"):]
+    return (fixture_dir / spec).resolve()
+
 SCENARIO_SCHEMA = {
     "type": "object",
     "required": ["id", "name", "input", "expected_output"],
@@ -304,9 +327,10 @@ def load_scenario(path: Path) -> Scenario:
     mocks_rel = str(setup_data.get("mocks", "") or "")
     mocks_path: Path | None = None
     if mocks_rel:
-        # Resolve relative to the scenario file's directory so test
-        # authors don't have to hardcode absolute paths.
-        mp = (path.parent / mocks_rel).resolve()
+        # Resolve relative to scenario yaml (default) OR via
+        # diffgraph: URI prefix → diff-graph repo root. See
+        # _resolve_prompt_path docstring for the rationale.
+        mp = _resolve_prompt_path(mocks_rel, path.parent)
         if not mp.exists():
             raise FileNotFoundError(
                 f"scenario {path}: setup.mocks → {mp} does not exist"
@@ -329,7 +353,7 @@ def load_scenario(path: Path) -> Scenario:
     user_message_from_rel = str(trig_data.get("user_message_from", "") or "")
     user_message_path: Path | None = None
     if user_message_from_rel:
-        candidate = (path.parent / user_message_from_rel).resolve()
+        candidate = _resolve_prompt_path(user_message_from_rel, path.parent)
         if not candidate.exists():
             raise FileNotFoundError(
                 f"scenario {path}: trigger.user_message_from → {candidate} does not exist"

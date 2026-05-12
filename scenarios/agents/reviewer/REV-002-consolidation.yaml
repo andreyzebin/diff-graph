@@ -45,7 +45,7 @@ input:
   trigger:
     type: auto
     agent: reviewer
-    user_message_from: "../../../prompts/reviewer/consolidation-buy3get1.md"
+    user_message_from: "diffgraph:diffgraph/test_prompts/reviewer/consolidation-buy3get1.md"
 
 expected_output:
   # Consolidation mode: reviewer publishes via post_comment — match

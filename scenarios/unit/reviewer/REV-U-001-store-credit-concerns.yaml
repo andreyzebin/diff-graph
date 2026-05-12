@@ -27,7 +27,7 @@ repo:
 # concerns-extractor. Without this the reviewer follows its default
 # flow (spawn investigators, post inline comments, set verdict),
 # which is exactly the wrong behaviour for a unit test.
-user_message_from: ../../../prompts/reviewer/concerns-only.md
+user_message_from: diffgraph:diffgraph/test_prompts/reviewer/concerns-only.md
 
 pr_state:
   metadata:

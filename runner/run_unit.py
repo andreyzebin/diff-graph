@@ -78,6 +78,33 @@ class UnitRunResult:
     attempt_dir: Optional[Path] = None
 
 
+# ── Path resolution: relative-to-yaml or diffgraph:<path> ─────────────────
+
+
+_DIFFGRAPH_REPO_DEFAULT = "/home/andrey/repos/diff-graph"
+
+
+def _resolve_prompt_path(spec: str, fixture_dir: Path) -> Path:
+    """Resolve a prompt/mocks file path from a fixture yaml field.
+
+    Two URI shapes supported:
+
+    - Plain relative (default): `../../path.md` → resolved against
+      the fixture yaml's directory. Stays inside the bench repo.
+    - `diffgraph:<path>`: resolved against the diff-graph repo root
+      (env `DIFFGRAPH_REPO`, default `/home/andrey/repos/diff-graph`).
+      Used when a prompt lives next to production agent prompts in
+      diff-graph/diffgraph/test_prompts/ — sharing a single source
+      of truth across unit + integration scenarios + production
+      avoids drift.
+    """
+    import os as _os
+    if spec.startswith("diffgraph:"):
+        repo = _os.environ.get("DIFFGRAPH_REPO", _DIFFGRAPH_REPO_DEFAULT)
+        return Path(repo).expanduser() / spec[len("diffgraph:"):]
+    return (fixture_dir / spec).resolve()
+
+
 def load_fixture(fixture_path: str | Path) -> UnitFixture:
     """Parse a fixture yaml. The yaml may live anywhere — referenced
     repo path is resolved as-is (absolute) from the repo.source field."""
@@ -94,24 +121,30 @@ def load_fixture(fixture_path: str | Path) -> UnitFixture:
         raise FileNotFoundError(
             f"{p}: repo.source {repo_source_path} is not a git checkout"
         )
-    # user_message_from is resolved relative to the fixture yaml.
+    # user_message_from is resolved against one of two roots:
+    #   - relative path (default): relative to the fixture yaml's
+    #     directory. Used for paths inside bench (e.g. ../mocks/x.yaml).
+    #   - `diffgraph:<path>`: relative to the diff-graph repo root,
+    #     resolved via DIFFGRAPH_REPO env (default
+    #     /home/andrey/repos/diff-graph). Used for task prompts that
+    #     live in diff-graph/diffgraph/test_prompts/<agent>/<file>.md
+    #     so they sit next to production prompts instead of being
+    #     scattered in bench.
     umf_raw = raw.get("user_message_from")
     umf: Optional[str] = None
     if umf_raw:
-        umf_path = (p.parent / str(umf_raw)).resolve()
+        umf_path = _resolve_prompt_path(str(umf_raw), p.parent)
         if not umf_path.exists():
             raise FileNotFoundError(
                 f"{p}: user_message_from -> {umf_path} does not exist"
             )
         umf = str(umf_path)
-    # mocks path — resolved relative to the fixture yaml, same as
-    # scenario_loader does for setup.mocks. Fail loudly on missing
-    # files so a typo doesn't silently run the agent against a real
-    # spawn chain (defeating the dispatcher unit's whole point).
+    # mocks path — same resolution rules as user_message_from
+    # (relative-to-yaml OR `diffgraph:<path>`).
     mocks_raw = raw.get("mocks")
     mocks_resolved: Optional[str] = None
     if mocks_raw:
-        mp = (p.parent / str(mocks_raw)).resolve()
+        mp = _resolve_prompt_path(str(mocks_raw), p.parent)
         if not mp.exists():
             raise FileNotFoundError(
                 f"{p}: mocks -> {mp} does not exist"
