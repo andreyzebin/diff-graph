@@ -305,48 +305,126 @@ class Agent:
 
     # ── Single-shot mode ──────────────────────────────────────────────────────
 
-    def _run_single(self) -> AgentResult:
-        messages = self._build_messages()
-        # Same observable wrapper as ReAct agents — judges and other
-        # single-shot agents get the trace decomposition for free
-        # (one `llm.request` span per agent.run, payloads on disk).
+    def _observe_llm_call(self, *, step: int, messages: list,
+                          tools: Optional[list], do_call: Callable,
+                          mode: str = "react") -> Any:
+        """Shared LLM-call wrapper used by both _run_single and
+        _run_react. Owns the OTel `llm.request` span, request +
+        response payload stashing, and usage stamping.
+
+        Caller owns event-bus emits (AGENT_LLM_REQUEST before,
+        AGENT_LLM_RESPONSE + AGENT_STEP after) because the event
+        payload shape differs slightly per mode (single has no
+        tool_calls; react has tool dispatch metadata) and we want
+        the helper kind-neutral.
+
+        Raises whatever `do_call()` raises — caller is responsible
+        for catching and emitting AGENT_LLM_ERROR.
+        """
+        model = self.llm_params.get("model", self.model)
         try:
             from .otel import observe as _observe
             from .otel_fs import (stash_request as _stash_req,
                                    stash_response as _stash_res)
-            _llm_ctx = _observe("llm.request", {
-                "llm.model": self.llm_params.get("model", self.model),
+            attrs = {
+                "llm.model": model,
                 "llm.message_count": len(messages),
                 "diffgraph.agent_id":   self.agent_id,
                 "diffgraph.agent_name": self.config.name,
-                "diffgraph.mode":       "single",
-            })
+                "diffgraph.mode":       mode,
+                "diffgraph.step":       step,
+            }
+            if tools is not None:
+                attrs["llm.tools_count"] = len(tools)
+            _llm_ctx = _observe("llm.request", attrs)
         except Exception:
             _llm_ctx = None
             _stash_req = _stash_res = lambda *a, **kw: None
+        req_payload = {"model": model, "messages": messages,
+                       "params": dict(self.llm_params)}
+        if tools is not None:
+            req_payload["tools"] = tools
+        if _llm_ctx is not None:
+            with _llm_ctx as _llm_span:
+                _stash_req(req_payload)
+                response = do_call()
+                # Both stream_llm (ReAct) and a plain non-stream
+                # OpenAI call (single) shape `.choices[0].message`
+                # uniformly. The stash payload below mirrors what
+                # the AI debugger reads back via span_id.
+                msg = response.choices[0].message
+                _u = response.usage
+                _usage_dict = ({
+                    "prompt_tokens": _u.prompt_tokens,
+                    "completion_tokens": _u.completion_tokens,
+                    "cached_tokens": _extract_cached(_u),
+                } if _u else {})
+                _stash_res({
+                    "content": getattr(msg, "content", "") or "",
+                    "tool_calls": [
+                        {"name": tc.function.name,
+                         "arguments": tc.function.arguments}
+                        for tc in (getattr(msg, "tool_calls", None) or [])
+                    ],
+                    "usage": _usage_dict,
+                })
+                _stamp_usage(_llm_span, response)
+                return response
+        return do_call()
+
+    def _run_single(self) -> AgentResult:
+        messages = self._build_messages()
+        model = self.llm_params.get("model", self.model)
+        # Symmetric with _run_react step 0: emit AGENT_LLM_REQUEST
+        # BEFORE the call so the events table has the same step
+        # shape for mode:single agents (judges, lead agents that
+        # don't loop) as it does for ReAct agents. Without this,
+        # single-shot runs had only `agent_started` in their events
+        # stream and /qa/sessions showed "no steps".
+        self.event_bus.emit(EventType.AGENT_LLM_REQUEST,
+                           agent_id=self.agent_id, agent_name=self.config.name,
+                           step=0, messages=messages, tools=None,
+                           llm_params={"model": model, **dict(self.llm_params)})
         try:
             from .streaming import _llm_call_with_retry
             def _do_call():
-                return self.llm.chat.completions.create(
-                    model=self.llm_params.get("model", self.model),
-                    messages=messages,
+                return _llm_call_with_retry(lambda: self.llm.chat.completions.create(
+                    model=model, messages=messages,
                     temperature=self.llm_params.get("temperature", 0),
                     stream=False,
-                )
-            if _llm_ctx is not None:
-                with _llm_ctx as _llm_span:
-                    _stash_req({"model": self.llm_params.get("model", self.model),
-                                "messages": messages,
-                                "params": dict(self.llm_params)})
-                    response = _llm_call_with_retry(_do_call)
-                    content = (response.choices[0].message.content or "").strip()
-                    output = _try_parse_json(content)
-                    _stash_res({"content": content, "output_parsed": output})
-                    _stamp_usage(_llm_span, response)
-            else:
-                response = _llm_call_with_retry(_do_call)
-                content = (response.choices[0].message.content or "").strip()
-                output = _try_parse_json(content)
+                ))
+            response = self._observe_llm_call(
+                step=0, messages=messages, tools=None,
+                do_call=_do_call, mode="single",
+            )
+            content = (response.choices[0].message.content or "").strip()
+            output = _try_parse_json(content)
+            # Emit AGENT_LLM_RESPONSE + AGENT_STEP — same shape as
+            # a text-only ReAct step (tool_calls=[]), so the diagram
+            # walker renders the lone step generically (tool_call to
+            # system:human, no kind-special case).
+            usage = response.usage
+            tok_in = usage.prompt_tokens if usage else 0
+            tok_out = usage.completion_tokens if usage else 0
+            tok_cached = _extract_cached(usage) if usage else 0
+            self.event_bus.emit(EventType.AGENT_LLM_RESPONSE,
+                               agent_id=self.agent_id, agent_name=self.config.name,
+                               step=0,
+                               tool_calls=[],
+                               content=content,
+                               usage={"prompt_tokens": tok_in,
+                                      "completion_tokens": tok_out,
+                                      "cached_tokens": tok_cached,
+                                      "paid": max(0, tok_in - tok_cached) + tok_out})
+            self.event_bus.emit(EventType.AGENT_STEP,
+                               agent_id=self.agent_id, agent_name=self.config.name,
+                               step=0,
+                               tool="(text)",
+                               tools=[],
+                               text_preview=content[:100].replace("\n", " "),
+                               args={},
+                               tok_in=tok_in,
+                               tok_out=tok_out)
         except Exception as exc:
             log.warning("single-shot agent '%s' failed: %s", self.config.name, exc)
             output = None
@@ -380,6 +458,19 @@ class Agent:
                 )
             except Exception:
                 pass
+
+        # Emit AGENT_DONE so the events stream has the same terminal
+        # marker shape as ReAct agents — symmetric with the
+        # AGENT_LLM_RESPONSE/AGENT_STEP pair above. Without this
+        # /qa/sessions sees the run as "still loading" until the
+        # orphan sweeper closes it.
+        try:
+            self.event_bus.emit(EventType.AGENT_DONE,
+                               agent_id=self.agent_id,
+                               agent_name=self.config.name,
+                               output=output)
+        except Exception:
+            pass
 
         return AgentResult(
             agent_id=self.agent_id,
@@ -448,44 +539,16 @@ class Agent:
                                tools=current_tools_schema,
                                llm_params={"model": step_model, **step_params})
 
-            # Single observable wrapper: same shape for LLM and tool
-            # calls. Stashes full request body for the AI debugger
-            # to drill into via the span_id-keyed payload file.
             try:
-                from orchestra.otel import observe as _observe
-                from orchestra.otel_fs import stash_request as _stash_req
-                from orchestra.otel_fs import stash_response as _stash_res
-                _llm_ctx = _observe("llm.request", {
-                    "llm.model": step_model,
-                    "llm.message_count": len(messages),
-                    "llm.tools_count": len(current_tools_schema or []),
-                    "diffgraph.agent_id": self.agent_id,
-                    "diffgraph.agent_name": self.config.name,
-                    "diffgraph.step": step,
-                })
-            except Exception:
-                _llm_ctx = None
-                _stash_req = _stash_res = lambda *a, **kw: None
-
-            try:
-                if _llm_ctx is not None:
-                    with _llm_ctx as _llm_span:
-                        _stash_req({"model": step_model,
-                                    "messages": messages,
-                                    "tools": current_tools_schema,
-                                    "params": step_params})
-                        response = stream_llm(
-                            self.llm, step_model, messages, current_tools_schema,
-                            tool_choice=step_tool_choice, on_token=_on_token,
-                            **step_params,
-                        )
-                        _stamp_usage(_llm_span, response)
-                else:
-                    response = stream_llm(
+                response = self._observe_llm_call(
+                    step=step, messages=messages, tools=current_tools_schema,
+                    do_call=lambda: stream_llm(
                         self.llm, step_model, messages, current_tools_schema,
                         tool_choice=step_tool_choice, on_token=_on_token,
                         **step_params,
-                    )
+                    ),
+                    mode="react",
+                )
             except Exception as exc:
                 log.error("agent '%s' step %d LLM call failed: %s: %s",
                           self.config.name, step, type(exc).__name__, exc)

@@ -66,9 +66,15 @@ class Event:
     """
     ts: Optional[datetime]  # assigned monotonically by the collector
     kind: str               # tool_call | tool_result | agent_spawn |
-                            # agent_done | agent_text | judge_verdict
+                            # agent_done   (a text-only LLM step
+                            # emits as tool_call with target=system:
+                            # human, no paired result — same shape
+                            # as any other tool call, no kind-special
+                            # case)
     actor: str              # "agent:<run_id>:<agent_id>" |
-                            # "system:<name>" | "human:<slug>" (future)
+                            # "system:<name>" (e.g. system:human,
+                            # system:diff, system:bitbucket,
+                            # system:trunc)
     target: Optional[str]   # same alphabet as actor
     label: str              # short display string
     payload: dict = field(default_factory=dict)   # full data for click → side panel
@@ -259,12 +265,11 @@ def _name_stem(label: str) -> str:
 
 def _foldable(a: Event, b: Event) -> bool:
     """Adjacent events fold together iff same direction, same actors,
-    same kind, same tool stem. Spawn/done/text never fold —
-    collapsing those erases control-flow milestones."""
+    same kind, same tool stem. Spawn/done never fold — collapsing
+    those erases control-flow milestones."""
     if a.kind != b.kind:
         return False
-    if a.kind in ("agent_spawn", "agent_done", "agent_text",
-                  "judge_verdict"):
+    if a.kind in ("agent_spawn", "agent_done"):
         return False
     if a.actor != b.actor or a.target != b.target:
         return False
@@ -279,8 +284,7 @@ def _foldable_pair(a: Event, b: Event) -> bool:
     lets them merge into one bundle event with a stacked label."""
     if a.kind != b.kind:
         return False
-    if a.kind in ("agent_spawn", "agent_done", "agent_text",
-                  "judge_verdict"):
+    if a.kind in ("agent_spawn", "agent_done"):
         return False
     return a.actor == b.actor and a.target == b.target
 
@@ -390,17 +394,17 @@ def _fair_collapse(events: list[Event], max_events: int) -> list[Event]:
                 evs = _fold_until_fixed(evs, pass_fn=_fold_pair_bundles)
         # Stage 3: hard truncate. User asked for ≤ N events — at
         # this point folding has plateaued. Drop the tail and emit
-        # a `Note over …: ⋯ truncated at N events ⋯` sentinel so
-        # the diagram visibly shows that the budget was hit. The
-        # sentinel goes into the canonical Event stream; renderers
-        # surface it as `agent_text` (Mermaid Note / D2 self-arrow).
+        # a sentinel tool_call to system:trunc so the diagram
+        # visibly shows the budget was hit. The sentinel goes into
+        # the canonical Event stream; renderers handle it via the
+        # generic tool_call path (no kind-special case needed).
         if len(evs) > target_per_run and target_per_run > 0:
             anchor = evs[0].actor if evs else "system:trunc"
             anchor_ts = evs[target_per_run - 1].ts if evs else None
             evs = evs[: target_per_run - 1]
             evs.append(Event(
-                ts=anchor_ts, kind="agent_text",
-                actor=anchor, target=anchor,
+                ts=anchor_ts, kind="tool_call",
+                actor=anchor, target="system:trunc",
                 label=f"⋯ truncated at {target_per_run} events ⋯",
                 payload={"truncated": True},
                 session_id=sid,
@@ -421,12 +425,12 @@ def _events_from_run(run_id: str, db_path: str) -> list[Event]:
     the `events` table so the diagram shows actual scope-open /
     scope-close moments:
 
-      tool_call(step N)   → ts of agent_llm_response(agent, N)
+      tool_call(step N)   → ts of agent_llm_response(agent, N),
+                            or agent_llm_request when no response
+                            preceded (mode:single — text-only step)
       tool_result(step N) → ts of agent_llm_request(agent, N+1)
       agent_spawn         → ts of child's agent_started
       agent_done (return) → ts of child's agent_done event
-      agent_text          → ts of agent_llm_response at that step
-      judge_verdict       → ts of judge's agent_done event
 
     Missing timestamps fall back to the previous event's ts +
     1 microsecond so the stream stays monotonic on degenerate data
@@ -520,14 +524,18 @@ def _assign_real_ts(events: list[Event], ts_index: dict) -> None:
         resolved: Optional[datetime] = None
 
         if e.kind == "tool_call" and aid and e.step is not None:
-            resolved = keyed.get((aid, e.step, "agent_llm_response"))
+            # Tool call ts = when the LLM decided to call (its
+            # response). Mode:single agents (judges, lead agents
+            # that don't loop) have no preceding response — fall
+            # back to the request ts so the call is still placed
+            # in the timeline.
+            resolved = (keyed.get((aid, e.step, "agent_llm_response"))
+                        or keyed.get((aid, e.step, "agent_llm_request")))
         elif e.kind == "tool_result" and agent_party and e.step is not None:
             resolved = (keyed.get((agent_party, e.step + 1,
                                     "agent_llm_request"))
                         or keyed.get((agent_party, e.step,
                                        "agent_llm_response")))
-        elif e.kind == "agent_text" and aid and e.step is not None:
-            resolved = keyed.get((aid, e.step, "agent_llm_response"))
         elif e.kind == "agent_spawn" and tgt_aid:
             resolved = (bounds.get(tgt_aid, {}).get("started")
                         or (keyed.get((aid, e.step, "agent_llm_response"))
@@ -536,8 +544,6 @@ def _assign_real_ts(events: list[Event], ts_index: dict) -> None:
             child_id = _agent_id_from_actor(e.actor)
             if child_id:
                 resolved = bounds.get(child_id, {}).get("done")
-        elif e.kind == "judge_verdict" and aid:
-            resolved = bounds.get(aid, {}).get("done")
 
         e.ts = resolved  # may be None — caller filters those out
 
@@ -551,24 +557,6 @@ def _walk_agent(agent: dict, *, run_id: str,
     the whole walk is done."""
     aid = agent.get("agent_id") or "?"
     actor_self = f"agent:{run_id}:{aid}"
-
-    if run_kind == "judge":
-        verdict = agent.get("output") or {}
-        if isinstance(verdict, dict):
-            score = verdict.get("overall_score")
-            v = verdict.get("verdict") or "?"
-            label = f"verdict={v}"
-            if score is not None:
-                label += f" · score={score}"
-        else:
-            label = "verdict"
-        out.append(Event(
-            ts=None, kind="judge_verdict",
-            actor=actor_self, target=parent_actor,
-            label=label, payload={"output": verdict},
-            session_id=run_id,
-        ))
-        return
 
     children_by_id = {
         (c.get("agent_id") or ""): c for c in (agent.get("children") or [])
@@ -716,12 +704,18 @@ def _walk_agent(agent: dict, *, run_id: str,
                 ))
 
         if not tool_calls and resp.get("content"):
+            # Text-only step — the LLM produced a final message and
+            # exited (mode:single agents, judges, and any ReAct step
+            # where the model returned text instead of calling a
+            # tool). We treat text-to-human as a tool call to a
+            # virtual `system:human` target so the diagram code stays
+            # kind-agnostic: same tool_call shape, same renderer path.
             out.append(Event(
-                ts=None, kind="agent_text",
-                actor=actor_self, target=actor_self,
+                ts=None, kind="tool_call",
+                actor=actor_self, target="system:human",
                 label=_short(resp["content"], 80),
-                payload={"content": resp["content"]},
-                session_id=run_id, step=step_num,
+                payload={"text": resp["content"], "tool": "text"},
+                session_id=run_id, step=step_num, count=1,
             ))
 
 
@@ -988,8 +982,9 @@ def _mm_escape(s: str) -> str:
 
 
 def _step_prefix(e: Event) -> str:
-    """Per-agent step number rendered as `[sN] ` prefix. Empty if
-    the event has no step (judge_verdict, synthesised done arrows)."""
+    """Per-agent step number rendered as `[sN] ` prefix. Empty when
+    the event has no step (synthesised done arrows, truncation
+    sentinels)."""
     return f"[s{e.step}] " if e.step is not None else ""
 
 
@@ -1072,11 +1067,6 @@ def to_mermaid(events: list[Event], db_path: str) -> str:
             lines.append(f"  {sa}->>{ta}: {label}")
         elif e.kind == "tool_result":
             lines.append(f"  {sa}-->>{ta}: {label}")
-        elif e.kind == "judge_verdict":
-            tgt = ta if e.target else sa
-            lines.append(f"  Note over {sa},{tgt}: judge · {label}")
-        elif e.kind == "agent_text":
-            lines.append(f"  Note over {sa}: {label}")
         else:
             lines.append(f"  Note over {sa}: {e.kind} · {label}")
 

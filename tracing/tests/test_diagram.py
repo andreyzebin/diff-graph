@@ -82,9 +82,23 @@ def db_two_runs(tmp_path):
     w_a.finish_run(model="m", status="completed")
     w_a.close()
 
-    # Judge run linked to the agent.
+    # Judge run linked to the agent. Mirrors the event shape that
+    # orchestra.Agent._run_single emits in production (May-2026):
+    # agent_started → agent_llm_request → agent_llm_response (with
+    # content) → agent_done. The diagram walker treats this exactly
+    # like any mode:single agent — text-only step renders as a
+    # tool_call to system:human.
     w_j = TraceDBWriter(db_path=db_path, run_id="judge00000001", kind="judge")
     w_j.on_event("agent_started", agent_id="ju1", agent_name="judge")
+    w_j.on_event(
+        "agent_llm_request", agent_id="ju1", agent_name="judge",
+        step=0, messages=[{"role": "user", "content": "evaluate"}],
+    )
+    w_j.on_event(
+        "agent_llm_response", agent_id="ju1", agent_name="judge",
+        step=0, tool_calls=[],
+        content='{"verdict":"pass","overall_score":0.95}',
+    )
     w_j.on_event(
         "agent_done", agent_id="ju1", agent_name="judge",
         output={"verdict": "pass", "overall_score": 0.95},
@@ -157,11 +171,15 @@ class TestEvents:
         db_path, agent_id, judge_id = db_two_runs
         events = events_from_runs([agent_id, judge_id], db_path)
         kinds = {e.kind for e in events}
-        # tool_call, tool_result emitted from the agent's one paired step;
-        # judge_verdict emitted from the judge run.
+        # tool_call + tool_result emitted from the agent's paired
+        # step. Judge runs no longer emit a kind-special
+        # `judge_verdict` event — they go through the same path as
+        # any mode:single agent (one text-only step → tool_call with
+        # target=system:human, no paired tool_result). The diagram
+        # walker stays kind-agnostic; renderers don't special-case
+        # judges.
         assert "tool_call" in kinds
         assert "tool_result" in kinds
-        assert "judge_verdict" in kinds
 
     def test_all_timestamps_tz_aware(self, db_two_runs):
         """Mixing tz-naive and tz-aware datetimes is a TypeError when
@@ -500,9 +518,9 @@ class TestFairCollapse:
     def test_hard_truncate_when_fold_plateaus(self):
         """Final stage of fair-share: when even pair-bundle fold
         can't reduce further (because the unfoldable kinds —
-        agent_spawn / agent_done / agent_text — dominate), drop the
-        tail to fit the budget exactly and append a sentinel
-        `agent_text` event with `⋯ truncated at N events ⋯` so the
+        agent_spawn / agent_done — dominate), drop the tail to fit
+        the budget exactly and append a sentinel `tool_call` to
+        `system:trunc` with `⋯ truncated at N events ⋯` so the
         diagram tells the reader it's incomplete.
 
         Constructing a stream of spawn events does the job — spawns
@@ -539,9 +557,12 @@ class TestFairCollapse:
 
         evs = events_from_runs(["spawn001"], db2, max_events=8)
         assert len(evs) <= 8, f"hard truncate failed: got {len(evs)} events"
-        # Sentinel is the last event.
-        assert evs[-1].kind == "agent_text", \
+        # Sentinel is the last event — a tool_call to system:trunc,
+        # using the same generic kind as any other call. The label
+        # + payload.truncated mark it as the truncation point.
+        assert evs[-1].kind == "tool_call", \
             f"sentinel not last: kinds={[e.kind for e in evs]}"
+        assert evs[-1].target == "system:trunc"
         assert "truncated" in evs[-1].label
         assert evs[-1].payload.get("truncated") is True
 
@@ -555,8 +576,7 @@ class TestFairCollapse:
 
     def test_spawn_done_never_fold(self, db_chatty):
         """Folding budget aggression must NOT erase agent_spawn /
-        agent_done / agent_text events. Pin with a very tight
-        budget."""
+        agent_done events. Pin with a very tight budget."""
         db_path, _ = db_chatty
         # Use the spawn fixture instead for this — but reuse the
         # mechanism. We're testing _fold_one_round's blacklist.
