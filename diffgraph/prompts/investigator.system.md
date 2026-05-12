@@ -23,8 +23,13 @@ tools:
 # in investigator.user.md. System layer is methodology only.
 
 budget:
-  tokens: 15000
-  steps: 20
+  # Sized for verbose providers — qwen3-6 emits long reflect bodies
+  # and reads files in full. 15K tokens / 20 steps caps unit-bench
+  # runs prematurely (INV-U-001 / INV-U-002 on plan 186 burned the
+  # whole budget before reaching done(findings=...)). Headroom now
+  # leaves room for 5–6 reflect cycles + ~10 file reads.
+  tokens: 30000
+  steps: 30
 reflect_interval: 3
 
 llm:

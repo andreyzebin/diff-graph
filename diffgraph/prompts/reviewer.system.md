@@ -22,8 +22,13 @@ tools:
 # only — no fields here today.
 
 budget:
-  tokens: 50000
-  steps: 50
+  # Sized for verbose providers — qwen3-6's reflect bodies + full
+  # file reads have hit token caps mid-flow on production runs
+  # (trace 2473d2ef4520 reviewer ran 19 steps, was forced_done at
+  # 50K mid-react cycle). Bump headroom so the typical flow
+  # finishes naturally, not under a ceiling.
+  tokens: 80000
+  steps: 60
 reflect_interval: 5
 
 llm:
