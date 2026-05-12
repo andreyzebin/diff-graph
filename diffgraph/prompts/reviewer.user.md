@@ -9,4 +9,5 @@ Existing threads on this PR:
 
 {existing_comments}
 
-Review this PR.
+Review this PR end-to-end. Investigators are available via
+spawn_agent — use them when a concern needs depth.
