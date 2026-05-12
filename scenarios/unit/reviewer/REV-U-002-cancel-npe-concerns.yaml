@@ -27,9 +27,11 @@ repo:
   source_branch: hotfix/ORD-287-cancel-npe
 
 # Custom user-message — turns the reviewer into a one-shot
-# concerns-extractor (list concerns via reflect(), done(empty)).
-# Same file REV-U-001 uses; generic, no scenario-specific hints.
-user_message_from: diffgraph:diffgraph/test_prompts/reviewer/concerns-only.md
+# concerns-extractor: emit the concerns list as text via the
+# `text_answer` capture tool, done(empty). Same file REV-U-001 uses;
+# generic, no scenario-specific hints. text_answer (not reflect)
+# because deepseek runs with tool_choice=required → no tool-less turn.
+user_message_from: diffgraph:diffgraph/test_prompts/reviewer/concerns-text.md
 
 pr_state:
   metadata:
@@ -60,7 +62,7 @@ trigger:
 
 agent_data: {}
 
-# ── Judge (concerns-only reviewer) ───────────────────────────────────────
+# ── Judge (concerns-text reviewer) ───────────────────────────────────────
 # Hotfix wraps `order.getItems()` in `if (... != null)` before the
 # inventory-release loop. The fix is local and looks harmless — but
 # AGENTS.md (which this same PR happens to DELETE) explicitly bans null
@@ -91,10 +93,10 @@ agent_data: {}
 # measure — the difference between a generic Java reviewer and one
 # that integrates project conventions.
 expected_output:
-  assert_via: [intended_concerns]
+  assert_via: [intended_text]
   required_comments: []
   forbidden_comments:
-    - description: "Inline comments — reviewer was told concerns-only; no posting allowed."
+    - description: "Inline comments — reviewer was told concerns-text; no posting allowed."
   concern_focuses:
     - id: agents-md-jpa-rule
       description_keywords: ["AGENTS.md", "@OneToMany", "Hibernate", "null guard", "JPA", "convention", "initialises"]
