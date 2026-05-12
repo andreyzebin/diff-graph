@@ -1,0 +1,177 @@
+id: REV-U-005-already-fixed-approve
+agent: reviewer
+tags: [tier:unit, agent:reviewer, isolation, continuation-review, staleness, approve]
+
+# Continuation-review scenario — the reviewer is invoked on a PR
+# where:
+#   * A previous human reviewer flagged a real BLOCKER on an earlier
+#     commit (step0 — null-guard "fix" that masks the root cause).
+#   * The author landed a follow-up commit (step1 — lifts the
+#     invariant to @PostLoad / @PrePersist in Order.java and removes
+#     the symptom guard).
+#   * The pre-seeded BLOCKER thread is anchored on step0's commit
+#     with `orphaned=true` (the anchored line was removed by step1).
+#   * Comment timestamp (`2026-05-05T14:56Z`) is BEFORE step1's
+#     commit time (`2026-05-05T14:59Z`).
+#
+# What the reviewer must do (per the staleness rule in
+# reviewer.user.md / already-fixed-approve.md):
+#
+#   1. Read the existing thread, see the alice BLOCKER.
+#   2. Compare timestamps — alice posted before step1.
+#   3. Read the diff for OrderService.java + Order.java to confirm
+#      step1 actually addressed the concern.
+#   4. Reply in the thread: "Addressed in <step1-sha7> — invariant
+#      lifted to @PostLoad" (or equivalent).
+#   5. APPROVE the PR — the only standing concern was alice's, and
+#      it's now fixed; nothing else is broken.
+#
+# What the reviewer must NOT do:
+#   * Re-raise the null-guard concern as a fresh inline
+#     `post_comment(file=..., line=..., severity=BLOCKER)` — that's
+#     the regression we're catching (agent ignores existing
+#     threads + re-raises already-addressed issues, ending in
+#     NEEDS_WORK).
+#   * Set NEEDS_WORK without a fresh standing finding.
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmark.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: hotfix/ORD-287-cancel-npe-step1
+
+# Custom user-message — the reviewer is in continuation-review mode.
+# Read threads, compare timestamps, reply in the thread + APPROVE.
+# No spawn_agent (kept unit-isolated). Defines staleness rule.
+user_message_from: diffgraph:diffgraph/test_prompts/reviewer/already-fixed-approve.md
+
+pr_state:
+  metadata:
+    title: "ORD-287: Hotfix NPE in cancelOrder"
+    description: |
+      Production NPE observed inside `OrderService.cancelOrder()` when
+      iterating `order.getItems()`. Round 1 added a null guard; round
+      2 followed up after review feedback to lift the invariant to
+      the entity (`@PostLoad`/`@PrePersist`) and remove the symptom
+      guard.
+    pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/287"
+    bot_user: "diffgraph-bot"
+
+  # Pre-seeded thread from a previous human reviewer (alice) on the
+  # symptom-fix commit (step0). The thread anchor is now `orphaned`
+  # because step1 removed the line it referenced. Timestamps:
+  #   step0 committed 2026-05-05T14:54Z
+  #   alice comment    2026-05-05T14:56Z   (after step0, before step1)
+  #   step1 committed  2026-05-05T14:59Z   (the fix)
+  comments:
+    - id: 5001
+      parent_id: 0
+      file: src/main/java/com/flowmart/orders/service/OrderService.java
+      line: 52
+      text: |
+        [BLOCKER] **Null guard masks the root cause**
+
+        Adding `if (order.getItems() != null)` here silences the NPE
+        but doesn't explain why the collection is null. Hibernate
+        @OneToMany should never produce null in managed flow — null
+        means an upstream construction path (legacy importer? raw
+        JDBC?) bypassed the entity.
+
+        Fix the upstream cause and lift the invariant to the entity
+        itself (e.g. `@PostLoad`/`@PrePersist` initialiser) so every
+        consumer can rely on `getItems()` being non-null without
+        scattering guards everywhere.
+      author:
+        name: "alice"
+        slug: "alice"
+      created_ms: "2026-05-05T14:56Z"
+      anchor:
+        path: src/main/java/com/flowmart/orders/service/OrderService.java
+        line: 52
+        # step0's SHA — the commit alice's anchor pegs to.
+        to_hash: "9e66ad081b928904c50fdf97002aefae511903c8"
+        # step1 removed line 52 (dropped the null guard) → Bitbucket
+        # would mark the anchor orphaned.
+        orphaned: true
+
+trigger:
+  type: comment
+  text: "/review"
+  comment_id: 0
+
+agent_data: {}
+
+# Strong leak controls so the keywords in alice's pre-seeded
+# comment don't artificially boost the score. The TEST is "did the
+# reviewer reply in alice's thread and APPROVE", not "did the
+# reviewer parrot alice's keywords back".
+leak_allowlist:
+  - "null guard"
+  - "root cause"
+  - "@PostLoad"
+  - "@PrePersist"
+  - "OneToMany"
+  - "@OneToMany"
+  - "invariant"
+  - "Hibernate"
+  - "items"
+  - "Order"
+  - "entity"
+
+# ── Judge ────────────────────────────────────────────────────────────────
+# assert_via=[pr_comments] (sink-side post_comment records). The
+# agent must:
+#   * leave a thread reply on alice's thread (parent_id=5001) saying
+#     the fix landed — judged via keyword match on the reply text.
+#   * NOT post a fresh inline finding re-raising the null guard.
+#   * set_review_status(APPROVED).
+expected_output:
+  assert_via: [pr_comments]
+  required_comments: []
+
+  reply:
+    # Reviewer's reply in alice's thread (parent_id=5001) must
+    # signal that the fix landed. Synonym group (OR semantics):
+    # any one of these keywords passes. AND-of-OR across groups —
+    # this scenario uses a single group so a single match is
+    # sufficient.
+    must_mention:
+      - ["addressed", "fixed", "resolved", "@PostLoad", "@PrePersist", "9ed4226"]
+    forbidden_topics:
+      - ["still stands", "remains an issue", "blocker still"]
+
+  forbidden_comments:
+    - description: "Fresh inline BLOCKER / MAJOR re-raising the null-guard concern — alice already raised it and step1 fixed it. Re-raising means the reviewer ignored existing threads."
+
+  expected_status_change: "APPROVED"
+
+  side_effects:
+    # Hard count: at most one inline (the optional thread reply,
+    # IF the reviewer chose post_comment with parent_id rather than
+    # a top-level reply). Zero fresh inline findings.
+    inline_comments: 0
+    review_status_change: true
+
+  thresholds:
+    min_score: 0.7
+    min_required_found: 0
+    max_false_positives: 0
+
+metadata:
+  difficulty: hard
+  language: java
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities:
+    - reviewer
+    - continuation_review
+    - thread_staleness
+    - timestamp_awareness
+    - anchor_orphaned_handling
+    - approve_when_fixed
