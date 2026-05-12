@@ -851,13 +851,37 @@ class Agent:
                     isinstance(content, str) and content.startswith("validation error"),
                 ))
 
+                # AGENT_TOOL_RESULT for EVERY tool — uniform shape.
+                # Previously reflect and done were carved out as
+                # special cases; now they flow through the same event
+                # path as any domain tool. Trace UIs and CLI loggers
+                # get one schema to render against.
+                result_text = content
+                result_preview = result_text[:200].replace("\n", " ").strip() if isinstance(result_text, str) else ""
+                try:
+                    tc_args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    tc_args = {}
+                if isinstance(result_text, list):
+                    r_count = len(result_text)
+                elif isinstance(result_text, str) and "\n" in result_text:
+                    r_count = result_text.count("\n") + 1
+                else:
+                    r_count = None
+                self.event_bus.emit(EventType.AGENT_TOOL_RESULT,
+                                   agent_id=self.agent_id, agent_name=self.config.name,
+                                   step=step, tool=tc.function.name,
+                                   args=tc_args,
+                                   result_len=len(result_text) if isinstance(result_text, (str, list)) else 0,
+                                   result_preview=result_preview,
+                                   result_count=r_count)
+                step_record.tool_calls.append({"name": tc.function.name})
+
+                # `done` is the one tool whose result drives control
+                # flow at the agent-loop level (terminates the run).
+                # Validation error → don't mark done, let the LLM
+                # retry on the next turn.
                 if tc.function.name == "done":
-                    # Trust registry.dispatch's JSON-Schema validation. If
-                    # `content` came back as a "validation error: ..." string,
-                    # the args didn't match `done`'s schema (e.g. some models
-                    # send `findings` as a string instead of an array). Don't
-                    # mark done — the error already lives in the tool result,
-                    # so the next LLM round will see it and retry.
                     if not (isinstance(content, str) and content.startswith("validation error")):
                         try:
                             args = json.loads(tc.function.arguments or "{}")
@@ -866,29 +890,6 @@ class Agent:
                         self._done_output = args.get("findings", args)
                         self._done_called = True
                         findings_from_done = self._done_output
-                elif tc.function.name != "reflect":
-                    # Emit AGENT_TOOL_RESULT for ALL tools (domain + meta)
-                    result_text = content
-                    # Build a short preview of the result
-                    result_preview = result_text[:200].replace("\n", " ").strip()
-                    try:
-                        tc_args = json.loads(tc.function.arguments or "{}")
-                    except json.JSONDecodeError:
-                        tc_args = {}
-                    if isinstance(result_text, list):
-                        r_count = len(result_text)
-                    elif isinstance(result_text, str) and "\n" in result_text:
-                        r_count = result_text.count("\n") + 1
-                    else:
-                        r_count = None
-                    self.event_bus.emit(EventType.AGENT_TOOL_RESULT,
-                                       agent_id=self.agent_id, agent_name=self.config.name,
-                                       step=step, tool=tc.function.name,
-                                       args=tc_args,
-                                       result_len=len(result_text),
-                                       result_preview=result_preview,
-                                       result_count=r_count)
-                    step_record.tool_calls.append({"name": tc.function.name})
 
             # Phase 2 of the pusher pipeline — let stateful handlers
             # (ReflectCadenceCounter, future ones) update themselves

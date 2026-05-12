@@ -1732,9 +1732,11 @@ def _make_event_handler(model: str):
             _agent_log.info("%s: %s(%s)%s", aname, tool, arg_str[:80], count_str)
 
         elif event == "orchestrator_reflect":
-            step = kw.get("step", 0)
-            conf = kw.get("confidence", "?")
-            _agent_log.info("%s: reflect  %s", aname, conf)
+            # No bespoke "reviewer: reflect medium" log line — reflect
+            # is rendered through the same `orchestrator_result`
+            # branch as every other tool now (homogeneous dispatch).
+            # We keep the event handler only to update the SGR
+            # summary panel state below (root agent only).
 
             # SGR tracking (root only — for summary panel)
             if is_root:
