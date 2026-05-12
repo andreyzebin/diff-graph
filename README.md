@@ -154,7 +154,7 @@ review:
 
 ### `tool_choice`
 
-Some LiteLLM-proxied models (e.g. `Qwen3-Coder-480B`) don't support `tool_choice="required"`. Set `tool_choice: "auto"` in `config.local.yaml`. Can also be set per-agent: `@llm: tool_choice=auto`.
+Some LiteLLM-proxied models (e.g. `Qwen3-Coder-480B`) don't support `tool_choice="required"`. Set `tool_choice: "auto"` in `config.local.yaml`. Can also be set per-agent in the prompt's frontmatter: `llm: {tool_choice: auto}`.
 
 ### Corporate TLS
 
@@ -343,16 +343,9 @@ python cli.py run --pr-url ... --prompts bitbucket://server/PROJECT/prompts-repo
 
 ### Agents
 
-All agents are homogeneous — same `Agent` class, same Markdown+YAML-frontmatter format, same tool dispatch. Hierarchy and behavior controlled entirely by prompts.
+All agents are homogeneous — same `Agent` class, same `<name>.system.md` + `<name>.user.md` layout (see [Prompt architecture](#prompt-architecture--layered-extension-friendly)), same tool dispatch. Hierarchy and behavior controlled entirely by prompts.
 
-Each agent is described by three sibling files:
-- `<name>.md` — YAML frontmatter (metadata: `agent`, `tools`, `budget`, `data`, `summary`)
-- `<name>.system.md` — stable methodology, tool docs, severity rules, finding shape (no per-call placeholders → cacheable)
-- `<name>.user.md` — per-call task template with `{placeholder}` interpolation (the "what to do this run")
-
-System and user templates follow SOLID separation: system declares **capabilities** (closed for modification), user dictates **the task** (open for extension via different user-message variants — see agent-isolation tests below).
-
-**Dispatcher** — entry point for user interactions. Three commands with distinct roles: `/ask` (or plain text) is *discussion* — answers questions scoped to the active thread; `/help` is *interface help* — explains the commands and recommends the right one for the user's current thread state; `/review` is *deep analysis* — spawns the reviewer. The dispatcher only spawns the reviewer on the literal `/review` command or auto-trigger; questions about review do not. Uses `@guards` to ensure replies are delivered via tools.
+**Dispatcher** — entry point for user interactions. Three commands with distinct roles: `/ask` (or plain text) is *discussion* — answers questions scoped to the active thread; `/help` is *interface help* — explains the commands and recommends the right one for the user's current thread state; `/review` is *deep analysis* — spawns the reviewer. The dispatcher only spawns the reviewer on the literal `/review` command or auto-trigger; questions about review do not. Uses `guards:` to ensure replies are delivered via tools.
 
 **Reviewer** — conducts the code review. Three phases: analyze (read diff, form concerns), investigate (spawn investigators), judge (consolidate findings). Owns PR comment interaction. When triggered inside a thread, the reviewer focuses its analysis on the thread's topic but also reads sibling threads with author attribution intact, so findings can cite prior debate, avoid duplicating already-resolved points, and respect what each speaker (including the agent's own `[SELF]` past comments) has previously argued.
 
@@ -360,28 +353,32 @@ System and user templates follow SOLID separation: system declares **capabilitie
 
 ### Data flow: `from:tool.field`
 
-Agents declare data dependencies in `@data`. Missing fields are auto-resolved from cached data-provider tools:
+Agents declare data dependencies in `data:`. Missing fields are auto-resolved from cached data-provider tools:
 
-```
-@data:
-  diff_summary: string -- from:pr_context.diff_summary
-  focus: string -- task from parent
+```yaml
+data:
+  diff_summary: {type: string, from: pr_context.diff_summary}
+  focus:        {type: string, description: "task from parent"}
 ```
 
 When investigator is spawned without `diff_summary`, the framework calls `pr_context()` tool (cached, hidden), extracts `.diff_summary`, injects into prompt. One tool call serves all fields. No domain code in the framework.
 
 ### Guards
 
-`@guards` configure automatic interventions when agent behavior goes wrong:
+`guards:` configure automatic interventions when agent behavior goes wrong:
 
-```
-@guards:
-  text_response: "Your text was NOT delivered. Use reply_to_comment()."
-  require_tool:reply_to_comment: "You must reply before finishing."
+```yaml
+guards:
+  text_response: "Your text was NOT delivered. Use post_comment()."
+  require_tool:post_comment: "You must reply before finishing."
 ```
 
 - `text_response` — model returned text without tool calls. Message injected, loop continues (max 2 retries).
 - `require_tool:X` — model called `done()` without calling tool X. Done cancelled, message injected, loop continues.
+
+### Pusher pipeline
+
+Per-step middleware chain that nudges the agent toward progress. Producers (budget ratios, time-budget escalation, reflect cadence) emit `PusherAction`s into a step context; consumers (apply + trace) mutate the conversation and emit telemetry. See `orchestra/budget.py` for the chain shape; per-prompt config: `reflect_interval` (step cadence) and optional wall-time budget (drives `TimeBudgetPusher` 0.5/0.75/1.0 → NUDGE/FORCE_REFLECT/FORCE_DONE).
 
 ### Lazy clone
 
@@ -428,7 +425,7 @@ Every agent ships as **two sibling files** under `diffgraph/prompts/`:
 
 | File | Layer | What lives here |
 |---|---|---|
-| `<agent>.system.md` | **system / methodology** | Stable agent identity: metadata, base `@tools` (minimum surface), data schema, guards, budget. Body = abstract *how-to* (severity rubric, finding shape, diff-view contract). |
+| `<agent>.system.md` | **system / methodology** | Stable agent identity: metadata, base `tools:` (minimum surface), data schema, guards, budget. Body = abstract *how-to* (severity rubric, finding shape, diff-view contract). |
 | `<agent>.user.md` | **user / task** | Per-call task wording (PR placeholders + the literal request). Optional YAML frontmatter declares per-task extensions: `tools_add`, `extra_tools`, `dispatch_mode`. |
 
 The system layer is the **closed-for-modification base class**; the user layer is the **open-for-extension** task wrapper — the prompt-side Liskov / Open–Closed split. The same `reviewer.system.md` is shared by production, by every isolated test prompt, and by every consolidation/concerns-text fixture; only the user layer changes per call.
@@ -438,13 +435,25 @@ The system layer is the **closed-for-modification base class**; the user layer i
 ---
 agent: reviewer
 mode: react
+summary: >
+  Code review lead. Analyzes a PR diff, identifies concerns scaled
+  to diff size, spawns focused investigators, consolidates findings.
+
 # Minimum surface every reviewer task needs. Per-task extensions
 # (publishing, delegation, verdict) opt in via the user layer.
 tools: [diff_read_file, diff_outline, diff_list_files, diff_search,
         reflect, done]
-budget: { tokens: 50000, steps: 50 }
+
 data:
-  commits: { type: string, from: pr_context.commits }
+  commits: {type: string, from: pr_context.commits}
+
+budget:
+  tokens: 50000
+  steps: 50
+reflect_interval: 5
+
+llm:
+  temperature: 0.2
 ---
 Code review lead. Execute the task described in the user message.
 Diff view, severity rubric, finding shape, … (the *how*).
@@ -503,13 +512,13 @@ The same model extends to dispatcher and investigator: `<agent>.system.md` defin
 
 | Feature | Description |
 |---|---|
-| `@data` + `from:tool.field` | Auto-resolve prompt data from cached tool calls |
-| `@guards` | Reactive guards: `text_response`, `require_tool:X` |
-| `@capabilities: spawn` | Agent can spawn children via `spawn_agent`, `spawn_many` |
+| `data:` + `from:tool.field` | Auto-resolve prompt data from cached tool calls |
+| `guards:` | Reactive guards: `text_response`, `require_tool:X` |
+| `tools: [spawn_agent, …]` | Agent can spawn children — `spawn_agent` lives in the same flat tool list as everything else |
 | JSON Schema validation | All tool calls validated before dispatch (jsonschema) |
 | Trace system | SQLite WAL, live WebSocket view, navigator with per-step detail |
 | SGR | Self-Guided Reasoning with question IDs and fuzzy matching |
-| Budget + pushers | Token/step limits with configurable nudge/force_done thresholds |
+| Pusher pipeline | Producers (ratio / time-budget / reflect cadence) → apply → trace middleware chain (`orchestra/budget.py`) |
 | Mutable LLM params | Parent can `adjust_agent` child's temperature, model, etc. |
 
 ### Tool system
@@ -550,7 +559,7 @@ diffgraph/                   Code review domain
     +-- bitbucket_pr.py      Bitbucket REST API
     +-- git_repo.py          Git clone/fetch/diff (header | ssh)
 +-- prompts/                   Two-file layout per agent: system + user
-    +-- dispatcher.system.md   Frontmatter (@tools, budget) + routing/thread methodology
+    +-- dispatcher.system.md   Frontmatter (tools, budget) + routing/thread methodology
     +-- dispatcher.user.md     Per-call template ({comment_thread}, {message}, …)
     +-- reviewer.system.md     Frontmatter + severity rubric + finding shape + AGENTS.md rule
     +-- reviewer.user.md       Production task: tools_add publishing+delegation, end-to-end review

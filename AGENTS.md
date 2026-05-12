@@ -6,18 +6,18 @@ This document describes the codebase for AI agents and coding assistants.
 
 DiffGraph is a multi-agent PR code reviewer built on the Orchestra framework. It takes a raw `git diff` (or fetches one from Bitbucket Server), runs a three-phase review pipeline via prompt-defined agents, and produces structured `ReviewFinding` objects -- optionally posted as inline PR comments.
 
-**Agents (defined by `.prompt` files):**
+**Agents (defined by `<name>.system.md` + `<name>.user.md` file pairs — see [README → Prompt architecture](README.md#prompt-architecture--layered-extension-friendly)):**
 - **Dispatcher** (react) — entry point for comment-triggered interactions (`/review`, `/ask`, `/help`, unknown commands). Routes to the right downstream agent or replies inline. Sees existing PR comments and the trigger comment thread.
 - **Reviewer** (react with SGR + spawn_many) — three-phase review lead: analyze the diff, form concerns scaled to diff size (1–2 small, 2–3 medium, 3–5 large), spawn investigators in one round, merge their findings, set the PR review status, and call done.
 - **Investigator** (react with SGR) — focused worker. Gets one concern, investigates first (read_file, read_outline, search), reflects with only genuinely unknown questions, returns findings with evidence. No spawning, no PR interaction.
 
-No pre-indexing, no database, no persistent state. One `run_review()` call per diff. The orchestrator is ~35 lines of logic — all methodology lives in the `.prompt` files.
+No pre-indexing, no database, no persistent state. One `run_review()` call per diff. The orchestrator is ~35 lines of logic — all methodology lives in the prompt files.
 
 ## Repository layout
 
 ```
 orchestra/                       Prompt-defined agent framework (~3,700 LOC)
-+-- compiler.py                  LLM compiler: .prompt files -> agent registry
++-- compiler.py                  Compiler: <name>.system.md + <name>.user.md -> agent registry
 +-- trace.py                     Trace data collection + template preparation
 +-- trace_db.py                  SQLite trace storage + reader
 tracing/                         Trace CLI + web server
@@ -51,10 +51,11 @@ diffgraph/                       Code review domain
 +-- tools.py                     Filesystem primitives (list_files, read_file, search_text)
 +-- outline.py                   tree-sitter structural outline
 +-- bitbucket.py                 Bitbucket Server integration
-+-- prompts/
-    +-- dispatcher.prompt        Comment-triggered routing (/review, /ask, /help, unknown)
-    +-- reviewer.prompt          Three-phase review lead (analyze -> investigate -> judge)
-    +-- investigator.prompt      Focused investigator with SGR
++-- prompts/                     Two files per agent: system + user (frontmatter + body)
+    +-- dispatcher.{system,user}.md   Comment-triggered routing (/review, /ask, /help)
+    +-- reviewer.{system,user}.md     Three-phase review lead (analyze -> investigate -> judge)
+    +-- investigator.{system,user}.md Focused investigator with SGR
++-- test_prompts/                Sibling test-only user layers (same system base)
 
 tests/
 +-- test_diff_parser.py
@@ -75,7 +76,7 @@ parse_diff(diff_text)
         +- files[path].after_changed_lines  -> set of + line numbers
 
 run_review(diff_text, repo_path, llm, model, existing_comments?)
-  +-> compile_prompts()          -> agent registry from .prompt files
+  +-> compile_prompts()          -> agent registry from .system.md + .user.md pairs
   +-> register_diffgraph_tools() -> domain tools as closures over context
   +-> build lead config    -> inject diff_summary, existing_comments
   +-> Agent(reviewer).run()
@@ -126,7 +127,7 @@ Side-effectful actions collected during the review:
 ### `set_review_status` tool (`orchestra_tools.py`)
 
 The reviewer's verdict on the PR as a whole. Default policy lives in
-`reviewer.prompt`: BLOCKER/MAJOR finding stands → `NEEDS_WORK`; only
+`reviewer.system.md`: BLOCKER/MAJOR finding stands → `NEEDS_WORK`; only
 MINOR/COMMENT or no findings → `APPROVED`; honestly unable to judge
 → leave unset. Strictness is described in prose, not hardcoded
 numbers — the prompt explicitly notes that the rule adjusts to the
@@ -167,7 +168,7 @@ Structured self-reflection. Each question gets a stable ID. Fuzzy matching links
 
 ### Budget (`orchestra/budget.py`)
 
-Tracks cumulative paid (sum of per-step deltas) with cache discount. Agents use their own `.prompt` budget. Default pushers: 75% nudge + 100% force_done.
+Tracks cumulative paid (sum of per-step deltas) with cache discount. Agents use their own per-prompt budget (`budget:` frontmatter). Pusher pipeline runs every step — see `orchestra/budget.py` (RatioPusher, TimeBudgetPusher, ReflectCadencePusher) and the REQUIREMENTS.md pusher-pipeline section.
 
 ### Trace system (`orchestra/trace_db.py`, `orchestra/trace.py`, `tracing/`)
 
@@ -226,22 +227,22 @@ Tree-sitter structural outline of a source file. Returns plain text:
 
 ### Add a new agent
 
-1. Create `diffgraph/prompts/<name>.prompt` with `@` headers (see README for format)
+1. Create `diffgraph/prompts/<name>.system.md` (frontmatter + methodology) and `<name>.user.md` (per-call task template) — see [README → Prompt architecture](README.md#prompt-architecture--layered-extension-friendly) for the field shape
 2. The LLM compiler auto-discovers it -- no code changes needed
 3. Other agents can find it via `list_agents` and spawn it via `spawn_agent`
 
 ### Add a new domain tool
 
 1. Add the tool function in `diffgraph/orchestra_tools.py` using `@registry.register`
-2. Reference the tool name in the agent's `@tools` header in its `.prompt` file
+2. Reference the tool name in the agent's `tools:` frontmatter (base toolkit) or in a user-layer `tools_add:` (per-task extension)
 3. The tool is a closure over the review context (`_Ctx`)
 
 ### Change review methodology
 
-Edit the `.prompt` files in `diffgraph/prompts/`:
-- `dispatcher.prompt` — comment-triggered routing, when to /review vs /ask vs unknown-command, context-focus rules (deep thread → focus on thread; shallow → primary context is whole PR)
-- `reviewer.prompt` — three-phase methodology, concern scaling, severity guide, set_review_status policy
-- `investigator.prompt` — investigation workflow, evidence requirements, when to call done
+Edit the prompt files in `diffgraph/prompts/` (system layer = methodology; user layer = per-call task):
+- `dispatcher.{system,user}.md` — comment-triggered routing, when to /review vs /ask vs unknown-command, context-focus rules (deep thread → focus on thread; shallow → primary context is whole PR)
+- `reviewer.{system,user}.md` — three-phase methodology, concern scaling, severity guide, set_review_status policy
+- `investigator.{system,user}.md` — investigation workflow, evidence requirements, when to call done
 
 All methodology lives in prompts, not in Python code. The orchestrator is ~35 lines.
 
@@ -271,7 +272,7 @@ Reasons:
 
 When you must convey a default, make it a default-with-room: "default
 policy: <X>; adjust strictness to the situation". Concrete consequences
-of this principle are visible in the CONSOLIDATE step (reviewer.prompt)
+of this principle are visible in the CONSOLIDATE step (reviewer.system.md)
 and the SET REVIEW STATUS step.
 
 ### Investigators filter, reviewer merges

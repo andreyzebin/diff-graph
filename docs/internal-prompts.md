@@ -75,7 +75,7 @@ because removing the code is a separate cleanup.
   in the spawn_many/plan/fork cleanup commit `ce8c4eb`.
 - **Compiler LLM-extract metadata fallback** (`orchestra/compiler.py:
   _llm_extract_metadata`) — used to be a fallback for prompts
-  without explicit `@agent` headers. After the YAML frontmatter
+  without explicit `agent:` headers. After the YAML frontmatter
   migration, every prompt has explicit headers; the LLM fallback is
   effectively unreachable.
 

@@ -4,15 +4,15 @@
 
 **Orchestra** is a prompt-defined agent framework (~3,700 LOC). One primitive: the **Agent**. One source of truth: the **Prompt file**.
 
-No pipelines, no state machines, no DAGs. Agents are defined by `.prompt` files with structured `@` headers. The framework provides a runtime (ReAct loop + tools + budget), an LLM compiler that builds an agent registry from prompt files, and observability via SQLite traces. All structure -- coordination, delegation, feedback -- emerges from agent decisions at runtime.
+No pipelines, no state machines, no DAGs. Agents are defined by paired `<name>.system.md` / `<name>.user.md` files with YAML frontmatter. The framework provides a runtime (ReAct loop + tools + budget + pusher pipeline), a compiler that builds an agent registry from prompt files, and observability via SQLite traces. All structure — coordination, delegation, feedback — emerges from agent decisions at runtime.
 
 ### Control model
 
 | Level | Mechanism | What it changes | Who controls |
 |---|---|---|---|
-| **Prompt** | system prompt, injected messages | *What* the agent thinks about | `.prompt` file, parent via `adjust_agent` |
-| **Params** | temperature, top_p, penalties | *How* the agent thinks | `.prompt` defaults, parent via `adjust_agent` |
-| **Model** | model switch | *Who* thinks | `.prompt` default, parent via `adjust_agent` |
+| **Prompt** | system prompt, injected messages | *What* the agent thinks about | `<name>.system.md` + `<name>.user.md`, parent via `adjust_agent` |
+| **Params** | temperature, top_p, penalties | *How* the agent thinks | `llm:` frontmatter, parent via `adjust_agent` |
+| **Model** | model switch | *Who* thinks | `llm:` frontmatter, parent via `adjust_agent` |
 
 All three levels are mutable at runtime by supervisor agents.
 
@@ -20,70 +20,86 @@ All three levels are mutable at runtime by supervisor agents.
 
 ## 2. Prompt File Format
 
-Single source of truth for an agent. Contains structured `@` headers and a prompt body.
+Each agent is defined by **two sibling files** with YAML frontmatter (see [README → Prompt architecture](README.md#prompt-architecture--layered-extension-friendly) for the full architecture writeup with examples):
 
-### Format
+- `<name>.system.md` — stable methodology + base toolkit. The "closed for modification" base layer.
+- `<name>.user.md` — per-call task wording + additive frontmatter (`tools_add`, `extra_tools`, `dispatch_mode`). The "open for extension" task layer.
 
-```
-@agent: <name>
-@mode: react | single
-@capabilities: sgr, spawn, spawn_many, plan, fork, adjust_agent, observe_agents, list_agents
-@tools: <comma-separated domain tool names>
-@budget: <tokens> tokens, <steps> steps[, <duration>]
-@llm: model=<name> temperature=<float> [top_p=<float>] [frequency_penalty=<float>]
-@data:
-  <field>: <type> -- <description>
-@summary: <1-3 sentence description for agent discovery>
+### System-layer frontmatter
+
+Canonical field order (see `diffgraph/prompts/reviewer.system.md` for a live example):
+
+```yaml
 ---
-<prompt body with {placeholder} variables matching @data fields>
+agent: <name>                       # unique identifier in the registry
+mode: react | single                # ReAct tool loop vs one-shot
+summary: >                          # shown in list_agents() output
+  <1–3 sentences>
+
+tools: [tool_a, tool_b, ...]        # full base toolkit, flat list
+
+data:                               # input schema, template variables,
+  <field>: {type, ...}              #   and discovery docs — triple duty
+                                    #   (see below)
+guards:                             # optional: reactive interventions
+  text_response:        "<message>"
+  require_tool:<tool>:  "<message>"
+
+budget:                             # run constraints
+  tokens: N
+  steps: M
+  wall_time: 300                    # optional, seconds; enables TimeBudgetPusher
+reflect_interval: K                 # step-cadence reflect nudge; omit to disable
+
+llm:                                # default LLM params (parent can override via adjust_agent)
+  temperature: 0.2
+  top_p: 1.0
+---
+<system body with stable methodology — diff view contract, severity rubric, finding shape, …>
 ```
 
-### Supported `@` headers
+### User-layer frontmatter
 
-| Header | Purpose |
-|---|---|
-| `@agent` | Agent name (unique identifier in registry) |
-| `@mode` | `single` (one LLM call) or `react` (non-deterministic tool loop) |
-| `@capabilities` | Which meta-tools the agent gets (see table below) |
-| `@tools` | Comma-separated list of domain tool names |
-| `@budget` | Token limit, step limit, optional wall time |
-| `@llm` | Default LLM parameters: model, temperature, top_p, penalties |
-| `@data` | Input schema fields with types and descriptions |
-| `@summary` | Short description shown in `list_agents` output |
+Per-call task layer. Frontmatter is **additive only** — `tools:` (full-replace) is rejected at compile time; use `tools_add` to extend the base toolkit.
 
-### `@data` triple duty
+```yaml
+---
+tools_add: [list_threads, spawn_agent, post_comment, ...]
+extra_tools:                        # optional: capture-style tools registered per-run
+  - name: text_answer
+    description: "Submit your final text."
+    parameters:
+      type: object
+      properties: {text: {type: string}}
+      required: [text]
+dispatch_mode: native | meta        # default native (direct tool calls);
+                                    # meta = list_tools/call_tool MCP-style
+---
+<user body — per-call task wording with {placeholder} interpolation>
+```
 
-Each `@data` field simultaneously serves as:
-1. **Input schema** -- what `spawn_agent` must provide
-2. **Template variable** -- `{field}` in prompt body is replaced with actual value
-3. **Discovery docs** -- shown in `list_agents` output
+### `data:` triple duty
 
-### `@capabilities` to meta-tools mapping
+Each `data:` field simultaneously serves as:
+1. **Input schema** — what `spawn_agent` must provide
+2. **Template variable** — `{field}` in prompt body is replaced with the actual value
+3. **Discovery docs** — shown in `list_agents()` output
 
-| Capability | Tools added |
-|---|---|
-| `sgr` | `reflect` |
-| `spawn` | `spawn_agent` |
-| `spawn_many` | `spawn_many` |
-| `plan` | `plan` |
-| `fork` | `fork` |
-| `adjust_agent` | `adjust_agent` |
-| `observe_agents` | `observe_agents` |
-| `list_agents` | `list_agents` |
+### Tool registration
 
-Every agent always gets `done`.
+All tools — domain (`diff_read_file`, `post_comment`, …) and framework (`spawn_agent`, `list_agents`, `reflect`, `done`) — live in **one flat list** under `tools:`. No separate `@capabilities` indirection. The presence of `reflect` in `tools` is what enables SGR; the presence of `spawn_agent` is what enables delegation.
+
+Framework tools are registered automatically by `orchestra/tools/builtin.py` based on `tools` ∪ `tools_add`. `done` is always available.
 
 ---
 
-## 3. LLM Compiler
+## 3. Compiler
 
-Reads `.prompt` files and builds an **agent registry**.
+Reads `<name>.system.md` + `<name>.user.md` pairs and builds an **agent registry**.
 
-**Two-pass parsing:**
-1. Deterministic -- regex extracts `@` headers. Fast, no LLM cost.
-2. LLM fallback -- for prompts without formal headers, an LLM infers capabilities, data requirements, and summary.
+**Parsing:** YAML frontmatter (`---` block at top) is the canonical format. A legacy `@key` flat-syntax parser remains for backwards compatibility with older prompts; new prompts use YAML.
 
-**Output:** `AgentRegistry` mapping agent names to metadata (summary, capabilities, input schema, tools, budget, llm_params, prompt template).
+**Output:** `AgentRegistry` mapping agent names to `AgentConfig` (system_prompt, user_prompt, tools, budget, reflect_interval, llm_params, input_schema, guards).
 
 **Caching:** by combined file hash (file provider) or commit SHA (Bitbucket provider). Recompiled only when content changes.
 
@@ -98,9 +114,9 @@ CLI: `--prompts` flag overrides default prompt directory. Enables A/B testing at
 
 **Runtime access:** `list_agents` tool returns the registry. `spawn_agent` validates data against target's schema and injects into `{placeholders}`.
 
-**Data inheritance:** Parent's `data_scope` is auto-injected into child `{placeholders}` when the child's `@data` field matches a key in the parent's scope. The child does not need to explicitly request `"inherit"` — matching fields are injected automatically.
+**Data inheritance:** Parent's `data_scope` is auto-injected into child `{placeholders}` when the child's `data:` field matches a key in the parent's scope. The child does not need to explicitly request `"inherit"` — matching fields are injected automatically.
 
-Example: the orchestrator sets `data_scope = {diff_summary, existing_comments, commits}` on the lead agent. When the lead spawns a reviewer, the reviewer's `@data` declares the same fields (`diff_summary`, `existing_comments`, `commits`, `focus`). The matching fields are copied from the lead's scope into the reviewer's prompt `{placeholders}`. The `focus` field comes from the `spawn_agent` call. Zero token waste on re-transmitting shared context.
+Example: the orchestrator sets `data_scope = {diff_summary, existing_comments, commits}` on the lead agent. When the lead spawns a reviewer, the reviewer's `data:` declares the same fields (`diff_summary`, `existing_comments`, `commits`, `focus`). The matching fields are copied from the lead's scope into the reviewer's prompt `{placeholders}`. The `focus` field comes from the `spawn_agent` call. Zero token waste on re-transmitting shared context.
 
 **No handoff context by default:** child agents get everything via their system prompt (with injected data), not from parent conversation history.
 
@@ -126,8 +142,8 @@ The agent manages its own children. No external runner.
 
 Every agent has a mutable `llm_params` dict: `temperature`, `top_p`, `frequency_penalty`, `presence_penalty`, `max_completion_tokens`, `model`.
 
-Initial values from `@llm` header. Changed at runtime by:
-1. Budget pushers (automated threshold actions)
+Initial values from `llm:` frontmatter. Changed at runtime by:
+1. Pusher pipeline (automated threshold actions — see `orchestra/budget.py`)
 2. Parent agent via `adjust_agent` tool
 
 Clamped to valid ranges. Every change emits `param_adjusted` event.
@@ -144,7 +160,7 @@ Everything is a tool. Domain actions, meta-actions, agent control, coordination.
 
 ### Domain tools
 
-Registered via Python `@registry.register` decorator or YAML config. Each agent only sees tools in its `@tools` list. Tool results auto-truncated. Multiple tool calls execute in parallel.
+Registered via Python `registry.register(...)` or YAML config. Each agent only sees tools listed in its base `tools:` plus any user-layer `tools_add:` extensions. Tool results auto-truncated. Multiple tool calls execute in parallel.
 
 ### Meta-tools (9 total)
 
@@ -225,17 +241,26 @@ Three dimensions tracked per agent: **tokens**, **steps**, **wall time**.
 
 **Cumulative paid:** budget tracks the sum of per-step deltas with cache discount. Cached tokens are discounted so agents are not penalized for prompt caching.
 
-Agents use their own `.prompt` budget (not parent-allocated). Budget is mutable -- `adjust_agent` can extend or reduce (bounded by `max_feedback_budget_delta`).
+Agents use their own per-prompt budget (declared in `budget:` frontmatter, not parent-allocated). Budget is mutable — `adjust_agent` can extend or reduce (bounded by `max_feedback_budget_delta`).
 
-### Pushers
+### Pusher pipeline
 
-Default configuration: 75% nudge + 100% force_done.
+Per-step middleware chain (`orchestra/budget.py`) that nudges the agent toward progress. Producers emit `PusherAction`s into a shared `StepContext`; consumers (apply + trace) mutate the conversation and emit telemetry.
 
-| Action | Effect |
+| Producer | Source signal | Default behavior |
+|---|---|---|
+| `RatioPusher` | `state.max_ratio` (token / step / wall) | One-shot per threshold from `BudgetConfig.pushers` |
+| `TimeBudgetPusher` | `state.wall_ratio` | 0.5 → NUDGE, 0.75 → FORCE_REFLECT, 1.0 → FORCE_DONE (no-op without `wall_time`) |
+| `ReflectCadencePusher` | `steps_since_reflect` | Enabled by `reflect_interval: N` — NUDGE at N steps without reflect, FORCE_REFLECT at 2N, re-arms each reflect cycle |
+
+| Action | Effect (applied by `ApplyActionsHandler`) |
 |---|---|
-| `nudge` | Inject user message (e.g., "budget running low, wrap up") |
-| `force_reflect` | Next step: only reflect tool available |
-| `force_done` | Next step: only done tool available |
+| `nudge` | Append a user-role message to the conversation |
+| `force_reflect` | Narrow tools_schema to `reflect` only for the next step |
+| `force_done` | Narrow tools_schema to `done` only for the next step |
+| `custom` | Call a custom handler with `(messages, state)` |
+
+Adding a new producer = one subclass of `PusherHandler`, plug into `BudgetTracker._producers`. Apply + trace consumers stay untouched.
 | `custom` | Python hook |
 
 ### Message condensation
@@ -346,7 +371,7 @@ Both views link to each other. `/runs/{id}` redirects to `/live` if running, `/t
 | Predefined topologies / DAGs | Structure should emerge from reasoning | Agents spawn at runtime via tools |
 | Parameter schedules / curves | Intelligence lives in prompts | Supervisor with `adjust_agent` |
 | Declarative feedback loops | Same | Supervisor with `observe_agents` + `adjust_agent` |
-| Agent config in YAML | Single source of truth is the `.prompt` file | `@` headers compiled to registry |
+| Separate agent-config YAML | Single source of truth is the prompt-pair (`.system.md` + `.user.md`) | YAML frontmatter compiled to registry |
 | Workflow enforcement | Max non-determinism | Methodology encoded in prompt |
 
 ---
@@ -355,7 +380,7 @@ Both views link to each other. `/runs/{id}` redirects to `/live` if running, `/t
 
 | Principle | Implication |
 |---|---|
-| **Prompt = config** | One `.prompt` file per agent. Headers declare capabilities, body defines behavior. |
+| **Prompt = config** | Two sibling files per agent (`<name>.system.md` + `<name>.user.md`). Frontmatter declares capabilities; body defines behavior. |
 | **LLM compiler** | Reads prompt files -> builds agent registry. Deterministic + LLM fallback. |
 | **Agent discovery** | Agents find each other by summary via `list_agents`. |
 | **Max non-determinism** | The react loop has no predetermined steps. The LLM decides everything. |
@@ -363,7 +388,7 @@ Both views link to each other. `/runs/{id}` redirects to `/live` if running, `/t
 | **Mutable params** | LLM generation parameters are live state. Supervisor agents tune them. |
 | **Signals, not actions** | Framework computes behavioral signals but does not act on them. |
 | **Budget = only hard constraint** | Pushers are the only forced guardrails. Everything else is soft. |
-| **Data flows through `{placeholders}`** | `@data` = input schema = template variables = discovery docs. |
+| **Data flows through `{placeholders}`** | `data:` = input schema = template variables = discovery docs. |
 | **Methodology in prompts** | Three-phase review (analyze -> investigate -> judge) is a prompt, not a pipeline. |
 | **Cumulative paid with cache discount** | Budget accounting reflects actual cost, not gross token counts. |
 | **Crash-safe traces** | SQLite persistence means partial runs are always inspectable. |
