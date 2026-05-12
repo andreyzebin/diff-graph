@@ -15,6 +15,10 @@ assert_via: {assert_via}
 - `intended_concerns` — `reflect(concerns=[...])` плюс
   `spawn_agent(focus=...)` из invocations.json. Используется когда
   тестируется только LOOK-фаза.
+- `intended_text` — текстовая выдача агента, захваченная через
+  capture-tool (`text_answer` / `text`) в последнем вызове. Используется
+  когда дизайн задачи требует, чтобы итог был свободным текстом, а
+  не структурой findings/concerns (напр. reviewer concerns-text).
 
 ВАЖНО: матчи `required_comments` ТОЛЬКО против перечисленных каналов
 (union). Если канал не в списке — игнорируй его данные при матчинге,
@@ -33,6 +37,15 @@ assert_via: {assert_via}
 
 ## Концерны, которые агент сформулировал (канал: intended_concerns)
 {intended_concerns}
+
+## Текстовая выдача агента (канал: intended_text)
+{intended_text}
+
+Это последний вызов capture-tool (`text_answer` / `text`). Используется
+для задач где результат — свободный текст (concerns-text и подобные).
+Матчинг concern_focuses в этом случае идёт против ОБЪЕДИНЕНИЯ всего
+текста (как одна большая строка): каждая keyword-группа из concern_focus
+должна содержать хотя бы одно совпадение в этом тексте.
 
 Это всё что reviewer выписал через `reflect(concerns=[...])` плюс
 все `focus` строки которые он передал в `spawn_agent`. Используется

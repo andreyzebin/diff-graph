@@ -12,12 +12,17 @@ bench_cmd: >
   {fixture_path}
   --provider={provider}
 
-# Reviewer in concerns-only mode against the store-credit feature
+# Reviewer in concerns-text mode against the store-credit feature
 # branch. The user-message override (see user_message_from) tells
-# the agent: read diff, list concerns via reflect(), call done(empty).
-# No spawn_agent, no post_comment, no set_review_status — the test
-# measures concern-forming, nothing else. Pattern matches the
-# existing REV-001 integration scenario but on a local clone.
+# the agent: read diff, submit concerns as TEXT via the `text_answer`
+# capture tool, call done(empty). Reflect stays as the agent's private
+# working memory. No spawn_agent, no post_comment, no set_review_status
+# — the test measures concern-forming, nothing else.
+#
+# Why text (not reflect): deepseek runs with tool_choice=required, so
+# the model can't emit a tool-less text turn. text_answer is a single
+# capture-style tool that wraps the deliverable; the judge reads it
+# back via assert_via=[intended_text].
 repo:
   source: /home/andrey/repos/code-review-examples/orderflow
   base_branch: master
@@ -27,7 +32,7 @@ repo:
 # concerns-extractor. Without this the reviewer follows its default
 # flow (spawn investigators, post inline comments, set verdict),
 # which is exactly the wrong behaviour for a unit test.
-user_message_from: diffgraph:diffgraph/test_prompts/reviewer/concerns-only.md
+user_message_from: diffgraph:diffgraph/test_prompts/reviewer/concerns-text.md
 
 pr_state:
   metadata:
@@ -51,13 +56,13 @@ trigger:
 
 agent_data: {}
 
-# ── Judge (concerns-only reviewer) ───────────────────────────────────────
-# The agent runs in concerns-only mode (see concerns-only.md), so it
-# never posts inline comments / sets verdict. All signal lives in
-# reflect(questions_remaining=[...]). The judge extracts those entries
-# from invocations.json and matches each concern_focuses keyword group
-# (AND-of-OR semantics: at least one keyword from the group must hit
-# the union of title+description across all reflect entries).
+# ── Judge (concerns-text reviewer) ───────────────────────────────────────
+# The agent runs in concerns-text mode (see concerns-text.md), so it
+# never posts inline comments / sets verdict. The deliverable is the
+# `text` arg of the final `text_answer(text=...)` capture-tool call.
+# The judge extracts that text from invocations.json and matches each
+# concern_focuses keyword group (AND-of-OR semantics: at least one
+# keyword from the group must appear somewhere in the text).
 #
 # Concerns chosen from the actual diff against AGENTS.md (master):
 #   • PR deletes AGENTS.md — the rule book for ownership / transactions /
@@ -74,10 +79,10 @@ agent_data: {}
 # reviewer hitting 2/4 groups is already a useful signal. Tighten after
 # we have a few attempt batches to calibrate.
 expected_output:
-  assert_via: [intended_concerns]
+  assert_via: [intended_text]
   required_comments: []
   forbidden_comments:
-    - description: "Inline comments — reviewer was told concerns-only; no posting allowed."
+    - description: "Inline comments — reviewer was told concerns-text; no posting allowed."
   concern_focuses:
     - id: agents-md-deletion
       description_keywords: ["AGENTS.md", "deleted", "removed", "convention", "guideline", "rule"]

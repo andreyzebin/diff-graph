@@ -275,7 +275,8 @@ def load_scenario(path: Path) -> Scenario:
     raw_assert_via = eo.get("assert_via") or []
     if isinstance(raw_assert_via, str):
         raw_assert_via = [raw_assert_via]
-    valid_channels = {"pr_comments", "intended_findings", "intended_concerns"}
+    valid_channels = {"pr_comments", "intended_findings", "intended_concerns",
+                      "intended_text"}
     assert_via: list[str] = []
     for ch in raw_assert_via:
         ch = str(ch).strip()

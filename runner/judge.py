@@ -247,6 +247,7 @@ class LLMJudge(Judge):
         # concerns-only, …).
         intended_findings = self._load_intended_findings()
         intended_concerns = self._load_intended_concerns()
+        intended_text = self._load_intended_text()
 
         # When the bench posts seed_comments + the trigger comment via the
         # same Bitbucket account as the agent (single-token setup), those
@@ -306,7 +307,8 @@ class LLMJudge(Judge):
         prompt = _build_prompt(self._template, scenario, comments, review_status,
                                pr_diff=pr_diff, agents_md=agents_md,
                                intended_findings=intended_findings,
-                               intended_concerns=intended_concerns)
+                               intended_concerns=intended_concerns,
+                               intended_text=intended_text)
         self._trace_request(scenario.id, prompt)
         try:
             data = self._llm_client.complete_json(prompt)
@@ -423,6 +425,32 @@ class LLMJudge(Judge):
                         "description": focus,
                     })
         return out
+
+    def _load_intended_text(self) -> str:
+        """Agent's final text deliverable for tasks whose channel is
+        plain prose. Two emission shapes the judge knows about:
+
+          1. `text_answer(text=...)` — capture-style tool registered
+             via prompt frontmatter's `extra_tools`. Works on
+             `tool_choice=required` providers (DeepSeek etc.) that
+             can't return a tool-less turn.
+          2. A text-only LLM turn (no tool_calls, content present)
+             — emitted by orchestra as a `kind: text` invocation
+             with `args.text` / `args.content` carrying the body.
+
+        Returned: the LAST such payload (run's final deliverable).
+        Empty string when nothing fits — judge sees an empty
+        intended_text section and grades the agent as having
+        produced no usable output.
+        """
+        invs = self._load_invocations()
+        for inv in reversed(invs):
+            args = inv.get("args") or {}
+            tool = inv.get("tool") or ""
+            kind = args.get("kind") if isinstance(args, dict) else None
+            if tool == "text_answer" or tool == "text" or kind == "text":
+                return str(args.get("text") or args.get("content") or "")
+        return ""
 
     def _ensure_writer(self):
         """Lazy-init the unified writer on the first request.
@@ -549,6 +577,7 @@ def _build_prompt(
     agents_md: str = "",
     intended_findings: list[dict] | None = None,
     intended_concerns: list[dict] | None = None,
+    intended_text: str = "",
 ) -> str:
     eo = scenario.expected_output
     required_str = json.dumps([
@@ -586,6 +615,7 @@ def _build_prompt(
         agent_comments=_format_comments(comments),
         intended_findings=_format_intended_findings(intended_findings or []),
         intended_concerns=_format_intended_concerns(intended_concerns or []),
+        intended_text=_format_intended_text(intended_text),
         required_comments=required_str,
         forbidden_comments=forbidden_str,
         concern_focuses=concern_focuses_str,
@@ -612,6 +642,16 @@ def _format_intended_concerns(concerns: list[dict]) -> str:
         src = c.get("source", "?")
         out.append(f"#{i} [{src}] {title}\n  {desc[:600]}")
     return "\n\n".join(out)
+
+
+def _format_intended_text(text: str) -> str:
+    """The agent's text deliverable — captured from the last
+    text_answer/text capture tool call. For text-output tasks
+    (e.g. concerns-text) this is the run's only output channel,
+    so the judge grades against it directly."""
+    if not text or not text.strip():
+        return "(none — agent did not call text_answer / text capture tool)"
+    return text.strip()[:6000]
 
 
 def _format_intended_findings(findings: list[dict]) -> str:
