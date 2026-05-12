@@ -793,6 +793,15 @@ _orphan_sweeper = OrphanRunSweeper(
     idle_grace_seconds=600,      # tolerate slow LLM calls up to 10m
 )
 
+# WAL grows fast under bench traffic; long-running readers hold back
+# the default 1000-page autocheckpoint, so reads against the trace DB
+# can slow to seconds. See wal_checkpointer.py for the symptom log.
+from tracing.server.wal_checkpointer import WalCheckpointer, checkpoint_now as _wal_checkpoint_now
+_wal_checkpointer = WalCheckpointer(
+    str(DEFAULT_DB_PATH),
+    interval_seconds=300,
+)
+
 
 @app.on_event("startup")
 async def _start_qa_supervisors():
@@ -824,9 +833,22 @@ async def _start_qa_supervisors():
     except Exception:
         import logging as _lg
         _lg.getLogger(__name__).exception("orphan-sweeper startup pass failed")
+    # Eager WAL drain at boot — clears whatever the previous process
+    # left behind so the first UI reads don't pay the scan tax.
+    try:
+        busy, frames, ckpt = await asyncio.to_thread(_wal_checkpoint_now, str(DEFAULT_DB_PATH))
+        if frames:
+            import logging as _lg
+            _lg.getLogger(__name__).info(
+                "wal-checkpoint: startup reclaimed %d/%d frames (busy=%d)",
+                ckpt, frames, busy)
+    except Exception:
+        import logging as _lg
+        _lg.getLogger(__name__).exception("wal-checkpoint startup pass failed")
     _qa_supervisor.start()
     _qa_discovery.start()
     _orphan_sweeper.start()
+    _wal_checkpointer.start()
 
 
 @app.on_event("shutdown")
@@ -834,6 +856,7 @@ async def _stop_qa_supervisors():
     await _qa_supervisor.stop()
     await _qa_discovery.stop()
     await _orphan_sweeper.stop()
+    await _wal_checkpointer.stop()
 
 
 class TaskCreatePayload(BaseModel):
