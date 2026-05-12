@@ -216,6 +216,115 @@ Don't include gradle wrapper, binary files, and other noise in diff_summary. Fil
 **Where:** `diffgraph/orchestrator.py` `_make_diff_summary`.
 **Effort:** Small.
 
+### 3.4 Diff-view mental model: markers are metadata, not content
+
+The reviewer/investigator system prompts describe `diff_list_files` /
+`diff_read_file` / `diff_search` as operating on a virtual filesystem
+where "each line is **annotated** with `+`/`-`/` `". Models read that
+as "the `+`/`-` characters are baked into the line text", which
+produces two characteristic failure modes:
+
+- `diff_search(query="^+", regex=true)` returns 0 results across every
+  glob — the agent assumes "this PR has no added lines" or "the diff
+  is empty", which it isn't. Seen on the SBLOOM-142 run (2026-05-12,
+  trace `2473d2ef4520`, step 12: 6 successive `^+`/`^-` searches all
+  with 0 hits before the agent gave up).
+- Agent treats `diff_list_files` output as a mix of "files with actual
+  changes" and "files without" — and spends steps trying to filter
+  to the former. In reality every entry in the result IS a change;
+  there is no filterable status column. Seen on the same run
+  (step 4: "The diff_list_files output was truncated. Let me get the
+  full list and identify which files have actual changes"); previously
+  on trace `4c996666d52d` where the agent burned 11 consecutive steps
+  on `diff_search(query="^M ")` looking for an imaginary M-status
+  column.
+
+What's actually true (per `diffsearch/tools.py:search_vfs` and
+`diffgraph/orchestra_tools.py:diff_search`):
+
+- The materialized VFS contains **pure source text** for each diff'd
+  file — no `+`/`-` prefixes inside the file content.
+- `+`/`-`/` ` markers and the (L, old, new) coordinates are
+  **separate metadata** in `.diffmeta/`, attached to each hit in the
+  tool's *output*, not searchable in the *input*.
+- `diff_search` runs grep on the source content; to find added code,
+  search for the substantive content (a method name, a class
+  declaration, a literal string) and the result will show via the
+  marker which hits landed on `+` lines.
+- `diff_list_files` returns only files that participate in the diff.
+  Every entry is a change — there is no "trivially changed vs
+  substantively changed" split available from this tool.
+
+**Fixes:**
+
+- **Prompt-level (small):** rewrite the "Diff view" section in
+  `reviewer.system.md` + `investigator.system.md` to say
+  "metadata-tagged" instead of "annotated", add one positive example
+  (`diff_search(query="OrderService")` → result with `+` marker on
+  hits) and one negative (`diff_search(query="^+")` → 0 results,
+  don't do this), and call out that `diff_list_files` entries are
+  all changes (no need to filter).
+- **Tool-level (medium):** include lines-added / lines-removed counts
+  in `diff_list_files` output (`PricingService.java (+47/-3)`),
+  giving the agent a quantitative signal of "amount of substantive
+  change per file" so it doesn't try to grep for it. Hook is
+  `DiffResult.files[path].after_changed_lines` (already tracks the
+  set of `+` line numbers) — sum and render.
+
+**Where:** `diffgraph/prompts/reviewer.system.md`,
+`diffgraph/prompts/investigator.system.md`,
+`diffgraph/orchestra_tools.py` (`diff_list_files` rendering),
+`diffsearch/tools.py` (`list_files_vfs`).
+
+### 3.5 `react_to_comment` reactions don't appear in Bitbucket
+
+Tool returns success in invocations.json but the reaction does not
+show on the Bitbucket Server PR. Seen on the SBLOOM-142 run
+(2026-05-12, trace `2473d2ef4520`): 8 `react_to_comment(thumbs_down)`
+calls on existing threads, all logged as completed at the orchestra
+layer; none of them visible to the human on the actual PR.
+
+Observations from the trace:
+
+- First 5 calls (step 18) logged `→ 4 lines` (a stringified result
+  body was returned), last 3 (step 19) logged no return arrow at all
+  — suggests at least the latter half hit an error path silently.
+- The reviewer's own brand-new findings were posted via
+  `post_comment` (5 of them, all visible on PR) — so the underlying
+  Bitbucket auth + comment endpoint works. The reactions endpoint
+  is the broken part.
+
+**Likely causes** (investigate one at a time):
+
+1. Bitbucket Server's reactions API is **not** the public REST path
+   we're calling — reactions on Server may be an undocumented
+   internal endpoint or unavailable on this version. Check the
+   server's Atlassian docs version and confirm a public reactions
+   endpoint exists.
+2. We hit the right endpoint but with the wrong emoticon ID —
+   `thumbs_down` is a name from the LLM-facing schema; the API may
+   expect a canonical emoji key like `:thumbsdown:` or a numeric
+   reaction-type ID.
+3. Bot account lacks the permission to react on comments authored
+   by the PR author. Same auth works for posting comments because
+   posting is a different scope.
+
+**Fixes:**
+
+- **Reproduce first** — manual `curl` against the Bitbucket reactions
+  endpoint with the bot's bearer token. If 404/403 → diagnose at the
+  API level.
+- **Then** either: fix the request shape (`providers/bitbucket_pr.py`
+  reaction call), surface the error from the tool result (currently
+  silent on failure), or remove `react_to_comment` from the agent's
+  tool surface if Bitbucket Server doesn't support it.
+
+**Where:** `diffgraph/providers/bitbucket_pr.py` (reaction call),
+`diffgraph/orchestra_tools.py` (`react_to_comment` registration —
+needs to propagate errors back to the agent so it doesn't keep
+trying), reviewer/dispatcher prompts (consider dropping the tool if
+the API is genuinely absent).
+
 ---
 
 ## 4. Trace Web Server
