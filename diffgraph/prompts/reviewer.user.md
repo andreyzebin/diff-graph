@@ -1,6 +1,10 @@
 ---
 dispatch_mode: native
-tools_add: [list_agents, spawn_agent, post_comment, set_review_status]
+# Production review uses every reviewer capability — add the thread-
+# reading + delegation + publishing tools on top of the base diff
+# toolkit (declared in reviewer.system.md frontmatter).
+tools_add: [list_threads, read_thread, read_comment, react_to_comment,
+            list_agents, spawn_agent, post_comment, set_review_status]
 ---
 PR: {pr_title}
 {pr_description}

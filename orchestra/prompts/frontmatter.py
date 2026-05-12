@@ -132,10 +132,17 @@ def split_path(path: str | "PathLike") -> Frontmatter:
 _VALID_DISPATCH_MODES = {"native", "meta"}
 
 
-def validate(fm: Frontmatter) -> None:
+def validate(fm: Frontmatter, *, role: str | None = None) -> None:
     """Strict validation of known fields. Unknown fields are allowed
     (forward-compat: future fields can land without breaking older
     parsers) but the known fields must have well-formed shapes.
+
+    `role` is "system" or "user" when the caller knows which prompt
+    layer the frontmatter belongs to. The user layer is the per-run
+    override and may ONLY extend the agent's tool surface — declaring
+    `tools:` there would silently replace the agent's base @tools,
+    which is exactly the configuration-drift risk this validator is
+    here to surface.
 
     Raises ValueError with a precise message on any violation. Authors
     fix the prompt, run it again. No silent fallback to "production
@@ -145,6 +152,15 @@ def validate(fm: Frontmatter) -> None:
     meta = fm.meta
     if not meta:
         return
+
+    if role == "user" and "tools" in meta:
+        raise ValueError(
+            "frontmatter (user layer): `tools` is not allowed — the "
+            "user prompt may only extend the agent's base tool surface "
+            "via `tools_add`. Move the full tool list to the agent's "
+            "system prompt frontmatter, or replace `tools:` with "
+            "`tools_add:` if you really meant to extend."
+        )
 
     if "dispatch_mode" in meta:
         dm = meta["dispatch_mode"]

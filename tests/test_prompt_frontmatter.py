@@ -152,6 +152,22 @@ class TestValidate:
         # well-formed shapes".
         validate(Frontmatter(meta={"future_field": "anything"}))
 
+    def test_user_role_rejects_full_replace_tools(self):
+        # `tools:` in the user (per-run) layer would silently replace
+        # the agent's base @tools — exactly the configuration-drift
+        # risk the validator is here to surface. Author meant `tools_add`.
+        with pytest.raises(ValueError, match="user layer.*tools_add"):
+            validate(Frontmatter(meta={"tools": ["diff_read_file"]}), role="user")
+
+    def test_user_role_allows_tools_add(self):
+        validate(Frontmatter(meta={"tools_add": ["text_answer"]}), role="user")
+
+    def test_system_role_still_allows_tools(self):
+        # System layer = agent's own prompt; full @tools list is the
+        # canonical place. No restriction there.
+        validate(Frontmatter(meta={"tools": ["diff_read_file"]}), role="system")
+        validate(Frontmatter(meta={"tools": ["diff_read_file"]}))  # role=None
+
 
 class TestCaptureTool:
     def test_handler_echoes_args(self):

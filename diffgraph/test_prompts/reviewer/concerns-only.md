@@ -1,6 +1,3 @@
----
-tools: [diff_list_files, diff_read_file, diff_outline, diff_search, reflect, done]
----
 PR: {pr_title}
 {pr_description}
 

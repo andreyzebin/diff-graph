@@ -187,7 +187,9 @@ class Agent:
                 else (self.config.user_prompt or ""))
         try:
             _fm = _fm_parse(_src)
-            _fm_validate(_fm)
+            # User layer = the per-run override / test prompt. Validator
+            # enforces `tools_add`-only (no full-replace `tools`) here.
+            _fm_validate(_fm, role="user")
         except ValueError as exc:
             log.error("frontmatter error on agent %s: %s", self.config.name, exc)
             raise

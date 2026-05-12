@@ -1,11 +1,12 @@
 ---
 agent: reviewer
 mode: react
-# Base toolkit — always available. Extensions (spawn_agent /
-# post_comment / set_review_status / etc.) come from the per-run
-# user message's frontmatter via `tools_add:`.
+# Base toolkit — minimum surface every reviewer task needs: read
+# the diff, track working memory, finish. Everything else (thread
+# reading, publishing, delegation, verdict) is per-task via the
+# user message's `tools_add:` frontmatter — including reviewer.user.md
+# for production.
 tools: [diff_read_file, diff_outline, diff_list_files, diff_search,
-        list_threads, read_thread, read_comment, react_to_comment,
         reflect, done]
 budget:
   tokens: 50000
