@@ -114,6 +114,68 @@ class TestReadCommentTimestamp:
         assert "Alice" in out
 
 
+class TestAnchorRendering:
+    """Comment anchors carry the source-commit SHA they peg to plus
+    an `orphaned` flag set by Bitbucket Server when subsequent
+    commits removed the anchored line. Both are surfaced in the
+    header so the reviewer can spot threads anchored on stale code
+    (= older commits or removed lines) before deciding to reply."""
+
+    def _anchored(self, **overrides) -> dict:
+        c = {
+            "id": 1, "parent_id": None, "depth": 0,
+            "file": "src/X.java", "line": 47,
+            "text": "blocker on this line",
+            "author": "Alice", "author_slug": "alice",
+            "resolved": False, "anchored": True,
+            "anchor_to_hash": "abcdef1234567890",
+            "anchor_orphaned": False,
+            "created_ms": None,
+        }
+        c.update(overrides)
+        return c
+
+    def test_anchor_shows_short_sha(self):
+        out = read_thread([self._anchored()], comment_id=1,
+                          snapshot_max_id_value=99)
+        # Path:line followed by @<7-char short sha>.
+        assert "src/X.java:47@abcdef1" in out
+
+    def test_outdated_anchor_marked(self):
+        c = self._anchored(anchor_orphaned=True)
+        out = read_thread([c], comment_id=1, snapshot_max_id_value=99)
+        assert "(outdated)" in out
+
+    def test_non_outdated_no_tag(self):
+        out = read_thread([self._anchored()], comment_id=1,
+                          snapshot_max_id_value=99)
+        assert "(outdated)" not in out
+
+    def test_missing_anchor_to_hash_renders_path_only(self):
+        c = self._anchored(anchor_to_hash="")
+        out = read_thread([c], comment_id=1, snapshot_max_id_value=99)
+        # No `@<sha>` clause, but the path:line still shows.
+        assert "src/X.java:47" in out
+        assert "@" not in out.split("src/X.java:47", 1)[1].split("===")[0]
+
+    def test_unanchored_comment_no_anchor_clause(self):
+        """General PR comments (no file/line) get no `@ <path>` part
+        at all — the renderer skips the whole clause."""
+        c = self._anchored(file="", line=0, anchored=False)
+        out = read_thread([c], comment_id=1, snapshot_max_id_value=99)
+        # The `@` wouldn't appear in author/header without an anchor.
+        # Sanity check: file path is empty so the clause is omitted.
+        assert "src/X.java" not in out
+
+    def test_anchor_in_read_comment(self):
+        """Same anchor rendering applies to `read_comment` (single
+        comment, full body, used when read_thread truncated)."""
+        out = read_comment([self._anchored(anchor_orphaned=True)],
+                           comment_id=1, snapshot_max_id_value=99)
+        assert "src/X.java:47@abcdef1" in out
+        assert "(outdated)" in out
+
+
 class TestListThreadsTimestamps:
     def test_thread_summary_shows_last_activity(self, sample_comments):
         """Reviewer scrolling `list_threads` should see "last

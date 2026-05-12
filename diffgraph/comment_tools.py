@@ -30,6 +30,31 @@ from datetime import datetime, timezone
 from typing import Optional
 
 
+def _format_anchor(c: dict) -> str:
+    """Render an inline comment's anchor as a trailing ` @ <path>:
+    <line>` clause for the comment header. When the anchor pegs to a
+    specific source commit, append the short SHA so the reviewer can
+    tell whether the thread is talking about the current tip or an
+    older revision. When Bitbucket flagged the anchor as `orphaned`
+    (the line was removed by subsequent commits) tag the clause
+    `(outdated)` — that's a strong signal the discussion may not
+    still apply.
+
+    Empty string when the comment isn't anchored to a file (general
+    PR comments and most thread replies — Bitbucket only attaches
+    `commentAnchor` to the root inline comment).
+    """
+    if not c.get("file"):
+        return ""
+    anchor = f" @ {c['file']}:{c.get('line') or 0}"
+    sha = (c.get("anchor_to_hash") or "").strip()
+    if sha:
+        anchor += f"@{sha[:7]}"
+    if c.get("anchor_orphaned"):
+        anchor += " (outdated)"
+    return anchor
+
+
 def _fmt_created(c: dict) -> str:
     """Render a comment's `created_ms` (milliseconds since UTC epoch,
     as returned by Bitbucket Server) as a compact ISO date+time the
@@ -265,9 +290,7 @@ def read_thread(
             replies_str = "1 reply"
         else:
             replies_str = f"{n_kids} replies"
-        anchor = ""
-        if c.get("file"):
-            anchor = f" @ {c['file']}:{c.get('line') or 0}"
+        anchor = _format_anchor(c)
         focus_marker = " ← FOCUS" if c["id"] == comment_id else ""
         ts = _fmt_created(c)
         ts_part = f" · {ts}" if ts else ""
@@ -321,9 +344,7 @@ def read_comment(
     author_label, body = _author_label(c, bot_user, subject_pattern)
     parent_id = c.get("parent_id")
     position = "root" if not parent_id else f"reply to #{parent_id}"
-    anchor = ""
-    if c.get("file"):
-        anchor = f" @ {c['file']}:{c.get('line') or 0}"
+    anchor = _format_anchor(c)
     ts = _fmt_created(c)
     ts_part = f" · {ts}" if ts else ""
     return f"=== #{c['id']} by {author_label}{ts_part} · {position}{anchor} ===\n{body}"

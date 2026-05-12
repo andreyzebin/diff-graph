@@ -431,18 +431,28 @@ def get_pr_comments(
                 # logic can compare against commit times for staleness
                 # checks ("is my prior SELF reply older than the latest
                 # commit on this PR?").
+                # `commentAnchor` carries the commit-pair the inline
+                # anchor pegs to. `orphaned=True` means subsequent
+                # commits removed / overwrote the anchored line, so
+                # the thread is talking about code that's no longer
+                # in the current view. `toHash` is the source-side
+                # commit SHA the line numbers refer to — useful for
+                # the agent to spot "this thread is anchored on an
+                # old commit, my latest review may have addressed it".
                 comments.append({
-                    "id":          node.get("id"),
-                    "parent_id":   parent_id,
-                    "depth":       depth,
-                    "file":        anchor.get("path", ""),
-                    "line":        anchor.get("line", 0),
-                    "text":        node.get("text", ""),
-                    "author":      author_obj.get("displayName", ""),
-                    "author_slug": author_obj.get("slug", author_obj.get("name", "")),
-                    "resolved":    node.get("state", "") == "RESOLVED",
-                    "anchored":    bool(anchor.get("path")),
-                    "created_ms":  node.get("createdDate"),
+                    "id":               node.get("id"),
+                    "parent_id":        parent_id,
+                    "depth":            depth,
+                    "file":             anchor.get("path", ""),
+                    "line":             anchor.get("line", 0),
+                    "text":             node.get("text", ""),
+                    "author":           author_obj.get("displayName", ""),
+                    "author_slug":      author_obj.get("slug", author_obj.get("name", "")),
+                    "resolved":         node.get("state", "") == "RESOLVED",
+                    "anchored":         bool(anchor.get("path")),
+                    "anchor_to_hash":   anchor.get("toHash", ""),
+                    "anchor_orphaned":  bool(anchor.get("orphaned")),
+                    "created_ms":       node.get("createdDate"),
                 })
                 # Reverse so that when popped from stack, replies are seen
                 # in chronological order. Bitbucket returns replies in

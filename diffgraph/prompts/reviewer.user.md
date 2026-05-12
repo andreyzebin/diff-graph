@@ -66,7 +66,12 @@ registry.
 
 Thread comments now carry an ISO timestamp in the header
 (`=== #<id> by <author> · YYYY-MM-DDThh:mmZ · ...`) so you can
-compare reply age vs commit dates without external help.
+compare reply age vs commit dates without external help. The
+header's anchor clause (`@ <path>:<line>@<sha7>`) tells you which
+commit the inline anchor pegs to, and `(outdated)` appears when
+Bitbucket detected the anchored line was removed by subsequent
+commits — that's a strong "this discussion may not still apply"
+signal. Treat outdated threads the same as already-resolved.
 
 After every concern is either published, replied to, or skipped,
 set the verdict via `set_review_status(APPROVED|NEEDS_WORK, reason)`
