@@ -299,7 +299,15 @@ class SGRTracker:
                 "description": "What to do next and why.",
             },
         }
-        required = ["learned", "questions_remaining", "confidence", "next_action"]
+        # `questions_remaining` is intentionally OPTIONAL — a reflect
+        # where everything's been answered can legitimately omit the
+        # field (semantically "no open questions"). Forcing it
+        # tripped models that produce a clean answer payload but
+        # don't bother emitting an empty list. The other three stay
+        # required: `learned` (facts gathered), `confidence`
+        # (low/medium/high), `next_action` (concrete plan) form the
+        # minimum substantive output of a reflect.
+        required = ["learned", "confidence", "next_action"]
 
         for ext_name, ext_schema in self._extensions_schema.items():
             properties[ext_name] = ext_schema

@@ -260,6 +260,84 @@ class ReflectCadenceCounter:
             self._counter += non_reflect
 
 
+class FailedReflectGuard:
+    """Break degenerate reflect-spam loops where every reflect fails
+    schema validation but the model keeps retrying with the same
+    malformed args.
+
+    Observed with qwen3-6 on production runs: model emits broken JSON
+    that gets parsed as `{"learned": "...everything..."}` with the
+    other required reflect fields silently stuffed into the string.
+    Validation correctly rejects (`'questions_remaining' is a required
+    property`), the LLM sees the error in tool_result, and tries again
+    with the same broken JSON. 47 consecutive failures in a 50-step
+    budget run (trace `be9b2084aafb`) — the model is stuck in the
+    malformation pattern; retrying doesn't help.
+
+    Rule: after N consecutive failed reflects (default 3), latch.
+    Phase 1 apply: hide `reflect` from `ctx.current_tools` and inject
+    a one-shot user message explaining the latch and the alternative
+    tools. The model can't reflect after this — it has to use
+    `post_comment`, `done`, or whatever else its tools_add gave it.
+
+    Counter resets on a SUCCESSFUL reflect (validation passed).
+    Non-reflect tool calls don't reset the counter — otherwise the
+    model could interleave a single read_thread to dodge the latch.
+
+    Latch is permanent within a run; once we conclude this LLM/model
+    combination can't produce valid reflect, no amount of further
+    "wait and retry" will fix it.
+    """
+    kind = "failed-reflect-guard"
+
+    def __init__(self, threshold: int = 3) -> None:
+        self._threshold = threshold
+        self._consecutive_failed: int = 0
+        self._latched: bool = False
+        self._nudge_injected: bool = False
+
+    def apply(self, ctx: StepContext) -> None:
+        if not self._latched:
+            return
+        # Drop reflect from tools_schema for this LLM call (and every
+        # subsequent one — latch is permanent).
+        ctx.current_tools = [
+            t for t in ctx.current_tools
+            if t.get("function", {}).get("name") != "reflect"
+        ]
+        # One-shot explanation so the model knows why reflect
+        # disappeared. Without this it would call reflect again,
+        # get "unknown tool", and we'd be in a different loop.
+        if not self._nudge_injected:
+            ctx.messages.append({
+                "role": "user",
+                "content": (
+                    f"reflect() has failed schema validation "
+                    f"{self._threshold} times in a row — your JSON "
+                    "output isn't matching the reflect schema (only "
+                    "the `learned` field is making it through). The "
+                    "tool is now hidden for the rest of this run. Use "
+                    "the remaining tools to make progress: post "
+                    "findings, reply in threads, or finish the run."
+                ),
+            })
+            self._nudge_injected = True
+
+    def on_step_done(self, ctx: StepContext) -> None:
+        # Walk outcomes; track reflect-specific runs of failure.
+        for name, is_err in ctx.step_outcomes:
+            if name != "reflect":
+                continue
+            if is_err:
+                self._consecutive_failed += 1
+                if self._consecutive_failed >= self._threshold:
+                    self._latched = True
+            else:
+                # A reflect actually ran — model produced valid args.
+                # Reset the streak.
+                self._consecutive_failed = 0
+
+
 class RatioPusher:
     """Budget-ratio one-shot producers from `BudgetConfig.pushers`.
 
@@ -562,6 +640,12 @@ class BudgetTracker:
         # signal in practice (each step costs roughly bounded
         # tokens), and `max_steps` still acts as the hard cap via
         # `state.exhausted` in the agent loop.
+        # `FailedReflectGuard` exists (orchestra/budget.py) but is
+        # intentionally NOT in the default chain — try relaxed
+        # reflect schema first (questions_remaining optional) and see
+        # if that alone breaks the qwen3-6 reflect-spam pattern. The
+        # guard is a heavier intervention and can be re-slotted here
+        # if the schema relaxation isn't enough.
         self._producers: list[PusherHandler] = [
             ReflectCadenceCounter(),
             RatioPusher(config.pushers),

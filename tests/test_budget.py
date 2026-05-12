@@ -26,6 +26,7 @@ from orchestra.budget import (
     ApplyActionsHandler,
     BudgetState,
     BudgetTracker,
+    FailedReflectGuard,
     PusherAction,
     RatioPusher,
     ReflectCadencePusher,
@@ -423,6 +424,119 @@ class TestTokenBudgetPusher:
                     f"{leaked}; pusher messages must be tool-agnostic. "
                     f"Got: {msg!r}"
                 )
+
+
+# ── FailedReflectGuard ───────────────────────────────────────────────────────
+
+
+class TestFailedReflectGuard:
+    """N consecutive reflect schema-validation failures → latch:
+    hide reflect from current_tools and inject a one-shot user
+    message. Repro: trace be9b2084aafb on mediaplanner SBLOOM-143
+    where qwen3-6 sent 47 consecutive malformed reflects (only
+    `learned` field; validation rejected every one) and burned the
+    entire 50-step budget without posting findings."""
+
+    def _ctx(self, tools: list[str] | None = None) -> StepContext:
+        return _ctx(tools=tools or ["reflect", "done", "post_comment"])
+
+    def test_under_threshold_does_not_latch(self):
+        guard = FailedReflectGuard(threshold=3)
+        ctx = self._ctx()
+        ctx.step_outcomes = [("reflect", True)]
+        guard.on_step_done(ctx)
+        ctx.step_outcomes = [("reflect", True)]
+        guard.on_step_done(ctx)
+        # 2 < 3 → not latched yet; reflect still in current_tools.
+        guard.apply(ctx)
+        names = [t["function"]["name"] for t in ctx.current_tools]
+        assert "reflect" in names
+
+    def test_threshold_latches(self):
+        guard = FailedReflectGuard(threshold=3)
+        ctx = self._ctx()
+        for _ in range(3):
+            ctx.step_outcomes = [("reflect", True)]
+            guard.on_step_done(ctx)
+        # 3 failures in a row → latched.
+        guard.apply(ctx)
+        names = [t["function"]["name"] for t in ctx.current_tools]
+        assert "reflect" not in names
+        # And the one-shot nudge message is in messages.
+        assert ctx.messages, "expected explanatory nudge after latch"
+        assert "schema validation" in ctx.messages[0]["content"]
+        assert "hidden" in ctx.messages[0]["content"]
+
+    def test_nudge_is_one_shot(self):
+        """Re-applying after the latch must NOT keep appending the
+        same nudge — that's its own degenerate spam."""
+        guard = FailedReflectGuard(threshold=2)
+        ctx = self._ctx()
+        for _ in range(2):
+            ctx.step_outcomes = [("reflect", True)]
+            guard.on_step_done(ctx)
+        guard.apply(ctx)
+        guard.apply(ctx)
+        guard.apply(ctx)
+        assert len(ctx.messages) == 1, (
+            f"nudge must fire exactly once after latch; got "
+            f"{len(ctx.messages)} messages: {ctx.messages!r}"
+        )
+
+    def test_successful_reflect_resets_streak(self):
+        """A reflect that actually passed validation breaks the
+        streak — model recovered, no latch needed."""
+        guard = FailedReflectGuard(threshold=3)
+        ctx = self._ctx()
+        ctx.step_outcomes = [("reflect", True)]
+        guard.on_step_done(ctx)
+        ctx.step_outcomes = [("reflect", True)]
+        guard.on_step_done(ctx)
+        # 2 failures in a row …
+        ctx.step_outcomes = [("reflect", False)]   # … then a success
+        guard.on_step_done(ctx)
+        # Next two failures should NOT trip the threshold.
+        ctx.step_outcomes = [("reflect", True)]
+        guard.on_step_done(ctx)
+        ctx.step_outcomes = [("reflect", True)]
+        guard.on_step_done(ctx)
+        guard.apply(ctx)
+        names = [t["function"]["name"] for t in ctx.current_tools]
+        assert "reflect" in names, "successful reflect should reset the streak"
+
+    def test_non_reflect_tool_does_not_reset_streak(self):
+        """Interleaving a non-reflect tool MUST NOT reset the
+        counter — otherwise a model could dodge the latch by
+        alternating reflect+post_comment."""
+        guard = FailedReflectGuard(threshold=3)
+        ctx = self._ctx()
+        ctx.step_outcomes = [("reflect", True), ("post_comment", False)]
+        guard.on_step_done(ctx)
+        ctx.step_outcomes = [("reflect", True), ("post_comment", False)]
+        guard.on_step_done(ctx)
+        ctx.step_outcomes = [("reflect", True)]
+        guard.on_step_done(ctx)
+        guard.apply(ctx)
+        names = [t["function"]["name"] for t in ctx.current_tools]
+        assert "reflect" not in names
+
+    def test_latch_persists(self):
+        """Once latched, reflect stays hidden for the rest of the
+        run regardless of subsequent successful tools."""
+        guard = FailedReflectGuard(threshold=2)
+        ctx = self._ctx()
+        ctx.step_outcomes = [("reflect", True)]
+        guard.on_step_done(ctx)
+        ctx.step_outcomes = [("reflect", True)]
+        guard.on_step_done(ctx)
+        # Latched. Then many successful non-reflect calls follow:
+        for _ in range(5):
+            ctx.step_outcomes = [("post_comment", False)]
+            guard.on_step_done(ctx)
+        ctx2 = self._ctx()
+        guard.apply(ctx2)
+        names = [t["function"]["name"] for t in ctx2.current_tools]
+        assert "reflect" not in names
 
 
 # ── ApplyActionsHandler ──────────────────────────────────────────────────────

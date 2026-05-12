@@ -64,10 +64,15 @@ class TestReflectValidation:
     def test_malformed_reflect_only_learned_rejected(self):
         """The mediaplanner failure mode: model emits malformed JSON
         that the parser salvages as `{"learned": "..."}`, with
-        `questions_remaining` / `confidence` / `next_action`
-        silently swallowed into the string. Dispatch must return a
-        validation error string so the LLM sees it as the
-        tool_result."""
+        `confidence` / `next_action` silently swallowed into the
+        string. Dispatch must return a validation error so the LLM
+        sees it in tool_result.
+
+        `questions_remaining` is intentionally optional — a reflect
+        with no open questions can omit it. The missing-required
+        field that surfaces here is one of the substantive three:
+        `learned` (present), `confidence`, or `next_action`.
+        """
         registry, _sgr, _ = _setup()
         bad_args = {
             "learned": (
@@ -75,16 +80,33 @@ class TestReflectValidation:
                 '"questions_remaining": [{"id": "Q1"}], '
                 '"confidence": "high"'
             ),
-            # NB: no `questions_remaining` / `confidence` / `next_action`
+            # NB: no `confidence` / `next_action`
         }
         result = registry.dispatch("reflect", bad_args)
         assert isinstance(result, str)
         assert result.startswith("validation error"), (
             f"malformed reflect should fail validation; got: {result!r}"
         )
-        # And the missing required field must be named in the error
-        # so the LLM has a concrete pointer to fix.
-        assert "questions_remaining" in result
+        # One of the still-required fields must be named.
+        assert ("confidence" in result) or ("next_action" in result), (
+            f"validation error should name the missing required "
+            f"field; got: {result!r}"
+        )
+
+    def test_questions_remaining_optional(self):
+        """A reflect with no open questions can omit
+        `questions_remaining` entirely — that's a valid "I've
+        answered everything" state, not a malformation."""
+        registry, _sgr, _ = _setup()
+        result = registry.dispatch("reflect", {
+            "learned": "All questions answered; ready to post findings.",
+            "confidence": "high",
+            "next_action": "Post findings via post_comment.",
+            # NB: no `questions_remaining` field
+        })
+        assert result == "Reflection noted.", (
+            f"omitting questions_remaining should succeed; got: {result!r}"
+        )
 
     def test_missing_confidence_rejected(self):
         registry, _sgr, _ = _setup()
