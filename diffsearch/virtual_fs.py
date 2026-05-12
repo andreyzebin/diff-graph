@@ -43,9 +43,14 @@ _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 def get_changed_files(base_ref: str, source_ref: str, repo_path: str) -> list[str]:
-    """Return list of files changed between two refs."""
+    """Return list of files the SOURCE branch changed relative to its
+    merge-base with BASE. Three-dot semantics (`base...source`) — the
+    PR's actual contribution. Two-dot (`base..source`) would also
+    include anything BASE itself did after the fork point, which on a
+    long-lived target branch surfaces files the PR never touched (e.g.
+    deletions master made after the source branch was cut)."""
     out = subprocess.run(
-        ["git", "diff", "--name-only", base_ref, source_ref],
+        ["git", "diff", "--name-only", f"{base_ref}...{source_ref}"],
         cwd=repo_path, capture_output=True, text=True, check=True,
     )
     return [f for f in out.stdout.strip().splitlines() if f]
@@ -66,9 +71,16 @@ def get_path_status(
         A (added), M (modified), D (deleted), R (renamed),
         C (copied), T (type-change). Unchanged paths are omitted —
         callers default missing keys to ' ' (a space, matching the
-        per-line marker convention for unchanged content)."""
+        per-line marker convention for unchanged content).
+
+    Three-dot semantics — same scope as `get_changed_files` and the
+    orchestrator's diff_text. Keeps the VFS / `diff_list_files` /
+    `diff_search` consistent with what the reviewer sees as "the PR's
+    actual changeset". See `get_changed_files` for the two- vs
+    three-dot rationale.
+    """
     out = subprocess.run(
-        ["git", "diff", "--name-status", base_ref, source_ref],
+        ["git", "diff", "--name-status", f"{base_ref}...{source_ref}"],
         cwd=repo_path, capture_output=True, text=True, check=True,
     )
     statuses: dict[str, str] = {}
@@ -94,9 +106,14 @@ def get_path_status(
 def build_virtual_file(
     base_ref: str, source_ref: str, path: str, repo_path: str
 ) -> VirtualFile:
-    """Build a VirtualFile from full-context unified diff."""
+    """Build a VirtualFile from full-context unified diff.
+
+    Three-dot semantics so per-file content + line markers stay
+    consistent with `get_changed_files` / `get_path_status` / the
+    orchestrator's diff_text — same merge-base anchor everywhere.
+    """
     result = subprocess.run(
-        ["git", "diff", "-U99999", base_ref, source_ref, "--", path],
+        ["git", "diff", "-U99999", f"{base_ref}...{source_ref}", "--", path],
         cwd=repo_path, capture_output=True, text=True, check=True,
     )
     diff_output = result.stdout
