@@ -95,6 +95,40 @@ class ToolRegistry:
         """Register a pre-built ToolDef directly."""
         self._tools[tool_def.name] = tool_def
 
+    def register_capture_tool(
+        self,
+        *,
+        name: str,
+        description: str,
+        parameters: dict,
+    ) -> ToolDef:
+        """Register a capture-style tool — no real implementation, the
+        handler echoes args back as `{status: received, args: <args>}`.
+
+        Used for test-only output channels declared by a prompt's
+        frontmatter (`extra_tools:` list). The LLM gets the schema in
+        the same way as any other tool; the framework records the
+        call in invocations.json and surfaces it to the judge.
+        Production prompts don't declare extras — only unit-test
+        fixtures do.
+
+        Idempotent: re-registering the same name overwrites the prior
+        definition (lets a fixture supersede a previous run's setup
+        cleanly).
+        """
+        def _capture(**args: Any) -> dict:
+            return {"status": "received", "args": dict(args)}
+
+        td = ToolDef(
+            name=name,
+            description=description,
+            parameters=parameters,
+            handler=_capture,
+            is_builtin=False,
+        )
+        self._tools[name] = td
+        return td
+
     def register_from_yaml(self, tools_config: dict[str, dict]) -> None:
         """
         Register tools from YAML config.
