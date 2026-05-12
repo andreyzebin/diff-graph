@@ -36,11 +36,16 @@ mode: react | single                # ReAct tool loop vs one-shot
 summary: >                          # shown in list_agents() output
   <1–3 sentences>
 
-tools: [tool_a, tool_b, ...]        # full base toolkit, flat list
+tools:                              # full base toolkit, flat list
+  - tool_a
+  - tool_b
 
-data:                               # input schema, template variables,
-  <field>: {type, ...}              #   and discovery docs — triple duty
-                                    #   (see below)
+data:                               # input schema + template variables + discovery
+  <field>:                          # triple duty (see below)
+    type: string
+    description: "..."
+    # OR: from: <provider>.<field>  # auto-resolve via cached data-provider tools
+
 guards:                             # optional: reactive interventions
   text_response:        "<message>"
   require_tool:<tool>:  "<message>"
@@ -64,14 +69,20 @@ Per-call task layer. Frontmatter is **additive only** — `tools:` (full-replace
 
 ```yaml
 ---
-tools_add: [list_threads, spawn_agent, post_comment, ...]
+tools_add:                          # additive only; full-replace via `tools:` is rejected
+  - list_threads
+  - spawn_agent
+  - post_comment
 extra_tools:                        # optional: capture-style tools registered per-run
   - name: text_answer
     description: "Submit your final text."
     parameters:
       type: object
-      properties: {text: {type: string}}
-      required: [text]
+      properties:
+        text:
+          type: string
+      required:
+        - text
 dispatch_mode: native | meta        # default native (direct tool calls);
                                     # meta = list_tools/call_tool MCP-style
 ---

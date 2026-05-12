@@ -9,11 +9,18 @@ summary: >
 # Minimum surface every reviewer task needs. Thread reading,
 # delegation, publishing, and verdict opt in per-task via the user
 # message's `tools_add:` — reviewer.user.md adds the production set.
-tools: [diff_read_file, diff_outline, diff_list_files, diff_search,
-        reflect, done]
+tools:
+  - diff_read_file
+  - diff_outline
+  - diff_list_files
+  - diff_search
+  - reflect
+  - done
 
 data:
-  commits: {type: string, from: pr_context.commits}
+  commits:
+    type: string
+    from: pr_context.commits
 
 budget:
   tokens: 50000

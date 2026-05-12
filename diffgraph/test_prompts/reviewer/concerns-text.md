@@ -4,7 +4,8 @@
 # capture-style tool — agent always emits A tool call, the framework
 # records the text as the run's output, judge reads it back via
 # `assert_via: [intended_text]`.
-tools_add: [text_answer]
+tools_add:
+  - text_answer
 extra_tools:
   - name: text_answer
     description: "Submit your final concerns list. Call once at the end with the full list as `text`. The agent's only deliverable channel for this task."
@@ -14,7 +15,8 @@ extra_tools:
         text:
           type: string
           description: "Concerns list, plain text, one per line as `- <short title>: <one-sentence question>`."
-      required: [text]
+      required:
+        - text
 ---
 PR: {pr_title}
 {pr_description}

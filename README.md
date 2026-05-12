@@ -357,8 +357,12 @@ Agents declare data dependencies in `data:`. Missing fields are auto-resolved fr
 
 ```yaml
 data:
-  diff_summary: {type: string, from: pr_context.diff_summary}
-  focus:        {type: string, description: "task from parent"}
+  diff_summary:
+    type: string
+    from: pr_context.diff_summary
+  focus:
+    type: string
+    description: "task from parent"
 ```
 
 When investigator is spawned without `diff_summary`, the framework calls `pr_context()` tool (cached, hidden), extracts `.diff_summary`, injects into prompt. One tool call serves all fields. No domain code in the framework.
@@ -441,11 +445,18 @@ summary: >
 
 # Minimum surface every reviewer task needs. Per-task extensions
 # (publishing, delegation, verdict) opt in via the user layer.
-tools: [diff_read_file, diff_outline, diff_list_files, diff_search,
-        reflect, done]
+tools:
+  - diff_read_file
+  - diff_outline
+  - diff_list_files
+  - diff_search
+  - reflect
+  - done
 
 data:
-  commits: {type: string, from: pr_context.commits}
+  commits:
+    type: string
+    from: pr_context.commits
 
 budget:
   tokens: 50000
@@ -465,8 +476,13 @@ Diff view, severity rubric, finding shape, … (the *how*).
 # Extension points — additive only. `tools:` (full-replace) is
 # rejected by the compiler at this layer to stop a per-task prompt
 # from silently overriding the agent's base contract.
-tools_add: [list_threads, read_thread, list_agents, spawn_agent,
-            post_comment, set_review_status]
+tools_add:
+  - list_threads
+  - read_thread
+  - list_agents
+  - spawn_agent
+  - post_comment
+  - set_review_status
 ---
 PR: {pr_title}
 {pr_description}
@@ -483,14 +499,18 @@ set_review_status; finish with done(findings).
 # Works on tool_choice=required providers (DeepSeek) that can't emit
 # a tool-less text turn. The judge reads `text_answer.text` back
 # via assert_via=[intended_text].
-tools_add: [text_answer]
+tools_add:
+  - text_answer
 extra_tools:
   - name: text_answer
     description: "Submit your final concerns list. Plain text, one per line."
     parameters:
       type: object
-      properties: { text: { type: string } }
-      required: [text]
+      properties:
+        text:
+          type: string
+      required:
+        - text
 ---
 PR: {pr_title}
 {pr_description}
