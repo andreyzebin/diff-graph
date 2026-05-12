@@ -254,12 +254,26 @@ document.addEventListener('alpine:init', () => {
         pageSize: 50,
         total: 0,
         async load() {
+          // First call (auto-refresh re-uses cached _urlApplied=true)
+          // picks up `?page=N` deep links from session-trace back-links.
+          if (!this._urlApplied) {
+            const sp = new URLSearchParams(window.location.search);
+            const p = parseInt(sp.get('page') || '', 10);
+            if (p && p > 0) this.page = p;
+            this._urlApplied = true;
+          }
           const offset = (this.page - 1) * this.pageSize;
           const r = await fetch(`${window.QA_BASE_PATH || ''}/api/qa/plans` +
                                 `?limit=${this.pageSize}&offset=${offset}`);
           const j = await r.json();
           this.plans = j.data || [];
           this.total = (j.meta && j.meta.total) || this.plans.length;
+        },
+        pushUrl() {
+          const qs = new URLSearchParams();
+          if (this.page !== 1) qs.set('page', String(this.page));
+          const url = window.location.pathname + (qs.toString() ? '?' + qs.toString() : '');
+          window.history.replaceState({}, '', url);
         },
         get pageCount() { return Math.max(1, Math.ceil(this.total / this.pageSize)); },
         get rangeText() {
@@ -272,6 +286,7 @@ document.addEventListener('alpine:init', () => {
           const next = Math.min(this.pageCount, Math.max(1, this.page + delta));
           if (next === this.page) return;
           this.page = next;
+          this.pushUrl();
           await this.load();
         },
         bars(p) {
@@ -659,9 +674,23 @@ document.addEventListener('alpine:init', () => {
       const next = Math.min(this.pageCount, Math.max(1, this.page + delta));
       if (next === this.page) return;
       this.page = next;
+      this.pushUrl();
       await this.load();
     },
+    pushUrl() {
+      const qs = new URLSearchParams();
+      if (this.page !== 1) qs.set('page', String(this.page));
+      const url = window.location.pathname + (qs.toString() ? '?' + qs.toString() : '');
+      window.history.replaceState({}, '', url);
+    },
     async load() {
+      // First call picks up `?page=N`; auto-refresh keeps cached page.
+      if (!this._urlApplied) {
+        const sp = new URLSearchParams(window.location.search);
+        const p = parseInt(sp.get('page') || '', 10);
+        if (p && p > 0) this.page = p;
+        this._urlApplied = true;
+      }
       const offset = (this.page - 1) * this.pageSize;
       const base = window.QA_BASE_PATH || '';
       const r = await (await fetch(`${base}/api/search/aggregates/by_mutation` +
@@ -992,6 +1021,26 @@ document.addEventListener('alpine:init', () => {
       name: '',
       firing: false,
     },
+    async init() {
+      // ?agent=…&tag=…&q=… deep links (and back-button restore)
+      const sp = new URLSearchParams(window.location.search);
+      this.agentFilter = sp.get('agent') || '';
+      this.tagFilter   = sp.get('tag')   || '';
+      this.q           = sp.get('q')     || '';
+      // `filtered()` is local, no fetch on filter change — just sync URL.
+      this.$watch('agentFilter', () => this.pushUrl());
+      this.$watch('tagFilter',   () => this.pushUrl());
+      this.$watch('q',           () => this.pushUrl());
+      await this.load();
+    },
+    pushUrl() {
+      const qs = new URLSearchParams();
+      if (this.agentFilter) qs.set('agent', this.agentFilter);
+      if (this.tagFilter)   qs.set('tag',   this.tagFilter);
+      if (this.q)           qs.set('q',     this.q);
+      const url = window.location.pathname + (qs.toString() ? '?' + qs.toString() : '');
+      window.history.replaceState({}, '', url);
+    },
     async load() {
       const base = window.QA_BASE_PATH || '';
       const [scR, mutR] = await Promise.all([
@@ -1083,6 +1132,14 @@ document.addEventListener('alpine:init', () => {
       priority: 100, maxRetries: 3,
       firing: false,
     },
+    pushUrl() {
+      const qs = new URLSearchParams();
+      for (const k of ['id', 'state', 'queue', 'q']) {
+        if (this.filters[k]) qs.set(k, this.filters[k]);
+      }
+      const url = window.location.pathname + (qs.toString() ? '?' + qs.toString() : '');
+      window.history.replaceState({}, '', url);
+    },
     async load(silent) {
       const base = window.QA_BASE_PATH || '';
       // Pick up ?id=... / ?state=... / ?queue=... from URL on first load.
@@ -1094,6 +1151,10 @@ document.addEventListener('alpine:init', () => {
         }
         this._urlApplied = true;
       }
+      // Reflect current filters into the URL (skip the silent auto-
+      // refresh tick so a partial typed `q` isn't pinned to the URL on
+      // every poll — only user-initiated `load()` mutates history).
+      if (!silent) this.pushUrl();
       // ?id=N → single-task view; bypass the list endpoint.
       const idFilter = (this.filters.id || '').trim();
       if (idFilter) {
