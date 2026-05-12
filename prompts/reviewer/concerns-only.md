@@ -8,10 +8,6 @@ Commits *(oldest → newest)*:
 
 {commits}
 
-Existing threads on this PR:
-
-{existing_comments}
-
 Identify the concerns this diff raises. Read the diff to
 understand the shape of the change, form distinct concerns
 (one line of inquiry per risk area, scaled to diff size),

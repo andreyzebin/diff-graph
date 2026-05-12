@@ -8,10 +8,6 @@ Commits *(oldest → newest)*:
 
 {commits}
 
-Existing threads on this PR:
-
-{existing_comments}
-
 Investigators returned the findings below. Consolidate them
 (merge duplicates, keep the higher severity, drop anything already
 covered in an open thread), publish each via post_comment(file,
