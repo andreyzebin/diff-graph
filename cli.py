@@ -130,7 +130,10 @@ def _run_with_dispatcher(
     # ── Lightweight context (no clone) ────────────────────────────────────
     thread = "(no thread)"
     bot_user_for_thread = review_cfg.get("bot_user", "")
-    if comment_id:
+    # `comment_id > 0` = real comment trigger. `-1` (sentinel) or `0`
+    # (legacy fallback) = no comment context; skip the fetch and
+    # leave thread as "(no thread)".
+    if comment_id and comment_id > 0:
         try:
             thread = get_comment_thread(
                 pr_url, comment_id,
@@ -180,7 +183,7 @@ def _run_with_dispatcher(
     # "other threads" rendering can omit it (it's already shown in
     # full under THREAD).
     active_root_id: int | None = None
-    if comment_id:
+    if comment_id and comment_id > 0:
         by_id = {c["id"]: c for c in existing_comments if c.get("id") is not None}
         cur = by_id.get(comment_id)
         seen: set[int] = set()
@@ -812,12 +815,18 @@ def run(
     # whatever was passed; the agent fails organically when it tries
     # to use a tool whose required data is absent.
     if agent_name:
-        cid_int: int = 0
+        # `-1` is the sentinel for "no comment context" (CLI without
+        # --comment-id, webhook auto-triggers on PR-open). Real
+        # Bitbucket comment ids are positive integers, so `-1`
+        # disambiguates cleanly from a fixture/test that genuinely
+        # uses `0` as a comment id. The dispatcher prompt reads
+        # `comment_id <= 0` (or `< 0`) as "no thread to render".
+        cid_int: int = -1
         if comment_id:
             try:
                 cid_int = int(comment_id)
             except (TypeError, ValueError):
-                cid_int = 0
+                cid_int = -1
 
         _run_with_dispatcher(
             pr_url=pr_url or "",

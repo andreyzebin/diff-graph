@@ -7,10 +7,10 @@ data:
     description: "full user message; may contain /command or plain text. Empty when no PR-comment context."
   comment_id:
     type: integer
-    description: "invoking comment ID. 0 = no comment context (CLI / auto-trigger / benchmark)."
+    description: "invoking comment ID. `-1` (sentinel) = no comment context (CLI / webhook auto-trigger / benchmark); `0` accepted as a legacy fallback. Positive values are real Bitbucket comment ids."
   comment_thread:
     type: string
-    description: "thread from root to invoking comment, or '(no thread)' when comment_id is 0."
+    description: "thread from root to invoking comment, or '(no thread)' when comment_id <= 0."
   pr_title:
     type: string
     description: "PR title"
