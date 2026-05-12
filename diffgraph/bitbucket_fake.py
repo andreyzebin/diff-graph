@@ -284,12 +284,23 @@ class FakeBitbucket:
 
 
 def _normalise_comment(c: dict) -> dict:
-    """Convert yaml-friendly shape into the legacy flat shape that
-    diff-graph's call sites expect:
-      {id, parent_id, depth, file, line, text, author, author_slug,
-       resolved, anchored}.
-    Accepts either flat (author/author_slug strings) or nested
-    (author={name, slug}, anchor={path, line}) inputs."""
+    """Convert yaml-friendly shape into the flat shape that diff-graph's
+    call sites expect.
+
+    Fields:
+      id, parent_id, depth, file, line, text, author, author_slug,
+      resolved, anchored, created_ms, anchor_to_hash, anchor_orphaned.
+
+    Accepts either flat (author/author_slug strings, file/line)
+    or nested (author={name, slug}, anchor={path, line, to_hash,
+    orphaned}) inputs. The nested form mirrors Bitbucket Server's
+    activity response so fixtures read like real PR state.
+
+    `created_ms` accepts either an ISO timestamp string
+    (`2026-05-05T14:56Z`) or a raw integer (ms since epoch). ISO is
+    easier for fixture authors and round-trips through
+    `comment_tools._fmt_created`.
+    """
     a = c.get("author")
     if isinstance(a, dict):
         author = a.get("name") or a.get("displayName") or a.get("slug") or ""
@@ -300,17 +311,43 @@ def _normalise_comment(c: dict) -> dict:
     anc = c.get("anchor") or {}
     file_path = anc.get("path") or c.get("file") or ""
     line = anc.get("line") or c.get("line") or 0
+
+    # created_ms: accept ISO string or raw int
+    created_raw = c.get("created_ms") if c.get("created_ms") is not None else c.get("created")
+    created_ms: int | None = None
+    if isinstance(created_raw, (int, float)):
+        created_ms = int(created_raw)
+    elif isinstance(created_raw, str) and created_raw:
+        try:
+            from datetime import datetime, timezone
+            # Accept `YYYY-MM-DDThh:mmZ` and `...:ssZ` and offset forms.
+            s = created_raw.strip()
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            created_ms = int(dt.timestamp() * 1000)
+        except ValueError:
+            created_ms = None
+
+    anchor_to_hash = anc.get("to_hash") or anc.get("toHash") or c.get("anchor_to_hash") or ""
+    anchor_orphaned = bool(anc.get("orphaned") or c.get("anchor_orphaned"))
+
     return {
-        "id":          int(c.get("id", 0) or 0),
-        "parent_id":   int(c.get("parent_id", 0) or 0),
-        "depth":       int(c.get("depth", 0) or 0),
-        "file":        str(file_path),
-        "line":        int(line or 0),
-        "text":        str(c.get("text") or ""),
-        "author":      str(author),
-        "author_slug": str(author_slug),
-        "resolved":    bool(c.get("resolved") or False),
-        "anchored":    bool(file_path),
+        "id":              int(c.get("id", 0) or 0),
+        "parent_id":       int(c.get("parent_id", 0) or 0),
+        "depth":           int(c.get("depth", 0) or 0),
+        "file":            str(file_path),
+        "line":            int(line or 0),
+        "text":            str(c.get("text") or ""),
+        "author":          str(author),
+        "author_slug":     str(author_slug),
+        "resolved":        bool(c.get("resolved") or False),
+        "anchored":        bool(file_path),
+        "created_ms":      created_ms,
+        "anchor_to_hash":  str(anchor_to_hash),
+        "anchor_orphaned": anchor_orphaned,
     }
 
 

@@ -314,15 +314,60 @@ def _parse_findings(raw: list) -> list[ReviewFinding]:
 
 
 def _get_commit_list(repo_path: str, base_ref: str, source_ref: str) -> str:
-    """Get oneline commit list between base and source."""
+    """List commits the source branch contributed to the PR, oldest
+    first, each line as `<sha7>  <YYYY-MM-DDThh:mmZ>  <subject>`.
+
+    Two-fold rationale:
+
+    - **Ordering**: oldest → newest so the agent reads them in the
+      same order they landed. The ISO timestamp removes the "is
+      this commit newer than that one?" guesswork from one-line
+      subjects (especially handy when topic-branch merges shuffle
+      `git log` ordering).
+    - **Staleness comparison**: when the agent reviews a PR a second
+      time it can compare each commit's timestamp against its prior
+      [SELF] reply timestamps (rendered in the same `YYYY-MM-DDThh:mmZ`
+      shape on every `read_thread` header) — anything newer than the
+      last [SELF] comment is a "review only the new changes" target.
+
+    Three-dot scope (`base...source`) so we only see the PR's actual
+    contribution, not commits that landed on the base branch after
+    the source was cut. Matches the VFS scope (see
+    `diffsearch/README.md`).
+    """
     import subprocess
+    from datetime import datetime, timezone
     try:
         result = subprocess.run(
-            ["git", "log", "--oneline", "--reverse", f"{base_ref}..{source_ref}"],
+            # %h = short sha · %ct = committer Unix epoch (sec, UTC) · %s = subject.
+            # We render the timestamp in Python so it lands in the
+            # exact same `YYYY-MM-DDThh:mmZ` shape as
+            # `comment_tools._fmt_created` — agents can compare
+            # commit dates to [SELF] reply dates string-for-string,
+            # no parsing required.
+            ["git", "log", "--reverse",
+             "--pretty=format:%h\t%ct\t%s",
+             f"{base_ref}...{source_ref}"],
             cwd=repo_path, capture_output=True, text=True, check=True,
         )
-        lines = result.stdout.strip()
-        return lines if lines else "(single commit)"
+        raw = result.stdout.strip()
+        if not raw:
+            return "(single commit)"
+        out_lines: list[str] = []
+        for row in raw.splitlines():
+            parts = row.split("\t", 2)
+            if len(parts) != 3:
+                out_lines.append(row)
+                continue
+            sha, ts, subject = parts
+            try:
+                iso = datetime.fromtimestamp(
+                    int(ts), tz=timezone.utc,
+                ).strftime("%Y-%m-%dT%H:%MZ")
+            except (TypeError, ValueError):
+                iso = ts
+            out_lines.append(f"{sha}  {iso}  {subject}")
+        return "\n".join(out_lines)
     except Exception:
         return "(unavailable)"
 
