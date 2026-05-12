@@ -414,7 +414,10 @@ async def api_step_messages(run_id: str, agent_id: str, step: int):
 
 @app.get("/api/runs/{run_id}/step/{agent_id}/{step}/call")
 async def api_step_call(run_id: str, agent_id: str, step: int):
-    """Full tool call arguments for a specific step."""
+    """Agent's outbound payload for the step — the LLM's assistant
+    message in full. Always returns `{content, tool_calls}` even if
+    one of them is empty; the UI decides what to render. No
+    kind-special case for text-only steps."""
     conn = sqlite3.connect(str(DEFAULT_DB_PATH))
     conn.row_factory = sqlite3.Row
     row = conn.execute(
@@ -425,7 +428,10 @@ async def api_step_call(run_id: str, agent_id: str, step: int):
     if not row:
         return JSONResponse(content={"error": "not found"}, status_code=404)
     data = json.loads(row["data_json"]) if row["data_json"] else {}
-    return JSONResponse(content=data.get("tool_calls", []))
+    return JSONResponse(content={
+        "content":    data.get("content", "") or "",
+        "tool_calls": data.get("tool_calls") or [],
+    })
 
 
 @app.get("/api/runs/{run_id}/step/{agent_id}/{step}/result", response_class=PlainTextResponse)

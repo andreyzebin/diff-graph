@@ -241,6 +241,13 @@ document.addEventListener('alpine:init', () => {
     async openStepDetails(agentId, step) {
       const stem = `${(agentId || '').substring(0, 8)}/s${step}`;
       const base = `${this.qaBase}/api/runs/${this.runId}/step/${agentId}`;
+      // History = step N's own LLM request — what the agent saw
+      // when it decided this step. Previously this read N+1's
+      // request (which includes step N's tool results), but that
+      // made the LAST step's history always 404 (no N+1 exists for
+      // done / final mode:single text step). N's own messages is
+      // available for every step uniformly — same code path for
+      // tool steps, text-only steps, judges, last-step done.
       await Promise.all([
         this.openTab(`req:${agentId}:${step}`,
                      `${stem} request`,
@@ -250,7 +257,7 @@ document.addEventListener('alpine:init', () => {
                      `${base}/${step}/result`),
         this.openTab(`hist:${agentId}:${step}`,
                      `${stem} history`,
-                     `${base}/${step + 1}/messages`),
+                     `${base}/${step}/messages`),
       ]);
       this.activeId = `req:${agentId}:${step}`;
     },
@@ -312,13 +319,20 @@ document.addEventListener('alpine:init', () => {
           try {
             const parsed = JSON.parse(raw);
             rawJson = JSON.stringify(parsed, null, 2);
-            // Tool-call array: pretty-print each argument JSON.
-            if (Array.isArray(parsed) && parsed.length && parsed[0].arguments !== undefined) {
-              const parts = parsed.map(tc => {
+            // /call envelope: {content, tool_calls}. Render whichever
+            // the LLM actually produced — same code path for tool
+            // steps and text-only steps (mode:single agents, judges).
+            const toolCalls = (parsed && parsed.tool_calls) || [];
+            const textContent = (parsed && parsed.content) || '';
+            if (Array.isArray(toolCalls) && toolCalls.length
+                && toolCalls[0].arguments !== undefined) {
+              const parts = toolCalls.map(tc => {
                 try { return JSON.stringify(JSON.parse(tc.arguments), null, 2); }
                 catch (e) { return tc.arguments; }
               });
               content = parts.join('\n\n---\n\n');
+            } else if (textContent) {
+              content = textContent;
             } else {
               content = rawJson;
             }
