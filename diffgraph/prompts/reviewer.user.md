@@ -9,10 +9,6 @@ Commits *(oldest → newest)*:
 
 {commits}
 
-Existing threads on this PR:
-
-{existing_comments}
-
 Review this PR end-to-end.
 
 Read the diff to understand the change, identify concerns, then
