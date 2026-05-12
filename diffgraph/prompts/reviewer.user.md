@@ -1,6 +1,6 @@
 ---
 dispatch_mode: native
-tools_add: [spawn_agent, post_comment, set_review_status]
+tools_add: [list_agents, spawn_agent, post_comment, set_review_status]
 ---
 PR: {pr_title}
 {pr_description}
