@@ -988,17 +988,17 @@ class Agent:
         Tool not in the fixture → real dispatch (partial mocking).
         """
         name = tc.function.name
-        # Use the centralised parser so the qwen3 truncated-JSON
-        # repair (`"key": }` / `"key": ,` pairs) runs when the
-        # registry's `fix_qwen3_stringification_bug` flag is set.
-        # Same flag covers both qwen3 failure modes — stringified
-        # nested args (caught later in dispatch) and pre-parse JSON
-        # corruption (caught here). See orchestra/tools/registry.py.
-        from orchestra.tools.registry import _parse_tool_arguments
-        args = _parse_tool_arguments(
-            tc.function.arguments,
-            fix_qwen3=self.registry.fix_qwen3_stringification_bug,
-        )
+        # Plain parse — no preemptive repair. Both qwen3 failure
+        # shapes (truncated keys / stringified args) are recovered
+        # by the registry's `arg_repair_handlers` chain, which only
+        # fires when schema validation actually flags a missing
+        # required field. `raw_args` is forwarded so syntax-level
+        # handlers can re-attempt parse on the original string.
+        raw_args = tc.function.arguments
+        try:
+            args = json.loads(raw_args or "{}")
+        except json.JSONDecodeError:
+            args = {}
 
         # ── Mock interception (Mockito-style, ordinal) ────────────────────
         if self.tool_mocks is not None and self.tool_mocks.has(name):
@@ -1021,8 +1021,11 @@ class Agent:
         if tc.id in dispatch_results:
             return self.registry.format_result(name, dispatch_results[tc.id])
 
-        # Everything else through registry (builtins + domain, with schema validation)
-        result = self.registry.dispatch(name, args)
+        # Everything else through registry (builtins + domain, with schema validation).
+        # raw_args lets the chain's syntax-level handlers (e.g.
+        # TruncatedJsonHandler) re-attempt parse from the original
+        # string when our fallback turned `args` into {}.
+        result = self.registry.dispatch(name, args, raw_args=raw_args)
         return self.registry.format_result(name, result)
 
     # ── Meta-tool implementations ─────────────────────────────────────────────

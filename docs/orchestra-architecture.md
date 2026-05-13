@@ -1,0 +1,474 @@
+# Orchestra — architecture
+
+`orchestra/` is the model-agnostic agent framework. It owns the
+ReAct loop, tool dispatch, schema validation, condensation, OTel
+tracing, and prompt compilation. Domain code (`diffgraph/`,
+`quality_api/`, the QA stack) plugs in by registering tools and
+loading a prompt directory; orchestra runs the loop.
+
+This doc is a map: where the moving parts live and how they
+connect. For per-component details, follow the file pointers.
+
+## 1. Run, top-down
+
+A single agent call looks like this:
+
+```
+caller (cli.py / diffgraph.api / quality_cli)
+   │
+   ▼
+run_agent(agent_name, data, llm, tool_registry, ...)              [orchestrator]
+   │
+   ▼
+compile_prompts(...)  →  AgentConfig                              [orchestra.compiler]
+   │                       (system_prompt, tools, budget,
+   │                        llm_params, …)
+   ▼
+Agent(config, tool_registry, llm, ...)                            [orchestra.agent]
+   │
+   ▼
+ReAct loop:
+   for step in 0..budget.max_steps:
+     1. assemble messages = [system] + [user] + history
+     2. call LLM (orchestra.streaming.llm_call_streaming)
+        → assistant message: {content, tool_calls}
+     3. for each tc in tool_calls:
+          args = json.loads(tc.arguments)
+          registry.dispatch(tc.name, args, raw_args=tc.arguments)
+     4. fold tool results back into history
+     5. apply pushers (token budget, time budget, reflect cadence)
+     6. check stop conditions (done(), max_steps, max_tokens)
+```
+
+The Agent itself is dumb about *what* tools do — it just routes
+JSON through the registry and feeds the results back. Each layer
+below adds a feature without coupling to the loop.
+
+## 2. Layers, by responsibility
+
+### `orchestra/types.py` — config dataclasses
+
+Single source of truth for `AgentConfig`, `BudgetConfig`,
+`LLMParamsConfig`, `CondensationConfig`. Every other module
+consumes these.
+
+- `AgentConfig.tools`: the tool names this agent may invoke.
+- `AgentConfig.budget`: `BudgetConfig` (max_tokens, max_steps,
+  pushers).
+- `AgentConfig.llm_params`: `LLMParamsConfig` (model, temperature,
+  tool_choice, stream, extra_body, `fix_qwen3_stringification_bug`).
+- `AgentConfig.mode`: `react` (tool-using loop) or `single`
+  (one-shot text answer, used by judges).
+
+### `orchestra/compiler.py` + `orchestra/prompts/` — prompt → config
+
+Prompts are `.md` files under a prompt directory with YAML
+frontmatter declaring `tools`, `budget`, etc. The compiler walks
+the dir, parses frontmatter via `orchestra/prompts/frontmatter.py`,
+and produces an `AgentRegistry` (mapping `agent_name → AgentConfig`).
+
+- `orchestra/prompts/internal/` — framework-built-in prompts
+  shared across deployments (reflect-nudge templates, condensation
+  prompt, etc.).
+- A caller's prompt directory (e.g. `diffgraph/prompts/`) is
+  passed via `prompt_resource=...`. Domain prompts override or
+  extend the framework defaults.
+
+The compiler also surfaces **data** fields declared by the prompt:
+
+```yaml
+data:
+  pr_title:       { type: string }
+  comment_thread: { type: string }
+  commits:        { from_tool: pr_context, from_field: commits }
+```
+
+`from_tool` makes a field lazy — the value comes from a registered
+data-provider tool (`hidden=True, cache=True`) when the agent
+spawns. See `orchestra/agent.py:resolve_agent_data`.
+
+### `orchestra/agent.py` — the ReAct loop
+
+`Agent` owns one prompt run. Key responsibilities:
+
+- Assemble messages each step (system + user + history + any
+  pusher-injected nudges).
+- Call the LLM via `orchestra/streaming.py` (OpenAI-compatible
+  endpoint with streaming support).
+- Dispatch tool calls through the registry — see §4.
+- Fold tool results back as `role=tool` messages.
+- Emit `EventType.*` to `event_bus` so listeners (`TraceCollector`,
+  trace-DB writer, OTel exporter) can record state.
+- Apply pushers (`apply` pre-LLM, `on_step_done` post-dispatch) —
+  see §6.
+- Honour `mode: single` for judges / mode:single agents:
+  one LLM call, no tools, no loop.
+
+Per-step contract: each iteration emits exactly one
+`AGENT_LLM_REQUEST` + one `AGENT_LLM_RESPONSE` event, plus N
+`AGENT_TOOL_REQUEST` / `AGENT_TOOL_RESULT` events for the N tool
+calls in that step. The trace tree leans on this 1:1:N shape.
+
+### `orchestra/tools/registry.py` — tool registry + dispatch
+
+`ToolRegistry` is the central tool catalogue. Tools register via:
+
+- decorator: `@registry.register(name=..., description=...,
+  parameters=..., result_limit=..., hidden=..., cache=...)`
+- direct call: `registry.register_tool_def(ToolDef(...))`
+- YAML: `registry.register_from_yaml(...)`
+
+Each `ToolDef` carries name, description, JSON Schema, the handler
+callable, and a few framework hints (`hidden` to drop from the
+agent-visible list, `cache=True` for data providers, `is_builtin`
+for `reflect`/`done`/`spawn_agent`).
+
+`registry.to_openai_schema(names)` produces the `tools=[...]` array
+the LLM sees. `registry.dispatch(name, args, raw_args=...)`:
+
+1. Look up the `ToolDef`.
+2. Validate args against the schema (`_validate_args`).
+3. On validation failure, walk the **argument-repair chain** —
+   see §5.
+4. On mock interception (test fixtures), short-circuit with the
+   canned result.
+5. Call the handler with `**args`.
+6. Truncate the result to `td.result_limit` and return.
+
+### `orchestra/tools/builtin.py` — framework-provided tools
+
+Registers `reflect`, `done`, `spawn_agent`, `list_agents` when the
+prompt asks for them in its `tools:` list. Each builtin gets a
+schema derived from the agent's config (e.g. `done`'s `findings`
+field type comes from `agent_config.output_schema`; `reflect`'s
+fields are augmented with `sgr_extensions`).
+
+The reflect handler **only fires after** dispatch's
+`_validate_args` accepts the call. That's why malformed reflects
+(qwen3-spam pattern) don't silently reset the cadence counter.
+
+### `orchestra/tools/meta.py` — framework escape-hatches
+
+`spawn_agent`, `list_agents`, `pr_context` (data provider). These
+hook into `Agent` methods directly (the registry maps them through
+small bridge handlers).
+
+### `orchestra/sgr.py` — Self-Guided Reasoning
+
+`SGRTracker` is the structured-reflect state machine. It builds
+the `reflect()` JSON schema (`learned`, `questions_remaining`,
+`resolved_questions`, `confidence`, `next_action`, plus any
+prompt-declared `sgr_extensions`), records each reflect call into
+a history list, and provides `extract_for_handoff` for child-agent
+prompting.
+
+### `orchestra/budget.py` — pushers + cadence
+
+Pushers are **step-level controllers** (not "LLM handlers" — the
+LLM call itself is a single fixed code path in
+`orchestra/streaming.py`). They run twice per ReAct iteration,
+sandwiching the LLM call + dispatch.
+
+#### StepContext: the per-step middleware ctx
+
+One `StepContext` object lives for the duration of each step. It
+carries:
+
+- `state` — the agent's `BudgetState` (tokens used, time elapsed,
+  step number).
+- `messages` / `all_tools` / `current_tools` — mutable IO the
+  pushers may mutate to influence the upcoming LLM call.
+- `actions` — producer→consumer queue (see below).
+- `step_outcomes` — empty in phase 1, populated in phase 2 with
+  `(tool_name, is_error)` per tool call this step ran.
+- `event_bus`, `agent_id`, `agent_name` — telemetry attribution.
+
+#### Two phases per step
+
+```
+        ┌─── phase 1: apply(ctx) ─────────────┐
+        │   tracker.apply_handlers(ctx)        │  pre-LLM
+        │   ↓                                  │
+        │   handlers append to ctx.actions     │
+        │   consumers translate actions →      │
+        │     messages / current_tools         │
+        │     mutations + telemetry            │
+        │   ↓                                  │
+        │   ctx.messages / ctx.current_tools   │
+        │   are final for the LLM call         │
+        └──────────────────────────────────────┘
+                      ↓
+                  LLM call
+                      ↓
+              tool dispatch (N tools)
+                      ↓
+        ┌─── phase 2: on_step_done(ctx) ──────┐
+        │   ctx.step_outcomes filled in       │
+        │   tracker.notify_step_done(ctx)     │  post-dispatch
+        │   ↓                                  │
+        │   stateful handlers (counters)       │
+        │   inspect outcomes, update state    │
+        └──────────────────────────────────────┘
+```
+
+#### Producer / consumer split
+
+Pushers don't touch `messages` or `current_tools` directly.
+**Producers** append `PusherAction` records describing intent:
+
+```python
+PusherAction(type=PusherType.NUDGE,    message="...", kind="sgr")
+PusherAction(type=PusherType.FORCE_REFLECT)
+PusherAction(type=PusherType.FORCE_DONE)
+PusherAction(type=PusherType.CUSTOM,   custom_handler=fn)
+```
+
+A single **consumer** stage at the end of phase 1 translates
+actions into:
+
+- `NUDGE` → append a `role=user` message with the configured text.
+- `FORCE_REFLECT` → narrow `current_tools` to just `[reflect]` and
+  add a nudge.
+- `FORCE_DONE` → narrow to `[done]`.
+- `CUSTOM` → call the dotted-path handler.
+
+This keeps producers stateless about how their intent surfaces;
+they just describe "the agent should be nudged to reflect right
+now" without knowing whether that means a message append or a
+tool narrowing.
+
+#### Built-in pushers
+
+- **`ReflectCadenceCounter`** (producer + stateful) — owns the
+  "tool steps since last reflect" counter. Phase 1: writes current
+  value to `ctx.steps_since_reflect`. Phase 2: scans
+  `step_outcomes` for a successful reflect, resets counter.
+  Cadence pusher reads the snapshot and produces a NUDGE at
+  `reflect_interval`, FORCE_REFLECT at 2× the interval.
+
+- **`RatioEscalationPusher`** (producer, abstract base) — three
+  thresholds with escalating messages: warn → strong-warn →
+  enforce. Subclassed for:
+  - `TokenBudgetPusher` — ratio = tokens_used / max_tokens.
+  - `TimeBudgetPusher` — ratio = wall_clock / max_wall_time.
+
+- **`RatioPusher`** — single-threshold base class; rarely used
+  directly.
+
+#### Configured via prompt frontmatter
+
+```yaml
+budget:
+  max_tokens: 50000
+  max_steps: 40
+  max_wall_time: 600
+  pushers:
+    - { at: 0.7, type: nudge,         message: "70% tokens used — start consolidating." }
+    - { at: 0.9, type: force_reflect }
+    - { at: 1.0, type: force_done }
+```
+
+The `BudgetTracker` (`orchestra/budget.py::BudgetTracker`)
+assembles the handler list from this config plus the framework's
+built-in `ReflectCadenceCounter`, and exposes
+`apply_handlers(ctx)` / `notify_step_done(ctx)` to the agent loop.
+
+### Three kinds of "handler" in the framework
+
+This often confuses readers — there are **three** distinct places
+the word "handler" shows up. None of them are interchangeable.
+
+| Kind                | Where                              | When it runs                                          | What it returns                          |
+|---------------------|------------------------------------|-------------------------------------------------------|------------------------------------------|
+| **`PusherHandler`** | `orchestra/budget.py`              | per ReAct step (phase 1 pre-LLM, phase 2 post-dispatch) | nothing; mutates `ctx` via `actions`     |
+| **`ToolDef.handler`** | `orchestra/tools/registry.py`     | once per accepted tool call (after schema validation) | the tool's result (str/dict)             |
+| **`ArgRepairHandler`** | `orchestra/tools/arg_repair.py`  | on validation failure with missing-required error      | repaired `args` dict, or `None` to defer |
+
+In particular:
+
+- **No "LLM handler" plug-point.** The LLM call itself
+  (`orchestra/streaming.py::llm_call_streaming`) is fixed code.
+  Vendor-specific knobs (streaming on/off, `extra_body`,
+  `tool_choice`) are passed as parameters, not via a handler chain.
+  If you need to intercept the LLM round-trip, do it before
+  (via a pusher mutating `ctx.messages` / `ctx.current_tools`) or
+  after (via tool-result formatting or an event subscriber).
+
+- **EventBus subscribers** (`TraceCollector`, `TraceDBWriter`,
+  `FSSpanExporter`) are observers, not handlers — they record
+  what happened but can't change behaviour. Same applies to the
+  OTel span emitters.
+
+- **Tool handler vs ArgRepairHandler** is the cleanest split:
+  ArgRepair operates on the **arguments** before they reach the
+  tool handler, only when validation flagged a missing field.
+  The tool handler itself sees a dict that already passed schema
+  validation — it never has to defend against malformed JSON or
+  missing required fields.
+
+### `orchestra/condensation.py` — history compaction
+
+When `usage.total_tokens > condensation.trigger`, the framework
+replaces the middle of `messages` with an LLM-generated summary,
+preserving `preserve_last` recent messages and (optionally) every
+`reflect` if `preserve_sgr=True`. The condense LLM call uses the
+same client as the main loop.
+
+### `orchestra/streaming.py` — LLM I/O
+
+Thin wrapper around the OpenAI client. Handles:
+
+- Streaming vs non-streaming (`stream` from `llm_params`).
+- `tool_choice` (`required` / `auto`).
+- `extra_body` forwarding (vendor-specific knobs like
+  `chat_template_kwargs.enable_thinking`).
+- Token accounting via `usage` field reconstruction when streaming.
+
+### `orchestra/events.py` + `orchestra/trace.py` — observability
+
+`EventBus` is a simple sync emitter. Subscribed by:
+
+- `TraceCollector` — builds an in-memory tree that mirrors agent
+  spawn relationships and per-step request/response/SGR.
+- `TraceDBWriter` (`orchestra/trace_db.py`) — appends to the QA
+  SQLite trace DB (`runs` + `events` + `otel_spans` tables).
+- `FSSpanExporter` (`orchestra/otel_fs.py`) — drops per-span
+  payloads as files for the offline viewer.
+
+`orchestra/trace.py:_prepare_agent` is what the QA UI consumes via
+`/api/runs/{id}/json` — it pairs each step's request and response,
+walks children recursively, and tags health flags
+(`tool_errors_count`, `repeats_prev_step`).
+
+### `orchestra/otel.py` + `otel_fs.py` — OpenTelemetry
+
+`setup_tracing(...)` wires up `OTLPSpanExporter` (HTTP) and the
+filesystem exporter. `set_domain_attrs(...)` stamps the active
+context with `diffgraph.run_id`, `scenario_id`, `mutation`,
+`plan_id`, `task_id`, `lineage`, `agent_name`, etc., so every
+span — `agent.<name>`, `llm.request`, `tool.<name>` — is
+self-describing without a JOIN against `runs`.
+
+`observe(name, attributes=...)` is the single span-context wrapper
+LLM and tool calls flow through. Payloads land in two places:
+attributes (compact dims) and stash-files (full request/response
+bodies + tool args/results).
+
+### `orchestra/tool_mocks.py` — test fixture mocks
+
+Mockito-style ordinal mocks. A benchmark scenario can declare:
+
+```yaml
+mocks:
+  - tool: post_comment
+    when: { args.severity: "MAJOR" }
+    return: { status: "posted", comment_id: 42 }
+```
+
+`Agent.dispatch_tool` intercepts the call BEFORE registry dispatch
+if `tool_mocks.has(name)` is True. Tests get deterministic tool
+results without spinning up the real handler. Mismatched fixture
+args raise `MockArgsMismatchError`; exhausted slots raise
+`MockExhaustedError` — both surface as test failures, not silent
+drift.
+
+### `orchestra/handoff.py` + `orchestra/feedback.py`
+
+Inter-agent state. When a parent agent calls
+`spawn_agent("child", focus=...)`, the framework builds the child's
+prompt with (a) the static system prompt, (b) the user-message
+template with placeholders resolved from `data`, (c) optional
+handoff context (last reflect, full reflect history, …) per the
+prompt's `handoff:` field, (d) feedback messages from prior failed
+attempts in this run.
+
+## 3. Domain layering
+
+`orchestra/` knows nothing about Bitbucket, diffs, or PR reviews.
+The diff-graph stack plugs in like this:
+
+- `diffgraph/orchestra_tools.py` — registers domain tools
+  (`diff_*`, `post_comment`, `set_review_status`, comment-graph
+  tools, etc.) on a per-call `ToolRegistry`.
+- `diffgraph/prompts/` — the prompt directory passed to
+  `compile_prompts`. Defines `dispatcher`, `reviewer`,
+  `investigator`, `judge.raw`.
+- `diffgraph/orchestrator.py` — the `run_review(...)` entry point
+  that builds the context, registers the tools, and calls
+  `run_agent("reviewer")`. The library API
+  (`diffgraph.api.DiffGraph`) is the public-facing wrapper.
+- `cli.py` — the binary surface for one-shot review runs and
+  webhook-style replays.
+
+`quality_api/` and `quality_cli/` use the same primitives for the
+QA bench: scheduling, multi-tenant runs, scoring, etc.
+
+## 4. Argument repair chain (the qwen3 fixes)
+
+Tool-call arguments arrive from the LLM as a JSON-encoded STRING
+in `tc.function.arguments`. Some models (qwen3-coder on vLLM /
+modelrun) periodically emit malformed JSON or mis-shaped objects.
+The dispatch path runs schema validation; on failure, it walks a
+chain of `ArgRepairHandler` instances **only when** the error is
+a missing-required-property failure. This gating is enforced by
+the harness (`ToolRegistry.dispatch`), not by individual handlers,
+so a custom handler can't accidentally widen the trigger.
+
+The default qwen3 chain (`fix_qwen3_stringification_bug=True`):
+
+1. **`TruncatedJsonHandler`** — operates on the RAW arguments
+   string. Fires when `args == {}` (parse fell back) and the raw
+   string contains a recoverable `"key": ,` / `"key": }` empty
+   pair. Drops the truncated key, re-parses, returns the dict.
+
+   Observed wild-type: plan 192 reviewer step 10 emitted 6
+   `post_comment` calls all ending in `"parent_id": }`. The regex
+   recovers `text`, `file`, `line`, `severity` intact.
+
+2. **`StringifiedArgsHandler`** — operates on the already-parsed
+   dict. When one string property contains nested escaped-JSON
+   whose keys cover the missing-required set, lifts them to the
+   top level.
+
+   Observed wild-type: qwen3 reflect emitting
+   `{"learned": "...\"confidence\": \"high\"..."}` instead of
+   distinct top-level keys.
+
+Every handler proposal is **re-validated** against the same schema
+before being committed. A proposal that doesn't fix the validation
+error is rejected; the next handler is invoked with the ORIGINAL
+args (failed candidates don't poison the chain). A handler that
+raises is logged and skipped.
+
+Caller registers a custom chain via:
+
+```python
+ToolRegistry(arg_repair_handlers=[MyHandler(), ...])
+```
+
+or enables the default qwen3 chain via:
+
+```python
+ToolRegistry(fix_qwen3_stringification_bug=True)
+```
+
+Provider profiles (`.llm_creds.toml`) carry the flag per-model so
+non-qwen3 paths pay zero cost (chain is empty → fast path stays
+the inline validate-and-call).
+
+## 5. Where to look next
+
+| Q                                              | File                                       |
+|------------------------------------------------|--------------------------------------------|
+| How does an agent assemble its messages?       | `orchestra/agent.py::_build_messages`      |
+| What does a `tools:` frontmatter entry mean?   | `orchestra/prompts/frontmatter.py`         |
+| When does reflect-nudge fire?                  | `orchestra/budget.py::ReflectCadenceCounter` |
+| How is `tc.function.arguments` parsed?         | `orchestra/agent.py:990` (line ~990)       |
+| Where do spans get their domain attrs?         | `orchestra/otel.py::set_domain_attrs`      |
+| How do tool mocks intercept?                   | `orchestra/agent.py::dispatch_tool` + `tool_mocks.py` |
+| What goes into the QA trace DB?                | `orchestra/trace_db.py`                    |
+| How do I add a new agent prompt?               | drop a `.md` in the prompt dir, set `tools:` in frontmatter, register any new tools |
+| How do I add a new tool?                       | `registry.register(name=..., parameters=...)` + add the name to the prompt's `tools:` |
+| How do I add a new arg-repair handler?         | implement `ArgRepairHandler.try_repair` + pass via `arg_repair_handlers=` |
+| How do I add a new pusher?                     | implement `PusherHandler.apply` (and optionally `on_step_done`), append to `BudgetTracker.handlers` |
+| What's the difference between a pusher and a tool handler? | pusher = per-step controller (mutates `ctx`); tool handler = per-call callable (returns a value). See §"Three kinds of handler". |

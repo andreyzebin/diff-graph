@@ -42,16 +42,31 @@ class ToolDef:
 class ToolRegistry:
     """Central registry for agent tools."""
 
-    def __init__(self, *, fix_qwen3_stringification_bug: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fix_qwen3_stringification_bug: bool = False,
+        arg_repair_handlers: Optional[list] = None,
+    ) -> None:
         self._tools: dict[str, ToolDef] = {}
-        # When True, `dispatch()` will retry once with
-        # `_repair_stringified_args(...)` if the model packed the
-        # tool-call payload as escaped JSON in a single string property.
-        # Off by default; flip on for providers known to be affected
-        # (currently Qwen3 via the modelrun/vLLM endpoints — see
-        # qwen-code#379, vllm#21711). Costs one extra json.loads on
-        # validation failure only.
+        # Argument-repair handler chain. Walked by `dispatch()` ONLY
+        # when schema validation has already failed — each handler
+        # proposes a repair, the framework re-validates, the first
+        # one whose proposal passes wins. Never runs preemptively on
+        # already-valid args.
+        #
+        # `arg_repair_handlers` (caller-supplied) wins outright. If
+        # not supplied and `fix_qwen3_stringification_bug=True`, the
+        # default qwen3 two-handler chain is installed. Otherwise
+        # the chain is empty — repair is fully opt-in.
         self.fix_qwen3_stringification_bug = fix_qwen3_stringification_bug
+        if arg_repair_handlers is not None:
+            self.arg_repair_handlers = list(arg_repair_handlers)
+        elif fix_qwen3_stringification_bug:
+            from orchestra.tools.arg_repair import default_qwen3_chain
+            self.arg_repair_handlers = default_qwen3_chain()
+        else:
+            self.arg_repair_handlers = []
 
     def register(
         self,
@@ -173,6 +188,7 @@ class ToolRegistry:
         """Create a shallow copy — domain tools shared, builtins can be overwritten."""
         new = ToolRegistry(
             fix_qwen3_stringification_bug=self.fix_qwen3_stringification_bug,
+            arg_repair_handlers=list(self.arg_repair_handlers),
         )
         new._tools = dict(self._tools)
         return new
@@ -200,23 +216,61 @@ class ToolRegistry:
             })
         return result
 
-    def dispatch(self, tool_name: str, args: dict) -> Any:
-        """Call a tool handler by name. Validates args against JSON Schema first."""
+    def dispatch(self, tool_name: str, args: dict, *,
+                 raw_args: Optional[str] = None) -> Any:
+        """Call a tool handler by name. Validates args against JSON
+        Schema first; on validation failure, walks the configured
+        `arg_repair_handlers` chain to attempt recovery.
+
+        `raw_args` is the original `function.arguments` STRING the
+        LLM emitted, before our JSON parse. Plumbing it through lets
+        syntax-level handlers (e.g. TruncatedJsonHandler) repair the
+        raw text when our parser silently fell back to `{}`. Callers
+        without raw access can omit it — semantic-level handlers
+        (e.g. StringifiedArgsHandler) work on `args` alone.
+        """
         td = self._tools.get(tool_name)
         if td is None:
             return f"unknown tool: {tool_name}"
 
         # Validate args against tool's JSON Schema
         error = _validate_args(args, td.parameters)
-        if error and self.fix_qwen3_stringification_bug:
-            repaired = _repair_stringified_args(args, td.parameters)
-            if repaired is not None and _validate_args(repaired, td.parameters) is None:
-                log.info(
-                    "tool %s: recovered qwen3-stringified args (lifted nested JSON)",
-                    tool_name,
-                )
-                args = repaired
-                error = None
+        if error and self.arg_repair_handlers:
+            # Chain-level gate: only attempt repair when the framework
+            # has flagged a missing required field. Wrong-type / enum
+            # / pattern violations stay the model's problem to fix —
+            # we don't want any handler second-guessing actual data.
+            # Putting the gate here means individual handlers don't
+            # have to re-implement it and a custom handler can't
+            # accidentally widen the trigger surface.
+            from orchestra.tools.arg_repair import _is_missing_required
+            if not _is_missing_required(error):
+                return error
+            for handler in self.arg_repair_handlers:
+                try:
+                    candidate = handler.try_repair(
+                        raw_args=raw_args,
+                        args=args,
+                        schema=td.parameters,
+                        error=error,
+                    )
+                except Exception:
+                    # A buggy handler must NEVER take the whole call
+                    # path down — log and move on. The remaining
+                    # handlers + the original validation error still
+                    # surface as if this one weren't there.
+                    log.exception("arg_repair handler %r raised", handler.name)
+                    continue
+                if candidate is None:
+                    continue
+                if _validate_args(candidate, td.parameters) is None:
+                    log.info(
+                        "tool %s: arg_repair handler %r recovered args",
+                        tool_name, handler.name,
+                    )
+                    args = candidate
+                    error = None
+                    break
         if error:
             return error
 
