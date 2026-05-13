@@ -42,6 +42,7 @@ import pytest
 
 from orchestra.tools.registry import (
     _repair_truncated_json,
+    _repair_over_escaped_keys,
     _parse_tool_arguments,
 )
 
@@ -269,3 +270,169 @@ class TestParseToolArguments:
         assert out == {}
         out2 = _parse_tool_arguments(None, fix_qwen3=True)
         assert out2 == {}
+
+
+# ── Third shape: over-escaped top-level keys ───────────────────────
+
+
+# Real payload from plan 218 run cbb7a22ec16d step 6 — a `reflect`
+# call where qwen3 wrote every top-level object key with
+# backslash-escaped quotes. JSON parser sees `\"X\":` as an escaped
+# quote (literal `"` inside the string value), so the FIRST value
+# string never closes → "Unterminated string starting at 12". The
+# whole reflect payload becomes one giant unterminated `learned`
+# value; agent-loop fallback turns args into `{}`, validation
+# reports `'learned' is a required property`.
+#
+# This constant captures the EXACT failure shape for regression. A
+# fix that stops working on this regresses the most common qwen3
+# reflect failure mode.
+REAL_OVER_ESCAPED_REFLECT = (
+    '{"learned": "I read the diff. Key finding: selectFreeItem '
+    'returns group.get(0) without sorting — BLOCKER.\\", '
+    '\\"questions_remaining\\": [{\\"id\\": \\"Q1\\", '
+    '\\"text\\": \\"Is ownership checked?\\"}], '
+    '\\"confidence\\": \\"high\\", '
+    '\\"next_action\\": \\"Submit findings now.\\"}'
+)
+
+
+class TestRepairOverEscapedKeys:
+    """Pure string transform: un-escape one layer of quote-escaping
+    when the input's top-level object keys were emitted as
+    `\\"X\\":` instead of `"X":`."""
+
+    def test_real_payload_becomes_parseable(self):
+        """The exact qwen3 reflect-emit failure must parse cleanly
+        after one un-escape pass."""
+        repaired = _repair_over_escaped_keys(REAL_OVER_ESCAPED_REFLECT)
+        parsed = json.loads(repaired)
+        assert isinstance(parsed, dict)
+
+    def test_real_payload_recovers_all_top_level_keys(self):
+        """Every reflect field is restored to the top level — none
+        get accidentally stranded inside a string."""
+        parsed = json.loads(_repair_over_escaped_keys(REAL_OVER_ESCAPED_REFLECT))
+        assert set(parsed.keys()) == {
+            "learned", "questions_remaining", "confidence", "next_action",
+        }
+        assert parsed["confidence"] == "high"
+        assert parsed["next_action"] == "Submit findings now."
+        # questions_remaining is a list of dicts — the over-escape
+        # also got applied inside the array literal and our un-escape
+        # has to recover the nested dicts too.
+        assert len(parsed["questions_remaining"]) == 1
+        assert parsed["questions_remaining"][0]["id"] == "Q1"
+
+    def test_no_escape_in_input_is_no_op(self):
+        """Cheap-path reject: input that doesn't contain `\\"` at
+        all must come out byte-identical (no work, no surprises)."""
+        clean = '{"text": "hello", "n": 7}'
+        assert _repair_over_escaped_keys(clean) == clean
+
+    def test_non_string_input_safe(self):
+        """Defensive: None / int / etc. just pass through."""
+        assert _repair_over_escaped_keys(None) is None
+        assert _repair_over_escaped_keys("") == ""
+        assert _repair_over_escaped_keys(42) == 42
+
+    def test_truncated_key_payload_not_changed_by_unescape(self):
+        """The truncated-key shape (`"parent_id": }`) doesn't contain
+        `\\"` sequences. The over-escape repair must be a no-op on
+        it so the chain still routes it to the right handler.
+        Cross-shape isolation test."""
+        truncated = '{"text": "hi", "parent_id": }'
+        assert _repair_over_escaped_keys(truncated) == truncated
+
+
+class TestParseToolArgumentsCoversThirdShape:
+    """`_parse_tool_arguments(fix_qwen3=True)` now cascades through
+    both truncated-json AND over-escaped repairs; either one's
+    success commits the result."""
+
+    def test_over_escaped_recovers_via_parse_helper(self):
+        out = _parse_tool_arguments(REAL_OVER_ESCAPED_REFLECT, fix_qwen3=True)
+        assert "learned" in out
+        assert out["confidence"] == "high"
+
+    def test_over_escaped_flag_off_falls_through(self):
+        """Without the flag the helper preserves legacy `return {}`
+        behaviour for any unparseable input, regardless of shape."""
+        out = _parse_tool_arguments(REAL_OVER_ESCAPED_REFLECT, fix_qwen3=False)
+        assert out == {}
+
+    def test_truncated_still_recovered(self):
+        """Regression: the previously-fixed truncated-key shape
+        must still pass through the cascading repair chain.
+        Sanity that adding the new handler didn't break the old."""
+        truncated = (
+            '{"file": "X.java", "line": 10, "severity": "MAJOR", '
+            '"text": "issue", "parent_id": }'
+        )
+        out = _parse_tool_arguments(truncated, fix_qwen3=True)
+        assert out["text"] == "issue"
+        assert "parent_id" not in out
+
+
+class TestOverEscapedKeysHandlerInChain:
+    """End-to-end via the registry's default qwen3 chain. Verifies
+    the handler is registered, fires on the right precondition, and
+    a committed candidate re-validates against the schema."""
+
+    SCHEMA = {
+        "type": "object",
+        "properties": {
+            "learned": {"type": "string"},
+            "questions_remaining": {"type": "array"},
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "next_action": {"type": "string"},
+        },
+        "required": ["learned", "confidence", "next_action"],
+    }
+
+    def _register(self, reg):
+        from orchestra.tools.registry import ToolDef
+        reg.register_tool_def(ToolDef(
+            name="reflect_probe",
+            description="reflect-shaped probe",
+            parameters=self.SCHEMA,
+            handler=lambda **kw: {"got": kw},
+        ))
+
+    def test_default_chain_includes_over_escaped_handler(self):
+        """The default qwen3 chain ships three handlers in
+        documented order. Order is part of the contract — narrower
+        repairs first, broader ones after."""
+        from orchestra.tools.arg_repair import default_qwen3_chain
+        chain = default_qwen3_chain()
+        names = [h.name for h in chain]
+        assert names == ["truncated_json", "over_escaped_keys",
+                          "stringified_args"]
+
+    def test_dispatch_recovers_over_escaped_reflect(self):
+        """End-to-end: dispatch a tool call whose raw arguments
+        match the over-escape shape. The chain runs through
+        truncated (no-op), over-escaped (recovers), stringified
+        (skipped). Handler invoked with the recovered args."""
+        from orchestra.tools.registry import ToolRegistry
+        reg = ToolRegistry(fix_qwen3_stringification_bug=True)
+        self._register(reg)
+        # Pre-parse fails → args = {}. Pass raw to dispatch like
+        # `agent.py` does after the inline `json.loads / except`
+        # block.
+        out = reg.dispatch("reflect_probe", {},
+                            raw_args=REAL_OVER_ESCAPED_REFLECT)
+        assert isinstance(out, dict)
+        assert out["got"]["confidence"] == "high"
+        assert "Submit findings" in out["got"]["next_action"]
+
+    def test_dispatch_with_chain_off_returns_validation_error(self):
+        """Without the flag, no chain → legacy validation error
+        surfaces. Sanity that the fix is gated behind opt-in."""
+        from orchestra.tools.registry import ToolRegistry
+        reg = ToolRegistry()  # no chain
+        self._register(reg)
+        out = reg.dispatch("reflect_probe", {},
+                            raw_args=REAL_OVER_ESCAPED_REFLECT)
+        assert isinstance(out, str)
+        assert "required property" in out

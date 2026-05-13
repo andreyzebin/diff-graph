@@ -475,9 +475,23 @@ def _parse_tool_arguments(raw: str, *, fix_qwen3: bool = False) -> dict:
 
     Returns `{}` on unrecoverable malformed input — preserves the
     existing fallback contract `agent.py` had inline. When
-    `fix_qwen3=True`, an interim `_repair_truncated_json` pass is
-    tried on JSONDecodeError; if it produces a parseable dict, we
-    use that and the original empty-fallback never fires.
+    `fix_qwen3=True`, multiple repair passes are tried in sequence
+    on JSONDecodeError; the first one that produces a parseable
+    dict wins:
+
+      1. `_repair_truncated_json` — drops `"key": <empty>` pairs
+         (qwen3 wild-type: `"parent_id": }`).
+      2. `_repair_over_escaped_keys` — un-escapes top-level object
+         keys when the model emitted `\\"X\\":` instead of `"X":`
+         (qwen3 wild-type: reflect with `\\"learned\\": "...", \\"
+         confidence\\": "..."`, → "Unterminated string" on parse).
+
+    Repairs are tried independently against the ORIGINAL raw input;
+    if one shape doesn't apply, the next runs from scratch. Chaining
+    two repairs (e.g. unescape THEN drop truncated keys) is not
+    currently done — a hybrid failure shape would need a dedicated
+    handler. Adding one is straightforward: a new `_repair_*` helper
+    + entry in the list below.
 
     This helper centralises what was previously a `try: json.loads /
     except: args = {}` snippet repeated all over `agent.py` — see
@@ -490,17 +504,65 @@ def _parse_tool_arguments(raw: str, *, fix_qwen3: bool = False) -> dict:
     except json.JSONDecodeError:
         if not fix_qwen3:
             return {}
-        repaired = _repair_truncated_json(s)
-        if repaired == s:
-            return {}
-        try:
-            result = json.loads(repaired)
-        except json.JSONDecodeError:
+        result = None
+        for repair in (_repair_truncated_json, _repair_over_escaped_keys):
+            repaired = repair(s)
+            if repaired == s:
+                continue
+            try:
+                candidate = json.loads(repaired)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                result = candidate
+                break
+        if result is None:
             return {}
     # Tool args MUST be a JSON object — arrays / scalars at the root
     # are ill-formed for our tool protocol, so coerce to `{}` to keep
     # the dispatcher's contract (it does `handler(**args)`).
     return result if isinstance(result, dict) else {}
+
+
+def _repair_over_escaped_keys(raw: str) -> str:
+    """Recover from a third qwen3 emission shape: top-level object
+    keys emitted with backslash-escaped quotes, breaking JSON syntax.
+
+    Wild-type (plan 218 run cbb7a22ec16d step 6, reflect call):
+
+        {"learned": "...content...\", \"questions_remaining\": [...],
+         \"confidence\": \"medium\", \"next_action\": \"...\"}
+
+    The model wrote `\"X\"` for object keys instead of `"X"`. JSON
+    parser sees `\"` as an escaped quote (literal `"` inside the
+    string value), so the `learned` string keeps going past where
+    it should have closed → "Unterminated string starting at 12".
+
+    Repair: globally replace `\"` → `"` in the raw text. This
+    un-escapes one layer of quote-escaping, recovering proper
+    object key boundaries. Side effect: legitimate escaped quotes
+    INSIDE string content (a model citing `"this"` inside `learned`)
+    would also be un-escaped, but:
+
+      - The repair only runs on JSONDecodeError fallback — input
+        that parses correctly never goes through here.
+      - The framework re-validates the result against the schema
+        before committing; a repair that produces unparseable
+        garbage or wrong-shape data is discarded.
+
+    Sequence inside a handler chain: cheaper truncated-key repair
+    tries first (different shape, distinct regex). If the input
+    has BOTH over-escaped keys AND a truncated trailing key, the
+    user will see this in the operator log and we'll iterate.
+
+    Returns the (possibly unchanged) raw string. Idempotent in the
+    sense that repeated calls converge — the second call has no
+    `\"` left to replace."""
+    if not isinstance(raw, str) or not raw:
+        return raw
+    if '\\"' not in raw:
+        return raw  # cheap reject — nothing to un-escape
+    return raw.replace('\\"', '"')
 
 
 def _repair_stringified_args(args: dict, schema: dict) -> Optional[dict]:

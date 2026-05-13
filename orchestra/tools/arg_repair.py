@@ -140,6 +140,58 @@ class TruncatedJsonHandler:
         return parsed if isinstance(parsed, dict) else None
 
 
+class OverEscapedKeysHandler:
+    """Recover from the qwen3 "over-escaped top-level keys" shape
+    (plan 218 run cbb7a22ec16d step 6).
+
+    Wild-type: model emits `\\"X\\":` for top-level object keys
+    instead of `"X":`. JSON parser sees `\\"` as an escaped quote
+    (literal `"` inside the string value), so the FIRST value
+    string never closes → "Unterminated string starting at N". The
+    agent loop's parse fallback turns args into `{}`, validation
+    reports the first required key as missing.
+
+    Pre-conditions for firing:
+      - `error` is a missing-required validation error
+      - `args` is empty (the over-escape made the FIRST value
+        string consume the entire payload)
+      - `raw_args` contains `\\"` sequences (cheap reject;
+        otherwise nothing to un-escape)
+
+    Repair: `_repair_over_escaped_keys` globally replaces `\\"`
+    with `"` in the raw text. If the result parses to a dict
+    covering the missing-required, the framework commits it.
+
+    Ordered AFTER `TruncatedJsonHandler` in the chain because
+    truncated-key repair is a narrower (regex-bounded) transform;
+    if both shapes could plausibly apply, the narrower one is the
+    safer first attempt. In practice their preconditions are
+    disjoint (truncated → some structural empty pair; over-escaped
+    → `\\"` in raw), so order is more about consistency than
+    correctness."""
+
+    name = "over_escaped_keys"
+
+    def try_repair(self, *, raw_args, args, schema, error):
+        # Missing-required gate enforced by the chain harness.
+        # Precondition: args came in empty (parse fell back).
+        if args:
+            return None
+        if not isinstance(raw_args, str) or not raw_args.strip():
+            return None
+        if '\\"' not in raw_args:
+            return None  # nothing to un-escape
+        from orchestra.tools.registry import _repair_over_escaped_keys
+        repaired = _repair_over_escaped_keys(raw_args)
+        if repaired == raw_args:
+            return None
+        try:
+            parsed = json.loads(repaired)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+
 class StringifiedArgsHandler:
     """Recover from the qwen3 "all args packed into one escaped-JSON
     string" failure mode (qwen-code#379).
@@ -170,9 +222,19 @@ class StringifiedArgsHandler:
 
 
 def default_qwen3_chain() -> list[ArgRepairHandler]:
-    """The two-handler chain enabled by
+    """The three-handler chain enabled by
     `ToolRegistry(fix_qwen3_stringification_bug=True)`. Order
-    matters: TruncatedJson runs first because it's cheaper and
-    its precondition (empty args) is disjoint from
-    StringifiedArgs' precondition (non-empty args)."""
-    return [TruncatedJsonHandler(), StringifiedArgsHandler()]
+    matters:
+
+      1. TruncatedJson  — narrow regex over `"key": ,` / `"key": }`
+                          (precondition: args empty)
+      2. OverEscapedKeys — global `\\"`→`"` un-escape
+                          (precondition: args empty + `\\"` in raw)
+      3. StringifiedArgs — lift nested JSON from a string property
+                          (precondition: args non-empty)
+
+    First two share the `args empty` precondition so order between
+    them is by repair specificity (truncated is narrower, runs
+    first). Stringified takes the non-empty branch."""
+    return [TruncatedJsonHandler(), OverEscapedKeysHandler(),
+            StringifiedArgsHandler()]
