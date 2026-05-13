@@ -354,6 +354,61 @@ LLM and tool calls flow through. Payloads land in two places:
 attributes (compact dims) and stash-files (full request/response
 bodies + tool args/results).
 
+### `orchestra/bench_log.py` — per-task unified system log
+
+Sister to OTel — same correlation IDs, different consumers. Where
+OTel spans answer "what did the agent DO at each step", bench-log
+answers "what did every subsystem TELL us along the way" — git
+output, judge stdout, worker lifecycle, scheduler decisions, …
+all collapsed into ONE timestamped JSON-lines stream per QA task.
+
+Layout (`~/.diffgraph/bench-logs/task-{id}/`):
+
+| File          | Producer                          | Contents                                       |
+|---------------|-----------------------------------|------------------------------------------------|
+| `stdout.log`  | bench subprocess (FD-written)     | non-Python output (shell, git, echo'd lines)   |
+| `stderr.log`  | bench subprocess (FD-written)     | non-Python error output (git's stderr too)     |
+| `system.log`  | Python `logging.*` via handler    | JSON lines from worker / bench / cli / judge   |
+| `meta.json`   | worker, written pre + post fork   | task / run / plan / scenario IDs, cmd, exit_code, timestamps |
+
+Each subsystem opts in by calling
+`setup_bench_logging(system=<name>)` at startup. The function:
+- reads `DIFFGRAPH_TASK_ID` from env if `task_id=` not passed
+- returns `None` (no-op) when no task scope — ad-hoc CLI runs
+  don't leak log files into the user's home
+- is idempotent across re-installs so subprocesses can refresh
+  correlation IDs without stacking handlers
+- captures `exc_info` as a separate `traceback` field plus a
+  one-line `exc` summary
+- surfaces caller's `extra={...}` kwargs as top-level JSON keys
+
+Wired into: `quality_cli/main.py` (worker, `system="worker"`),
+`cli.py` (diff-graph, `system="diffgraph"`), `benchmark/cli.py`
+(`system="bench"`). Plumbing via env:
+`DIFFGRAPH_BENCH_LOGS_DIR`, `DIFFGRAPH_TASK_ID`,
+`DIFFGRAPH_TRACE_RUN_ID`, `DIFFGRAPH_PLAN_ID`,
+`DIFFGRAPH_SCENARIO_ID`.
+
+Consumers:
+- `GET /api/qa/tasks/{id}/bench-log?stream=combined|stdout|stderr|system&as=text|json`
+- `GET /api/runs/{run_id}/bench-log` — alias via `qa_tasks.trace_run_id`
+- Trace UI: 📜 button in `/qa/sessions/{run_id}` header opens a
+  right-pane tab with the combined view
+- Plans UI: `📜` link on every task chip in the expand-plan
+  detail strip — works even when the agent never started (bench
+  crashed at setup → no `runs` row, but bench-log dir still
+  exists because the worker creates it BEFORE forking).
+- `quality-cli traces bench-log <run_id|task_id>` — pipe-friendly
+
+The bench-log feature is **independent** from OTel — they share
+correlation IDs but write to separate stores. The trace tree
+answers "what the agent did"; the bench-log answers "why didn't
+the agent even start", which is the failure mode OTel can't
+observe because there are no spans for it. See plan 212 task
+#3636 (git clone exit 128 with reason buried in
+`CalledProcessError.stderr`) for the wild-type case the layer
+exists to solve.
+
 ### `orchestra/tool_mocks.py` — test fixture mocks
 
 Mockito-style ordinal mocks. A benchmark scenario can declare:
