@@ -47,6 +47,16 @@ Behaviour
   is supported by design).
 - Tool in the fixture but ordinal exhausted → MockExhaustedError
   (the agent made more calls to this tool than the fixture lists).
+- Entry marked `sticky: true` replays forever — the ordinal counter
+  stays put when a sticky entry is consumed. Use it for "disable
+  this tool indefinitely; always return the same canned reply"
+  cases (e.g. set_review_status while we're sorting out reviewer
+  workflow noise).
+- One-line shortcut: a tool whose value is a bare string is parsed
+  as a single sticky entry returning that string verbatim. So
+  `set_review_status: "tool temporarily off — proceed"` is
+  equivalent to writing out a one-element list with
+  `sticky: true` + `return: "..."`.
 
 For `spawn_agent` specifically, the canned `return:` is wrapped into
 the JSON envelope the parent agent expects from a real spawn (status
@@ -76,6 +86,12 @@ log = logging.getLogger(__name__)
 class MockEntry:
     when: dict[str, Any]              # optional guard; empty = no guard
     return_data: Any
+    # When True, this entry never advances the per-tool ordinal counter
+    # — every subsequent call to the tool keeps returning it. Use for
+    # "disable this tool indefinitely" scenarios (e.g. set_review_status
+    # turned off while we work out kinks). Entries placed after a sticky
+    # one are dead code (counter stuck at the sticky index).
+    sticky: bool = False
 
 
 @dataclass
@@ -117,17 +133,32 @@ class ToolMocks:
                     f"tool_mocks for {tool_name!r}: agent called {idx + 1} time(s) "
                     f"but fixture only lists {len(entries)} entries"
                 )
-            consumed_set.add(idx)
-        return entries[idx]
+            entry = entries[idx]
+            # Sticky entries replay forever — counter stays put so the
+            # next call returns this same entry. Non-sticky entries
+            # advance the counter as usual (strict ordinal).
+            if not entry.sticky:
+                consumed_set.add(idx)
+        return entry
 
     @classmethod
     def from_dict(cls, data: dict, source_path: str = "") -> "ToolMocks":
         by_tool: dict[str, list[MockEntry]] = {}
         for tool_name, raw_entries in (data or {}).items():
+            # One-line shortcut: when the value is a bare string, the
+            # tool is mocked with a single sticky entry returning that
+            # string. Designed for "disable this tool, just reply with
+            # a fixed message" cases — the common form for
+            # `set_review_status: "tool temporarily disabled"`.
+            if isinstance(raw_entries, str):
+                by_tool[tool_name] = [MockEntry(
+                    when={}, return_data=raw_entries, sticky=True,
+                )]
+                continue
             if not isinstance(raw_entries, list):
                 raise ValueError(
-                    f"mocks for tool '{tool_name}' must be a list, got "
-                    f"{type(raw_entries).__name__}"
+                    f"mocks for tool '{tool_name}' must be a list or string, "
+                    f"got {type(raw_entries).__name__}"
                 )
             entries: list[MockEntry] = []
             for i, entry in enumerate(raw_entries):
@@ -143,7 +174,11 @@ class ToolMocks:
                     raise ValueError(
                         f"mock entry {tool_name}[{i}] missing 'return'"
                     )
-                entries.append(MockEntry(when={}, return_data=entry["return"]))
+                entries.append(MockEntry(
+                    when={},
+                    return_data=entry["return"],
+                    sticky=bool(entry.get("sticky", False)),
+                ))
             by_tool[tool_name] = entries
         return cls(by_tool=by_tool, source_path=source_path)
 
