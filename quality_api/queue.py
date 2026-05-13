@@ -903,10 +903,18 @@ class PlanStore:
 
     def create_anonymous(self, *, name: str, scenarios: list[dict],
                           lineage: str, mutation_hash: str,
-                          queue: str, attempts_min: int = 1,
+                          queue, attempts_min: int = 1,
                           priority: int = 100,
                           notes: str = "") -> tuple[int, list[int]]:
         """One-shot plan over a heterogeneous list of scenarios.
+
+        `queue` accepts a single name (str) OR a list of names. With
+        multiple queues we fan out N scenarios × M queues = N×M agent
+        tasks so the same scenario can be evaluated by every worker
+        pool. Each pool has its own dedicated worker(s) — the queue
+        name is the routing key. A comma-containing string would
+        land on a single bogus queue with no worker, hence the split
+        at the endpoint level.
 
         `scenarios` is a list of dicts: {id, bench_cmd?} — per-scenario
         runner override goes into the task's payload. Used by
@@ -920,8 +928,12 @@ class PlanStore:
         """
         if not scenarios:
             raise ValueError("anonymous plan requires at least one scenario")
-        if not queue:
-            raise ValueError("anonymous plan requires a queue")
+        if isinstance(queue, str):
+            queues = [q.strip() for q in queue.split(",") if q.strip()]
+        else:
+            queues = [str(q).strip() for q in (queue or []) if str(q).strip()]
+        if not queues:
+            raise ValueError("anonymous plan requires at least one queue")
         scenario_ids = [str(s["id"]) for s in scenarios if s.get("id")]
         with self.queue._lock, self.queue._conn() as c:
             cur = c.execute(
@@ -931,7 +943,7 @@ class PlanStore:
                    VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
                 (name or "", _now().isoformat(), "anonymous",
                  json.dumps([lineage] if lineage else []),
-                 json.dumps([queue]),
+                 json.dumps(queues),
                  json.dumps(scenario_ids),
                  max(1, attempts_min), notes or ""),
             )
@@ -949,27 +961,28 @@ class PlanStore:
             if scen_id:        resources.append(f"scenario://{scen_id}")
             if lineage:        resources.append(f"lineage://{lineage}")
             if mutation_hash:  resources.append(f"mutation://{mutation_hash}")
-            for attempt_n in range(1, max(1, attempts_min) + 1):
-                agent_tid = self.queue.enqueue(TaskSpec(
-                    queue=queue,
-                    attempt_n=attempt_n,
-                    plan_id=plan_id,
-                    priority=priority,
-                    payload=dict(payload_base),
-                    resources=list(resources),
-                ))
-                task_ids.append(agent_tid)
-                judge_tid = self.queue.enqueue(TaskSpec(
-                    queue=queue,
-                    attempt_n=attempt_n,
-                    plan_id=plan_id,
-                    priority=priority,
-                    kind="judge",
-                    parent_task_id=agent_tid,
-                    initial_state="blocked",
-                    payload=dict(payload_base),
-                ))
-                task_ids.append(judge_tid)
+            for q in queues:
+                for attempt_n in range(1, max(1, attempts_min) + 1):
+                    agent_tid = self.queue.enqueue(TaskSpec(
+                        queue=q,
+                        attempt_n=attempt_n,
+                        plan_id=plan_id,
+                        priority=priority,
+                        payload=dict(payload_base),
+                        resources=list(resources),
+                    ))
+                    task_ids.append(agent_tid)
+                    judge_tid = self.queue.enqueue(TaskSpec(
+                        queue=q,
+                        attempt_n=attempt_n,
+                        plan_id=plan_id,
+                        priority=priority,
+                        kind="judge",
+                        parent_task_id=agent_tid,
+                        initial_state="blocked",
+                        payload=dict(payload_base),
+                    ))
+                    task_ids.append(judge_tid)
         return plan_id, task_ids
 
     def create(self, spec: PlanSpec) -> tuple[int, list[int]]:

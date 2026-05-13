@@ -5,13 +5,13 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=a8a5d62"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=plan-expand"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
 <style>
 [x-cloak] { display: none !important; }
-body { padding: 20px; max-width: 1400px; margin: 0 auto; }
+body { padding: 20px; max-width: 1600px; margin: 0 auto; }
 .qa-nav { margin-bottom: 16px; font-size: 0.9em; }
 .qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
 .qa-nav a:hover { text-decoration: underline; }
@@ -141,10 +141,28 @@ th { color: #8b949e; font-weight: normal; }
                  style="background:#0d1117; border:1px solid #30363d; color:#c9d1d9;
                         padding:3px 6px; border-radius:3px; width:100%;">
         </label>
-        <label>provider
-          <input type="text" x-model="anonModal.provider"
-                 style="background:#0d1117; border:1px solid #30363d; color:#c9d1d9;
-                        padding:3px 6px; border-radius:3px; width:120px;">
+        <label>provider(s)
+          <div class="multi" style="background:#0d1117; border:1px solid #30363d;
+                                     border-radius:4px; padding:3px; min-height:28px;
+                                     display:flex; flex-wrap:wrap; gap:4px; min-width:200px;">
+            <template x-for="q in anonModal.providers" :key="q">
+              <span style="background:#1f6feb33; color:#58a6ff; padding:2px 6px;
+                           border-radius:3px; font-size:0.8em; cursor:pointer;"
+                    @click="anonModal.providers = anonModal.providers.filter(x => x !== q)"
+                    x-text="q + ' ×'"></span>
+            </template>
+            <select @change="if ($event.target.value &&
+                                  !anonModal.providers.includes($event.target.value)) {
+                                anonModal.providers.push($event.target.value);
+                              } $event.target.value=''"
+                    style="background:transparent; border:0; flex:1; min-width:120px;
+                           color:#c9d1d9; font-size:0.85em;">
+              <option value="">+ add provider</option>
+              <template x-for="p in availableProviders"
+                        :key="p"><option :value="p" x-text="p"
+                        :disabled="anonModal.providers.includes(p)"></option></template>
+            </select>
+          </div>
         </label>
       </div>
 

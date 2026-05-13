@@ -5,12 +5,12 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=a8a5d62"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=plan-expand"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
 <style>
-body { padding: 20px; max-width: 1400px; margin: 0 auto; }
+body { padding: 20px; max-width: 1600px; margin: 0 auto; }
 .qa-nav { margin-bottom: 16px; font-size: 0.9em; }
 .qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
 .qa-nav a:hover { text-decoration: underline; }
@@ -40,6 +40,27 @@ th { color: #8b949e; font-weight: normal; }
                    padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
 .pager .btn-page:hover:not(:disabled) { background: #30363d; }
 .pager .btn-page:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Expand-toggle button — ▸/▾ chevron for the per-scenario score
+ * detail strip. Borderless so it doesn't compete with the data. */
+.btn-disclose { background: transparent; border: 0; color: #8b949e;
+                cursor: pointer; padding: 2px 4px; font-size: 0.85em;
+                font-family: ui-monospace, monospace; }
+.btn-disclose:hover { color: #c9d1d9; }
+.btn-disclose.open { color: #58a6ff; }
+.muted { color: #8b949e; font-size: 0.85em; }
+.tn { font-variant-numeric: tabular-nums; text-align: right; }
+.run-link { color: #58a6ff; text-decoration: none; }
+.run-link:hover { text-decoration: underline; }
+/* Per-scenario detail row that appears under an expanded plan. */
+.plan-detail > td { background: #0d1117; padding: 0; }
+.plan-detail-inner { padding: 10px 14px; border-left: 2px solid #58a6ff; }
+.plan-scores { font-size: 0.82em; margin: 0; }
+.plan-scores th { color: #8b949e; font-weight: normal; padding: 4px 8px; }
+.plan-scores td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
+.plan-scores tr:last-child td { border-bottom: 0; }
+.score-good { color: #56d364; }
+.score-mid  { color: #c69026; }
+.score-bad  { color: #f47067; }
 </style>
 </head>
 <body hx-boost="true" hx-ext="head-support">
@@ -64,13 +85,22 @@ th { color: #8b949e; font-weight: normal; }
   <template x-if="plans.length > 0">
     <table>
       <thead><tr>
+        <th style="width:24px;"></th>
         <th>id</th><th>name</th><th>state</th>
         <th>providers</th><th>scenarios</th>
         <th>progress</th><th>created</th><th></th>
       </tr></thead>
       <tbody>
         <template x-for="p in plans" :key="p.id">
+          <tbody style="display: contents;">
           <tr>
+            <td>
+              <button class="btn-disclose"
+                      :class="{ open: expanded[p.id] }"
+                      @click="toggleExpanded(p)"
+                      :title="expanded[p.id] ? 'collapse' : 'expand to see per-scenario scores'"
+                      x-text="expanded[p.id] ? '▾' : '▸'"></button>
+            </td>
             <td>
               <a class="run-link" :href="`{{ base_path }}/qa/sessions?plan=${p.id}`"
                  x-text="`#${p.id}`"
@@ -100,6 +130,62 @@ th { color: #8b949e; font-weight: normal; }
                       @click="cancelPlan(p)">cancel</button>
             </td>
           </tr>
+          <template x-if="expanded[p.id]">
+            <tr class="plan-detail">
+              <td></td>
+              <td colspan="8">
+                <div class="plan-detail-inner">
+                  <template x-if="!scoreRows[p.id]">
+                    <span class="muted">loading per-scenario scores…</span>
+                  </template>
+                  <template x-if="scoreRows[p.id] && scoreRows[p.id].length === 0">
+                    <span class="muted">no scored runs yet</span>
+                  </template>
+                  <template x-if="scoreRows[p.id] && scoreRows[p.id].length > 0">
+                    <table class="plan-scores">
+                      <thead><tr>
+                        <th>scenario</th><th>model</th>
+                        <th class="tn">score</th>
+                        <th class="tn">hard</th>
+                        <th class="tn">soft</th>
+                        <th class="tn">meth</th>
+                        <th class="tn">fp</th>
+                        <th class="tn">found</th>
+                        <th>when</th>
+                      </tr></thead>
+                      <tbody>
+                        <template x-for="row in scoreRows[p.id]"
+                                  :key="row.agent_id || (row.scenario + row.model + row.ts)">
+                          <tr>
+                            <td>
+                              <a class="run-link"
+                                 :href="`{{ base_path }}/qa/sessions?plan=${p.id}&scenario=${row.scenario}`"
+                                 x-text="row.scenario"></a>
+                            </td>
+                            <td x-text="(row.model || '').split('/').slice(-1)[0]"
+                                :title="row.model"></td>
+                            <td class="tn" :class="scoreClass(row.score)"
+                                x-text="fmtScore(row.score)"></td>
+                            <td class="tn" x-text="fmtScore(row.hard_skill)"></td>
+                            <td class="tn" x-text="fmtScore(row.soft_skill)"></td>
+                            <td class="tn" x-text="fmtScore(row.methodology)"></td>
+                            <td class="tn" x-text="row.fp_count ?? '—'"></td>
+                            <td class="tn"
+                                x-text="row.found_rate != null
+                                          ? (row.found_rate * 100).toFixed(0) + '%'
+                                          : '—'"></td>
+                            <td class="meta" :title="row.ts"
+                                x-text="fmtLocalSmart(row.ts)"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </template>
+                </div>
+              </td>
+            </tr>
+          </template>
+          </tbody>
         </template>
       </tbody>
     </table>

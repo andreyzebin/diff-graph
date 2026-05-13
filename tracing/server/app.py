@@ -1616,6 +1616,20 @@ async def api_qa_get_plan(plan_id: int):
                                               live_score=_qa_plans.live_score(plan_id))})
 
 
+@app.get("/api/qa/plans/{plan_id}/scores")
+async def api_qa_plan_scores(plan_id: int, limit: int = 1000):
+    """Per-scenario judge scores for one plan.
+
+    Powers the expand-row in /qa/plans — one row per (scenario × model)
+    judge run that landed inside this plan's time window. Shares the
+    join shape with `live_score` (plan_id → qa_tasks → mutation
+    resource URI → agent runs) so the rows match what the plan's
+    live-score header would aggregate, just un-aggregated.
+    """
+    rows = _store().per_run_scores(plan_id=plan_id, limit=limit)
+    return JSONResponse({"data": rows})
+
+
 @app.post("/api/qa/plans/{plan_id}/cancel")
 async def api_qa_cancel_plan(plan_id: int):
     n = _qa_plans.cancel(plan_id)

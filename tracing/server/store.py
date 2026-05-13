@@ -867,6 +867,7 @@ class SQLiteTraceStore:
                        scenario: Optional[str] = None,
                        generation: Optional[str] = None,
                        lineage: Optional[str] = None,
+                       plan_id: Optional[int] = None,
                        limit: int = 1000) -> list[dict]:
         """Flat list of per-run judge scores. One row = one (agent ↔
         judge) pair; the consumer plots box/violin/timeline over these.
@@ -915,6 +916,21 @@ class SQLiteTraceStore:
                 "   AND a.started_at <= COALESCE(t.finished_at, datetime('now')))"
             )
             params.append(f"lineage://{lineage}")
+        if plan_id is not None:
+            # Same join shape `live_score` uses. Agent run's time
+            # window has to land inside one of the plan's qa_tasks
+            # rows. The mutation match is via the task's resource
+            # URI (Stage B — agent.mutation has no FK).
+            clauses.append(
+                "EXISTS (SELECT 1 FROM qa_tasks t "
+                " WHERE t.plan_id = ? "
+                "   AND EXISTS (SELECT 1 FROM json_each(t.resources) je "
+                "                WHERE je.value LIKE 'mutation://' || a.mutation || '%') "
+                "   AND t.started_at IS NOT NULL "
+                "   AND a.started_at >= t.started_at "
+                "   AND a.started_at <= COALESCE(t.finished_at, datetime('now')))"
+            )
+            params.append(plan_id)
         clauses.append("a.linked_run_id IS NOT NULL")
 
         try:

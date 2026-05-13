@@ -295,6 +295,45 @@ document.addEventListener('alpine:init', () => {
         page: 1,
         pageSize: 50,
         total: 0,
+        // Per-plan expand-state. Keyed by plan id.
+        expanded: {},        // {id: bool}
+        scoreRows: {},       // {id: [row, …]} — fetched on first expand
+        async toggleExpanded(p) {
+          const cur = !!this.expanded[p.id];
+          this.expanded[p.id] = !cur;
+          // Lazy-fetch per-scenario judge scores on first expand.
+          // The /api/qa/plans/{id}/scores endpoint returns one row
+          // per judge run (scenario × model). Cache the array so
+          // re-opening is instant; the 5s auto-refresh keeps it
+          // fresh for plans that are still running.
+          if (this.expanded[p.id] && !this.scoreRows[p.id]) {
+            await this.loadScores(p.id);
+          }
+        },
+        async loadScores(planId) {
+          const base = window.QA_BASE_PATH || '';
+          try {
+            const r = await fetch(`${base}/api/qa/plans/${planId}/scores`);
+            const j = await r.json();
+            this.scoreRows[planId] = j.data || [];
+          } catch (e) {
+            this.scoreRows[planId] = [];
+          }
+        },
+        fmtScore(v) {
+          if (v === null || v === undefined) return '—';
+          const n = Number(v);
+          if (!isFinite(n)) return '—';
+          return n.toFixed(2);
+        },
+        scoreClass(v) {
+          if (v === null || v === undefined) return '';
+          const n = Number(v);
+          if (!isFinite(n)) return '';
+          if (n >= 0.85) return 'score-good';
+          if (n >= 0.6)  return 'score-mid';
+          return 'score-bad';
+        },
         async load() {
           // First call (auto-refresh re-uses cached _urlApplied=true)
           // picks up `?page=N` deep links from session-trace back-links.
@@ -310,6 +349,11 @@ document.addEventListener('alpine:init', () => {
           const j = await r.json();
           this.plans = j.data || [];
           this.total = (j.meta && j.meta.total) || this.plans.length;
+          // Refresh expanded-plan scores in parallel — keeps the
+          // detail strip ticking with the rest of the page.
+          const expandedIds = Object.keys(this.expanded)
+            .filter(id => this.expanded[id]);
+          await Promise.all(expandedIds.map(id => this.loadScores(id)));
         },
         pushUrl() {
           const qs = new URLSearchParams();
@@ -693,13 +737,14 @@ document.addEventListener('alpine:init', () => {
     bulkFireConfigId: null,                       // currently-picked schedule for bulk fire
     fireStatus: '',
     allScenarios: [],                             // /api/qa/scenarios cache (for anonymous fire)
+    availableProviders: [],                        // worker-pool names; populated lazily on modal open
     anonModal: {                                  // anonymous-fire modal state
       open: false,
       picked: [],                                  // list of scenario ids checked
       agentFilter: '',
       tagFilter: '',
       q: '',
-      provider: 'deepseek',
+      providers: ['deepseek'],                     // multi-select; backend fans out N×M tasks
       firing: false,
     },
     page: 1,
@@ -777,10 +822,25 @@ document.addEventListener('alpine:init', () => {
       this.fireStatus = `"${cfg?.name || configId}" × ${this.selected.length}: ${results.join(' · ')}`;
     },
     async openAnonModal() {
+      const base = window.QA_BASE_PATH || '';
       if (!this.allScenarios.length) {
-        const base = window.QA_BASE_PATH || '';
         const r = await (await fetch(`${base}/api/qa/scenarios`)).json();
         this.allScenarios = r.data || [];
+      }
+      // Populate the provider multi-select from configured worker
+      // pools — the queue name IS the provider name, and that's the
+      // routing key the backend uses. Typing a name that doesn't
+      // match a pool means the task queues forever (this is the
+      // bug we hit on plan 202).
+      if (!this.availableProviders.length) {
+        try {
+          const r = await (await fetch(`${base}/api/qa/worker-pools`)).json();
+          this.availableProviders = (r.data || [])
+            .filter(p => p.enabled !== false)
+            .map(p => p.queue || p.name)
+            .filter(Boolean)
+            .sort();
+        } catch (e) { /* keep empty — user can still type via legacy field if any */ }
       }
       this.anonModal.open = true;
     },
@@ -808,12 +868,17 @@ document.addEventListener('alpine:init', () => {
       try {
         const base = window.QA_BASE_PATH || '';
         const results = [];
+        // Backend's `provider` accepts a CSV string and fans out
+        // one (scenario, queue) task pair per provider. Sending a
+        // joined string keeps the wire format simple.
+        const providerCsv = (m.providers && m.providers.length
+                              ? m.providers : ['deepseek']).join(',');
         for (const mut of this.selected) {
           const r = await fetch(`${base}/api/qa/fire-anonymous`, {
             method: 'POST', headers: {'content-type': 'application/json'},
             body: JSON.stringify({
               scenarios: m.picked, sha: mut,
-              lineage: 'master', provider: m.provider || 'deepseek',
+              lineage: 'master', provider: providerCsv,
             }),
           });
           const j = await r.json();
@@ -1053,13 +1118,14 @@ document.addEventListener('alpine:init', () => {
     q: '',
     fireStatus: '',
     recentMutations: [],          // from /api/search/aggregates/by_mutation
+    availableProviders: [],        // worker-pool names, lazy-populated
     fireModal: {
       open: false,
       shaMode: 'recent',          // 'recent' | 'custom'
       shaPicked: '',              // full_sha when shaMode==='recent'
       shaCustom: '',              // free-form input when shaMode==='custom'
       lineage: 'master',
-      provider: 'deepseek',
+      providers: ['deepseek'],     // multi-select; backend fans out 1 task per pool per scenario
       name: '',
       firing: false,
     },
@@ -1118,8 +1184,24 @@ document.addEventListener('alpine:init', () => {
         this.picked = [...this.picked, sid];
       }
     },
-    openFireModal() {
+    async openFireModal() {
       this.fireModal.open = true;
+      const base = window.QA_BASE_PATH || '';
+      // Lazy-load worker-pool names for the provider multi-select.
+      // We use the queue NAME the task gets enqueued on — typing a
+      // free-form value (the old single-field behaviour) was easy
+      // to mistype as `"deepseek,qwen3-6"` and land the task on a
+      // queue with no worker (plan 202 dead-letter).
+      if (!this.availableProviders.length) {
+        try {
+          const r = await (await fetch(`${base}/api/qa/worker-pools`)).json();
+          this.availableProviders = (r.data || [])
+            .filter(p => p.enabled !== false)
+            .map(p => p.queue || p.name)
+            .filter(Boolean)
+            .sort();
+        } catch (e) { /* keep empty */ }
+      }
       const sp = new URLSearchParams(window.location.search);
       const shaParam = sp.get('sha');
       if (shaParam) {
@@ -1141,12 +1223,15 @@ document.addEventListener('alpine:init', () => {
       m.firing = true;
       try {
         const base = window.QA_BASE_PATH || '';
+        // CSV join — backend splits and creates one task per (scen, pool).
+        const providerCsv = (m.providers && m.providers.length
+                              ? m.providers : ['deepseek']).join(',');
         const r = await fetch(`${base}/api/qa/fire-anonymous`, {
           method: 'POST', headers: {'content-type': 'application/json'},
           body: JSON.stringify({
             scenarios: this.picked, sha,
             lineage: m.lineage || 'master',
-            provider: m.provider || 'deepseek',
+            provider: providerCsv,
             name: m.name || '',
           }),
         });
