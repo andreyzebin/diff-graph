@@ -57,10 +57,55 @@ def db_with_step(monkeypatch):
         {"role": "system", "content": "You are a code reviewer."},
         {"role": "user", "content": "Please review the diff."},
     ]
+    # Tools the agent had at step 0 — full OpenAI shape with name,
+    # description, and parameter schema. The /tools endpoint serves
+    # this back as-is; the renderer formats it human-readably.
+    tools_step0 = [
+        {"type": "function", "function": {
+            "name": "diff_read_file",
+            "description": "Read a slice of a file in the diff view.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "start_line": {"type": "integer"},
+                },
+                "required": ["path"],
+            },
+        }},
+        {"type": "function", "function": {
+            "name": "spawn_agent",
+            "description": "Delegate a focused investigation to a sub-agent.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string"},
+                    "focus": {"type": "string"},
+                },
+                "required": ["agent_name", "focus"],
+            },
+        }},
+    ]
     con.execute(
         "INSERT INTO events (run_id, agent_id, event_type, step, data_json) "
         "VALUES (?, ?, 'agent_llm_request', 0, ?)",
-        ("run-x", "agent-x", json.dumps({"messages": messages_step0})),
+        ("run-x", "agent-x", json.dumps({
+            "messages": messages_step0,
+            "tools": tools_step0,
+            "tools_count": len(tools_step0),
+        })),
+    )
+    # Step 1 request: legacy-shape event — only `tools_count`, no
+    # full schemas (orchestra/trace_db.py used to drop the array).
+    # The /tools endpoint must degrade gracefully — empty list +
+    # the count, with a hint string in the text view.
+    con.execute(
+        "INSERT INTO events (run_id, agent_id, event_type, step, data_json) "
+        "VALUES (?, ?, 'agent_llm_request', 1, ?)",
+        ("run-x", "agent-x", json.dumps({
+            "messages": messages_step0,
+            "tools_count": 7,
+        })),
     )
     # Step 0 response: tool call (well-formed) — exercises the
     # /call endpoint's pretty-printed args branch.
@@ -155,3 +200,93 @@ class TestCallEndpoint:
         assert r.status_code == 404
         assert r.headers["content-type"].startswith("text/plain")
         assert r.text == "(not found)"
+
+
+class TestToolsEndpoint:
+    """`/api/runs/{id}/step/{agent}/{n}/tools` — surfaces the tool
+    list the LLM saw at step N. Primary debugging use case:
+    confirming a specific function (e.g. `spawn_agent`,
+    `set_review_status`) was actually present in the request, and
+    reading the description / parameter schema as the agent saw it."""
+
+    def test_default_returns_envelope_with_full_schemas(self, client, db_with_step):
+        """JSON shape: `{tools: [...openai-shape], tools_count}`. The
+        envelope is stable — UI introspects `.tools[i].function.name`
+        + `.function.description` directly."""
+        r = client.get("/api/runs/run-x/step/agent-x/0/tools")
+        assert r.status_code == 200
+        body = r.json()
+        assert set(body.keys()) == {"tools", "tools_count"}
+        assert body["tools_count"] == 2
+        names = [t["function"]["name"] for t in body["tools"]]
+        assert names == ["diff_read_file", "spawn_agent"]
+        # Full schema landed — not just names.
+        assert body["tools"][1]["function"]["description"].startswith("Delegate")
+
+    def test_as_text_lists_names_descriptions_and_params(self, client, db_with_step):
+        r = client.get("/api/runs/run-x/step/agent-x/0/tools?as=text")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/plain")
+        body = r.text
+        # Banner counts what's available so a quick eyeball confirms
+        # "yes, two tools were on the table".
+        assert "TOOLS (2 available)" in body
+        # Each tool surfaces its name + description.
+        assert "▶ diff_read_file" in body
+        assert "Read a slice of a file in the diff view." in body
+        assert "▶ spawn_agent" in body
+        assert "Delegate a focused investigation" in body
+        # Required parameters are marked with `*`, optional with ` `.
+        assert "* agent_name: string" in body
+        assert "* focus: string" in body
+        assert "* path: string" in body            # required
+        assert "  start_line: integer" in body    # not required
+
+    def test_legacy_event_only_count_renders_hint(self, client, db_with_step):
+        """Pre-feature trace events stored only `tools_count` and
+        dropped the full array. The endpoint must not crash on those
+        — JSON returns `tools=[]` with the historical count, text
+        view surfaces a clear hint instead of silently saying
+        "0 tools" which would mislead a debugger reading an old run."""
+        r = client.get("/api/runs/run-x/step/agent-x/1/tools")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["tools"] == []
+        assert body["tools_count"] == 7
+
+        t = client.get("/api/runs/run-x/step/agent-x/1/tools?as=text")
+        assert t.status_code == 200
+        assert "no tool schemas captured" in t.text
+        assert "tools_count=7" in t.text
+
+    def test_as_text_404_plain(self, client, db_with_step):
+        r = client.get("/api/runs/run-x/step/agent-x/99/tools?as=text")
+        assert r.status_code == 404
+        assert r.headers["content-type"].startswith("text/plain")
+        assert r.text == "(not found)"
+
+
+class TestRenderToolsDirect:
+    """`render_tools()` is also called from non-HTTP contexts (e.g. a
+    future CLI command); pin its return shape so refactors don't
+    silently break it."""
+
+    def test_empty_with_no_legacy_count(self):
+        from tracing.server.messages_render import render_tools
+        out = render_tools([])
+        assert "no tools" in out and "text-only" in out
+
+    def test_empty_with_legacy_count_emits_hint(self):
+        from tracing.server.messages_render import render_tools
+        out = render_tools([], tools_count=5)
+        assert "no tool schemas captured" in out
+        assert "tools_count=5" in out
+
+    def test_malformed_entry_doesnt_crash(self):
+        """A non-dict tool entry shouldn't bring down rendering;
+        we render a placeholder so the other tools are still readable."""
+        from tracing.server.messages_render import render_tools
+        out = render_tools([None, "garbage", {"function": {"name": "ok"}}])
+        # Two malformed placeholders + the real one.
+        assert "malformed entry" in out
+        assert "▶ ok" in out

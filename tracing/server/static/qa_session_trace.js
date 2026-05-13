@@ -253,10 +253,10 @@ document.addEventListener('alpine:init', () => {
       return this.tabs.find(t => t.id === this.activeId) || null;
     },
 
-    // Open a payload tab (call/result/messages) on the right panel.
+    // Open a payload tab (call/result/messages/tools) on the right panel.
     // url = API endpoint that returns the raw payload; msgIndex picks
     // out one message from a `messages` array if provided.
-    // One click on a step → three side-panel tabs auto-loaded.
+    // One click on a step → four side-panel tabs auto-loaded.
     // Semantics are framed around the TOOL CALL — that's the unit
     // the agent operates on per step:
     //   request  → the tool the agent invoked (the parsed
@@ -271,6 +271,12 @@ document.addEventListener('alpine:init', () => {
     //              the last step), the tab shows `(end of
     //              conversation — agent did not reach this step)`.
     //              `/api/runs/{id}/step/{agent}/{n+1}/messages`
+    //   tools    → the function-tool list the agent SAW in this
+    //              step's LLM request — name, description,
+    //              parameter schema for each. Use to answer
+    //              "was set_review_status / spawn_agent on the
+    //              table at this step, and how was it described?"
+    //              `/api/runs/{id}/step/{agent}/{n}/tools`
     // Existing manual tabs stay open; `openTab` dedupes by id.
     async openStepDetails(agentId, step) {
       const stem = `${(agentId || '').substring(0, 8)}/s${step}`;
@@ -292,6 +298,9 @@ document.addEventListener('alpine:init', () => {
         this.openTab(`hist:${agentId}:${step}`,
                      `${stem} history`,
                      `${base}/${step}/messages`),
+        this.openTab(`tools:${agentId}:${step}`,
+                     `${stem} tools`,
+                     `${base}/${step}/tools`),
       ]);
       this.activeId = `req:${agentId}:${step}`;
     },
@@ -324,7 +333,7 @@ document.addEventListener('alpine:init', () => {
         //                 with meta+streams JSON envelope for toggle
         // /result is already plain-text; everything else falls back
         // to client-side JSON pretty-printing.
-        const supportsTextView = /\/(messages|call|bench-log)$/.test(url);
+        const supportsTextView = /\/(messages|call|bench-log|tools)$/.test(url);
         if (supportsTextView) {
           const sep = url.includes('?') ? '&' : '?';
           const [tResp, jResp] = await Promise.all([

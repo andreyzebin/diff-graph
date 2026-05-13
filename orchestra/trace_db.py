@@ -271,6 +271,15 @@ class TraceDBWriter:
                 data[k] = compact
                 continue
             if k == "tools" and isinstance(v, list):
+                # Store the full schema so the UI can answer "what
+                # exactly did the agent see in its tool list at this
+                # step" (function name, description, parameter schema)
+                # — that's how we debug things like "why didn't the
+                # reviewer ever call spawn_agent; was it in the tool
+                # list at all?" `tools_count` stays alongside for
+                # quick filtering / index queries without parsing
+                # the whole array.
+                data["tools"] = v
                 data["tools_count"] = len(v)
                 continue
             try:

@@ -427,6 +427,47 @@ async def api_step_messages(run_id: str, agent_id: str, step: int,
     return JSONResponse(content=messages)
 
 
+@app.get("/api/runs/{run_id}/step/{agent_id}/{step}/tools")
+async def api_step_tools(run_id: str, agent_id: str, step: int,
+                         as_: str = Query("json", alias="as")):
+    """Tool list the agent saw in its LLM request at this step.
+
+    Answers "what tools were actually on the table when the model
+    decided what to do?" — primary use case: confirming that
+    optional surfaces like `spawn_agent` / `set_review_status` were
+    in fact present (and read whether the description was strong /
+    weak enough to be invoked).
+
+    `?as=json` (default) → envelope `{tools: [...openai-shape], tools_count}`
+       so consumers can introspect. Returns `tools=[]` for legacy
+       events that pre-date full-schema capture (only `tools_count`
+       was recorded then).
+    `?as=text` → plain-text view: per-tool `▶ name` banner with
+       description + indented parameter listing (`*` marks required).
+    """
+    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT data_json FROM events WHERE run_id=? AND agent_id=? AND event_type='agent_llm_request' AND step=? LIMIT 1",
+        (run_id, agent_id, step),
+    ).fetchone()
+    conn.close()
+    if not row:
+        if as_ == "text":
+            return PlainTextResponse("(not found)", status_code=404)
+        return JSONResponse(content={"error": "not found"}, status_code=404)
+    data = json.loads(row["data_json"]) if row["data_json"] else {}
+    tools = data.get("tools") or []
+    tools_count = data.get("tools_count")
+    if as_ == "text":
+        from tracing.server.messages_render import render_tools
+        return PlainTextResponse(render_tools(tools, tools_count=tools_count))
+    return JSONResponse(content={
+        "tools": tools,
+        "tools_count": tools_count if tools_count is not None else len(tools),
+    })
+
+
 @app.get("/api/runs/{run_id}/step/{agent_id}/{step}/call")
 async def api_step_call(run_id: str, agent_id: str, step: int,
                         as_: str = Query("json", alias="as")):

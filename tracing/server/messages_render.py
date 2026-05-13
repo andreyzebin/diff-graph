@@ -125,6 +125,60 @@ def render_call(envelope: dict) -> str:
     return "\n\n".join(blocks)
 
 
+def render_tools(tools: list, *, tools_count: int | None = None) -> str:
+    """Render the tool list the agent saw in this step's LLM request.
+
+    OpenAI-style tool shape: `{type: "function", function: {name,
+    description, parameters: {...JSON schema}}}`. We show the function
+    name, the description verbatim, and a compact list of parameter
+    names with their types — enough to answer "did this tool actually
+    show up in the agent's options at this step, with a meaningful
+    description?". The full parameter schema lives in the JSON view.
+
+    `tools_count` is the legacy fallback for events captured BEFORE
+    full schemas were stored (orchestra/trace_db.py used to drop the
+    `tools` array and keep only the count). When tools is empty but
+    the legacy count is non-zero, render a hint to that effect so the
+    UI doesn't silently say "0 tools" for a run where the agent really
+    saw N."""
+    if not tools:
+        if tools_count:
+            return (
+                f"(no tool schemas captured for this step — legacy "
+                f"trace event with tools_count={tools_count} only; "
+                f"rerun on current orchestra/trace_db.py to populate "
+                f"the schemas)"
+            )
+        return "(no tools — text-only LLM call)"
+    blocks: list[str] = [_banner(f"TOOLS ({len(tools)} available)")]
+    for i, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            blocks.append(f"#{i + 1} (malformed entry)")
+            continue
+        fn = tool.get("function") or {}
+        name = fn.get("name") or tool.get("name") or "(unnamed)"
+        desc = (fn.get("description") or "").strip()
+        params = fn.get("parameters") or {}
+        param_names = []
+        props = params.get("properties") if isinstance(params, dict) else None
+        if isinstance(props, dict):
+            required = set(params.get("required") or [])
+            for pname, pschema in props.items():
+                t = (pschema or {}).get("type") if isinstance(pschema, dict) else None
+                marker = "*" if pname in required else " "
+                param_names.append(f"{marker} {pname}: {t or '?'}")
+        parts = [f"▶ {name}"]
+        if desc:
+            # Indent multi-line descriptions for readability.
+            parts.append("\n".join("    " + ln for ln in desc.splitlines()))
+        if param_names:
+            parts.append("  params:\n" + "\n".join(
+                "    " + p for p in param_names
+            ))
+        blocks.append("\n".join(parts))
+    return "\n\n".join(blocks)
+
+
 def _render_tool_result(msg: dict) -> str:
     """Tool result message. `name` is the tool that produced this
     result; `tool_call_id` ties it back to the matching call earlier
