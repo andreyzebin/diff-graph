@@ -1,24 +1,45 @@
 id: SCEN-305
-name: "AGENTS.md-driven decision — agent must cite the project rule"
+name: "AGENTS.md adherence — flag violations of conventions introduced in the same PR"
 tags: [java, agents-md, conventions, severity:major, tier:integration]
 
-# Companion to SCEN-011 (same branch, same NPE fix). Where SCEN-011
-# checks that the agent objects to the @OneToMany null guard at all,
-# this scenario checks that the objection is *grounded in AGENTS.md*
-# rather than generic JPA knowledge — the judge looks for an explicit
-# AGENTS.md citation in the finding's evidence.
+# The ONE scenario in the suite where AGENTS.md is reachable by the
+# agent. Every other branch had AGENTS.md removed from history (orderflow
+# repo was rewritten with git-filter-repo so it never existed on master)
+# — see ../../../../scenarios history and the orderflow repo commit
+# `chore: onboarding doc + first OnboardingNotificationService`.
+#
+# This PR ships TWO things together:
+#   1. A fresh AGENTS.md onboarding doc (general engineering principles:
+#      SOLID, constructor injection, no N+1, atomic writes, auth,
+#      tests, style).
+#   2. A new OnboardingNotificationService that already VIOLATES two of
+#      those principles in the same diff — field injection instead of
+#      constructor injection, and N+1 inside notifyAll().
+#
+# The test: does the agent READ the AGENTS.md being introduced and
+# CONNECT it to violations in the rest of the same PR? A weak agent
+# reviewing this as "two unrelated files" will miss the link. A strong
+# agent recognises that introducing a convention while violating it in
+# the same commit is itself the bug.
 
 input:
   bitbucket:
     provider: real
     pull_request:
-      from_branch: "hotfix/ORD-287-cancel-npe"
+      from_branch: "chore/onboarding-add-agents-md"
       to_branch: "master"
-      title: "ORD-287: Fix NPE on order cancellation"
+      title: "chore: onboarding doc + first OnboardingNotificationService"
       description: |
-        ## ORD-287: NPE on order cancellation when items list is null
+        ## Onboarding documentation + first notification service
 
-        Adds null guard before iterating items in cancelOrder().
+        Two changes:
+
+        - Adds `AGENTS.md` — the team's onboarding doc covering engineering
+          principles, test expectations, and style.
+        - Adds `OnboardingNotificationService` — sends welcome emails after
+          a customer completes onboarding. Wired into the nightly cohort
+          job and the manual re-send admin endpoint. EmailGateway delegation
+          is stubbed pending the gateway interface PR.
 
   trigger:
     type: comment
@@ -26,28 +47,45 @@ input:
 
 expected_output:
   required_comments:
+
     - id: EXP-1
       type: inline
       severity: major
       location:
-        file: "src/main/java/com/flowmart/orders/service/OrderService.java"
-        line: 59
+        file: "src/main/java/com/flowmart/orders/service/OnboardingNotificationService.java"
+        line: 19
       description_keywords:
-        # Must combine root-cause framing with explicit AGENTS.md citation.
-        - ["AGENTS.md", "project convention", "team rule", "documented"]
-        - ["@OneToMany", "Hibernate", "never null", "empty collection"]
-        - ["root cause", "guard hides", "symptom", "data integrity"]
+        - ["@Autowired", "field injection", "constructor injection"]
+        - ["AGENTS.md", "principle", "convention", "team rule", "documented", "guideline"]
       rationale: |
-        The agent should not just object on JPA grounds — it should ground
-        the objection in the project's own AGENTS.md, which states "JPA
-        @OneToMany collections are initialised by Hibernate as empty lists
-        and should never be null in normal flow". An agent that has read
-        AGENTS.md will quote it; an agent relying purely on world knowledge
-        will say the same thing without the citation. This scenario
-        rewards the citation explicitly.
+        OnboardingNotificationService uses field injection
+        (`@Autowired private CustomerRepository`) while the AGENTS.md
+        being added in the SAME PR explicitly states "Constructor
+        injection only — no field or setter injection on services or
+        controllers." The reviewer must flag the contradiction and
+        ground the objection in the AGENTS.md rule that this very PR
+        introduces — that linkage is the whole point of the test.
+
+    - id: EXP-2
+      type: inline
+      severity: major
+      location:
+        file: "src/main/java/com/flowmart/orders/service/OnboardingNotificationService.java"
+        line: 27
+      description_keywords:
+        - ["N+1", "loop", "findById", "per-item", "per item", "batched", "findAllById"]
+        - ["AGENTS.md", "principle", "convention", "team rule", "documented", "guideline"]
+      rationale: |
+        notifyAll() calls `customerRepository.findById()` inside a
+        for-each over the supplied customer ids — one query per id.
+        AGENTS.md introduced in this PR says "No N+1 queries — never
+        call a repository inside a loop over a collection. Use batched
+        / In-style queries." Should be a single `findAllById(customerIds)`
+        call. The finding must cite AGENTS.md.
 
   forbidden_comments:
-    - description: "Suggesting to add a logging.warn on the null branch (treats symptom, not the AGENTS.md root rule)"
+    - description: "Treating AGENTS.md and OnboardingNotificationService as independent unrelated changes — the test is precisely that they aren't"
+    - description: "Generic 'consider using constructor injection' suggestions that don't reference the AGENTS.md rule introduced in the same PR"
 
   expected_status_change: "NEEDS_WORK"
 
@@ -61,7 +99,7 @@ metadata:
   language: java
   pr_size: small
   scenario_type: bug
-  capabilities: [agents_md_awareness, root_cause_analysis, project_conventions]
-  status: "DRAFT — runnable, but matcher upgrade needed to enforce AGENTS.md citation"
+  capabilities: [agents_md_awareness, cross_file_reasoning, project_conventions]
+  status: "runnable"
   author: "team"
   created: "2026-05-05"
