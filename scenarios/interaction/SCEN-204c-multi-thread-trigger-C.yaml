@@ -22,7 +22,7 @@ input:
         **So that** we can run campaigns without a deploy
 
         ### Acceptance criteria
-        - When a customer has 4+ items from a promoted category, the **cheapest**
+        - When a customer has 4+ items from a promoted category, the cheapest
           item is free
         - Discount is shown as a line item labelled with the promotion name
         - Only one promotion applies per category — no stacking

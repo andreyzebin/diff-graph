@@ -24,8 +24,8 @@ input:
         ## Fix NoneType iteration in cancel_order
 
         Production traceback: `TypeError: 'NoneType' object is not iterable`
-        in cancel_order when iterating order.items for legacy-imported
-        orders where items=None.
+        in `cancel_order` for a small number of orders flagged in the
+        incident ticket.
 
         ### Fix
         Guard `if order.items:` before the iteration.

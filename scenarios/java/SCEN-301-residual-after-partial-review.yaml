@@ -17,16 +17,12 @@ input:
         **So that** we can run campaigns without a deploy
 
         ### Acceptance criteria
-        - When a customer has 4+ items from a promoted category, the **cheapest**
+        - When a customer has 4+ items from a promoted category, the cheapest
           item is free
         - Discount is shown as a line item labelled with the promotion name
         - Only one promotion applies per category — no stacking
         - Promotion respects `startDate` and `endDate`
         - Applies to OPEN orders only
-
-        ### Notes
-        - See `PricingService` for existing discount patterns
-        - Follow the same ownership-check pattern as `OrderController`
 
   setup:
     seed_comments:

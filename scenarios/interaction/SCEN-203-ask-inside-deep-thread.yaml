@@ -10,17 +10,17 @@ input:
       to_branch: "master"
       title: "ORD-287: Fix NPE on order cancellation"
       description: |
-        ## ORD-287: NPE on order cancellation when items list is null
+        ## ORD-287: NPE on order cancellation
 
-        **Incident:** Production NPE in `cancelOrder()` when iterating
-        `order.getItems()` for orders created via the legacy import path
-        (items=null instead of empty list).
+        **Incident:** Production NPE reported in `cancelOrder()` for a small
+        number of orders. Reproduced on three orders flagged in the incident
+        ticket.
 
         ### Fix
         Added a null guard before iterating items in `cancelOrder()`.
 
         ### Acceptance criteria
-        - `cancelOrder()` no longer throws NPE when items is null
+        - `cancelOrder()` no longer throws NPE on the affected orders
         - Existing cancellation behaviour unchanged for normal orders
 
   setup:
