@@ -475,6 +475,44 @@ class TimeBudgetPusher(RatioEscalationPusher):
     )
 
 
+class StepBudgetPusher(RatioEscalationPusher):
+    """Step-count escalation on `state.step_ratio`. Second-layer
+    safety net behind token / wall budgets.
+
+    Why a separate axis: in theory `token_ratio` should track
+    `step_ratio` because each step costs roughly bounded tokens. In
+    practice this assumption breaks for token-cheap, tool-call-heavy
+    patterns — qwen3-6 investigator on plan 204 burned 30/30 steps
+    while `token_ratio` was still ~0.4 (lots of short `diff_search`
+    + short reflect bodies + heavy prompt caching). Token escalation
+    never reached FORCE_DONE; step cap killed the agent before it
+    emitted `done()`.
+
+    FORCE_DONE fires at **0.90** (not 1.0 like token/time) so the
+    model has ~10% of step-budget headroom to actually emit `done()`
+    before the hard cap kicks in via `state.exhausted`. At 1.0 the
+    agent loop terminates regardless of what the pusher said this
+    step — so the override here is load-bearing for "actually got a
+    final submission" semantics, not just stylistic.
+
+    Tightening only the FORCE_DONE threshold (not NUDGE/FORCE_REFLECT)
+    keeps the escalation timeline familiar — 50% / 75% match
+    token/wall pushers; only the final stage moves up."""
+    kind = "step-budget"
+    ratio_attr = "step_ratio"
+
+    # 0.90 instead of parent's 1.0 — see class docstring.
+    DEFAULT_FORCE_DONE_AT: float = 0.90
+
+    DEFAULT_NUDGE_MSG = (
+        "Half of your step budget is used. Plan what's left so you "
+        "finish before it runs out."
+    )
+    DEFAULT_FORCE_DONE_MSG = (
+        "Step budget running low. Submit your final output now."
+    )
+
+
 class ReflectCadencePusher:
     """Generic reflect-cadence producer: counter + threshold → NUDGE,
     escalate to FORCE_REFLECT, re-armed every reflect cycle.
@@ -635,11 +673,16 @@ class BudgetTracker:
         #                           1.0 on `state.token_ratio`.
         # - TimeBudgetPusher      — same shape on `state.wall_ratio`,
         #                           no-op without `max_wall_time`.
-        # Step budget is intentionally NOT a separate escalation axis
-        # — `token_ratio` covers the same "agent is overrunning"
-        # signal in practice (each step costs roughly bounded
-        # tokens), and `max_steps` still acts as the hard cap via
-        # `state.exhausted` in the agent loop.
+        # - StepBudgetPusher      — same shape on `state.step_ratio`,
+        #                           FORCE_DONE at 0.90 (not 1.0) so
+        #                           the model has headroom to emit
+        #                           done() before the hard cap.
+        # Earlier versions of this comment claimed step budget is
+        # "covered" by token budget — that assumption failed on
+        # token-cheap tool-call-heavy patterns (qwen3-6 investigator,
+        # plan 204) where step budget exhausts long before token
+        # budget. All three axes now have independent escalation;
+        # whichever ratio crosses its threshold first wins.
         # `FailedReflectGuard` exists (orchestra/budget.py) but is
         # intentionally NOT in the default chain — try relaxed
         # reflect schema first (questions_remaining optional) and see
@@ -651,6 +694,7 @@ class BudgetTracker:
             RatioPusher(config.pushers),
             TokenBudgetPusher(),
             TimeBudgetPusher(),
+            StepBudgetPusher(),
         ]
         self._consumers: list[PusherHandler] = [
             ApplyActionsHandler(),

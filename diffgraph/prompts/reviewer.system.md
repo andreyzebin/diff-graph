@@ -27,8 +27,16 @@ budget:
   # (trace 2473d2ef4520 reviewer ran 19 steps, was forced_done at
   # 50K mid-react cycle). Bump headroom so the typical flow
   # finishes naturally, not under a ceiling.
+  #
+  # Three independent budget axes — whichever ratio crosses first
+  # wins. Token is the primary guard; step is the secondary
+  # (catches token-cheap, step-heavy patterns where the agent
+  # walks the diff via many short tool calls); wall is the third
+  # (caps deadlocks from slow LLM providers). Framework's default
+  # pushers escalate each axis at 50/75/{100,90} independently.
   tokens: 80000
-  steps: 60
+  steps: 127
+  wall: 20m
 reflect_interval: 5
 
 llm:

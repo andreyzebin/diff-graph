@@ -24,12 +24,18 @@ tools:
 
 budget:
   # Sized for verbose providers — qwen3-6 emits long reflect bodies
-  # and reads files in full. 15K tokens / 20 steps caps unit-bench
-  # runs prematurely (INV-U-001 / INV-U-002 on plan 186 burned the
-  # whole budget before reaching done(findings=...)). Headroom now
-  # leaves room for 5–6 reflect cycles + ~10 file reads.
+  # and reads files in full. Token budget is the PRIMARY guard;
+  # step budget is the SECONDARY safety net (token-cheap tool-call-
+  # heavy patterns burn steps faster than tokens — see plan 204
+  # INV-U-001 where 30/30 steps exhausted at token_ratio ~0.4).
+  # Step count is intentionally generous; framework-level
+  # StepBudgetPusher fires NUDGE@50% / FORCE_REFLECT@75% /
+  # FORCE_DONE@90% on whatever this value is. Wall clock is a
+  # third independent axis — caps the rare deadlock case where the
+  # LLM provider stalls.
   tokens: 30000
-  steps: 30
+  steps: 127
+  wall: 15m
 reflect_interval: 3
 
 llm:

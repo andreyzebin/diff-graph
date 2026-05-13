@@ -30,6 +30,7 @@ from orchestra.budget import (
     PusherAction,
     RatioPusher,
     ReflectCadencePusher,
+    StepBudgetPusher,
     StepContext,
     TimeBudgetPusher,
     TokenBudgetPusher,
@@ -424,6 +425,220 @@ class TestTokenBudgetPusher:
                     f"{leaked}; pusher messages must be tool-agnostic. "
                     f"Got: {msg!r}"
                 )
+
+
+# ── StepBudgetPusher ─────────────────────────────────────────────────────────
+
+
+class TestStepBudgetPusher:
+    """Step-count escalation on `state.step_ratio`. Same shape as
+    Token/Time pushers (inherits from RatioEscalationPusher) — these
+    tests cover the step-specific instance + the **tightened**
+    FORCE_DONE threshold (0.90 vs parent's 1.0) which gives the
+    model headroom before the hard step cap kicks in."""
+
+    def _ctx_with_steps(self, steps_used: int, steps_max: int = 100) -> StepContext:
+        """A StepContext whose step_ratio is `steps_used / steps_max`.
+
+        Tokens + wall are neutralised so this axis can be exercised
+        in isolation — same convention as `TestTokenBudgetPusher`."""
+        state = BudgetState(
+            original_tokens=1_000_000,   # huge → token_ratio ≈ 0
+            original_steps=steps_max,
+            steps_used=steps_used,
+            wall_start=0.0,
+        )
+        return _ctx(state=state)
+
+    def test_default_kind(self):
+        assert StepBudgetPusher.kind == "step-budget"
+        assert StepBudgetPusher.ratio_attr == "step_ratio"
+
+    def test_force_done_threshold_tighter_than_parent(self):
+        """The class-level override is load-bearing: at ratio=1.0 the
+        agent loop has already terminated via `state.exhausted`, so
+        FORCE_DONE@1.0 would never get a chance to act. 0.90 gives
+        the model ~10% step-budget headroom to actually emit done()
+        after seeing the narrow-to-[done] tool list."""
+        assert StepBudgetPusher.DEFAULT_FORCE_DONE_AT == 0.90
+
+    def test_under_first_threshold_no_action(self):
+        pusher = StepBudgetPusher()
+        ctx = self._ctx_with_steps(steps_used=30, steps_max=100)  # 0.30
+        pusher.apply(ctx)
+        assert ctx.actions == []
+
+    def test_crosses_nudge_at_50pct(self):
+        pusher = StepBudgetPusher()
+        ctx = self._ctx_with_steps(steps_used=55, steps_max=100)  # 0.55
+        pusher.apply(ctx)
+        assert len(ctx.actions) == 1
+        a = ctx.actions[0]
+        assert a.type == PusherType.NUDGE
+        assert a.kind == "step-budget"
+        assert a.threshold == pytest.approx(0.5)
+        # The nudge must mention steps specifically (not generic
+        # "budget gone") so a model that's burning token-light steps
+        # gets actionable feedback on the right axis.
+        assert "step" in a.message.lower()
+
+    def test_escalates_through_three_levels(self):
+        """Walk step_ratio through 0.40, 0.60, 0.80, 0.95. Each
+        threshold fires once in order; FORCE_DONE at 0.90 is the
+        critical one — fires BEFORE the hard cap (1.0)."""
+        pusher = StepBudgetPusher()
+        seen: list[PusherType] = []
+        for used in [40, 60, 80, 95]:
+            ctx = self._ctx_with_steps(steps_used=used, steps_max=100)
+            pusher.apply(ctx)
+            seen.extend(a.type for a in ctx.actions)
+        assert seen == [
+            PusherType.NUDGE,         # crossed 0.50 at used=60
+            PusherType.FORCE_REFLECT, # crossed 0.75 at used=80
+            PusherType.FORCE_DONE,    # crossed 0.90 at used=95 — BEFORE hard cap
+        ]
+
+    def test_force_done_fires_before_hard_cap(self):
+        """The whole point of FORCE_DONE@0.90: at step 90/100 the
+        agent still has 10 steps to run, sees a tools list narrowed
+        to [done], and can flush findings. Without the override
+        (i.e. FORCE_DONE@1.0) the agent loop would terminate via
+        state.exhausted on the same tick the pusher fires, leaving
+        no room for the LLM to act on it."""
+        pusher = StepBudgetPusher()
+        # Sweep up to but not past 0.90:
+        seen_before = []
+        for used in [50, 70, 89]:
+            ctx = self._ctx_with_steps(steps_used=used, steps_max=100)
+            pusher.apply(ctx)
+            seen_before.extend(a.type for a in ctx.actions)
+        assert PusherType.FORCE_DONE not in seen_before
+        # State is NOT yet exhausted (would block agent loop):
+        assert not self._ctx_with_steps(89, 100).state.exhausted
+        # Now cross 0.90:
+        ctx = self._ctx_with_steps(steps_used=90, steps_max=100)
+        pusher.apply(ctx)
+        assert any(a.type == PusherType.FORCE_DONE for a in ctx.actions)
+        # And critically — state.exhausted is STILL False so the
+        # agent loop will still call the LLM with the narrowed tools.
+        assert not ctx.state.exhausted
+
+    def test_no_re_arm(self):
+        """Step count only goes up; latches stay fired forever."""
+        pusher = StepBudgetPusher()
+        ctx = self._ctx_with_steps(steps_used=60, steps_max=100)
+        pusher.apply(ctx)
+        ctx2 = self._ctx_with_steps(steps_used=65, steps_max=100)
+        pusher.apply(ctx2)
+        assert ctx2.actions == []  # still under 0.75 → silent
+
+    def test_messages_distinguish_dimensions(self):
+        """Step vs token vs time nudges carry different copy so the
+        model can tell WHICH budget axis is pressuring it. This is
+        the load-bearing reason we have three separate pusher
+        classes (instead of one `max_ratio` pusher)."""
+        msgs = {
+            "step":  StepBudgetPusher.DEFAULT_NUDGE_MSG,
+            "token": TokenBudgetPusher.DEFAULT_NUDGE_MSG,
+            "wall":  TimeBudgetPusher.DEFAULT_NUDGE_MSG,
+        }
+        # All distinct.
+        assert len(set(msgs.values())) == 3
+        # Each mentions its own dimension.
+        assert "step"  in msgs["step"].lower()
+        assert "token" in msgs["token"].lower()
+        assert "wall-clock" in msgs["wall"].lower()
+
+
+# ── Axis independence ────────────────────────────────────────────────────────
+#
+# Plan 204 INV-U-001 surfaced a load-bearing assumption that wasn't
+# tested: "token_ratio covers step_ratio in practice (each step
+# costs roughly bounded tokens)". qwen3-6 broke it — 30/30 steps
+# exhausted with token_ratio still ~0.4. The token escalator never
+# fired FORCE_DONE; the agent got killed by `state.exhausted`
+# without emitting findings.
+#
+# This block exists as a structural regression net: every escalation
+# axis must work INDEPENDENTLY, not by relying on another to cover
+# it. If you ever consider removing a budget axis from the default
+# chain because "another one will catch the same case", read these
+# tests first.
+
+
+class TestAxisIndependence:
+
+    def test_step_exhaust_with_low_token_ratio_emits_force_done(self):
+        """Token-cheap, step-heavy pattern (qwen3-6 reproduction).
+        Without `StepBudgetPusher` in the chain this assertion
+        FAILS — token escalator stays at ~0.4 nudge level and the
+        agent dies on `state.exhausted` with no FORCE_DONE."""
+        state = BudgetState(
+            original_tokens=30_000,
+            original_steps=30,
+            steps_used=27,           # 90% step budget
+            cumulative_paid=12_000,  # 40% token budget
+            wall_start=0.0,
+        )
+        ctx = _ctx(state=state)
+        # Walk a fresh BudgetTracker through this ctx — replicates
+        # production wiring rather than calling pushers directly.
+        from orchestra.budget import BudgetTracker
+        from orchestra.types import BudgetConfig
+        tracker = BudgetTracker(BudgetConfig(max_tokens=30_000, max_steps=30))
+        tracker.apply_handlers(ctx)
+        # At least ONE pusher in the default chain must have emitted
+        # FORCE_DONE for this ratio profile. With StepBudgetPusher
+        # in the chain, it does. Without, the chain stays silent on
+        # the most-pressing dimension.
+        assert any(a.type == PusherType.FORCE_DONE for a in ctx.actions), (
+            "step-budget exhaust must escalate to FORCE_DONE "
+            "independently of token-budget — see plan 204 INV-U-001"
+        )
+
+    def test_token_exhaust_with_low_step_ratio_emits_force_done(self):
+        """Inverse: token-heavy, step-light pattern (e.g. a single
+        massive prompt with one LLM call). Token escalator catches
+        it even when step ratio is tiny."""
+        state = BudgetState(
+            original_tokens=10_000,
+            original_steps=100,
+            steps_used=5,           # 5% step budget
+            cumulative_paid=10_000, # 100% token budget
+            wall_start=0.0,
+        )
+        ctx = _ctx(state=state)
+        from orchestra.budget import BudgetTracker
+        from orchestra.types import BudgetConfig
+        tracker = BudgetTracker(BudgetConfig(max_tokens=10_000, max_steps=100))
+        tracker.apply_handlers(ctx)
+        assert any(a.type == PusherType.FORCE_DONE for a in ctx.actions)
+
+    def test_no_axis_exhausted_no_escalation(self):
+        """Sanity counter-test: a healthy run with all ratios well
+        under 0.5 emits no escalation actions. The chain's overhead
+        is bounded to NUDGE-level signals — won't spam an
+        already-on-track agent."""
+        state = BudgetState(
+            original_tokens=30_000,
+            original_steps=30,
+            steps_used=3,
+            cumulative_paid=2_000,
+            wall_start=0.0,
+        )
+        ctx = _ctx(state=state)
+        from orchestra.budget import BudgetTracker
+        from orchestra.types import BudgetConfig
+        tracker = BudgetTracker(BudgetConfig(max_tokens=30_000, max_steps=30))
+        tracker.apply_handlers(ctx)
+        # ReflectCadenceCounter may fire NUDGE here on the first
+        # tick (no reflect yet) — that's fine. The budget axes
+        # specifically must NOT have fired FORCE_DONE.
+        budget_kinds = {"token-budget", "time-budget", "step-budget"}
+        budget_force_done = [a for a in ctx.actions
+                              if a.kind in budget_kinds
+                              and a.type == PusherType.FORCE_DONE]
+        assert budget_force_done == []
 
 
 # ── FailedReflectGuard ───────────────────────────────────────────────────────

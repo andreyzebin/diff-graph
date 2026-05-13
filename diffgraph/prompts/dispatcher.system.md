@@ -29,8 +29,14 @@ data:
     description: "prompt content hash (short)"
 
 budget:
+  # Dispatcher should be quick — routes a single message + maybe
+  # spawns one child. Tight token + step + wall caps keep latency
+  # bounded; framework pushers escalate at 50/75/{100,90} on each
+  # axis independently. If wall trips here it almost certainly
+  # means a downstream tool (spawn_agent, post_comment) is hung.
   tokens: 30000
-  steps: 10
+  steps: 20
+  wall: 3m
 
 llm:
   temperature: 0.3
