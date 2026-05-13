@@ -461,6 +461,140 @@ async def api_step_call(run_id: str, agent_id: str, step: int,
     return JSONResponse(content=envelope)
 
 
+def _bench_log_dir(task_id: int) -> "Path":
+    """Resolve the bench-log directory for a task. Matches the layout
+    `quality_cli.main` (worker) and `orchestra.bench_log` write to:
+    `~/.diffgraph/bench-logs/task-{id}/`. Honours
+    `DIFFGRAPH_BENCH_LOGS_DIR` env if set (tests / non-default homes)."""
+    from pathlib import Path as _P
+    base = _P(os.environ.get("DIFFGRAPH_BENCH_LOGS_DIR") or
+              _P.home() / ".diffgraph" / "bench-logs")
+    return base / f"task-{task_id}"
+
+
+def _resolve_task_id_for_run(run_id: str) -> Optional[int]:
+    """`/api/runs/{run_id}/bench-log` is a convenience alias for the
+    task-keyed endpoint. Find the qa_tasks row whose `trace_run_id`
+    matches (worker pre-allocates the run_id and stamps it before
+    spawning the bench subprocess)."""
+    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT id FROM qa_tasks WHERE trace_run_id=? LIMIT 1",
+            (run_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return int(row["id"]) if row else None
+
+
+def _bench_log_payload(task_id: int, *, stream: str, as_: str):
+    """Shared body of `/api/qa/tasks/{id}/bench-log` and the run-id
+    alias. Returns a FastAPI Response: PlainTextResponse for
+    `as=text`, JSONResponse for `as=json`. The stream selector picks
+    one of the three files in the bench-log dir:
+
+      stdout   — raw subprocess stdout (file descriptor written
+                 directly by bench; catches non-Python output)
+      stderr   — raw subprocess stderr
+      system   — `orchestra.bench_log` JSON lines from any Python
+                 process that opted in (worker, bench, diff-graph,
+                 judge)
+      combined (default) — text view that concatenates the three
+                 with header bars; in `as=json` returns all three as
+                 separate string fields plus the meta object.
+    """
+    from pathlib import Path as _P
+    log_dir = _bench_log_dir(task_id)
+    if not log_dir.exists():
+        if as_ == "text":
+            return PlainTextResponse(
+                f"(no bench-log dir for task {task_id} — task may "
+                f"predate bench-log capture or be still in-flight)",
+                status_code=404,
+            )
+        return JSONResponse({"error": {"code": "not_found",
+                                       "message": "no bench-log dir"}},
+                             status_code=404)
+
+    def _read(name: str) -> str:
+        p = log_dir / name
+        try:
+            return p.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            return ""
+        except Exception as e:
+            return f"(read error: {e})"
+
+    meta_raw = _read("meta.json")
+    try:
+        meta = json.loads(meta_raw) if meta_raw else {}
+    except Exception:
+        meta = {"raw": meta_raw}
+    streams = {
+        "stdout": _read("stdout.log"),
+        "stderr": _read("stderr.log"),
+        "system": _read("system.log"),
+    }
+
+    if as_ == "json":
+        return JSONResponse({"data": {"meta": meta, **streams}})
+
+    # text mode — combined view or single stream
+    if stream in streams:
+        return PlainTextResponse(streams[stream] or f"(empty {stream})")
+    # combined: header bars + each stream in turn. Drop empty
+    # streams from the view so a typical small failure case isn't
+    # ¾ "(empty stdout)" noise.
+    parts: list[str] = []
+    bar = "━" * 60
+    parts.append(f"{bar}\n  META\n{bar}\n{json.dumps(meta, indent=2, ensure_ascii=False)}")
+    for label, body in (("SYSTEM", streams["system"]),
+                         ("STDOUT", streams["stdout"]),
+                         ("STDERR", streams["stderr"])):
+        if body.strip():
+            parts.append(f"{bar}\n  {label}\n{bar}\n{body}")
+    return PlainTextResponse("\n\n".join(parts) + "\n")
+
+
+@app.get("/api/qa/tasks/{task_id}/bench-log")
+async def api_qa_task_bench_log(
+    task_id: int,
+    stream: str = Query("combined"),
+    as_: str = Query("text", alias="as"),
+):
+    """Full bench-log payload for one task — stdout/stderr/system
+    streams plus the meta.json header. Primary keyed by task_id;
+    the run-id alias below is convenience for the trace UI which
+    already knows the agent's run_id."""
+    return _bench_log_payload(task_id, stream=stream, as_=as_)
+
+
+@app.get("/api/runs/{run_id}/bench-log")
+async def api_run_bench_log(
+    run_id: str,
+    stream: str = Query("combined"),
+    as_: str = Query("text", alias="as"),
+):
+    """Alias to the task-keyed endpoint above — looks up the
+    qa_tasks row whose trace_run_id matches and dispatches there.
+    Lets the trace UI link "view bench log" without having to
+    pre-resolve task_id client-side."""
+    tid = _resolve_task_id_for_run(run_id)
+    if tid is None:
+        if as_ == "text":
+            return PlainTextResponse(
+                f"(run {run_id} has no associated task — "
+                f"local/anonymous run or pre-trace-run-id era)",
+                status_code=404,
+            )
+        return JSONResponse({"error": {"code": "no_task_for_run",
+                                       "message": "no task"}},
+                             status_code=404)
+    return _bench_log_payload(tid, stream=stream, as_=as_)
+
+
 @app.get("/api/runs/{run_id}/step/{agent_id}/{step}/result", response_class=PlainTextResponse)
 async def api_step_result(run_id: str, agent_id: str, step: int):
     """Full tool result for a specific step (delta tool messages only)."""

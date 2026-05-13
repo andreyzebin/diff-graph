@@ -315,13 +315,16 @@ document.addEventListener('alpine:init', () => {
       let rawJson = null;
       try {
         // Endpoints that have a server-side text renderer (see
-        // tracing/server/messages_render.py): fetch both views once
-        // up front so the { } JSON toggle is local (no refetch).
-        //   /messages → human-readable transcript (default)
-        //   /call     → pretty-printed tool-call args / text content
+        // tracing/server/messages_render.py + bench-log endpoint):
+        // fetch both views once up front so the { } JSON toggle is
+        // local (no refetch).
+        //   /messages   → human-readable transcript (default)
+        //   /call       → pretty-printed tool-call args / text content
+        //   /bench-log  → combined stdout/stderr/system text (default)
+        //                 with meta+streams JSON envelope for toggle
         // /result is already plain-text; everything else falls back
         // to client-side JSON pretty-printing.
-        const supportsTextView = /\/(messages|call)$/.test(url);
+        const supportsTextView = /\/(messages|call|bench-log)$/.test(url);
         if (supportsTextView) {
           const sep = url.includes('?') ? '&' : '?';
           const [tResp, jResp] = await Promise.all([

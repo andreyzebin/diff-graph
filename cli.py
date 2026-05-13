@@ -391,6 +391,15 @@ def _run_with_dispatcher(
         "diffgraph-cli",
         fs_root=str(fs_dir) if fs_dir else None,
     )
+    # Opt into the per-task system log when running under a bench
+    # task (DIFFGRAPH_TASK_ID env set by the worker). No-op for
+    # ad-hoc local runs. system="diffgraph" tags every log line so
+    # the UI can colour-code or filter.
+    try:
+        from orchestra.bench_log import setup_bench_logging
+        setup_bench_logging(system="diffgraph")
+    except Exception:
+        pass
     # Stamp domain dims on the current OTel context. Every span
     # spawned under cli.session — agent.<name>, llm.request,
     # tool.* — auto-merges these from get_domain_attrs(), so the

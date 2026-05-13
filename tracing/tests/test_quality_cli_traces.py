@@ -127,3 +127,66 @@ class TestTracesCallCommand:
         assert r.exit_code == 0
         parsed = json.loads(r.output)
         assert isinstance(parsed, list)
+
+
+class TestTracesBenchLogCommand:
+    """`traces bench-log <target>` — pipes the API's combined text
+    view to stdout for grepping / paging. Same `--as` and stream
+    selector as the API endpoint."""
+
+    def test_numeric_target_hits_task_endpoint(self, runner, stub_api):
+        """Numeric argument is interpreted as task_id and routes to
+        `/api/qa/tasks/{id}/bench-log`."""
+        from quality_cli.main import app as cli_app
+        r = runner.invoke(cli_app, ["traces", "bench-log", "42"])
+        assert r.exit_code == 0
+        assert stub_api, "no API call recorded"
+        path, _params, kind = stub_api[-1]
+        assert path == "/api/qa/tasks/42/bench-log"
+        assert kind == "text"
+
+    def test_hex_target_hits_run_alias(self, runner, stub_api):
+        """Non-numeric argument routes to the run-id alias."""
+        from quality_cli.main import app as cli_app
+        r = runner.invoke(cli_app, ["traces", "bench-log", "abc123def456"])
+        assert r.exit_code == 0
+        path, _params, _kind = stub_api[-1]
+        assert path == "/api/runs/abc123def456/bench-log"
+
+    def test_stream_param_forwarded(self, runner, stub_api):
+        """`--stream stderr` makes it to the request params verbatim
+        — important because the API reads exactly that key."""
+        from quality_cli.main import app as cli_app
+        r = runner.invoke(cli_app,
+                          ["traces", "bench-log", "42", "--stream", "stderr"])
+        assert r.exit_code == 0
+        _path, params, _kind = stub_api[-1]
+        assert params.get("stream") == "stderr"
+
+    def test_as_json_uses_json_getter(self, runner, stub_api):
+        """`--as json` routes through `_api_get` (parsed JSON) rather
+        than `_api_get_text` so the user gets a properly-rendered
+        JSON dump."""
+        from quality_cli.main import app as cli_app
+        r = runner.invoke(cli_app,
+                          ["traces", "bench-log", "42", "--as", "json"])
+        assert r.exit_code == 0
+        # The stub for _api_get returns a list[{role: ...}]. The
+        # command should JSON-dump it. Sanity-check the output
+        # parses back to the same shape.
+        parsed = json.loads(r.output)
+        assert isinstance(parsed, list)
+        kinds = [c[2] for c in stub_api]
+        assert "json" in kinds and "text" not in kinds
+
+    def test_invalid_stream_short_circuits(self, runner, stub_api):
+        """Typo on `--stream` shouldn't silently fetch with a bogus
+        value — the API would 200 (because it falls back to combined
+        for unknown stream) but the user's intent was something
+        specific. Validate client-side."""
+        from quality_cli.main import app as cli_app
+        r = runner.invoke(cli_app,
+                          ["traces", "bench-log", "42", "--stream", "bogus"])
+        # _emit_error doesn't typer-raise but emits and returns;
+        # what matters is that NO API call was made.
+        assert stub_api == []

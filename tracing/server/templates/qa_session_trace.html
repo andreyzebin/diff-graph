@@ -8,7 +8,7 @@
   window.QA_BASE_PATH = "{{ base_path }}";
   window.RUN_ID = "{{ run_id }}";
 </script>
-<script defer src="{{ base_path }}/static/qa_session_trace.js?v=16"></script>
+<script defer src="{{ base_path }}/static/qa_session_trace.js?v=17"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
 body { padding: 16px; max-width: 1700px; margin: 0 auto; }
@@ -216,6 +216,17 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
       <template x-if="backHref">
         <a class="back-link" :href="backHref">← back to filtered list</a>
       </template>
+      <!-- Bench log — full stdout/stderr/system streams from the
+           bench subprocess that produced this session. Opens in
+           the right-side tab panel so the operator can flip back
+           to the trace without losing scroll. 404 here means the
+           run pre-dates bench-log capture or wasn't spawned by a
+           QA worker (local / anonymous invocation). -->
+      <button type="button" class="back-link"
+              style="margin-left: 12px; background: none; border: 0; cursor: pointer;"
+              @click="openTab(`benchlog:${runId}`, 'bench log',
+                              `${qaBase}/api/runs/${runId}/bench-log`)"
+              title="open the bench subprocess log (stdout/stderr/system streams) for this session">📜 bench log</button>
       <a class="back-link" :href="`${qaBase}/runs/${runId}/trace`" style="margin-left: 12px;" title="Old Jinja-rendered trace">legacy view ⧉</a>
     </span>
   </div>

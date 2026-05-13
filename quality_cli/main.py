@@ -631,6 +631,64 @@ def traces_call(
         print(_j.dumps(j, indent=2, ensure_ascii=False))
 
 
+@traces_app.command("bench-log")
+def traces_bench_log(
+    target: str = typer.Argument(
+        ...,
+        help="run_id (12-char hex) OR task_id (integer). The endpoint "
+             "auto-detects which one was supplied — task_id when the "
+             "value is numeric, run_id otherwise.",
+    ),
+    stream: str = typer.Option(
+        "combined", "--stream",
+        help="combined (default) | stdout | stderr | system. "
+             "combined: META + SYSTEM + STDOUT + STDERR with header bars. "
+             "system: only JSON-line log from worker / bench / diff-graph / "
+             "judge Python loggers. stdout / stderr: raw subprocess streams.",
+    ),
+    as_: str = typer.Option(
+        "text", "--as",
+        help="text (default) | json — text returns the rendered view, "
+             "json returns the raw envelope {meta, stdout, stderr, system}.",
+    ),
+):
+    """Dump the bench subprocess log for one task or run.
+
+    Bench logs are the persisted stdout/stderr of the bench process
+    the QA worker spawned to produce this trace, plus a `system.log`
+    aggregating Python `logging.*` calls from every subsystem that
+    opted in (worker, bench, diff-graph cli, judge — all keyed by
+    the same `DIFFGRAPH_TASK_ID` correlation id).
+
+    Examples:
+      quality-cli traces bench-log 48ef6fe1eaf6           # by run_id
+      quality-cli traces bench-log 3045                   # by task_id
+      quality-cli traces bench-log 48ef6fe1eaf6 --stream system
+      quality-cli traces bench-log 3045 --stream stderr > stderr.log
+    """
+    if as_ not in ("text", "json"):
+        _emit_error("bad_arg", f"--as must be 'text' or 'json', got: {as_}")
+        return
+    if stream not in ("combined", "stdout", "stderr", "system"):
+        _emit_error("bad_arg",
+                    f"--stream must be combined|stdout|stderr|system, "
+                    f"got: {stream}")
+        return
+    # Numeric → task_id endpoint; else assume run_id.
+    if target.isdigit():
+        path = f"/api/qa/tasks/{int(target)}/bench-log"
+    else:
+        path = f"/api/runs/{target}/bench-log"
+    params = {"stream": stream, "as": as_}
+    if as_ == "text":
+        body = _api_get_text(path, params)
+        print(body)
+    else:
+        j = _api_get(path, params)
+        import json as _j
+        print(_j.dumps(j, indent=2, ensure_ascii=False))
+
+
 @traces_app.command("problems")
 def traces_problems(
     since: Optional[str] = typer.Option(None,
@@ -1422,17 +1480,83 @@ def worker_loop(
             "BENCHMARK_TRACE_DIR",
             str(Path.home() / ".diffgraph" / "bench-runs"),
         )
+        # Bench logs — full stdout / stderr per task, plus a meta.json
+        # and a `system.log` (JSON lines, all Python `logging` calls
+        # from worker / cli.py / bench / judge merged in timestamp
+        # order — via `orchestra.bench_log.setup_bench_logging`).
+        # Previously we kept only the last 500 chars of each stream
+        # in qa_tasks.result_json, so failures during bench setup
+        # (git clone, push, fixture provisioning) were forensically
+        # opaque. Now the full streams land on disk and are queryable
+        # via `/api/qa/tasks/{id}/bench-log` (and the trace UI tab).
+        bench_logs_root = Path.home() / ".diffgraph" / "bench-logs"
+        task_log_dir = bench_logs_root / f"task-{t.id}"
+        task_log_dir.mkdir(parents=True, exist_ok=True)
+        # Install the system-log handler for the worker's OWN logging
+        # calls (the bench / cli.py subprocesses install it again on
+        # their side via env var passthrough below).
         try:
-            proc = subprocess.run(
-                ["bash", "-c", cmd],
-                capture_output=True, text=True,
-                env=env,
-                timeout=task_timeout_seconds,
+            from orchestra.bench_log import setup_bench_logging
+            setup_bench_logging(
+                task_id=str(t.id),
+                run_id=pre_run_id,
+                plan_id=str(t.plan_id) if t.plan_id is not None else "",
+                scenario_id=t_scenario or "",
+                system="worker",
             )
+        except Exception:
+            pass
+        # Propagate to the subprocess via env: bench / diff-graph cli
+        # will pick this up at their startup and re-install the
+        # handler with their own `system=` tag.
+        env["DIFFGRAPH_BENCH_LOGS_DIR"] = str(bench_logs_root)
+        if t_scenario:
+            env["DIFFGRAPH_SCENARIO_ID"] = t_scenario
+        stdout_path = task_log_dir / "stdout.log"
+        stderr_path = task_log_dir / "stderr.log"
+        meta_path = task_log_dir / "meta.json"
+        bench_started_at = _now_iso()
+        # Write a meta-pre-flight file BEFORE the subprocess starts —
+        # if bench crashes hard (segfault, OOM), the meta still has
+        # task_id / scenario / run_id so the log dir is findable.
+        meta_payload: dict = {
+            "task_id": t.id, "plan_id": t.plan_id,
+            "scenario_id": t_scenario, "mutation": t_mutation,
+            "lineage": t_lineage, "queue": t.queue,
+            "run_id": pre_run_id,
+            "cmd": cmd,
+            "started_at": bench_started_at,
+            "finished_at": None,
+            "exit_code": None,
+            "error_class": None,
+        }
+        try:
+            meta_path.write_text(json.dumps(meta_payload, indent=2,
+                                             ensure_ascii=False))
+        except Exception:
+            pass
+        try:
+            with stdout_path.open("wb") as _so, stderr_path.open("wb") as _se:
+                proc = subprocess.run(
+                    ["bash", "-c", cmd],
+                    stdout=_so, stderr=_se,
+                    env=env,
+                    timeout=task_timeout_seconds,
+                )
+            # Tails for result_payload — same back-compat shape the
+            # /qa/tasks list view consumes. Reading from disk costs
+            # ~ms even on multi-MB logs.
+            def _tail(path: Path, n: int = 500) -> str:
+                try:
+                    raw = path.read_bytes()
+                except Exception:
+                    return ""
+                return raw[-n:].decode("utf-8", errors="replace")
             result_payload = {
                 "exit_code": proc.returncode,
-                "stdout_tail": proc.stdout[-500:],
-                "stderr_tail": proc.stderr[-500:],
+                "stdout_tail": _tail(stdout_path),
+                "stderr_tail": _tail(stderr_path),
+                "bench_log_dir": str(task_log_dir),
             }
             if proc.returncode != 0:
                 result_state = "error"
@@ -1440,10 +1564,27 @@ def worker_loop(
         except subprocess.TimeoutExpired:
             result_state = "error"
             error_class = "timeout"
+            result_payload = {"bench_log_dir": str(task_log_dir),
+                              "stdout_tail": "", "stderr_tail": "",
+                              "exit_code": None}
         except Exception as exc:
             result_state = "error"
             error_class = type(exc).__name__
-            result_payload = {"exception": str(exc)}
+            result_payload = {"exception": str(exc),
+                              "bench_log_dir": str(task_log_dir)}
+        # Finalise meta.json — overwrites the pre-flight with the
+        # post-subprocess fields (finished_at / exit_code / error_class).
+        meta_payload["finished_at"] = _now_iso()
+        meta_payload["exit_code"] = (
+            result_payload.get("exit_code")
+            if isinstance(result_payload, dict) else None
+        )
+        meta_payload["error_class"] = error_class
+        try:
+            meta_path.write_text(json.dumps(meta_payload, indent=2,
+                                             ensure_ascii=False))
+        except Exception:
+            pass
 
         hb_stop.set()
         hb_thread.join(timeout=1)
@@ -1486,6 +1627,14 @@ def datetime_now() -> str:
     that goes into the DB)."""
     from datetime import datetime
     return datetime.now().strftime("%H:%M:%S")
+
+
+def _now_iso() -> str:
+    """UTC ISO-8601 timestamp for persistent records (bench-log meta,
+    qa_tasks lifecycle fields, etc.). Same shape as `datetime.now(
+    timezone.utc).isoformat()` used elsewhere in the codebase."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ── auto-plan ─────────────────────────────────────────────────────────────
