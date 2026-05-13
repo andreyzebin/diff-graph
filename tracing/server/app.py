@@ -11,7 +11,7 @@ from pathlib import Path
 
 from typing import Optional
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -397,8 +397,17 @@ async def api_otel_trace(run_id: str):
 
 
 @app.get("/api/runs/{run_id}/step/{agent_id}/{step}/messages")
-async def api_step_messages(run_id: str, agent_id: str, step: int):
-    """Full messages array for a specific step (for [⧉] on-demand loading)."""
+async def api_step_messages(run_id: str, agent_id: str, step: int,
+                            as_: str = Query("json", alias="as")):
+    """Full messages array for a specific step.
+
+    `?as=json` (default) → JSON array, the raw OpenAI-style messages
+       the LLM saw — for tooling that wants to parse.
+    `?as=text` → plain-text transcript with role banners + pretty-
+       printed tool-call args, rendered by `messages_render`. The UI's
+       history tab uses this for its default human-readable view; the
+       JSON toggle re-fetches without `as=text`.
+    """
     conn = sqlite3.connect(str(DEFAULT_DB_PATH))
     conn.row_factory = sqlite3.Row
     row = conn.execute(
@@ -407,17 +416,29 @@ async def api_step_messages(run_id: str, agent_id: str, step: int):
     ).fetchone()
     conn.close()
     if not row:
+        if as_ == "text":
+            return PlainTextResponse("(not found)", status_code=404)
         return JSONResponse(content={"error": "not found"}, status_code=404)
     data = json.loads(row["data_json"]) if row["data_json"] else {}
-    return JSONResponse(content=data.get("messages", []))
+    messages = data.get("messages", [])
+    if as_ == "text":
+        from tracing.server.messages_render import render_messages
+        return PlainTextResponse(render_messages(messages))
+    return JSONResponse(content=messages)
 
 
 @app.get("/api/runs/{run_id}/step/{agent_id}/{step}/call")
-async def api_step_call(run_id: str, agent_id: str, step: int):
+async def api_step_call(run_id: str, agent_id: str, step: int,
+                        as_: str = Query("json", alias="as")):
     """Agent's outbound payload for the step — the LLM's assistant
-    message in full. Always returns `{content, tool_calls}` even if
-    one of them is empty; the UI decides what to render. No
-    kind-special case for text-only steps."""
+    message in full.
+
+    `?as=json` (default) → `{content, tool_calls}` envelope.
+    `?as=text` → plain-text view (pretty-printed tool-call args
+       or the content string, whichever the LLM actually emitted).
+       Same renderer that powers the messages-history transcript so
+       formatting is identical across views.
+    """
     conn = sqlite3.connect(str(DEFAULT_DB_PATH))
     conn.row_factory = sqlite3.Row
     row = conn.execute(
@@ -426,12 +447,18 @@ async def api_step_call(run_id: str, agent_id: str, step: int):
     ).fetchone()
     conn.close()
     if not row:
+        if as_ == "text":
+            return PlainTextResponse("(not found)", status_code=404)
         return JSONResponse(content={"error": "not found"}, status_code=404)
     data = json.loads(row["data_json"]) if row["data_json"] else {}
-    return JSONResponse(content={
+    envelope = {
         "content":    data.get("content", "") or "",
         "tool_calls": data.get("tool_calls") or [],
-    })
+    }
+    if as_ == "text":
+        from tracing.server.messages_render import render_call
+        return PlainTextResponse(render_call(envelope))
+    return JSONResponse(content=envelope)
 
 
 @app.get("/api/runs/{run_id}/step/{agent_id}/{step}/result", response_class=PlainTextResponse)

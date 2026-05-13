@@ -375,6 +375,27 @@ def _api_get(path: str, params: dict | None = None) -> dict | list:
                     f"{exc.response.text[:200]}")
 
 
+def _api_get_text(path: str, params: dict | None = None) -> str:
+    """GET endpoint that returns plain text (the server-side renderer
+    output for `?as=text` views). Same error handling as `_api_get`;
+    body returned verbatim so the CLI can pipe it directly."""
+    url = _api_base() + path
+    try:
+        r = _httpx.get(url, params=params or {}, timeout=15.0)
+        r.raise_for_status()
+        return r.text
+    except _httpx.RequestError as exc:
+        _emit_error(
+            "api_unreachable",
+            f"can't reach {url} ({exc}). Set QUALITY_API_URL or start "
+            f"the server (./dev_server.sh start).",
+        )
+    except _httpx.HTTPStatusError as exc:
+        _emit_error("api_error",
+                    f"{exc.response.status_code} from {url}: "
+                    f"{exc.response.text[:200]}")
+
+
 @traces_app.command("ls")
 def traces_ls(
     kind: Optional[str] = typer.Option(None, help="agent | judge"),
@@ -548,6 +569,66 @@ def traces_otel(run_id: str = typer.Argument(...)):
     j = _api_get(f"/api/otel/traces/{run_id}")
     import json as _j
     _Out.console.print(_j.dumps(j, indent=2, ensure_ascii=False))
+
+
+@traces_app.command("messages")
+def traces_messages(
+    run_id: str = typer.Argument(...),
+    agent_id: str = typer.Argument(...),
+    step: int = typer.Argument(...),
+    as_: str = typer.Option("text", "--as",
+                              help="text (default) | json — text uses the "
+                                   "server-side renderer for a human-readable "
+                                   "transcript; json returns the raw OpenAI "
+                                   "messages array."),
+):
+    """Dump the full conversation context the agent saw at a specific
+    step — the same view as the UI's `history` tab.
+
+    `--as text` (default): server-rendered transcript with role
+    banners and pretty-printed tool-call args. Pipe to a file or
+    pager: `quality-cli traces messages <run> <agent> 7 > step7.txt`.
+
+    `--as json`: raw `[{role, content, tool_calls?, ...}, ...]` for
+    tooling that wants to post-process."""
+    if as_ not in ("text", "json"):
+        _emit_error("bad_arg", f"--as must be 'text' or 'json', got: {as_}")
+        return
+    path = f"/api/runs/{run_id}/step/{agent_id}/{step}/messages"
+    if as_ == "text":
+        body = _api_get_text(path, {"as": "text"})
+        # Plain print so terminals/pipes get the body without
+        # rich-style wrapping or syntax colouring.
+        print(body)
+    else:
+        j = _api_get(path)
+        import json as _j
+        print(_j.dumps(j, indent=2, ensure_ascii=False))
+
+
+@traces_app.command("call")
+def traces_call(
+    run_id: str = typer.Argument(...),
+    agent_id: str = typer.Argument(...),
+    step: int = typer.Argument(...),
+    as_: str = typer.Option("text", "--as",
+                              help="text (default) | json — same semantics "
+                                   "as `traces messages`, applied to the "
+                                   "agent's outbound LLM call payload."),
+):
+    """Dump the agent's outbound payload for one step — the LLM's
+    assistant turn (tool call OR text answer)."""
+    if as_ not in ("text", "json"):
+        _emit_error("bad_arg", f"--as must be 'text' or 'json', got: {as_}")
+        return
+    path = f"/api/runs/{run_id}/step/{agent_id}/{step}/call"
+    if as_ == "text":
+        body = _api_get_text(path, {"as": "text"})
+        print(body)
+    else:
+        j = _api_get(path)
+        import json as _j
+        print(_j.dumps(j, indent=2, ensure_ascii=False))
 
 
 @traces_app.command("problems")

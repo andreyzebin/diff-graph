@@ -42,6 +42,17 @@ document.addEventListener('alpine:init', () => {
       this.fromQuery = new URLSearchParams(location.search).get('from') || '';
       this._restoreTableUrl();
 
+      await this._refreshTraceData();
+      // Live trace tail: while the run is still going, re-pull meta +
+      // tree every 5s so new steps surface without a manual reload.
+      // Stops itself the first tick after status flips out of
+      // 'running' — see _refreshTraceData. Independent of the
+      // diagram's own auto-refresh timer (`_diagramTimer`); the two
+      // serve different panels and can be off/on independently.
+      this._maybeStartTraceTimer();
+    },
+
+    async _refreshTraceData() {
       try {
         const [metaR, treeR] = await Promise.all([
           fetch(`${this.qaBase}/api/runs/${this.runId}`),
@@ -55,8 +66,31 @@ document.addEventListener('alpine:init', () => {
           this.tree = await treeR.json();
           this.flatAgents = this._flatten(this.tree, '', true);
         }
+        // Table mode shares the same event stream — keep it in sync
+        // while the run grows, so the table tail matches the tree.
+        if (this.traceViewMode === 'table') {
+          await this.loadTable();
+        }
       } catch (e) {
-        console.error('sessionTraceView init failed', e);
+        console.error('sessionTraceView _refreshTraceData failed', e);
+      }
+    },
+
+    _maybeStartTraceTimer() {
+      this._stopTraceTimer();
+      if (this.meta.status && this.meta.status !== 'running') return;
+      this._traceTimer = setInterval(async () => {
+        await this._refreshTraceData();
+        if (this.meta.status && this.meta.status !== 'running') {
+          this._stopTraceTimer();
+        }
+      }, 5000);
+    },
+
+    _stopTraceTimer() {
+      if (this._traceTimer) {
+        clearInterval(this._traceTimer);
+        this._traceTimer = null;
       }
     },
 
@@ -280,27 +314,37 @@ document.addEventListener('alpine:init', () => {
       let content;
       let rawJson = null;
       try {
+        // Endpoints that have a server-side text renderer (see
+        // tracing/server/messages_render.py): fetch both views once
+        // up front so the { } JSON toggle is local (no refetch).
+        //   /messages → human-readable transcript (default)
+        //   /call     → pretty-printed tool-call args / text content
+        // /result is already plain-text; everything else falls back
+        // to client-side JSON pretty-printing.
+        const supportsTextView = /\/(messages|call)$/.test(url);
+        if (supportsTextView) {
+          const sep = url.includes('?') ? '&' : '?';
+          const [tResp, jResp] = await Promise.all([
+            fetch(`${url}${sep}as=text`),
+            fetch(url),
+          ]);
+          if (!tResp.ok) {
+            this._finishTab(id, this._notFoundHint(tResp.status, url), null);
+            return;
+          }
+          content = await tResp.text();
+          if (jResp.ok) {
+            try { rawJson = JSON.stringify(await jResp.json(), null, 2); }
+            catch (e) { /* leave rawJson null — toggle button stays disabled */ }
+          }
+          this._finishTab(id, content, rawJson);
+          return;
+        }
+
         const resp = await fetch(url);
         const raw = await resp.text();
         if (!resp.ok) {
-          // 404 is expected for several legit cases — replace the
-          // raw FastAPI error blob with a friendly inline message
-          // per endpoint:
-          //   /messages on N+1 → agent didn't reach the next step
-          //                      (crashed, killed, or this is the
-          //                      last step).
-          //   /result on N     → step didn't produce a tool result
-          //                      (typical for control-flow steps
-          //                      like the final `done()` call).
-          let hint = `HTTP ${resp.status}\n\n${raw}`;
-          if (resp.status === 404) {
-            if (url.includes('/messages')) {
-              hint = '(end of conversation — agent did not reach this step)';
-            } else if (url.includes('/result')) {
-              hint = '(no tool result for this step — control-flow only)';
-            }
-          }
-          this._finishTab(id, hint, null);
+          this._finishTab(id, this._notFoundHint(resp.status, url, raw), null);
           return;
         }
         content = raw;
@@ -319,23 +363,7 @@ document.addEventListener('alpine:init', () => {
           try {
             const parsed = JSON.parse(raw);
             rawJson = JSON.stringify(parsed, null, 2);
-            // /call envelope: {content, tool_calls}. Render whichever
-            // the LLM actually produced — same code path for tool
-            // steps and text-only steps (mode:single agents, judges).
-            const toolCalls = (parsed && parsed.tool_calls) || [];
-            const textContent = (parsed && parsed.content) || '';
-            if (Array.isArray(toolCalls) && toolCalls.length
-                && toolCalls[0].arguments !== undefined) {
-              const parts = toolCalls.map(tc => {
-                try { return JSON.stringify(JSON.parse(tc.arguments), null, 2); }
-                catch (e) { return tc.arguments; }
-              });
-              content = parts.join('\n\n---\n\n');
-            } else if (textContent) {
-              content = textContent;
-            } else {
-              content = rawJson;
-            }
+            content = rawJson;
           } catch (e) { /* not JSON */ }
         }
       } catch (e) {
@@ -343,6 +371,18 @@ document.addEventListener('alpine:init', () => {
       }
 
       this._finishTab(id, content, rawJson);
+    },
+
+    // Inline-friendly replacements for the FastAPI error blob on
+    // expected 404s — used by the endpoint-text fetcher above and
+    // the generic raw-fetch path below.
+    _notFoundHint(status, url, raw) {
+      if (status === 404) {
+        if (url.includes('/messages')) return '(end of conversation — agent did not reach this step)';
+        if (url.includes('/result'))   return '(no tool result for this step — control-flow only)';
+        if (url.includes('/call'))     return '(no call payload for this step)';
+      }
+      return `HTTP ${status}${raw ? '\n\n' + raw : ''}`;
     },
 
     // Replace the tab slot in `this.tabs` instead of mutating the
