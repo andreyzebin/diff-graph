@@ -1109,6 +1109,45 @@ shape — including in production, where the reviewer reading the
 investigator's `outcome` is more natural than rummaging through
 `done.findings`.
 
+### 5d.4 Judge asserts — migrate `must_mention` word arrays to semantic `rationale`
+
+The reply judge (`benchmark/runner/judge.py::REPLY_PROMPT`) documents
+`must_mention` rows as **"matches if any of its alternatives appears
+semantically (synonyms ok)"** — but in practice the word-array shape
+nudges the LLM judge into surface keyword-matching even when its
+docstring says otherwise. Two observed false-fails (plan 219 run
+53b3ee6ee582 on DISP-U-001 — fixed by removing `must_address`; plan
+221 run cd9da88f0166 on DISP-U-002 — fixed by removing `must_mention`)
+both had ideal agent output that scored 0.0 because a row was marked
+`matched=false`. The fix on the scenario side was to lift the contract
+into prose `rationale` ("agent should greet back because the user
+said hi") and rely on `forbidden_topics` + `acknowledgement_required`
+as hard rails.
+
+Action: audit every `must_mention` / `must_address` block in
+`benchmark/scenarios/`:
+
+- **Ack-style fixtures** (one-line greet-back / brief ack +
+  delegate — DISP-U-001/002, SCEN-200/201/202/203 etc): drop the
+  word-array fields entirely; move the contract into `rationale`
+  with explicit "REQUIRED (semantic)" / "FORBIDDEN (semantic)"
+  sections so the LLM judges by intent, not keyword presence.
+- **Substantive-answer fixtures** (e.g. /ask-style scenarios where
+  the agent genuinely must discuss a topic): `must_mention` is
+  more defensible, but rewrite each row as a single semantic
+  statement ("agent acknowledges Y") rather than a raw word list,
+  so the judge can't fall back to keyword-checking.
+
+Open question: should the judge prompt itself stop showing
+`must_mention` rows altogether for scenarios that have empty arrays,
+or even drop the field from the EXPECTED REPLY JSON when missing,
+so the judge doesn't pattern-match on its presence? Leaning yes —
+silence the noisy field by default; force scenarios to opt in.
+
+Until that audit lands, the two-handed pattern (drop word arrays,
+expand `rationale` with explicit REQUIRED/FORBIDDEN semantics) is
+the workaround. See DISP-U-001 / DISP-U-002 for the canonical shape.
+
 ### 5d.1 Live, progressive run dashboard (per-provider throughput)
 
 When `bench run --mode aggressive` is in flight the user is
