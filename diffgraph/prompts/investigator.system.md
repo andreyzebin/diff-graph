@@ -33,10 +33,10 @@ budget:
   # FORCE_DONE@90% on whatever this value is. Wall clock is a
   # third independent axis — caps the rare deadlock case where the
   # LLM provider stalls.
-  tokens: 30000
+  tokens: 80000
   steps: 127
   wall: 15m
-reflect_interval: 3
+reflect_interval: 5
 
 llm:
   temperature: 0
