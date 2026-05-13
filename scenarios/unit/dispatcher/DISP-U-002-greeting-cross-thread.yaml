@@ -102,30 +102,57 @@ expected_output:
     - description: "Inline finding comments (file+line+severity) — dispatcher posts none of its own; if any appear, the dispatcher mirrored a (mocked) reviewer's output."
 
   reply:
-    must_mention:
-      - ["hi", "hello", "hey", "привет", "здравствуйте", "добрый"]
-    # must_address removed: judge interprets it as "reply must
-    # SUBSTANTIVELY discuss the topic", which contradicts this
-    # scenario's design — the trigger is a one-word greeting and
-    # the expected response is a one-line greet-back, not a
-    # substantive discussion of "greeting". must_mention pins the
-    # acceptable copy; forbidden_topics + acknowledgement_required
-    # carry the rest of the contract. See plan 219 run
-    # 53b3ee6ee582 + DISP-U-001 for the same false-fail pattern
-    # on the sister scenario.
+    # No must_mention / must_address word lists here — the contract
+    # is purely semantic: "did the agent greet back, since the user
+    # said hi". Listing literal words (["hi", "hello", …]) tempts
+    # the LLM-judge into surface keyword-matching even though the
+    # judge prompt says "semantic, synonyms ok"; observed on plan
+    # 221 run cd9da88f0166 where the agent replied "Hi Alice! 👋
+    # How can I help with ORD-234?" and the judge marked row 0
+    # `matched=false` because the reply included a follow-up offer.
+    # Twin-fix with DISP-U-001 (must_address removed for the same
+    # over-strict-interpretation reason). Hard rails live in
+    # forbidden_topics + acknowledgement_required; semantic contract
+    # lives in rationale below.
     forbidden_topics:
       - ["Starting review", "Запускаю обзор", "Beginning review", "Reviewing the"]
       - ["selectFreeItem", "applyBulkDiscount", "BLOCKER", "MAJOR"]
     rationale: |
-      The trigger is a plain greeting, not a /command. The
-      dispatcher's prompt says: plain text → /ask path, never spawn
-      reviewer. The /review in the parallel thread (visible via
-      EXISTING COMMENTS) is someone else's request and must not bleed
-      into this trigger's response. Acceptable: a brief greet back,
-      optionally a one-liner about the three commands. NOT acceptable:
-      starting a review, summarising what /review does as if
-      confirming an intent, or treating "hi!" as a question about
-      the diff.
+      Semantic contract — judge should grade by INTENT, not by
+      keyword presence.
+
+      Setup: user (alice) was @-mentioned-implicitly by posting a
+      plain "hi!" as the trigger comment in this thread (id=200,
+      parent_id=0). A sibling thread (id=100) contains alice's
+      /review request, but that's someone else's intent in another
+      root and must NOT influence this reply.
+
+      REQUIRED (semantic):
+        - The agent greets the user back. Any natural greet-back
+          qualifies — "Hi Alice!", "Hello!", "Hey there", "Привет!",
+          "Здравствуйте", "Добрый день", capitalisation/emojis/name
+          variations all fine. The matter is intent: did the agent
+          acknowledge the greeting?
+        - Optionally — and this is FINE, not a violation — a short
+          follow-up offering help in this PR thread is acceptable
+          ("How can I help with this PR?", "What would you like
+          me to look at?"). The dispatcher operates inside a PR
+          context; mentioning the PR is natural and not a bleed
+          from the sibling /review thread.
+
+      FORBIDDEN (semantic):
+        - Starting a review: "Starting review of …", "Запускаю
+          обзор", "Beginning review", inline finding comments.
+        - Mirroring sibling-thread content: the parallel /review in
+          another root must not show up here in any form.
+        - Treating "hi!" as a question about the diff (e.g.
+          unsolicited PR summary, discussing the changes the user
+          didn't ask about).
+
+      Judge: ask yourself "would a polite assistant on a PR thread,
+      given a one-word 'hi!', reply this way without spilling
+      sibling-thread content?" — yes → pass, regardless of which
+      specific greeting word was chosen.
 
   side_effects:
     inline_comments: 0
