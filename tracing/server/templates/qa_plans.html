@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=chip-providers"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=task-log-link"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -212,8 +212,21 @@ th { color: #8b949e; font-weight: normal; }
                           <template x-if="t.trace_run_id">
                             <a class="run-link" style="margin-left:4px;"
                                :href="`{{ base_path }}/qa/sessions/${t.trace_run_id}?from=plan%3D${p.id}`"
-                               title="open trace">→</a>
+                               title="open agent trace">→</a>
                           </template>
+                          <!-- Bench-log link works EVEN when the
+                               agent never started (bench crashed at
+                               setup → no `runs` row → trace link
+                               above would 404). Direct task-keyed
+                               URL: the worker writes the log dir
+                               BEFORE spawning bench, so a present
+                               dir doesn't depend on the agent
+                               actually emitting any spans. -->
+                          <a class="run-link"
+                             style="margin-left:4px; opacity:0.75;"
+                             :href="`{{ base_path }}/api/qa/tasks/${t.id}/bench-log`"
+                             target="_blank"
+                             title="open bench log (stdout/stderr/system) — works even if the agent never started">📜</a>
                         </span>
                       </template>
                     </div>
