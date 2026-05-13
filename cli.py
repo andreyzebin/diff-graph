@@ -33,6 +33,18 @@ CONFIG_FILE = BASE_DIR / "config.yaml"
 # Make benchmark package importable
 sys.path.insert(0, str(BASE_DIR))
 
+# When this CLI is spawned by the QA worker as part of a task, opt
+# into the per-task system log so every `logging.*` call in bench
+# code lands in the SAME file as the worker's and diff-graph's
+# entries — `/api/qa/tasks/{id}/bench-log` then returns a unified
+# timestamp-ordered view across all three subsystems. No-op when
+# DIFFGRAPH_TASK_ID isn't set (ad-hoc local runs, tests).
+try:
+    from orchestra.bench_log import setup_bench_logging
+    setup_bench_logging(system="bench")
+except Exception:
+    pass
+
 
 def _make_trigger(agent_cfg: dict, bitbucket_connection: dict):
     from runner.trigger import HttpTrigger, WebhookTrigger, CliTrigger
