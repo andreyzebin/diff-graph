@@ -14,7 +14,7 @@ input:
     pull_request:
       from_branch: "feature/ORD-450-warehouse-rewrite"
       to_branch: "master"
-      title: "[BENCHMARK] SCEN-304: Warehouse service rewrite (ORD-450)"
+      title: "ORD-450: Warehouse service rewrite"
       description: |
         ## ORD-450: Replace legacy WarehouseClient with WarehouseService
 

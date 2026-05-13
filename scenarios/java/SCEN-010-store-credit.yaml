@@ -8,7 +8,7 @@ input:
     pull_request:
       from_branch: "feature/ORD-301-store-credit"
       to_branch: "master"
-      title: "[BENCHMARK] SCEN-010: Customer store credit redemption (ORD-301)"
+      title: "ORD-301: Customer store credit redemption"
       description: |
         ## ORD-301: Customer store credit redemption
 
@@ -19,14 +19,9 @@ input:
         ### Acceptance criteria
         - Customer can see their available (non-expired, non-redeemed) credits
         - Customer can apply a single credit to an OPEN order they own
-        - Credit amount is deducted from the order **subtotal** before tax
-          is recalculated — not from the final total
+        - Applying a credit reduces the amount owed on the order
         - A credit cannot be applied more than once
         - Expired credits cannot be applied
-
-        ### Notes
-        - Store credit is a pre-tax deduction per AGENTS.md pricing rules
-        - Follow ownership-check patterns from `OrderController`
 
 expected_output:
   required_comments:

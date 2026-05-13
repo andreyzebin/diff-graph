@@ -13,7 +13,7 @@ input:
     pull_request:
       from_branch: "feature/ORD-234-buy-3-get-1-free"
       to_branch: "master"
-      title: "[BENCHMARK] SCEN-204b: Buy-3-get-1-free promotion (ORD-234)"
+      title: "ORD-234: Buy-3-get-1-free promotion"
       description: |
         ## ORD-234: Implement buy-3-get-1-free promotions
 

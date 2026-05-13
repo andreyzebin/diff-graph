@@ -19,7 +19,7 @@ input:
     pull_request:
       from_branch: "fix/cancel-order-iter"
       to_branch: "main"
-      title: "[BENCHMARK] SCEN-306: cancel_order iterates None items"
+      title: "Fix NPE in cancel_order on None items"
       description: |
         ## Fix NoneType iteration in cancel_order
 

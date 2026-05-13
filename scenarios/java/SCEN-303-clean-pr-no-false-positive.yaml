@@ -12,7 +12,7 @@ input:
     pull_request:
       from_branch: "chore/javadoc-order-service"
       to_branch: "master"
-      title: "[BENCHMARK] SCEN-303: Javadoc OrderService (chore)"
+      title: "chore: Javadoc OrderService"
       description: |
         ## Docs: javadoc OrderService public methods
 
