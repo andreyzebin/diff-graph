@@ -146,6 +146,51 @@ def _tool_call_summary(tc: dict) -> dict:
         return {"name": name, "args": ""}
 
 
+# Tool-result prefixes that indicate the framework rejected the call
+# before any user code ran (schema validation, JSON parse fallback,
+# unknown tool name). Used by `_prepare_agent` to badge "errored"
+# steps in the trace tree.
+_TOOL_ERROR_PREFIXES = (
+    "validation error",
+    "unknown tool",
+    "error:",
+)
+
+
+def _looks_like_tool_error(result: str) -> bool:
+    """Heuristic on a tool_result message body. We match the framework's
+    well-known error prefixes rather than parsing the whole message —
+    a real tool that legitimately starts with "error" in its output
+    will only show up as a one-off, while validation/parse failures
+    cluster (you'll see N copies of the same prefix across a step,
+    which is exactly the signal a reader cares about)."""
+    if not isinstance(result, str):
+        return False
+    head = result.lstrip().lower()
+    return any(head.startswith(p) for p in _TOOL_ERROR_PREFIXES)
+
+
+def _tool_call_signature(resp: Optional[dict]) -> Optional[tuple]:
+    """Tuple of (tool_name, arguments) pairs for a step's outbound
+    tool_calls — used to detect "agent re-emitted the exact same
+    payload after seeing an error" loops. Returns None for text-only
+    steps so they don't accidentally compare equal to each other."""
+    if not resp:
+        return None
+    calls = resp.get("tool_calls") or []
+    if not calls:
+        return None
+    sig = []
+    for tc in calls:
+        if isinstance(tc, dict):
+            name = tc.get("name") or (tc.get("function") or {}).get("name") or ""
+            args = tc.get("arguments")
+            if args is None:
+                args = (tc.get("function") or {}).get("arguments")
+            sig.append((name, args or ""))
+    return tuple(sig) if sig else None
+
+
 def _prepare_agent(trace: dict, depth: int) -> dict:
     """Prepare one agent's data for template rendering."""
     sgr = trace.get("sgr", [])
@@ -197,11 +242,30 @@ def _prepare_agent(trace: dict, depth: int) -> dict:
         for r in tool_results:
             truncated_results.append(r[:500] + ("…" if len(r) > 500 else ""))
 
+        # Health flags surfaced in the trace tree so the failure shape
+        # is visible without drilling in. Two cheap counters:
+        #   - `tool_errors_count`: tool results matching one of the
+        #     framework's known error prefixes. Lets the UI badge a
+        #     step that emitted "valid"-looking tool calls but every
+        #     result came back as a validation error (see e.g. the
+        #     qwen3 "parent_id: }" failure where 6 post_comment calls
+        #     all came back as `'text' is a required property`).
+        #   - `repeats_prev_step`: True when this step's outbound
+        #     (tool_name, arguments) signature is identical to the
+        #     previous step's. Loop indicator — a model that re-emits
+        #     the exact same call after seeing an error is stuck.
+        err_count = sum(1 for r in tool_results if _looks_like_tool_error(r))
+        cur_sig = _tool_call_signature(sd["resp"])
+        prev_sig = _tool_call_signature(steps_list[i - 1]["resp"]) if i > 0 else None
+        repeats = bool(cur_sig) and cur_sig == prev_sig
+
         paired_steps.append({
             "step": sd["step"],
             "req": sd["req"],
             "resp": sd["resp"],
             "tool_results": truncated_results,
+            "tool_errors_count": err_count,
+            "repeats_prev_step": repeats,
             "sgr": sgr_by_step.get(sd["step"]),
             "sgr_index": list(sgr_by_step.keys()).index(sd["step"]) if sd["step"] in sgr_by_step else None,
         })

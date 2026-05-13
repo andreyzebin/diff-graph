@@ -84,6 +84,15 @@ summary:hover { background: #161b22; }
 
 /* LLM calls */
 .llm-call { margin: 2px 12px; border-left: 2px solid #30363d; }
+/* Step-health markers: tinted left border + faint background so a
+ * scanner can spot failing or looping steps without reading badges.
+ * The badge chips in the header carry the actual count / reason. */
+.llm-call.step-errored { border-left-color: #f47067; background: #f4706711; }
+.llm-call.step-repeat  { border-left-color: #c69026; background: #c6902611; }
+.step-badge { padding: 1px 6px; border-radius: 3px; font-size: 0.75em;
+              font-variant-numeric: tabular-nums; }
+.step-badge-err    { background: #f4706722; color: #f47067; border: 1px solid #f4706744; }
+.step-badge-repeat { background: #c6902622; color: #c69026; border: 1px solid #c6902644; }
 .llm-header { padding: 4px 10px; display: flex; gap: 8px; align-items: center; font-size: 0.85em; }
 .llm-step { color: #8b949e; }
 .llm-step-num { color: #8b949e; font-size: 0.8em; min-width: 40px; }

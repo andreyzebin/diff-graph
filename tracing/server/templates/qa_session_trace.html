@@ -8,7 +8,7 @@
   window.QA_BASE_PATH = "{{ base_path }}";
   window.RUN_ID = "{{ run_id }}";
 </script>
-<script defer src="{{ base_path }}/static/qa_session_trace.js?v=15"></script>
+<script defer src="{{ base_path }}/static/qa_session_trace.js?v=16"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
 body { padding: 16px; max-width: 1700px; margin: 0 auto; }
@@ -418,12 +418,28 @@ body { padding: 16px; max-width: 1700px; margin: 0 auto; }
 
           <template x-for="s in agent.paired_steps" :key="s.step">
             <template x-if="s.resp || s.req">
-              <details class="llm-call">
+              <details class="llm-call"
+                       :class="{
+                         'step-errored': s.tool_errors_count > 0,
+                         'step-repeat':  s.repeats_prev_step,
+                       }">
                 <summary class="llm-header">
                   <span class="llm-step-num">step <span x-text="s.step"></span></span>
                   <button type="button" class="step-open-all"
                           title="open request + response + history in right pane"
                           @click.stop.prevent="openStepDetails(agent.agent_id, s.step)">→ open</button>
+                  <template x-if="s.tool_errors_count > 0">
+                    <span class="step-badge step-badge-err"
+                          :title="`${s.tool_errors_count} tool result(s) failed validation / parse — open response tab for details`">
+                      ⚠ <span x-text="s.tool_errors_count"></span> err
+                    </span>
+                  </template>
+                  <template x-if="s.repeats_prev_step">
+                    <span class="step-badge step-badge-repeat"
+                          title="same tool call(s) as previous step — agent may be stuck in a loop">
+                      ↻ repeat
+                    </span>
+                  </template>
 
                   <template x-if="s.resp && s.resp.tool_calls && s.resp.tool_calls.length">
                     <span class="llm-tools">
