@@ -26,6 +26,13 @@
 #   extra_body    table of vendor extensions, e.g.
 #                 {"chat_template_kwargs": {"enable_thinking": false}}
 #   headers       table of extra HTTP headers (rare; not yet wired)
+#   fix_qwen3_stringification_bug
+#                 bool — opt-in recovery for the known qwen3 tool-call
+#                 bug where the model packs the whole arguments object
+#                 into a single escaped-JSON string property instead
+#                 of producing top-level keys. See qwen-code#379,
+#                 vllm-project/vllm#21711. ToolRegistry.dispatch then
+#                 retries validation once with the nested JSON lifted.
 
 [providers.deepseek]
 base_url    = "https://api.deepseek.com/v1"
@@ -51,6 +58,7 @@ model       = "Qwen/Qwen3-Coder-480B-A35B-Instruct"
 tool_choice = "auto"
 timeout     = 600
 extra_body  = { chat_template_kwargs = { enable_thinking = false } }
+fix_qwen3_stringification_bug = true
 
 [providers.qwen3-6]
 base_url    = "https://<your-modelrun-id>.modelrun.inference.cloud.ru/v1"
@@ -59,3 +67,4 @@ model       = "<your-model-name>"
 tool_choice = "auto"
 timeout     = 600
 extra_body  = { chat_template_kwargs = { enable_thinking = false } }
+fix_qwen3_stringification_bug = true

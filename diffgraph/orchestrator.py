@@ -111,6 +111,7 @@ def run_review(
     prompt_resource: Optional[str] = None,
     tool_choice: str = "",
     bot_user: str = "",
+    fix_qwen3_stringification_bug: bool = False,
 ) -> tuple[list[ReviewFinding], ReviewContext]:
     """Run lead agent directly (no dispatcher). For --pr-url without --message."""
     diff_result = parse_diff(diff_text)
@@ -122,7 +123,9 @@ def run_review(
     )
     ctx._bot_user = bot_user
 
-    tool_registry = ToolRegistry()
+    tool_registry = ToolRegistry(
+        fix_qwen3_stringification_bug=fix_qwen3_stringification_bug,
+    )
     register_diffgraph_tools(tool_registry, ctx)
 
     # Data resolved via from:pr_context.* — no manual injection needed

@@ -41,8 +41,16 @@ class ToolDef:
 class ToolRegistry:
     """Central registry for agent tools."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, fix_qwen3_stringification_bug: bool = False) -> None:
         self._tools: dict[str, ToolDef] = {}
+        # When True, `dispatch()` will retry once with
+        # `_repair_stringified_args(...)` if the model packed the
+        # tool-call payload as escaped JSON in a single string property.
+        # Off by default; flip on for providers known to be affected
+        # (currently Qwen3 via the modelrun/vLLM endpoints — see
+        # qwen-code#379, vllm#21711). Costs one extra json.loads on
+        # validation failure only.
+        self.fix_qwen3_stringification_bug = fix_qwen3_stringification_bug
 
     def register(
         self,
@@ -162,7 +170,9 @@ class ToolRegistry:
 
     def clone(self) -> "ToolRegistry":
         """Create a shallow copy — domain tools shared, builtins can be overwritten."""
-        new = ToolRegistry()
+        new = ToolRegistry(
+            fix_qwen3_stringification_bug=self.fix_qwen3_stringification_bug,
+        )
         new._tools = dict(self._tools)
         return new
 
@@ -197,6 +207,15 @@ class ToolRegistry:
 
         # Validate args against tool's JSON Schema
         error = _validate_args(args, td.parameters)
+        if error and self.fix_qwen3_stringification_bug:
+            repaired = _repair_stringified_args(args, td.parameters)
+            if repaired is not None and _validate_args(repaired, td.parameters) is None:
+                log.info(
+                    "tool %s: recovered qwen3-stringified args (lifted nested JSON)",
+                    tool_name,
+                )
+                args = repaired
+                error = None
         if error:
             return error
 
@@ -327,6 +346,66 @@ def _validate_args(args: dict, schema: dict) -> str | None:
         return f"validation error{field}: {e.message}"
     except Exception:
         return None  # if jsonschema not installed, skip validation
+
+
+def _repair_stringified_args(args: dict, schema: dict) -> Optional[dict]:
+    """Recover from the qwen3 tool-call stringification bug.
+
+    Failure shape (see qwen-code#379, vllm#21711, observed in our
+    reviewer reflect spam loop on Qwen3-Coder via vLLM): the model
+    emits ONE top-level string property whose value is an escaped
+    JSON object containing all the other fields it should have
+    produced separately. Example for `reflect(learned, confidence,
+    next_action, ...)`:
+
+        {"learned": "...findings...\", \"confidence\": \"high\",
+                    \"next_action\": \"...\""}
+
+    `confidence`/`next_action` live INSIDE the `learned` string,
+    not next to it, so JSON-Schema validation rejects with
+    "'confidence' is a required property".
+
+    This helper looks for ONE string-typed top-level property whose
+    value parses as a JSON object and contains every required key
+    currently missing from the top level. If found, returns a flat
+    args dict with the lifted keys merged in (and the now-redundant
+    stringified container dropped — its content is fully hoisted).
+
+    Returns None if no safe repair is possible. Conservative on
+    purpose: never modifies args that schema-validate; never lifts
+    if the candidate string doesn't cover ALL missing-required keys.
+    """
+    if not isinstance(args, dict) or not isinstance(schema, dict):
+        return None
+    required = schema.get("required") or []
+    missing = [k for k in required if k not in args]
+    if not missing:
+        return None
+
+    for key, val in args.items():
+        if not isinstance(val, str):
+            continue
+        s = val.strip()
+        # Cheap pre-check: skip strings that don't even look like
+        # a JSON object (saves the parse cost on every long `learned`).
+        if not (s.startswith("{") and s.endswith("}")):
+            continue
+        try:
+            lifted = json.loads(s)
+        except Exception:
+            continue
+        if not isinstance(lifted, dict):
+            continue
+        if not all(req in lifted for req in missing):
+            continue
+        # Build repaired payload: drop the stringified container, then
+        # overlay the lifted keys. Lifted wins on overlap — the model's
+        # "real" value for any duplicate key is the one it intended at
+        # the inner JSON level (the top-level string is just a wrapper).
+        repaired = {k: v for k, v in args.items() if k != key}
+        repaired.update(lifted)
+        return repaired
+    return None
 
 
 def _noop_handler(**kwargs: Any) -> str:

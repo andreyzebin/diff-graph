@@ -30,6 +30,7 @@ class DiffGraph:
         max_tokens: int = 40000,
         tool_choice: str = "",
         bot_user: str = "",
+        fix_qwen3_stringification_bug: bool = False,
     ) -> None:
         self.repo_path = repo_path
         self.llm = llm_client
@@ -38,6 +39,7 @@ class DiffGraph:
         self.max_tokens = max_tokens
         self.tool_choice = tool_choice
         self.bot_user = bot_user
+        self.fix_qwen3_stringification_bug = fix_qwen3_stringification_bug
 
     def review(
         self,
@@ -71,4 +73,5 @@ class DiffGraph:
             prompt_resource=prompt_resource,
             tool_choice=self.tool_choice,
             bot_user=self.bot_user,
+            fix_qwen3_stringification_bug=self.fix_qwen3_stringification_bug,
         )

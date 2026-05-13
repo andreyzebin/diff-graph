@@ -104,6 +104,10 @@ def apply_provider(llm_cfg: dict, provider_name: str) -> dict:
                                     # tool parsers (vLLM Qwen3-Coder)
         "extra_body": "extra_body", # vendor extensions
                                     # ({"chat_template_kwargs": {"enable_thinking": False}})
+        # bool — opt-in tool-call repair for the qwen3 "all args packed
+        # into one escaped-JSON string" bug (qwen-code#379, vllm#21711).
+        # See orchestra/tools/registry.py:_repair_stringified_args.
+        "fix_qwen3_stringification_bug": "fix_qwen3_stringification_bug",
     }
     for src_key, dst_key in mapping.items():
         if src_key in profile and profile[src_key] not in ("", None):

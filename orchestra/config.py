@@ -157,6 +157,9 @@ def _parse_agent(name: str, d: dict) -> AgentConfig:
             presence_penalty=lp.get("presence_penalty", 0.0),
             max_completion_tokens=lp.get("max_completion_tokens", 4096),
             tool_choice=lp.get("tool_choice", "required"),
+            fix_qwen3_stringification_bug=bool(
+                lp.get("fix_qwen3_stringification_bug", False)
+            ),
         )
 
     return AgentConfig(

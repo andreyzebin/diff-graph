@@ -82,6 +82,13 @@ class LLMParamsConfig:
                                      # vLLM Qwen3-Coder deployments)
     extra_body: Optional[dict] = None  # vendor extensions, e.g.
                                        # {"chat_template_kwargs": {"enable_thinking": False}}
+    # Recovery for the qwen3 tool-call stringification bug
+    # (qwen-code#379 / vllm#21711): the model packs the whole JSON
+    # arguments object into a single string-typed property. When True,
+    # ToolRegistry.dispatch retries validation once with the nested
+    # JSON lifted to the top level. Off by default; flip on per
+    # provider profile.
+    fix_qwen3_stringification_bug: bool = False
 
 
 # ── Agent ─────────────────────────────────────────────────────────────────────

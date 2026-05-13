@@ -229,7 +229,11 @@ def _run_with_dispatcher(
     ctx._subject_pattern = pat
 
     # ── Tool registry with all domain tools ───────────────────────────────
-    tool_registry = ToolRegistry()
+    tool_registry = ToolRegistry(
+        fix_qwen3_stringification_bug=bool(
+            llm_cfg.get("fix_qwen3_stringification_bug", False)
+        ),
+    )
     register_diffgraph_tools(tool_registry, ctx)
 
     # ── Data: common context + extra CLI data ────────────────────────────
