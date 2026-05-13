@@ -17,6 +17,7 @@ fixtures that depend on PR threads / comments).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -24,6 +25,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+
+log = logging.getLogger(__name__)
 
 import yaml
 
@@ -169,10 +172,25 @@ def load_fixture(fixture_path: str | Path) -> UnitFixture:
 
 
 def _git(cwd: Path | str, *args: str, check: bool = True) -> str:
-    r = subprocess.run(
-        ["git", *args],
-        cwd=str(cwd), capture_output=True, text=True, check=check,
-    )
+    """Run `git ...` with stderr captured. On failure log BOTH the
+    command and git's own stderr message to the bench system log,
+    then re-raise — Rich's default traceback rendering shows only
+    `str(CalledProcessError)` which doesn't include git's reason
+    text, leaving operators staring at a bare "exit 128" with no
+    hint why. See plan 212 task #3636 for the wild-type case."""
+    try:
+        r = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd), capture_output=True, text=True, check=check,
+        )
+    except subprocess.CalledProcessError as exc:
+        log.error(
+            "git failed: cmd=%s cwd=%s rc=%s stderr=%r stdout=%r",
+            ["git", *args], str(cwd), exc.returncode,
+            (exc.stderr or "")[:2000],
+            (exc.stdout or "")[:500],
+        )
+        raise
     return r.stdout.strip()
 
 
