@@ -20,6 +20,16 @@ port = 8000
 #                       compiled prompts' content hash becomes "mutation"
 #                       (both surface in the dispatcher prompt and trace DB),
 #                       so each route can A/B-test a different prompt set.
+#   --mocks <path>      tool-mocks fixture (YAML) — short-circuits the
+#                       listed tool calls with canned replies. Mockito-
+#                       style: each entry is consumed in order. Sticky
+#                       entries replay forever (use to disable a tool
+#                       indefinitely). Bare-string value at a tool key
+#                       is a one-line shortcut for "sticky-return this
+#                       string". Drop-in fixture for the common
+#                       'set_review_status off' case is shipped at
+#                       orchestra/fixtures/mocks/disable-review-status.yaml.
+#                       Format: see orchestra/tool_mocks.py.
 #
 # Example with provider + bot user + pinned prompts version:
 #   command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id} --provider=deepseek --bot-user=review-bot --prompts=bitbucket://server/SBLOOM/diffgraph-prompts/refs/main/prompts'
@@ -32,6 +42,19 @@ timeout = 600
 [agents.dg-review]
 trigger = "cli"
 command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --agent=reviewer'
+timeout = 600
+
+# DiffGraph — reviewer with set_review_status temporarily disabled.
+# Same as dg-review but every set_review_status call short-circuits
+# with a canned "disabled" reply (sticky one-liner from
+# orchestra/fixtures/mocks/disable-review-status.yaml). The reviewer
+# still reads diff, spawns investigators, posts inline comments, and
+# finishes — only the PR-status update is silenced. Useful while
+# downstream automation around status changes is being reworked or
+# while a webhook fan-out is making noise.
+[agents.dg-review-no-status]
+trigger = "cli"
+command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --agent=reviewer --mocks=orchestra/fixtures/mocks/disable-review-status.yaml'
 timeout = 600
 
 # PR-Agent — forward raw Bitbucket event

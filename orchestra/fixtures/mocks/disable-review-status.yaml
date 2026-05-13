@@ -1,0 +1,26 @@
+# Drop-in tool-mock fixture for `cli.py run --mocks <path>`.
+#
+# What it does: every call the agent makes to `set_review_status`
+# short-circuits with the canned reply below — the tool keeps
+# appearing in the agent's tool list (no prompt recompile needed),
+# so the agent simply sees "tool acknowledged, status not actually
+# changed" and proceeds.
+#
+# Use case: temporarily neutralise the reviewer's verdict step
+# while something downstream is broken (webhook noise, downstream
+# automation in flux, etc.) without rolling new prompts.
+#
+# Form: the one-line YAML shortcut introduced by orchestra/tool_mocks.py
+# — a bare string at the tool key is parsed as a single STICKY entry
+# returning that string verbatim. Sticky entries never advance the
+# per-tool ordinal counter, so however many times the reviewer hits
+# `set_review_status`, the same line is returned. No MockExhaustedError.
+#
+# Pairs with: orchestra/tool_mocks.py (loader),
+#             tests/test_tool_mocks_sticky.py (semantics tests),
+#             code-review-benchmarks/benchmark/scenarios/unit/reviewer/
+#               REV-U-006-disabled-review-status.yaml (regression
+#               scenario that exercises the reviewer end-to-end with
+#               this fixture active).
+
+set_review_status: "set_review_status is temporarily disabled — proceed without changing PR status; continue with your remaining work."
