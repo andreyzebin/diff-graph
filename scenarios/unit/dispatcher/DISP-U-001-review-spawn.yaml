@@ -67,7 +67,16 @@ expected_output:
   reply:
     must_mention:
       - ["Starting review", "Запускаю обзор", "Beginning review", "Reviewing"]
-    must_address: ["review"]
+    # must_address removed: judge interprets it as "reply must
+    # SUBSTANTIVELY discuss the topic", which contradicts this
+    # scenario's design — the dispatcher's job is a BRIEF ack +
+    # delegate to spawn_agent(reviewer). Substantive analysis is
+    # the reviewer's responsibility, not the dispatcher's. The
+    # `acknowledgement_required: true` below already pins the ack
+    # contract; must_mention pins the ack copy. See plan 219 run
+    # 53b3ee6ee582 — dispatcher executed ideally (ack + spawn +
+    # done with empty findings) yet scored 0.0 because the judge
+    # demanded "substantive answer" the scenario explicitly forbids.
     forbidden_topics:
       # Don't mirror the reviewer's findings into the ack reply.
       - ["selectFreeItem", "applyBulkDiscount", "BLOCKER", "MAJOR", "@Transactional", "Lombok"]

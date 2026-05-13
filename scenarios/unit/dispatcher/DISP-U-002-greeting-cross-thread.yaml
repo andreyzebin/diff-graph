@@ -104,7 +104,15 @@ expected_output:
   reply:
     must_mention:
       - ["hi", "hello", "hey", "привет", "здравствуйте", "добрый"]
-    must_address: ["greeting", "hi", "hello", "привет"]
+    # must_address removed: judge interprets it as "reply must
+    # SUBSTANTIVELY discuss the topic", which contradicts this
+    # scenario's design — the trigger is a one-word greeting and
+    # the expected response is a one-line greet-back, not a
+    # substantive discussion of "greeting". must_mention pins the
+    # acceptable copy; forbidden_topics + acknowledgement_required
+    # carry the rest of the contract. See plan 219 run
+    # 53b3ee6ee582 + DISP-U-001 for the same false-fail pattern
+    # on the sister scenario.
     forbidden_topics:
       - ["Starting review", "Запускаю обзор", "Beginning review", "Reviewing the"]
       - ["selectFreeItem", "applyBulkDiscount", "BLOCKER", "MAJOR"]
