@@ -64,9 +64,19 @@ agent_data: {}
 # concern_focuses keyword group (AND-of-OR semantics: at least one
 # keyword from the group must appear somewhere in the text).
 #
-# Concerns chosen from the actual diff against AGENTS.md (master):
-#   • PR deletes AGENTS.md — the rule book for ownership / transactions /
-#     style. Major red flag a reviewer should call out.
+# Concerns chosen from the actual content the agent sees via diff_*
+# tools, which use 3-dot (merge-base) diff = "what this branch
+# contributes since branching from master". Master commits that
+# landed AFTER feature branched off (AGENTS.md tightening,
+# .gitignore + gradle wrapper additions) are NOT visible in the
+# agent's diff view — they were never part of the PR's change set.
+# Previously this fixture listed an "agents-md-deletion" concern
+# based on `git diff master..feature` (2-dot) which conflates
+# "feature deleted X" with "master added X after branching"; that
+# concern was structurally unreachable for any correct reviewer.
+# See plan 217 run d433714500ea for the wild-type discussion.
+#
+# Real concerns from feature/ORD-301-store-credit's actual changes:
 #   • redeemCredit(creditId, orderId) lacks ownership checks → IDOR.
 #     AGENTS.md mandates ownership verification on every endpoint.
 #   • isRedeemed() check inside @Transactional is not pessimistic-locked
@@ -76,7 +86,7 @@ agent_data: {}
 #     the credit covers order.total → user loses the leftover.
 #
 # Threshold tuned conservatively (0.5) because the diff is large and a
-# reviewer hitting 2/4 groups is already a useful signal. Tighten after
+# reviewer hitting 2/3 groups is already a useful signal. Tighten after
 # we have a few attempt batches to calibrate.
 expected_output:
   assert_via: [intended_text]
@@ -84,9 +94,6 @@ expected_output:
   forbidden_comments:
     - description: "Inline comments — reviewer was told concerns-text; no posting allowed."
   concern_focuses:
-    - id: agents-md-deletion
-      description_keywords: ["AGENTS.md", "deleted", "removed", "convention", "guideline", "rule"]
-      rationale: "PR deletes AGENTS.md — the project's authorization / transaction / style rule book. Reviewer should flag this prominently."
     - id: redeem-authorization
       description_keywords: ["authorization", "ownership", "currentUser", "IDOR", "auth check", "belong", "verify"]
       rationale: "redeemCredit(creditId, orderId) does not verify that the credit or the order belong to the authenticated customer. AGENTS.md explicitly mandates ownership verification on every endpoint."

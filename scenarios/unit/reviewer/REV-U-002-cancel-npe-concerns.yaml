@@ -65,8 +65,7 @@ agent_data: {}
 # ── Judge (concerns-text reviewer) ───────────────────────────────────────
 # Hotfix wraps `order.getItems()` in `if (... != null)` before the
 # inventory-release loop. The fix is local and looks harmless — but
-# AGENTS.md (which this same PR happens to DELETE) explicitly bans null
-# guards on @OneToMany fields:
+# AGENTS.md explicitly bans null guards on @OneToMany fields:
 #
 #   "All collections returned from JPA relations are never `null` —
 #    Hibernate initialises them as empty. Do not add `!= null` guards
@@ -82,16 +81,22 @@ agent_data: {}
 #   • The null guard violates a documented JPA convention.
 #   • The null is a SYMPTOM of a broken upstream mapping or a non-JPA
 #     construction path — fixing at the consumer hides the real bug.
-#   • AGENTS.md itself is being deleted in this PR (the very rule book
-#     that bans this fix shape). Reviewer should flag the deletion.
-#   • Build-system damage is bundled in (gradle wrapper / .gitignore
-#     deletions) and is out of scope for an NPE hotfix.
 #
 # This is a HARDER scenario than REV-U-001: the diff looks trivially
 # correct in isolation; only a project-aware reviewer who has read
 # AGENTS.md will catch it. Exactly the value statement we want to
 # measure — the difference between a generic Java reviewer and one
 # that integrates project conventions.
+#
+# NOTE: agent's diff_* tools use 3-dot (merge-base) diff = "what
+# this branch contributes since branching". Master commits that
+# landed AFTER hotfix branched (AGENTS.md tightening, gradle wrapper
+# addition, .gitignore) are NOT in the agent's diff view. Previous
+# versions of this fixture listed "agents-md-deletion" and
+# "scope-creep" (gradle/gitignore) concerns based on `git diff
+# master..hotfix` (2-dot), but those are structurally invisible to
+# the agent and were unfairly penalising correct reviewers. See
+# plan 217 run d433714500ea for the wild-type discussion.
 expected_output:
   assert_via: [intended_text]
   required_comments: []
@@ -104,12 +109,6 @@ expected_output:
     - id: symptom-vs-cause
       description_keywords: ["symptom", "root cause", "mapping", "upstream", "hide", "real bug", "@PostLoad", "@PrePersist", "entity boundary"]
       rationale: "The null is a symptom of a broken upstream mapping or a non-JPA constructor path. Fixing at the consumer (loop site) hides the cause. AGENTS.md mandates defending the invariant at the entity boundary."
-    - id: agents-md-deletion
-      description_keywords: ["AGENTS.md", "deleted", "removed", "convention", "guideline", "rule"]
-      rationale: "PR deletes AGENTS.md — the rule book the hotfix violates. Reviewer should flag the deletion (independently of the fix shape concern)."
-    - id: scope-creep
-      description_keywords: ["scope", "gradle", "wrapper", "gradlew", "unrelated", ".gitignore", "build"]
-      rationale: "An NPE hotfix should touch one method. Bundling gradle wrapper + .gitignore deletions widens the blast radius unnecessarily."
   side_effects:
     inline_comments: 0
     review_status_change: false
