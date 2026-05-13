@@ -557,7 +557,8 @@ class TaskQueue:
                 return True
             cur = c.execute(
                 """UPDATE qa_tasks
-                   SET state=?, finished_at=?, trace_run_id=?,
+                   SET state=?, finished_at=?,
+                       trace_run_id = COALESCE(?, trace_run_id),
                        result_json=?, error_class=?
                    WHERE id=? AND lease_owner=?""",
                 (state, _now().isoformat(), trace_run_id,
@@ -576,7 +577,8 @@ class TaskQueue:
             judge_state = "finished" if state == "finished" else "cancelled"
             c.execute(
                 """UPDATE qa_tasks
-                   SET state=?, finished_at=?, trace_run_id=?,
+                   SET state=?, finished_at=?,
+                       trace_run_id = COALESCE(?, trace_run_id),
                        error_class=?
                    WHERE parent_task_id=? AND kind='judge'
                      AND state IN ('blocked', 'queued')""",
