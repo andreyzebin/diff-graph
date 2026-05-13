@@ -107,8 +107,8 @@ expected_output:
       description_keywords: ["AGENTS.md", "@OneToMany", "Hibernate", "null guard", "JPA", "convention", "initialises"]
       rationale: "AGENTS.md states @OneToMany collections are never null under Hibernate — null guards hide mapping errors. Reviewer must connect the documented rule to this exact diff."
     - id: symptom-vs-cause
-      description_keywords: ["symptom", "root cause", "mapping", "upstream", "hide", "real bug", "@PostLoad", "@PrePersist", "entity boundary"]
-      rationale: "The null is a symptom of a broken upstream mapping or a non-JPA constructor path. Fixing at the consumer (loop site) hides the cause. AGENTS.md mandates defending the invariant at the entity boundary."
+      description_keywords: ["symptom", "root cause", "mapping", "upstream", "hide", "real bug", "entity", "consumer"]
+      rationale: "The null is a symptom of a broken upstream mapping or a non-JPA constructor path. Fixing at the consumer (loop site) hides the cause. AGENTS.md's JPA rule (visible on this branch) says null on @OneToMany hides mapping errors — reviewer should generalise: fix the entity / upstream construction, not the consumer. Note: the @PostLoad/@PrePersist guidance was added to AGENTS.md on master AFTER the hotfix branched off, so it is NOT in the agent's view; keyword list reflects only what's actually citable on this branch."
   side_effects:
     inline_comments: 0
     review_status_change: false

@@ -58,8 +58,14 @@ agent_data:
 #   • Root cause is upstream — either a broken Hibernate mapping or
 #     a non-JPA construction path (raw JDBC import, native query row
 #     mapping) that bypasses Hibernate's collection init.
-#   • Per AGENTS.md, the fix belongs at the entity boundary
-#     (@PostLoad / @PrePersist) — NOT at every consumer site.
+#   • The fix belongs at the entity / upstream construction site —
+#     NOT at every consumer of getItems(). NOTE: AGENTS.md's explicit
+#     @PostLoad/@PrePersist guidance was added on master AFTER this
+#     hotfix branched off, so it is NOT visible to the agent. The
+#     reviewer is expected to generalise from the @OneToMany rule
+#     that IS on the branch ("doing so hides mapping errors") to
+#     "fix at the entity, not at every consumer". Keywords below
+#     reflect what's actually citable on this branch.
 #   • Off-graph noise: investigator should NOT drift into unrelated
 #     subsystems (pricing, store credit, etc.). It stays on this
 #     single concern.
@@ -83,8 +89,8 @@ expected_output:
     - id: fix-at-entity
       type: inline
       severity: minor
-      description_keywords: ["@PostLoad", "@PrePersist", "entity", "boundary", "invariant", "consumer"]
-      rationale: "AGENTS.md mandates defending the invariant at the entity (@PostLoad/@PrePersist), not in every consumer. Investigator should recommend the correct fix location."
+      description_keywords: ["entity", "boundary", "invariant", "consumer", "upstream"]
+      rationale: "Investigator should recommend fixing at the entity / upstream construction site rather than wrapping every consumer in null guards. The @PostLoad/@PrePersist hint isn't on the agent's view of AGENTS.md (added on master after this branch); general reviewing principles (fix the cause, not the symptom) are the actual signal."
   forbidden_comments:
     # Incidental findings ON THE PATH are fine (e.g. while reading the
     # entity/mapping the investigator notices a related JPA quirk, that
