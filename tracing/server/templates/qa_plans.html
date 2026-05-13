@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="{{ base_path }}/static/trace.css">
 <script>window.QA_BASE_PATH = "{{ base_path }}";</script>
-<script defer src="{{ base_path }}/static/qa.js?v=plan-expand"></script>
+<script defer src="{{ base_path }}/static/qa.js?v=plan-live"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
 <script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/head-support.js"></script>
@@ -61,6 +61,35 @@ th { color: #8b949e; font-weight: normal; }
 .score-good { color: #56d364; }
 .score-mid  { color: #c69026; }
 .score-bad  { color: #f47067; }
+/* Activity strip inside an expanded plan row. Counts per state +
+ * trailing live-score. Visible only while the plan is still
+ * producing — finished plans get the same data but it's static. */
+.activity-strip { display: flex; gap: 8px; flex-wrap: wrap;
+                  align-items: center; margin-bottom: 8px;
+                  font-size: 0.85em; }
+.activity-strip .chip { padding: 2px 8px; border-radius: 10px;
+                        font-variant-numeric: tabular-nums; border: 1px solid; }
+.chip-good      { color: #56d364; border-color: #23863666; background: #2386361a; }
+.chip-running   { color: #c69026; border-color: #c6902666; background: #c690261a; }
+.chip-queued    { color: #8b949e; border-color: #30363d; background: #161b22; }
+.chip-error     { color: #f47067; border-color: #da363366; background: #da36331a; }
+.chip-cancelled { color: #6e7681; border-color: #6e768166; background: #161b22; }
+/* In-flight task chips — one per agent task currently queued /
+ * running / leased / errored. The colour mirrors the activity-strip
+ * chip for the same state so the reader can tie them together. */
+.task-strip { display: flex; gap: 6px; flex-wrap: wrap;
+              margin-bottom: 10px; }
+.task-chip { padding: 2px 8px; border-radius: 4px; font-size: 0.8em;
+             border: 1px solid #30363d; background: #0d1117; }
+.task-chip.task-queued   { border-color: #30363d; color: #8b949e; }
+.task-chip.task-blocked  { border-color: #30363d; color: #6e7681; }
+.task-chip.task-leased,
+.task-chip.task-running  { border-color: #c6902666; color: #c69026; background: #c690260f; }
+.task-chip.task-error,
+.task-chip.task-failed   { border-color: #da363366; color: #f47067; background: #da36330f; }
+.task-chip.task-completed,
+.task-chip.task-finished { border-color: #23863666; color: #56d364; background: #2386360f; }
+.task-chip.task-cancelled { border-color: #6e768166; color: #6e7681; }
 </style>
 </head>
 <body hx-boost="true" hx-ext="head-support">
@@ -135,6 +164,63 @@ th { color: #8b949e; font-weight: normal; }
               <td></td>
               <td colspan="8">
                 <div class="plan-detail-inner">
+
+                  <!-- Live activity strip — auto-refresh keeps it
+                       fresh while the plan runs. Counts come from
+                       plan.progress; in-flight tasks come from
+                       /api/qa/tasks?plan_id=N (refreshed alongside
+                       the scores). -->
+                  <div class="activity-strip">
+                    <span class="chip chip-good"
+                          x-show="(p.progress.finished || 0) > 0">
+                      ✓ <span x-text="p.progress.finished || 0"></span> done
+                    </span>
+                    <span class="chip chip-running"
+                          x-show="(p.progress.running || 0) + (p.progress.leased || 0) > 0">
+                      ⟳ <span x-text="(p.progress.running || 0) + (p.progress.leased || 0)"></span> running
+                    </span>
+                    <span class="chip chip-queued"
+                          x-show="(p.progress.queued || 0) + (p.progress.blocked || 0) > 0">
+                      ⏳ <span x-text="(p.progress.queued || 0) + (p.progress.blocked || 0)"></span> queued
+                    </span>
+                    <span class="chip chip-error"
+                          x-show="(p.progress.error || 0) > 0">
+                      ✗ <span x-text="p.progress.error || 0"></span> error
+                    </span>
+                    <span class="chip chip-cancelled"
+                          x-show="(p.progress.cancelled || 0) > 0">
+                      ⊘ <span x-text="p.progress.cancelled || 0"></span> cancelled
+                    </span>
+                    <span class="meta" x-show="scoreText(p)"
+                          x-text="scoreText(p)"></span>
+                  </div>
+
+                  <!-- In-flight task list — visible only when there
+                       are tasks currently active or queued. Each
+                       chip shows scenario + queue + state so the
+                       reader can tell what's about to score next.
+                       Failed tasks get an error-class tooltip. -->
+                  <template x-if="taskRows[p.id] && taskRows[p.id].length > 0">
+                    <div class="task-strip">
+                      <template x-for="t in taskRows[p.id]" :key="t.id">
+                        <span class="task-chip"
+                              :class="`task-${t.state}`"
+                              :title="taskTooltip(t)">
+                          <span x-text="taskStatusIcon(t.state)"></span>
+                          <span x-text="taskScenario(t)"></span>
+                          <span class="muted" x-text="' · ' + t.queue"></span>
+                          <template x-if="t.trace_run_id">
+                            <a class="run-link" style="margin-left:4px;"
+                               :href="`{{ base_path }}/qa/sessions/${t.trace_run_id}?from=plan%3D${p.id}`"
+                               title="open trace">→</a>
+                          </template>
+                        </span>
+                      </template>
+                    </div>
+                  </template>
+
+                  <!-- Completed-and-judged rows. Auto-refresh adds
+                       new ones as judges finish. -->
                   <template x-if="!scoreRows[p.id]">
                     <span class="muted">loading per-scenario scores…</span>
                   </template>
@@ -152,6 +238,7 @@ th { color: #8b949e; font-weight: normal; }
                         <th class="tn">fp</th>
                         <th class="tn">found</th>
                         <th>when</th>
+                        <th>trace</th>
                       </tr></thead>
                       <tbody>
                         <template x-for="row in scoreRows[p.id]"
@@ -176,6 +263,14 @@ th { color: #8b949e; font-weight: normal; }
                                           : '—'"></td>
                             <td class="meta" :title="row.ts"
                                 x-text="fmtLocalSmart(row.ts)"></td>
+                            <td>
+                              <template x-if="row.agent_id">
+                                <a class="run-link"
+                                   :href="`{{ base_path }}/qa/sessions/${row.agent_id}?from=plan%3D${p.id}`"
+                                   title="open agent trace"
+                                   x-text="(row.agent_id || '').slice(0,8) + ' →'"></a>
+                              </template>
+                            </td>
                           </tr>
                         </template>
                       </tbody>

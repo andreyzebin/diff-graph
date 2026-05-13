@@ -298,16 +298,16 @@ document.addEventListener('alpine:init', () => {
         // Per-plan expand-state. Keyed by plan id.
         expanded: {},        // {id: bool}
         scoreRows: {},       // {id: [row, …]} — fetched on first expand
+        taskRows:  {},       // {id: [task, …]} — currently-queued / running / errored tasks
         async toggleExpanded(p) {
           const cur = !!this.expanded[p.id];
           this.expanded[p.id] = !cur;
-          // Lazy-fetch per-scenario judge scores on first expand.
-          // The /api/qa/plans/{id}/scores endpoint returns one row
-          // per judge run (scenario × model). Cache the array so
-          // re-opening is instant; the 5s auto-refresh keeps it
-          // fresh for plans that are still running.
-          if (this.expanded[p.id] && !this.scoreRows[p.id]) {
-            await this.loadScores(p.id);
+          // Lazy-fetch per-scenario judge scores AND the live task
+          // list on first expand. Both keep updating via the 5s
+          // auto-refresh while the plan is open.
+          if (this.expanded[p.id]) {
+            if (!this.scoreRows[p.id]) await this.loadScores(p.id);
+            if (!this.taskRows[p.id])  await this.loadTasks(p.id);
           }
         },
         async loadScores(planId) {
@@ -319,6 +319,53 @@ document.addEventListener('alpine:init', () => {
           } catch (e) {
             this.scoreRows[planId] = [];
           }
+        },
+        async loadTasks(planId) {
+          // Live in-flight + recently-finished tasks for this plan.
+          // We surface everything that isn't a finished `completed`
+          // task — the completed ones are already in the per-score
+          // table below. Failed / running / queued chips give the
+          // operator a quick "what's happening RIGHT NOW" view.
+          const base = window.QA_BASE_PATH || '';
+          try {
+            const r = await fetch(`${base}/api/qa/tasks?plan_id=${planId}&limit=200`);
+            const j = await r.json();
+            const all = (j.data || [])
+              // agent tasks only — judges are derived; surfacing them
+              // here would double-count from the operator's perspective
+              .filter(t => (t.kind || 'agent') === 'agent')
+              // hide completed agents (they're in the score table)
+              .filter(t => !['completed', 'finished'].includes(t.state || ''))
+              .sort((a, b) => (a.id || 0) - (b.id || 0));
+            this.taskRows[planId] = all;
+          } catch (e) {
+            this.taskRows[planId] = [];
+          }
+        },
+        taskScenario(t) {
+          // Pull the scenario id out of the task's resource URIs
+          // (Stage B — no dedicated column). One task can carry
+          // multiple resources; we look for the first `scenario://`.
+          for (const u of (t.resources || [])) {
+            const m = /^scenario:\/\/(.+)$/.exec(u);
+            if (m) return m[1];
+          }
+          return '?';
+        },
+        taskStatusIcon(state) {
+          return ({
+            queued:    '⏳', blocked: '⏳',
+            leased:    '⟳',  running: '⟳',
+            error:     '✗',  failed:  '✗',
+            cancelled: '⊘',
+          })[state] || '·';
+        },
+        taskTooltip(t) {
+          const parts = [`task #${t.id}`, `state: ${t.state}`,
+                          `queue: ${t.queue}`];
+          if (t.error_class) parts.push(`error: ${t.error_class}`);
+          if (t.started_at)  parts.push(`started: ${t.started_at}`);
+          return parts.join('\n');
         },
         fmtScore(v) {
           if (v === null || v === undefined) return '—';
@@ -349,11 +396,17 @@ document.addEventListener('alpine:init', () => {
           const j = await r.json();
           this.plans = j.data || [];
           this.total = (j.meta && j.meta.total) || this.plans.length;
-          // Refresh expanded-plan scores in parallel — keeps the
-          // detail strip ticking with the rest of the page.
+          // Refresh BOTH per-scenario scores and in-flight task
+          // chips for every expanded plan — keeps the detail strip
+          // ticking with the rest of the page. Both calls fan out
+          // in parallel; the activity strip itself reads from
+          // `p.progress` which already refreshed via this load().
           const expandedIds = Object.keys(this.expanded)
             .filter(id => this.expanded[id]);
-          await Promise.all(expandedIds.map(id => this.loadScores(id)));
+          await Promise.all(expandedIds.flatMap(id => [
+            this.loadScores(id),
+            this.loadTasks(id),
+          ]));
         },
         pushUrl() {
           const qs = new URLSearchParams();
