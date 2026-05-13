@@ -7,6 +7,7 @@ import importlib
 import inspect
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, get_type_hints
 
@@ -346,6 +347,106 @@ def _validate_args(args: dict, schema: dict) -> str | None:
         return f"validation error{field}: {e.message}"
     except Exception:
         return None  # if jsonschema not installed, skip validation
+
+
+def _repair_truncated_json(raw: str) -> str:
+    """Drop `"key": <empty>` pairs that make qwen3 tool-call JSON
+    unparseable. Idempotent — runs until a fixed point.
+
+    Failure shape this targets (observed in plan 192 reviewer step 10
+    on qwen3-6, 6 post_comment calls all malformed the same way):
+
+        {"text": "...", "parent_id": }
+
+    The model emitted `parent_id` as a key but with no value. Standard
+    JSON dies on the bare `}` after the colon. Two regexes cover the
+    three positional variants:
+
+      `, "k": ,`   inner empty pair (comma-prefixed)
+      `, "k": }`   trailing empty pair (comma-prefixed, before close)
+      `{"k": ,`    leading empty pair, follow-up keys present
+      `{"k": }`    leading empty pair, only key in object
+
+    Both regexes use a `(?=[,}])` lookahead to confirm "no value" —
+    we ONLY strip when the colon is immediately followed by another
+    structural token. A real value (string / number / nested object)
+    won't match because the lookahead would see `"`, `{`, `[`, or a
+    digit instead.
+
+    Conservative on purpose: never modifies string contents, only the
+    outermost JSON structure. A `"text": "Found , here"` value is
+    safe because the regex requires a *quoted key*, and the `, ` is
+    inside a string literal whose surrounding quotes aren't keys.
+    """
+    if not isinstance(raw, str) or not raw:
+        return raw
+    # Three patterns applied repeatedly. Distinguishing them matters
+    # because the leading-key case has to also consume its trailing
+    # comma — leaving `{, "b": 2}` would just trade one parse error
+    # for another.
+    #
+    #   inner_or_trailing: `, "k": ,` or `, "k": }`
+    #     Leading comma was the separator from a prior valid pair —
+    #     dropping it along with the empty key cleanly joins the
+    #     remaining pairs / closes the brace.
+    #
+    #   leading_with_more: `{"k": ,` (object start, more pairs follow)
+    #     Must consume the trailing comma + whitespace too so the
+    #     repaired object doesn't start with a dangling comma.
+    #
+    #   leading_lonely:    `{"k": }` (object start, no more pairs)
+    #     No trailing comma to consume; just drop the key.
+    inner_or_trailing = re.compile(r',\s*"[^"]*"\s*:\s*(?=[,}])')
+    leading_with_more = re.compile(r'([{\[])\s*"[^"]*"\s*:\s*,\s*')
+    leading_lonely    = re.compile(r'([{\[])\s*"[^"]*"\s*:\s*(?=})')
+    prev = None
+    cur = raw
+    # Bound the loop — pathological input shouldn't spin forever.
+    # 8 passes is more than enough for any realistic depth of nested
+    # truncations; a 9th iteration without change exits via the
+    # `prev == cur` check anyway.
+    for _ in range(8):
+        if prev == cur:
+            break
+        prev = cur
+        cur = inner_or_trailing.sub('', cur)
+        cur = leading_with_more.sub(r'\1', cur)
+        cur = leading_lonely.sub(r'\1', cur)
+    return cur
+
+
+def _parse_tool_arguments(raw: str, *, fix_qwen3: bool = False) -> dict:
+    """Parse `tc.function.arguments` (a JSON-encoded string from the
+    OpenAI tool-call protocol) into a dict.
+
+    Returns `{}` on unrecoverable malformed input — preserves the
+    existing fallback contract `agent.py` had inline. When
+    `fix_qwen3=True`, an interim `_repair_truncated_json` pass is
+    tried on JSONDecodeError; if it produces a parseable dict, we
+    use that and the original empty-fallback never fires.
+
+    This helper centralises what was previously a `try: json.loads /
+    except: args = {}` snippet repeated all over `agent.py` — see
+    the grep at orchestra/agent.py:992 for the original site. New
+    parse failures should add coverage here, not at the call site.
+    """
+    s = raw or "{}"
+    try:
+        result = json.loads(s)
+    except json.JSONDecodeError:
+        if not fix_qwen3:
+            return {}
+        repaired = _repair_truncated_json(s)
+        if repaired == s:
+            return {}
+        try:
+            result = json.loads(repaired)
+        except json.JSONDecodeError:
+            return {}
+    # Tool args MUST be a JSON object — arrays / scalars at the root
+    # are ill-formed for our tool protocol, so coerce to `{}` to keep
+    # the dispatcher's contract (it does `handler(**args)`).
+    return result if isinstance(result, dict) else {}
 
 
 def _repair_stringified_args(args: dict, schema: dict) -> Optional[dict]:

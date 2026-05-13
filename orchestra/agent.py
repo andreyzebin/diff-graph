@@ -988,10 +988,17 @@ class Agent:
         Tool not in the fixture → real dispatch (partial mocking).
         """
         name = tc.function.name
-        try:
-            args = json.loads(tc.function.arguments or "{}")
-        except json.JSONDecodeError:
-            args = {}
+        # Use the centralised parser so the qwen3 truncated-JSON
+        # repair (`"key": }` / `"key": ,` pairs) runs when the
+        # registry's `fix_qwen3_stringification_bug` flag is set.
+        # Same flag covers both qwen3 failure modes — stringified
+        # nested args (caught later in dispatch) and pre-parse JSON
+        # corruption (caught here). See orchestra/tools/registry.py.
+        from orchestra.tools.registry import _parse_tool_arguments
+        args = _parse_tool_arguments(
+            tc.function.arguments,
+            fix_qwen3=self.registry.fix_qwen3_stringification_bug,
+        )
 
         # ── Mock interception (Mockito-style, ordinal) ────────────────────
         if self.tool_mocks is not None and self.tool_mocks.has(name):
