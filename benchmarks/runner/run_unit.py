@@ -388,11 +388,24 @@ def run_unit_fixture(
         os.close(snk_fd)
         env["DIFFGRAPH_FAKE_PR_FILE"] = fake_pr_path
         env["DIFFGRAPH_FAKE_PR_SINK"] = sink_path
+        # Jira is OFF by default for unit scenarios. read_ticket is in
+        # the reviewer / investigator BASE toolset, but a scenario
+        # that isn't about Jira must never make a real tracker call —
+        # and the worker's env carries JIRA_TOKEN. So: drop JIRA_TOKEN
+        # from the subprocess env unconditionally (a unit run can't
+        # reach a live Jira), then either point read_ticket at a
+        # fixture or flip the disabled toggle. A scenario opts IN to
+        # Jira by declaring `jira_fixture:` — that one field is the
+        # whole override; everything else gets `_disabled`.
+        env.pop("JIRA_TOKEN", None)
         if fixture.jira_fixture:
             # Fake JiraProvider data source — read_ticket serves this
             # fixture instead of hitting a live Jira (fake-bitbucket
             # pattern, same class, env-switched source).
             env["DIFFGRAPH_JIRA_FIXTURE"] = fixture.jira_fixture
+            env.pop("DIFFGRAPH_JIRA_DISABLED", None)
+        else:
+            env["DIFFGRAPH_JIRA_DISABLED"] = "1"
         if agent_dir is not None:
             # cli.py reads DIFFGRAPH_TRACE_PATH and routes both OTel
             # filesystem and SQLite trace inserts under it. We hand

@@ -311,13 +311,6 @@ class TestWriteSide:
         fake.resolve_pr_comment("x", comment_id=7)
         assert fake.sink_records[-1] == {"kind": "resolve", "comment_id": 7}
 
-    def test_react_to_pr_comment_records(self):
-        fake = bf.FakeBitbucket({})
-        fake.react_to_pr_comment("x", comment_id=7, emoticon=":+1:")
-        assert fake.sink_records[-1] == {
-            "kind": "react", "comment_id": 7, "emoticon": ":+1:"
-        }
-
     def test_set_review_status_records(self):
         fake = bf.FakeBitbucket({})
         fake.set_review_status("x", user_slug="bot", status="NEEDS_WORK")
@@ -368,7 +361,7 @@ class TestWriteSideFileSink:
         sink_file = tmp_path / "sink.jsonl"
         fake = bf.FakeBitbucket({}, sink_path=str(sink_file))
         fake.post_pr_comment("x", text="a")
-        fake.react_to_pr_comment("x", comment_id=1, emoticon=":+1:")
+        fake.set_review_status("x", user_slug="bot", status="NEEDS_WORK")
         # File sink runs IN ADDITION to in-memory sink_records — both
         # populated so a test can pick whichever is easier to assert on.
         assert len(fake.sink_records) == 2
@@ -376,7 +369,7 @@ class TestWriteSideFileSink:
         assert len(lines) == 2
         recs = [json.loads(l) for l in lines]
         assert recs[0]["kind"] == "post_comment"
-        assert recs[1]["kind"] == "react"
+        assert recs[1]["kind"] == "set_status"
 
     def test_file_sink_failure_does_not_crash_agent(self, tmp_path):
         """If the sink file becomes unwritable mid-run, the agent

@@ -25,7 +25,7 @@ The payload shape is identical in both modes::
       "self_user":   "diffgraph-bot"            # whoever the agent posts as
     }
 
-Write-side calls (`post_pr_comment`, `react_to_pr_comment`, …) append
+Write-side calls (`post_pr_comment`, `set_review_status`, …) append
 records to the configured sink — either a JSONL file path (subprocess
 mode, the runner reads it back) or a Python list (in-process mode, the
 test reads `instance.sink_records`).
@@ -262,14 +262,6 @@ class FakeBitbucket:
             except Exception:
                 pass
         return posted
-
-    def react_to_pr_comment(
-        self, pr_url: str, comment_id: int, emoticon: str,
-        token: Optional[str] = None, ca_bundle: Optional[str] = None,
-        client_cert: Optional[str] = None,
-    ) -> None:
-        self._record({"kind": "react", "comment_id": int(comment_id),
-                      "emoticon": emoticon})
 
     def set_review_status(
         self, pr_url: str, user_slug: str, status: str,
@@ -528,13 +520,6 @@ def post_review_comments(pr_url, comments,
                                             on_status=on_status,
                                             changed_lines=changed_lines,
                                             decorate=decorate)
-
-
-def react_to_pr_comment(pr_url, comment_id, emoticon,
-                        token=None, ca_bundle=None, client_cert=None):
-    return _instance().react_to_pr_comment(pr_url, comment_id, emoticon,
-                                           token=token, ca_bundle=ca_bundle,
-                                           client_cert=client_cert)
 
 
 def set_review_status(pr_url, user_slug, status,

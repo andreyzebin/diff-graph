@@ -11,7 +11,6 @@ tools:
   - read_thread
   - read_comment
   - post_comment
-  - react_to_comment
   - list_agents
   - spawn_agent
   - done

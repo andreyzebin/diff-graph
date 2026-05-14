@@ -1,0 +1,78 @@
+id: INV-U-004-jira-no-access
+agent: investigator
+tags: [tier:unit, agent:investigator, isolation, jira, resilience, tool-mock]
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmarks.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# Sibling of INV-U-003. Same branch, same focus, same resilience
+# bar — the only difference is the degraded reply read_ticket comes
+# back with. Here Jira is reachable but the SPECIFIC ticket isn't:
+# a 404 (deleted) or 403 (the bot account lacks permission), which
+# the real JiraProvider surfaces via the `_not_viewable` sentinel +
+# format_ticket as the `[ticket KEY] could not be read …` one-liner.
+# The jira-no-access.yaml mock reproduces exactly that string. The
+# investigator must absorb it and still land the core concern from
+# the diff — same as INV-U-003, different failure flavour.
+
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: hotfix/ORD-287-cancel-npe
+
+# read_ticket → the sticky "ticket could not be read — deleted or no
+# permission" reply on every call (bench-side fixture; mirrors the
+# real _not_viewable / format_ticket output shape).
+mocks: ../../../fixtures/mocks/jira-no-access.yaml
+
+agent_data:
+  # Same focus as INV-U-003 — does not telegraph the root cause or
+  # fix location; points at the ticket so read_ticket gets exercised
+  # and meets the not-viewable reply.
+  focus: |
+    OrderService.cancelOrder() was hitting a NullPointerException on
+    `order.getItems()`. The hotfix in this diff wraps that loop in
+    `if (order.getItems() != null)`. Investigate whether this is the
+    right place and shape of fix, and whether the underlying cause is
+    properly understood.
+
+    The PR is associated with Jira ticket ORD-287 — read it
+    (read_ticket) for the acceptance criteria and incident context
+    before forming your assessment.
+
+# ── Judge (investigator resilience) ──────────────────────────────────────
+# Same contract as INV-U-003: assert_via: intended_findings, the bar
+# is resilience not depth. read_ticket came back "ticket not viewable
+# — deleted or no permission"; the investigator must STILL land the
+# core concern from the diff (the null guard on @OneToMany hides a
+# mapping / construction problem — provable from the code alone). The
+# forbidden rule guards against turning the tool's failure into a
+# review finding.
+expected_output:
+  assert_via: [intended_findings]
+  required_comments:
+    - id: null-guard-concern
+      type: inline
+      severity: major
+      description_keywords: ["null guard", "@OneToMany", "Hibernate", "root cause", "mapping", "upstream", "never null"]
+      rationale: "The diff alone is enough to surface the core concern — the null guard on @OneToMany hides a mapping/construction problem. The investigator must reach this from the code even though its read_ticket call came back not-viewable."
+  forbidden_comments:
+    - description: "A 'finding' that just reports the Jira ticket being unreachable / deleted / permission-denied — that's a tool state, not a code-review finding. The investigator should absorb the not-viewable reply silently and work from the diff."
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+  thresholds:
+    min_score: 0.5
+    min_required_found: 1
+    max_false_positives: 1
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [investigator, jira_resilience, tool_mock_resilience, root_cause]

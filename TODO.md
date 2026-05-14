@@ -254,40 +254,21 @@ Coverage added in `tests/test_diff_tool_schemas.py`
 (`TestDiffListFilesChangesOnly` + `TestDiffListFilesPagination`)
 and `diffsearch/tests/test_list_outline.py` (`TestChangesOnly`).
 
-### ~~3.5 `react_to_comment` on Bitbucket Server — fixed via graceful 404~~
+### ~~3.5 `react_to_comment` — removed entirely~~
 
-Diagnosed: Bitbucket Server does **not** expose a public reactions
-REST endpoint. Calls to `/rest/api/1.0/.../comments/<id>/reactions/
-<emoticon>` return 404 across the SBLOOM instance (confirmed via
-direct invocation 2026-05-12 on PR 80). The feature exists in the
-UI on Data Center 8.x+ but is not in the documented REST API.
-
-Fixed in three places so the failure mode is loud but not fatal:
-
-- `bitbucket.react_to_pr_comment` catches `HTTPError(code=404)`
-  specifically and re-raises as a new
-  `ReactionsUnsupportedError(RuntimeError)` subclass with an
-  actionable message pointing at `post_comment(parent_id=...)`.
-- `orchestra_tools.react_to_comment` translates that exception into
-  a structured `{"status": "unsupported", "hint": "...", ...}`
-  result. Non-404 errors still surface as `{"status": "error"}` so
-  generic transport blips aren't silently misclassified.
-- `reviewer.user.md` drops `react_to_comment` from `tools_add`
-  entirely for production. The companion staleness rule (timestamps
-  on every read_thread / list_threads header) gives reviewer a
-  concrete way to use `post_comment(parent_id=...)` for both
-  agree-with-existing-finding and refute-existing-finding paths —
-  emoji reactions would have been a thinner signal anyway.
-
-Coverage: `tests/test_react_unsupported.py` (4 tests) pins the 404→
-unsupported translation and confirms non-404 errors still get the
-generic `error` status.
-
-If we ever need reactions on Cloud (Bitbucket Cloud DOES expose a
-reactions API), re-add `react_to_comment` to the user-layer
-`tools_add` for that environment specifically — the framework code
-stays as-is, the prompt-level extension surface lets us turn it on
-without touching the registry.
+Bitbucket Server has no public reactions REST endpoint (404 on
+`/rest/api/1.0/.../comments/<id>/reactions/<emoticon>` across the
+SBLOOM instance; the feature is UI-only on Data Center 8.x+). The
+tool was first kept with a graceful-404 path, then removed
+outright — the whole stack is gone: the `react_to_comment` orchestra
+tool, `bitbucket.react_to_pr_comment` + `ReactionsUnsupportedError`,
+the fake/api provider methods, the `tools` / `tools_add` entries in
+the dispatcher + reviewer prompts, and `tests/test_react_unsupported.py`.
+Agents acknowledge / follow up on existing threads with
+`post_comment(parent_id=...)` — a thread reply is a richer signal
+than an emoji anyway. If reactions are ever needed on Bitbucket
+Cloud (which does expose the API), re-add as a prompt-layer
+`tools_add` extension for that environment specifically.
 
 ---
 

@@ -349,3 +349,57 @@ class TestJiraDisabledToggle:
         }
         assert len(seen) == 1                       # same reply every call
         assert "proceed with the PR diff" in seen.pop()
+
+
+# ── Provider-level disabled toggle (DIFFGRAPH_JIRA_DISABLED) ─────────
+
+class TestProviderDisabledToggle:
+    """The provider's own `disabled` switch — distinct from the
+    ToolMocks fixture above. read_ticket is in the reviewer /
+    investigator BASE toolset, so a scenario that isn't about Jira
+    would still let the agent reach for a live tracker (the worker
+    env carries JIRA_TOKEN). The bench's run_unit sets
+    DIFFGRAPH_JIRA_DISABLED=1 for every unit scenario that doesn't
+    opt in with a `jira_fixture:` — so "Jira off" is the default and
+    a scenario opts IN, not out."""
+
+    def test_disabled_flag_short_circuits_to_sentinel(self, monkeypatch):
+        monkeypatch.delenv("DIFFGRAPH_JIRA_DISABLED", raising=False)
+        p = JiraProvider(token="pat-xxxxx", disabled=True)
+        assert p.configured is False              # disabled ⇒ not configured
+        tc = p.fetch_ticket("DEMO-1")
+        assert tc.configured is False
+        assert tc.key == "DEMO-1"
+        assert "disabled" in tc.note.lower()
+        assert tc.comments == [] and tc.links == []
+
+    def test_env_var_drives_disabled(self, monkeypatch):
+        monkeypatch.setenv("DIFFGRAPH_JIRA_DISABLED", "1")
+        monkeypatch.setenv("JIRA_TOKEN", "pat-xxxxx")
+        p = JiraProvider()
+        assert p.disabled is True
+        assert p.configured is False
+        assert "disabled" in p.fetch_ticket("DEMO-2").note.lower()
+
+    def test_disabled_wins_over_token_and_fixture(self, monkeypatch):
+        """Disabled is absolute — it beats both a token AND a fixture
+        path. fetch_ticket must NOT read the fixture file when the
+        provider is disabled."""
+        monkeypatch.delenv("DIFFGRAPH_JIRA_DISABLED", raising=False)
+        p = JiraProvider(
+            token="pat-xxxxx",
+            fixture_path="/nonexistent/would-raise-if-read.json",
+            disabled=True,
+        )
+        # If `disabled` didn't win, fixture mode would FileNotFoundError.
+        tc = p.fetch_ticket("DEMO-3")
+        assert tc.configured is False
+        assert "disabled" in tc.note.lower()
+
+    def test_format_ticket_renders_disabled_note_as_one_liner(self, monkeypatch):
+        monkeypatch.delenv("DIFFGRAPH_JIRA_DISABLED", raising=False)
+        tc = JiraProvider(disabled=True).fetch_ticket("DEMO-4")
+        out = format_ticket(tc)
+        assert out.startswith("[ticket DEMO-4]")
+        assert "disabled" in out.lower()
+        assert "TICKET DEMO-4" not in out          # not the full-render path

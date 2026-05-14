@@ -589,65 +589,6 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         return {"status": "posted", "comment_id": cid, "mode": mode}
 
     @registry.register(
-        name="react_to_comment",
-        description=(
-            "Add a reaction emoji to an existing PR comment. The agent's "
-            "lightweight way to acknowledge a thread without writing a "
-            "reply: thumbs_up for 'addressed / agree', thumbs_down for "
-            "'still not OK', eyes for 'looking into this', tada for "
-            "'fixed nicely', etc. Use this in place of a verbal 'resolved' "
-            "reply when the diff already speaks for itself."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "comment_id": {"type": "integer"},
-                "emoticon": {
-                    "type": "string",
-                    "description": (
-                        "Reaction name without colons. Common values: "
-                        "thumbs_up, thumbs_down, heart, smile, tada, "
-                        "confused, eyes, rocket."
-                    ),
-                },
-            },
-            "required": ["comment_id", "emoticon"],
-        },
-    )
-    def react_to_comment_tool(comment_id: int = 0, emoticon: str = "") -> dict:
-        pr_url = getattr(ctx, "_pr_url", "") or ""
-        if not pr_url:
-            return {"status": "skipped",
-                    "message": "no pr_url on ctx; running locally — reaction not posted"}
-        if not comment_id:
-            return {"status": "error", "message": "comment_id is required"}
-        from diffgraph.bitbucket import (
-            react_to_pr_comment,
-            ReactionsUnsupportedError,
-        )
-        try:
-            react_to_pr_comment(pr_url, int(comment_id), emoticon)
-            return {"status": "posted",
-                    "comment_id": int(comment_id),
-                    "emoticon": emoticon.strip().strip(":")}
-        except ReactionsUnsupportedError as exc:
-            # Bitbucket Server: no public reactions API. Tell the
-            # agent to use a textual reply instead of an emoji —
-            # status "unsupported" so the agent doesn't retry with a
-            # different emoticon hoping it'll succeed.
-            return {
-                "status": "unsupported",
-                "comment_id": int(comment_id),
-                "message": str(exc),
-                "hint": (
-                    "Use post_comment(parent_id=<comment_id>, text=...) "
-                    "to leave a reply instead of a reaction."
-                ),
-            }
-        except Exception as exc:
-            return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
-
-    @registry.register(
         name="set_review_status",
         description=(
             "Set the agent's overall verdict on the PR. Use APPROVED when no "

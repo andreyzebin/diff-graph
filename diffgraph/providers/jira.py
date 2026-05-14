@@ -183,6 +183,22 @@ def _not_configured(key: str) -> TicketContext:
     )
 
 
+def _disabled(key: str) -> TicketContext:
+    """Jira deliberately switched OFF for this run — the operator
+    toggle (DIFFGRAPH_JIRA_DISABLED), distinct from "never set up".
+    The bench sets this for every unit scenario that doesn't opt in
+    with a `jira_fixture:`, so `read_ticket` being in the
+    reviewer/investigator base toolset never makes a scenario reach
+    for a live Jira. Same shape of outcome as the other sentinels:
+    a one-line note, carry on with the diff."""
+    return TicketContext(
+        key=key, summary="", issue_type="", status="", description="",
+        configured=False,
+        note="Jira integration is disabled for this run — proceeding "
+             "with the diff + PR description alone.",
+    )
+
+
 def _not_viewable(key: str, exc: Exception) -> TicketContext:
     """Jira IS configured, but THIS ticket couldn't be read — a 404
     (deleted / never existed) or a 403 (the bot account lacks
@@ -267,6 +283,7 @@ class JiraProvider:
         ca_bundle: str = "",
         client_cert: str = "",
         fixture_path: str = "",
+        disabled: bool = False,
     ):
         self.url = url or os.environ.get("JIRA_URL", "") or DEFAULT_JIRA_URL
         self.token = token or os.environ.get("JIRA_TOKEN", "")
@@ -285,12 +302,23 @@ class JiraProvider:
         self.fixture_path = fixture_path or os.environ.get(
             "DIFFGRAPH_JIRA_FIXTURE", ""
         )
+        # Operator toggle — DIFFGRAPH_JIRA_DISABLED forces every
+        # read_ticket to the `_disabled` sentinel regardless of token
+        # / fixture. The bench sets it for unit scenarios that don't
+        # opt into Jira; it also stands alone as a "Jira off" switch.
+        self.disabled = disabled or bool(
+            os.environ.get("DIFFGRAPH_JIRA_DISABLED", "")
+        )
         self._client = None
 
     @property
     def configured(self) -> bool:
-        # A fixture counts as "configured" — it IS the data source
-        # for the fake path, no token needed.
+        # Disabled wins — an off provider is not "configured" no
+        # matter what token/fixture is around. Otherwise a fixture
+        # counts as configured (it IS the fake-path data source, no
+        # token needed).
+        if self.disabled:
+            return False
         return bool(self.token) or bool(self.fixture_path)
 
     def _jira(self):
@@ -326,19 +354,22 @@ class JiraProvider:
 
     def fetch_ticket(self, key: str) -> TicketContext:
         """`fetch_ticket_raw` + `distill_ticket`, with graceful
-        degradation at three levels:
+        degradation at four levels:
 
-          - no token / no fixture        → `_not_configured` sentinel
-          - fixture mode, any error      → propagates (a broken test
-                                           fixture must fail loud)
-          - network mode, any error      → `_not_viewable` sentinel
-                                           (404 deleted / 403 no
-                                           permission / timeout / …)
+          - disabled (operator toggle)    → `_disabled` sentinel
+          - no token / no fixture         → `_not_configured` sentinel
+          - fixture mode, any error       → propagates (a broken test
+                                            fixture must fail loud)
+          - network mode, any error       → `_not_viewable` sentinel
+                                            (404 deleted / 403 no
+                                            permission / timeout / …)
 
         The network-mode catch is what keeps the reviewer stable when
         Jira says "you can't view this issue": a deleted or
         permission-locked ticket is a normal per-PR condition, not a
         crash — the agent gets a clean note and proceeds on the diff."""
+        if self.disabled:
+            return _disabled(key)
         if not self.configured:
             return _not_configured(key)
         if self.fixture_path:

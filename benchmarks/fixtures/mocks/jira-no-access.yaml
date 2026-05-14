@@ -1,0 +1,16 @@
+# Unit-tier mock — simulates Jira reachable but the SPECIFIC ticket
+# unviewable: a 404 (deleted / never existed) or a 403 (the bot
+# account lacks permission). The sticky reply mirrors what the real
+# JiraProvider produces for this case — `format_ticket(_not_viewable(...))`
+# emits exactly this `[ticket KEY] …` one-liner — so the scenario
+# exercises the agent's "ticket gone, carry on with the diff" path
+# without needing a live Jira to actually 404.
+#
+# Distinct from orchestra/fixtures/mocks/disable-jira.yaml:
+#   disable-jira      = operator opt-out ("integration is off")
+#   jira-no-access    = a real per-ticket failure ("this issue is
+#                       gone / you can't see it")
+# Both end the same way for the agent — a one-line note, then work
+# from the diff — which is the point of the resilience scenarios.
+
+read_ticket: "[ticket ORD-287] Ticket ORD-287 could not be read — it may have been deleted, or this account lacks permission to view it (HTTPError). Proceeding with the diff + PR description alone."

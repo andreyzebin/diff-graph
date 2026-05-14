@@ -99,7 +99,6 @@ _SYSTEM_FOR: dict[str, str] = {
     "read_thread":       "bitbucket",
     "read_comment":      "bitbucket",
     "post_comment":      "bitbucket",
-    "react_to_comment":  "bitbucket",
     "set_review_status": "bitbucket",
     # Control-flow primitives don't route through a system lane:
     #   spawn_agent       → agent_spawn event (parent → child)

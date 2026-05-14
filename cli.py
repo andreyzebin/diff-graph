@@ -561,12 +561,12 @@ def _run_with_dispatcher(
     if findings:
         _print_findings(findings)
 
-    # Agents publish on the fly via post_comment / set_review_status /
-    # react_to_comment tools. The runner no longer bulk-publishes
-    # findings from done() — that path was deprecated and removed
-    # ("agents only post via tools"). Replies + review status still
-    # go through _publish_to_pr because some flows queue them in
-    # review_ctx for end-of-run delivery.
+    # Agents publish on the fly via post_comment / set_review_status
+    # tools. The runner no longer bulk-publishes findings from done()
+    # — that path was deprecated and removed ("agents only post via
+    # tools"). Replies + review status still go through
+    # _publish_to_pr because some flows queue them in review_ctx for
+    # end-of-run delivery.
     meta = _early_meta
     author_prefix = ctx._author_prefix
     _publish_to_pr(
@@ -1471,11 +1471,10 @@ def _publish_to_pr(
 ) -> None:
     """End-of-run helper: queued replies + review-status verdict.
 
-    Findings, inline comments and reactions all flow through the
-    agents' tools (post_comment, react_to_comment) on the fly —
-    runner-side bulk publish was deprecated. This helper now only
-    drains comment_replies (queued by some flows) and applies the
-    final review_status if set.
+    Findings and inline comments flow through the agents' tools
+    (post_comment) on the fly — runner-side bulk publish was
+    deprecated. This helper now only drains comment_replies (queued
+    by some flows) and applies the final review_status if set.
     """
     if not pr_url:
         return
@@ -1499,8 +1498,8 @@ def _publish_to_pr(
             console.print(f"  [yellow]reply #{reply['comment_id']} failed: {exc}[/yellow]")
 
     # resolve_comment was removed: target Bitbucket doesn't expose the
-    # resolve operation we'd need. Light-touch resolution UX is handled
-    # by the agent's react_to_comment tool (thumbs_up = addressed).
+    # resolve operation we'd need. Agents acknowledge / follow up on
+    # existing threads with post_comment(parent_id=...) instead.
 
     if review_status:
         mode = (verdict_mode or "api").strip().lower()

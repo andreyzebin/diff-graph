@@ -170,16 +170,6 @@ class BitbucketAPI(Protocol):
     ) -> int: ...
 
     @staticmethod
-    def react_to_pr_comment(
-        pr_url: str,
-        comment_id: int,
-        emoticon: str,
-        token: Optional[str] = None,
-        ca_bundle: Optional[str] = None,
-        client_cert: Optional[str] = None,
-    ) -> None: ...
-
-    @staticmethod
     def set_review_status(
         pr_url: str,
         user_slug: str,

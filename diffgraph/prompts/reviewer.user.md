@@ -7,10 +7,6 @@ tools_add:
   - spawn_agent
   - post_comment
   - set_review_status
-  # NB: react_to_comment intentionally omitted — Bitbucket Server
-  # doesn't expose a public reactions REST endpoint (returns 404),
-  # so reactions silently fail. Use post_comment(parent_id=...) for
-  # both "agree" replies and "disagree" follow-ups.
 
 # Interface contract — Bitbucket-PR data the reviewer receives
 # from its parent (dispatcher) at spawn time.

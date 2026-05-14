@@ -4,7 +4,6 @@
 # reviewer's base surface (reviewer.system.md); tools_add here is
 # the publishing surface.
 tools_add:
-  - react_to_comment
   - post_comment
   - set_review_status
 

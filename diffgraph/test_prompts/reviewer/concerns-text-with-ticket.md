@@ -1,16 +1,13 @@
 ---
 # Ticket-backed concerns variant of concerns-text.md. Same
-# concerns-text deliverable channel, but the reviewer also has
-# `read_ticket` and is told the PR's associated Jira ticket(s) —
-# so it can ground concerns in the ticket's acceptance criteria
-# instead of guessing intent from the diff alone.
-#
-# `read_ticket` lives here at the USER level, scoped to this test
-# scenario only — production reviewer.user.md is untouched until
-# the feature is proven out (TODO §5b Phase 1).
+# concerns-text deliverable channel; `read_ticket` is in the
+# reviewer's base surface (reviewer.system.md), so tools_add here
+# only carries the text_answer capture tool. The prompt body below
+# tells the reviewer the PR's associated Jira ticket(s) and nudges
+# it to ground concerns in the ticket's acceptance criteria rather
+# than guessing intent from the diff alone.
 tools_add:
   - text_answer
-  - read_ticket
 extra_tools:
   - name: text_answer
     description: "Submit your final concerns list. Call once at the end with the full list as `text`. The agent's only deliverable channel for this task."

@@ -8,6 +8,11 @@ summary: >
 
 # Reading + thinking + finishing. Investigator never posts (reviewer
 # publishes) and never spawns — findings flow back via done().
+# read_ticket is base surface here for the same reason thread
+# reading is: it gathers INPUT context (the diff, the threads, the
+# Jira ticket the PR claims to fix) — not an acting-on-outputs tool.
+# An investigator handed a focus that references a ticket should be
+# able to read it for the acceptance criteria.
 tools:
   - diff_list_files
   - diff_read_file
@@ -16,6 +21,7 @@ tools:
   - list_threads
   - read_thread
   - read_comment
+  - read_ticket
   - reflect
   - done
 

@@ -6,16 +6,22 @@ summary: >
   to diff size, spawns focused investigators, consolidates findings.
   Three-phase methodology: analyze, investigate (one round), judge.
 
-# Base surface: everything a reviewer needs to GATHER input —
-# read the diff AND read the existing thread graph — plus
-# reflect/done. Thread reading is foundational, not implementation-
-# specific: every reviewer task wants to know what's already been
-# discussed. What VARIES per task is how the reviewer ACTS on what
-# it found — whether it delegates (spawn_agent), where/how it
-# replies (post_comment), whether it sets a verdict
-# (set_review_status). Those acting-on-outputs tools opt in
-# per-task via the user message's `tools_add:` — see
-# reviewer.user.md for the production set.
+# Base surface: everything a reviewer needs to GATHER input — read
+# the diff, read the existing thread graph, read the Jira ticket the
+# PR claims to fix — plus reflect/done. Input gathering is
+# foundational, not implementation-specific: every reviewer task
+# wants the diff, what's already been discussed, and the ticket's
+# acceptance criteria. What VARIES per task is how the reviewer ACTS
+# on what it found — whether it delegates (spawn_agent), where/how
+# it replies (post_comment), whether it sets a verdict
+# (set_review_status). Those acting-on-outputs tools opt in per-task
+# via the user message's `tools_add:` — see reviewer.user.md for the
+# production set.
+#
+# read_ticket degrades gracefully when Jira is off / unconfigured /
+# the ticket is unviewable — a one-line note, then the reviewer
+# works from the diff. Unit scenarios get Jira disabled by default
+# (run_unit) unless they declare a `jira_fixture:`.
 tools:
   - diff_read_file
   - diff_outline
@@ -24,6 +30,7 @@ tools:
   - list_threads
   - read_thread
   - read_comment
+  - read_ticket
   - reflect
   - done
 
