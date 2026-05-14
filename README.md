@@ -20,6 +20,7 @@ Multi-agent PR code reviewer powered by the **Orchestra** framework. All agents 
 - [Running as systemd services on RHEL](#running-as-systemd-services-on-rhel)
 - [Docker](docker/README.md)
 - [Webhook router & health checks](webhook/README.md)
+- [Benchmark — scenarios & judge](benchmarks/README.md) — the in-repo `benchmarks/` subtree (was `code-review-benchmarks`)
 - [Quality management architecture](docs/qa-architecture.md) — how bench (unit + integration tiers) and pr-analytics (merge_acceptance_rate) form a closed improvement loop
 
 ### Three commands, three roles
@@ -80,9 +81,16 @@ cp .env.example .env
 # edit .env -- fill in API keys
 source .env
 
+cp .llm_creds.toml.example .llm_creds.toml
+# edit .llm_creds.toml -- declare LLM provider profiles (gitignored)
+
 cp config.yaml config.local.yaml
 # edit config.local.yaml -- set api_url and model if not using OpenAI
 ```
+
+`.llm_creds.toml` at the repo root is the recommended local profiles
+file — it's gitignored and the loader picks it up automatically (it
+walks up from the cwd). See [LLM provider profiles](#llm-provider-profiles).
 
 Run against a Bitbucket Server PR:
 
@@ -248,7 +256,33 @@ python cli.py run --repo . --base HEAD~1
 
 ### LLM provider profiles
 
-Profiles live in `~/repos/.llm_creds.toml` (see `.llm_creds.toml.example`).
+LLM endpoints are declared as named **profiles** in a `.llm_creds.toml`
+file, selected per-run with `--provider <name>`.
+
+**Create your local, non-committed profiles file** — copy the tracked
+example to the repo root:
+
+```bash
+cp .llm_creds.toml.example .llm_creds.toml   # gitignored — never committed
+# then edit .llm_creds.toml with your endpoints
+```
+
+The loader (`diffgraph/llm_creds.py`) resolves the file in this order,
+first hit wins:
+
+1. `$LLM_CREDS_FILE` — explicit override
+2. `.llm_creds.toml` in the current dir, **walking up to the
+   filesystem root** — so a copy at the repo root is picked up
+   automatically whenever you run from inside the checkout
+3. `~/.llm_creds.toml`
+4. `~/repos/.llm_creds.toml`
+
+The in-repo copy (#2) is the recommended spot: it's gitignored, lives
+next to the code, and works for both the agent and the `benchmarks/`
+subtree without any env var. Secrets still don't live in the file —
+string values go through `${VAR}` env-var expansion at load time, so
+the actual keys stay in `.env`.
+
 Each section declares one endpoint and its quirks:
 
 ```toml
@@ -613,9 +647,23 @@ diffgraph/                   Code review domain
 diffsearch/                  Virtual unified diff filesystem
 webhook/                     Bitbucket webhook router with A/B routing
 tracing/                     Trace web server (FastAPI + Alpine.js)
+quality_api/                 QA orchestration — task queue, worker pools, discovery
+quality_cli/                 QA worker / search / tasks CLI
+benchmarks/                  Code-review agent benchmark — scenarios + judge
++-- cli.py                   run (integration) / run-unit / report / history
++-- runner/                  scenario loader, LLM judge, scorer, run / run_unit
++-- scenarios/               unit/ (isolation) + java/ + interaction/ (full pipeline)
++-- fixtures/                user-message overrides + ToolMocks fixtures
 evolution/                   Self-sustaining prompt development
 docker/                      Dockerfile + entrypoint
 ```
+
+`benchmarks/` was a separate repo (`code-review-benchmarks`) until the
+May-2026 monorepo merge — it's now a `git subtree` here. One checkout,
+one `.venv`, one `.env`; the QA server runs the bench from inside its
+own tree. See [`benchmarks/README.md`](benchmarks/README.md) for how to
+run scenarios and [`docs/qa-architecture.md`](docs/qa-architecture.md)
+for the full quality loop.
 
 ## Running as systemd services on RHEL
 
@@ -633,10 +681,12 @@ Clone the repo, create the venv, install deps, and fill in configs as usual:
 ```bash
 cd /opt/diffgraph                            # or wherever you checked out the repo
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements.txt    # includes the benchmarks/ subtree deps
 cp .env.example .env                         # edit: API keys, tokens, CA bundle
+cp .llm_creds.toml.example .llm_creds.toml   # edit: LLM provider profiles
 cp webhook/config.example.toml webhook.toml  # edit: routes, agents
 cp config.yaml config.local.yaml             # edit: LLM api_url / model
+cp benchmarks/config.yaml benchmarks/config.local.yaml  # edit: bench Bitbucket + judge
 ```
 
 `.env` with `export KEY=value` lines works as-is — the units source it via `bash -lc 'set -a && source .env && exec ...'`.

@@ -58,6 +58,12 @@ if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
     echo "         cp .env.example .env && edit it" >&2
 fi
 
+if [[ ! -f "${INSTALL_DIR}/benchmarks/config.local.yaml" ]]; then
+    echo "WARNING: ${INSTALL_DIR}/benchmarks/config.local.yaml not found — the trace" >&2
+    echo "         server's QA worker pool runs the in-repo bench and needs it" >&2
+    echo "         cp benchmarks/config.yaml benchmarks/config.local.yaml && edit it" >&2
+fi
+
 install_unit() {
     local template="$1"
     local name

@@ -10,8 +10,12 @@
 #   ./scripts/reload-services.sh webhook           # restart only webhook
 #   ./scripts/reload-services.sh trace             # restart only trace server
 #
-# After webhook.toml / config.local.yaml / .env edits, just run:
+# After webhook.toml / config.local.yaml / benchmarks/config.local.yaml /
+# .env edits, just run:
 #   ./scripts/reload-services.sh --no-pull --no-pip
+#
+# `pip install -r requirements.txt` covers the in-repo benchmarks/
+# subtree too — its deps are folded into the repo-root requirements.txt.
 
 set -euo pipefail
 

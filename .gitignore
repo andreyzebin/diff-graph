@@ -3,6 +3,7 @@
 graph.json
 config.local.yaml
 .env
+.llm_creds.toml
 __pycache__/
 *.pyc
 *.pyo

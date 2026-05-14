@@ -930,7 +930,7 @@ def history(limit: int = typer.Option(20, "--limit", "-n", help="Number of runs 
 def run_unit(
     fixture: str = typer.Argument(..., help="Path to a unit-fixture yaml (or to a directory containing scenario.yaml)"),
     provider: Optional[str] = typer.Option(None, "--provider", "-p",
-                                            help="Provider profile from ~/repos/.llm_creds.toml (e.g. deepseek)"),
+                                            help="Provider profile from .llm_creds.toml (repo root — gitignored; loader also checks $LLM_CREDS_FILE and ~/) — e.g. deepseek"),
     timeout: int = typer.Option(300, "--timeout", "-t", help="Hard timeout for cli.py subprocess (seconds)"),
     keep_tmp: bool = typer.Option(False, "--keep-tmp", help="Don't delete the temp clone on success — useful for debugging the diff view"),
     attempt_dir: Optional[str] = typer.Option(
