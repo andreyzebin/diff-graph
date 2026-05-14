@@ -1,5 +1,10 @@
 [Unit]
-Description=DiffGraph Trace Server
+# DiffGraph QA server: the FastAPI app in tracing/server. Serves the
+# QA UI + API (/qa/*, /api/qa/*), the per-run trace viewer (/, /runs/*),
+# AND runs the WorkerSupervisor that spawns bench-task workers. One
+# process, all of it — the trace viewer is just a subset of what this
+# serves, hence the rename from diffgraph-trace.
+Description=DiffGraph QA Server
 After=network-online.target
 Wants=network-online.target
 
@@ -19,7 +24,7 @@ TimeoutStopSec=30
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=diffgraph-trace
+SyslogIdentifier=diffgraph-qa
 
 [Install]
 WantedBy=multi-user.target

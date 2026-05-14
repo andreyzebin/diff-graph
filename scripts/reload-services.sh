@@ -8,7 +8,8 @@
 #   ./scripts/reload-services.sh --no-pull         # skip git pull (e.g. only config changed)
 #   ./scripts/reload-services.sh --no-pip          # skip pip install
 #   ./scripts/reload-services.sh webhook           # restart only webhook
-#   ./scripts/reload-services.sh trace             # restart only trace server
+#   ./scripts/reload-services.sh qa                # restart only the QA server
+#                                                  # ("trace" still accepted as an alias)
 #
 # After webhook.toml / config.local.yaml / benchmarks/config.local.yaml /
 # .env edits, just run:
@@ -32,9 +33,11 @@ for arg in "$@"; do
         --no-pull) PULL=0 ;;
         --no-pip)  PIP=0 ;;
         webhook)   TARGETS+=("diffgraph-webhook.service") ;;
-        trace)     TARGETS+=("diffgraph-trace.service") ;;
+        # diffgraph-trace.service was renamed to diffgraph-qa.service;
+        # `trace` stays as an alias so old muscle memory / scripts work.
+        qa|trace)  TARGETS+=("diffgraph-qa.service") ;;
         -h|--help)
-            sed -n '2,14p' "$0"
+            sed -n '2,16p' "$0"
             exit 0
             ;;
         *)
@@ -45,7 +48,7 @@ for arg in "$@"; do
 done
 
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
-    TARGETS=("diffgraph-webhook.service" "diffgraph-trace.service")
+    TARGETS=("diffgraph-webhook.service" "diffgraph-qa.service")
 fi
 
 if [[ "$PULL" -eq 1 ]]; then

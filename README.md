@@ -670,7 +670,7 @@ for the full quality loop.
 Two daemons ship with DiffGraph:
 
 - **Webhook router** — `python -m webhook --config webhook.toml` (default port `8000`)
-- **Trace server** — FastAPI UI over `~/.diffgraph/traces.db` (default port `8080`). Hosts both the per-run trace viewer (`/`, `/runs/{id}`) and the **Quality API** (`/qa/*`) for scheduled cross-mutation evaluation: configurable schedules with tag-filtered scenarios, plan/queue with worker-pool supervisor, per-mutation scoring (hard skill / soft skill / methodology), on-demand fire from `/qa/mutations`, plan cancel.
+- **QA server** (`diffgraph-qa.service`, was `diffgraph-trace`) — the FastAPI app in `tracing/server`, default port `8080`. One process serving three things: the per-run **trace viewer** (`/`, `/runs/{id}`), the **Quality API + UI** (`/qa/*`, `/api/qa/*`) for scheduled cross-mutation evaluation — configurable schedules with tag-filtered scenarios, plan/queue, per-mutation scoring (hard skill / soft skill / methodology), on-demand fire, plan cancel — and the **WorkerSupervisor** that spawns bench-task workers on demand. The trace viewer is just a subset of what it serves, hence the name.
 
 Systemd unit templates + install/reload helpers live under `scripts/`.
 
@@ -702,7 +702,7 @@ sudo INSTALL_USER=diffgraph ./scripts/install-services.sh
 The installer:
 
 1. Substitutes `__INSTALL_DIR__` / `__USER__` in the unit templates.
-2. Writes `diffgraph-webhook.service` and `diffgraph-trace.service` to `/etc/systemd/system/`.
+2. Writes `diffgraph-webhook.service` and `diffgraph-qa.service` to `/etc/systemd/system/`.
 3. `systemctl daemon-reload && systemctl enable --now` both units.
 
 Ports are overridable via `.env`: `export WEBHOOK_PORT=8000` / `export TRACE_PORT=8080`.
@@ -720,10 +720,10 @@ sudo firewall-cmd --reload
 ### Manage
 
 ```bash
-sudo systemctl status  diffgraph-webhook diffgraph-trace
-sudo systemctl restart diffgraph-webhook diffgraph-trace
-sudo systemctl stop    diffgraph-webhook diffgraph-trace
-sudo systemctl disable diffgraph-webhook diffgraph-trace   # stop auto-start on boot
+sudo systemctl status  diffgraph-webhook diffgraph-qa
+sudo systemctl restart diffgraph-webhook diffgraph-qa
+sudo systemctl stop    diffgraph-webhook diffgraph-qa
+sudo systemctl disable diffgraph-webhook diffgraph-qa   # stop auto-start on boot
 ```
 
 ### Logs
@@ -733,7 +733,7 @@ Both services log to the systemd journal under their `SyslogIdentifier`:
 ```bash
 # Follow live
 journalctl -u diffgraph-webhook -f
-journalctl -u diffgraph-trace -f
+journalctl -u diffgraph-qa -f
 
 # Last N lines
 journalctl -u diffgraph-webhook -n 200 --no-pager
@@ -746,7 +746,7 @@ journalctl -u diffgraph-webhook --since today
 journalctl -u diffgraph-webhook -p err
 
 # Both at once, live
-journalctl -u diffgraph-webhook -u diffgraph-trace -f
+journalctl -u diffgraph-webhook -u diffgraph-qa -f
 ```
 
 ### Reload after `git pull` or config change

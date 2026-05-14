@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Install DiffGraph systemd units (webhook + trace server) on RHEL/CentOS/Rocky/Alma.
+# Install DiffGraph systemd units (webhook + QA server) on RHEL/CentOS/Rocky/Alma.
 #
 # Usage:
 #   sudo ./scripts/install-services.sh                # install & enable both
@@ -80,18 +80,29 @@ install_unit() {
 
 echo "User=${INSTALL_USER}  Group=${INSTALL_GROUP}"
 
+# diffgraph-trace.service was renamed to diffgraph-qa.service. On hosts
+# that ran an older installer, tear the stale unit down before
+# installing the new one so systemd doesn't keep two copies of the
+# same process.
+OLD_TRACE_UNIT="${SYSTEMD_DIR}/diffgraph-trace.service"
+if [[ -f "$OLD_TRACE_UNIT" ]]; then
+    echo "Removing renamed-away unit: diffgraph-trace.service → diffgraph-qa.service"
+    systemctl disable --now diffgraph-trace.service 2>/dev/null || true
+    rm -f "$OLD_TRACE_UNIT"
+fi
+
 install_unit "${SCRIPT_DIR}/diffgraph-webhook.service"
-install_unit "${SCRIPT_DIR}/diffgraph-trace.service"
+install_unit "${SCRIPT_DIR}/diffgraph-qa.service"
 
 systemctl daemon-reload
 
 if [[ "$ENABLE" -eq 1 ]]; then
-    systemctl enable --now diffgraph-webhook.service diffgraph-trace.service
+    systemctl enable --now diffgraph-webhook.service diffgraph-qa.service
     echo
     echo "Services installed and started. Status:"
-    systemctl --no-pager status diffgraph-webhook.service diffgraph-trace.service || true
+    systemctl --no-pager status diffgraph-webhook.service diffgraph-qa.service || true
 else
     echo
     echo "Services installed (not started). Start manually:"
-    echo "  sudo systemctl enable --now diffgraph-webhook.service diffgraph-trace.service"
+    echo "  sudo systemctl enable --now diffgraph-webhook.service diffgraph-qa.service"
 fi
