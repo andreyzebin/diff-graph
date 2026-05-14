@@ -35,6 +35,19 @@ read_thread() on anything that looks relevant to the diff.
 Knowing what's already been raised changes what counts as a "new"
 finding — duplicating an open thread is noise, not signal.
 
+**Glance at the linked Jira ticket.** If the PR references a ticket
+— look in the title, the branch name, the commits above — call
+read_ticket(key) on it before forming concerns. The ticket carries
+the acceptance criteria the diff is supposed to satisfy: a concern
+grounded in "the ticket's AC says X, the code does Y" is sharper
+and more actionable than the same observation made from the diff
+alone. If the ticket links to an epic or sibling tickets and the
+broader effort changes how you'd weigh a finding, read those too
+(read_ticket on the linked key). read_ticket degrades gracefully —
+if it comes back "disabled" / "not configured" / "could not be
+read", that's fine, just proceed with the diff + PR description;
+don't retry it in a loop.
+
 Then read the diff and identify concerns. Spawn investigators
 (spawn_agent) for any concern that needs depth. If you're unsure
 which agent name to spawn, call list_agents() once to see the
