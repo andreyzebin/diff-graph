@@ -1,0 +1,29 @@
+# Unit-tier reviewer mock — combines two sticky entries for REV-U-006.
+#
+# 1) spawn_agent — sticky empty investigator output. The reviewer is
+#    isolated from real sub-agents (unit-tier convention); the
+#    investigator just returns "no findings" no matter how many times
+#    the reviewer spawns it.
+#
+# 2) set_review_status — the canonical disable-status fixture from
+#    diff-graph at:
+#       diff-graph/orchestra/fixtures/mocks/disable-review-status.yaml
+#    Copied here so the bench scenario's relative `mocks:` path
+#    resolves inside this repo. Keep the two strings in sync if you
+#    edit either side.
+#
+# Test purpose (see REV-U-006): the reviewer must complete its run
+# (post comments, call done) WITHOUT crashing on the sticky
+# set_review_status reply. The mock replaces the real handler so
+# the fake bench sink never observes a status change — that's
+# verifiable via side_effects.review_status_change in the scenario.
+
+spawn_agent:
+  - sticky: true
+    return:
+      output: "(no investigator findings — sub-agent disabled for unit-tier isolation)"
+      findings: []
+      confidence: low
+      learned: "(no-op)"
+
+set_review_status: "set_review_status is temporarily disabled — proceed without changing PR status; continue with your remaining work."

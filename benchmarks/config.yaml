@@ -1,0 +1,109 @@
+bitbucket:
+  connection:
+    base_url: "${BITBUCKET_URL}"
+    project: "${BITBUCKET_PROJECT}"
+    repo: "${BITBUCKET_REPO}"
+    agent_account: "${BITBUCKET_AGENT_ACCOUNT}"
+    auth:
+      env: BITBUCKET_TOKEN
+
+agent:
+  # trigger: how to activate the agent on each benchmark PR.
+  #
+  # http (default) — POST to base_url/review with the PR id.
+  #   Use when the agent exposes an HTTP endpoint.
+  #
+  # webhook — add agent_account as a reviewer on the PR, then wait
+  #   timeout_seconds.  Use when the agent is already wired to Bitbucket
+  #   via PR_REVIEWER_UPDATED webhooks and no direct HTTP call is needed.
+  #
+  # cli — run a local shell command and wait for it to exit.
+  #   Use when the agent is invoked via CLI (e.g. pr-agent, custom scripts).
+  #   The command is executed via the shell so source, pipes, etc. work.
+  #   Placeholders available in the command string:
+  #     {pr_url}    — full Bitbucket PR URL
+  #     {pr_id}     — integer PR ID
+  #     {provider}  — LLM provider profile name (only used with -p / --all-providers)
+  #   Example:
+  #     trigger: "cli"
+  #     command: 'source .env && python pr_agent/cli.py --pr_url="{pr_url}" improve --extended'
+  #     cwd: "/path/to/pr-agent"
+  #     timeout_seconds: 300
+  #     output: "stream"   # stream — single updating line / log — one line per output (default)
+  #   For LLM matrix runs, list provider profile names (from ~/repos/.llm_creds.toml):
+  #     providers:
+  #       - deepseek
+  #       - qwen3-6
+  #   Then run: cli.py run --all-providers   (or -p deepseek -p qwen3-6 ad-hoc)
+  trigger: "http"
+  base_url: "http://localhost:8080"   # used only when trigger=http
+  api_key: "${AGENT_API_KEY}"         # used only when trigger=http
+  timeout_seconds: 120                # http: request timeout / webhook: wait time / cli: process timeout
+
+  # ── Interaction scenarios (cli trigger only) ──────────────────────
+  # When a scenario triggers via a posted comment (e.g. /help, /ask),
+  # the runner posts the comment to Bitbucket and then invokes this
+  # second cli command with {message} and {comment_id} placeholders
+  # filled in. This drives the dispatcher path of cli.py — different
+  # from the default `command` which usually invokes the reviewer
+  # directly via --agent reviewer.
+  #
+  # Falls back to `command` if missing — but most agents can't tell
+  # /help from /review on a single command shape, so set it explicitly.
+  #
+  #   interaction_command: 'cd /path/to/agent && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id} --provider={provider}'
+  #
+  # If your interaction scenarios seed multi-author threads via [name]
+  # prefixes (see scenarios/interaction/SCEN-201, 203), pass diff-graph's
+  # --subject-pattern + --bot-user so the agent treats those prefixes as
+  # distinct authors at the rendering layer (single Bitbucket account
+  # is no obstacle):
+  #
+  #   interaction_command: '... cli.py run ... --bot-user=<bot-slug> --subject-pattern=''^\[(\w+)\]\s+'''
+  #
+  # Same flags also belong on the regular `command` for review scenarios
+  # whenever you want the agent's findings/replies tagged with its bot
+  # slug (e.g. for incremental-review scenarios that seed prior-round
+  # comments — without the prefix, the agent's own outputs come back
+  # indistinguishable from any other author on subsequent rounds).
+  #
+  #   command: '... cli.py run ... --agent reviewer --bot-user=<bot-slug> --subject-pattern=''^\[(\w+)\]\s+'''
+
+judge:
+  model: "claude-opus-4-6"
+  temperature: 0
+  prompt_template: "prompts/judge.txt"
+  output: "log"   # stream — single updating line while LLM generates / log — silent (default)
+  # Channel through which the agent surfaces its APPROVED/NEEDS_WORK verdict
+  # — part of the agent's output interface contract:
+  #   "api"      Bitbucket participants endpoint (production default).
+  #              Needs the bot to be a reviewer, not the PR author.
+  #   "comment"  scan the agent's general comments for a [verdict:STATUS]
+  #              marker. Bench-friendly when the bot opened the PR and
+  #              self-approve via API is blocked. Pair with the agent's
+  #              --verdict-mode=comment flag.
+  #   "both"     prefer the API value, fall back to the comment marker.
+  # verdict_source: "api"
+  # For any OpenAI-compatible endpoint (DeepSeek, Ollama, vLLM, OpenAI, etc.)
+  # If api_url is set, OpenAI-compatible client is used instead of Anthropic.
+  # api_url: "https://api.deepseek.com/v1"
+  # api_key: "${DEEPSEEK_API_KEY}"
+  # timeout: 600
+  #
+  # Vendor extensions for the OpenAI-compatible client. The judge does
+  # NOT use tool calls (just JSON output), so the Qwen3 tool-parser bug
+  # doesn't bite — but enable_thinking=false still helps avoid noisy
+  # <think>…</think> blocks polluting the judge's JSON.
+  # extra_body:
+  #   chat_template_kwargs:
+  #     enable_thinking: false
+
+results:
+  store_path: "results"
+  db_path: "results/benchmark.db"
+  keep_runs: 50
+  regression_threshold: 0.05
+
+report:
+  output_dir: "reports"
+  format: html

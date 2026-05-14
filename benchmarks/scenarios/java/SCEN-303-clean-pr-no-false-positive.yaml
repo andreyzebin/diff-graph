@@ -1,0 +1,59 @@
+id: SCEN-303
+name: "Clean PR — agent must NOT invent issues"
+tags: [java, false-positive-resistance, clean-pr, severity:none]
+
+# Branch in orderflow: `chore/javadoc-order-service` — pure documentation,
+# adds class- and method-level javadoc to OrderService. No signature,
+# behaviour, or transaction-boundary changes. Should be APPROVED.
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "chore/javadoc-order-service"
+      to_branch: "master"
+      title: "chore: Javadoc OrderService"
+      description: |
+        ## Docs: javadoc OrderService public methods
+
+        Adds class-level and per-method javadoc to OrderService — the
+        existing methods were undocumented even though they're called
+        from controllers. Pure documentation; no signature, behaviour,
+        or transaction-boundary changes.
+
+  trigger:
+    type: comment
+    text: "/review"
+
+expected_output:
+  required_comments: []
+
+  # Anything stronger than a COMMENT here is a false positive — the change
+  # is purely mechanical. Listing the specific shapes the agent should NOT
+  # invent so the judge can flag them precisely.
+  forbidden_comments:
+    - description: "Asking for tests of methods whose logic isn't being changed (this PR only adds javadoc)"
+    - description: "Style nits about javadoc wording, line length, or @param presence"
+    - description: "Suggesting code changes (refactors, extractions) on the documented methods — out of scope"
+    - description: "Pre-existing concerns rediscovered while reading the methods (the PR didn't touch them)"
+
+  expected_status_change: "APPROVED"
+  acknowledgement_required: true
+
+  thresholds:
+    # Pass when the agent posts NO findings of severity > COMMENT.
+    # Score should land near 1.0; the bench treats forbidden_comments hits
+    # as false positives that subtract.
+    min_score: 0.80
+    min_required_found: 0
+    max_false_positives: 1
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: tiny
+  scenario_type: false_positive_resistance
+  capabilities: [restraint, no_false_positives, approval_path]
+  status: "runnable"
+  author: "team"
+  created: "2026-05-05"

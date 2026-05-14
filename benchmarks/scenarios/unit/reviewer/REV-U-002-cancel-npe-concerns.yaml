@@ -1,0 +1,128 @@
+id: REV-U-002-cancel-npe-concerns
+agent: reviewer
+tags: [tier:unit, agent:reviewer, isolation, concerns-only]
+
+# Per-fixture worker cmd. {provider} is filled by the worker.
+# No tier-based dispatch in code — this yaml field is the single
+# source of truth for "how to run this fixture".
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmark.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# Reviewer in concerns-only mode against the cancel-NPE hotfix
+# (same PR that INV-U-001-cancel-npe investigates). Goal: capture
+# what concerns a free reviewer raises on this exact diff — so we
+# can compare them to the hand-written investigator focus and see
+# how the latter should actually look in the absence of leaks.
+#
+# IMPORTANT: nothing in this fixture (title, description, comments,
+# focus) may telegraph the verdict. The reviewer must form concerns
+# from the diff alone + AGENTS.md it discovers on its own.
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: hotfix/ORD-287-cancel-npe
+
+# Custom user-message — turns the reviewer into a one-shot
+# concerns-extractor: emit the concerns list as text via the
+# `text_answer` capture tool, done(empty). Same file REV-U-001 uses;
+# generic, no scenario-specific hints. text_answer (not reflect)
+# because deepseek runs with tool_choice=required → no tool-less turn.
+user_message_from: diffgraph:diffgraph/test_prompts/reviewer/concerns-text.md
+
+pr_state:
+  metadata:
+    # Title is the commit subject the author actually wrote — factual,
+    # describes the fix, doesn't pre-judge it.
+    # NB: do not spell out the fix shape ("adds a null guard") in
+    # the description — that telegraphs the very concern keyword
+    # the reviewer is graded on finding ("null guard"). Keep the
+    # description to OBSERVED behaviour only; the reviewer has to
+    # read the diff to know HOW the fix was implemented.
+    title: "ORD-287: Hotfix NPE in cancelOrder"
+    description: |
+      Production NPE observed inside `OrderService.cancelOrder()`
+      when iterating `order.getItems()`. Tiny hotfix — one method
+      touched.
+    pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/287"
+    bot_user: "diffgraph-bot"
+
+  # No existing threads — reviewer reads only the diff. Same as
+  # REV-U-001; later fixtures may add a thread graph to test
+  # incremental_awareness.
+  comments: []
+
+trigger:
+  type: comment
+  text: "/review"
+  comment_id: 0
+
+agent_data: {}
+
+# ── Judge (concerns-text reviewer) ───────────────────────────────────────
+# Hotfix wraps `order.getItems()` in `if (... != null)` before the
+# inventory-release loop. The fix is local and looks harmless — but
+# AGENTS.md explicitly bans null guards on @OneToMany fields:
+#
+#   "All collections returned from JPA relations are never `null` —
+#    Hibernate initialises them as empty. Do not add `!= null` guards
+#    on `@OneToMany` fields; doing so hides mapping errors."
+#
+#   "If a non-JPA path can construct or persist the entity (legacy
+#    importer, raw JDBC, native query mapping rows by hand), defend
+#    the invariant at the *entity* with `@PostLoad`/`@PrePersist`
+#    callbacks rather than scattering null guards through every
+#    consumer."
+#
+# So the reviewer must catch:
+#   • The null guard violates a documented JPA convention.
+#   • The null is a SYMPTOM of a broken upstream mapping or a non-JPA
+#     construction path — fixing at the consumer hides the real bug.
+#
+# This is a HARDER scenario than REV-U-001: the diff looks trivially
+# correct in isolation; only a project-aware reviewer who has read
+# AGENTS.md will catch it. Exactly the value statement we want to
+# measure — the difference between a generic Java reviewer and one
+# that integrates project conventions.
+#
+# NOTE: agent's diff_* tools use 3-dot (merge-base) diff = "what
+# this branch contributes since branching". Master commits that
+# landed AFTER hotfix branched (AGENTS.md tightening, gradle wrapper
+# addition, .gitignore) are NOT in the agent's diff view. Previous
+# versions of this fixture listed "agents-md-deletion" and
+# "scope-creep" (gradle/gitignore) concerns based on `git diff
+# master..hotfix` (2-dot), but those are structurally invisible to
+# the agent and were unfairly penalising correct reviewers. See
+# plan 217 run d433714500ea for the wild-type discussion.
+expected_output:
+  assert_via: [intended_text]
+  required_comments: []
+  forbidden_comments:
+    - description: "Inline comments — reviewer was told concerns-text; no posting allowed."
+  concern_focuses:
+    - id: agents-md-jpa-rule
+      description_keywords: ["AGENTS.md", "@OneToMany", "Hibernate", "null guard", "JPA", "convention", "initialises"]
+      rationale: "AGENTS.md states @OneToMany collections are never null under Hibernate — null guards hide mapping errors. Reviewer must connect the documented rule to this exact diff."
+    - id: symptom-vs-cause
+      description_keywords: ["symptom", "root cause", "mapping", "upstream", "hide", "real bug", "entity", "consumer"]
+      rationale: "The null is a symptom of a broken upstream mapping or a non-JPA constructor path. Fixing at the consumer (loop site) hides the cause. AGENTS.md's JPA rule (visible on this branch) says null on @OneToMany hides mapping errors — reviewer should generalise: fix the entity / upstream construction, not the consumer. Note: the @PostLoad/@PrePersist guidance was added to AGENTS.md on master AFTER the hotfix branched off, so it is NOT in the agent's view; keyword list reflects only what's actually citable on this branch."
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+  thresholds:
+    # Harder than REV-U-001 — most reviewers without project context
+    # will rubber-stamp the null guard. min_score is set low so we can
+    # see directional improvement as the reviewer prompt is tuned.
+    min_score: 0.5
+    min_required_found: 0
+    max_false_positives: 1
+
+metadata:
+  difficulty: hard
+  language: java
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [reviewer, concern_forming, look_phase, agents_md_awareness, root_cause]

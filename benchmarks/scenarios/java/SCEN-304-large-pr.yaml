@@ -1,0 +1,101 @@
+id: SCEN-304
+name: "Large PR (10+ files) — agent budgets investigation under load"
+tags: [java, large-pr, budget-stress, severity:critical, cost:expensive]
+
+# Branch `feature/ORD-450-warehouse-rewrite` is in orderflow (11 files):
+# new WarehouseService + InventoryService + DTOs + config + bulk import
+# script + tests, plus a small change to OrderService to use the new
+# service. Tests budget allocation under load — reviewer should triage
+# rather than try to find every single issue.
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "feature/ORD-450-warehouse-rewrite"
+      to_branch: "master"
+      title: "ORD-450: Warehouse service rewrite"
+      description: |
+        ## ORD-450: Replace legacy WarehouseClient with WarehouseService
+
+        Migrates 4 callers from the deprecated WarehouseClient to the
+        new WarehouseService API. Updates inventory release path,
+        order cancellation, and the bulk-import script. Adds tests
+        for the new service and removes the old integration tests
+        that no longer apply.
+
+        ### Acceptance criteria
+        - All 4 callers use WarehouseService
+        - cancelOrder() still releases inventory on cancel
+        - Bulk import preserves transactional behaviour
+        - Test coverage for happy path + error path
+
+expected_output:
+  # On a large PR the reviewer should triage — find the BLOCKERs, accept
+  # that some MINORs may be missed. min_required_found is set lower than
+  # the count to reflect that.
+  required_comments:
+    - id: EXP-1
+      type: inline
+      severity: critical
+      location:
+        file: "src/main/java/com/flowmart/orders/service/OrderService.java"
+        line: 46
+      description_keywords:
+        - ["transaction", "@Transactional", "atomicity"]
+        - ["cancelOrder", "inventory", "release"]
+      rationale: |
+        cancelOrder used to be @Transactional; the warehouse rewrite drops
+        the annotation. The status update and the warehouse release are no
+        longer in the same transaction — partial cancel can leave the
+        order CANCELLED but inventory not released, or vice versa.
+
+    - id: EXP-2
+      type: inline
+      severity: major
+      location:
+        file: "src/main/java/com/flowmart/orders/script/BulkImport.java"
+        line: 21
+      description_keywords:
+        - ["loop", "per-item", "batch", "performance", "N"]
+      rationale: |
+        The script issues one warehouseService.reserve() call per item in
+        a for-each. On a large import that's N round-trips; the prior
+        WarehouseClient interface had a batched reserveAll variant.
+
+    - id: EXP-3
+      type: inline
+      severity: major
+      location:
+        file: "src/main/java/com/flowmart/orders/service/InventoryService.java"
+        line: 15
+      description_keywords:
+        - ["null", "Optional", "missing", "absent"]
+      rationale: |
+        lookup() returns null when the item id isn't in the store. Every
+        caller (WarehouseService.reserve / release, decrement) dereferences
+        the result without checking — NPE on any unknown id, plus surprises
+        anyone reading the signature without seeing the bug.
+
+  forbidden_comments:
+    - description: "Suggesting full deprecation of WarehouseClient is rushed (the rewrite IS the deprecation)"
+    - description: "Asking for migration guides — out of scope for this PR"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    # Find at least the two BLOCKERs; the MAJOR may be missed under
+    # budget pressure on a large PR.
+    min_score: 0.55
+    min_required_found: 2
+    max_false_positives: 5
+
+metadata:
+  difficulty: hard
+  language: java
+  pr_size: large
+  scenario_type: bug
+  capabilities: [budget_allocation, triage, transaction_safety, performance]
+  status: "runnable"
+  author: "team"
+  created: "2026-05-05"

@@ -1,0 +1,119 @@
+id: REV-U-001-store-credit-concerns
+agent: reviewer
+tags: [tier:unit, agent:reviewer, isolation, concerns-only]
+
+# Per-fixture worker cmd. {provider} is filled by the worker.
+# No tier-based dispatch in code — this yaml field is the single
+# source of truth for "how to run this fixture".
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmark.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# Reviewer in concerns-text mode against the store-credit feature
+# branch. The user-message override (see user_message_from) tells
+# the agent: read diff, submit concerns as TEXT via the `text_answer`
+# capture tool, call done(empty). Reflect stays as the agent's private
+# working memory. No spawn_agent, no post_comment, no set_review_status
+# — the test measures concern-forming, nothing else.
+#
+# Why text (not reflect): deepseek runs with tool_choice=required, so
+# the model can't emit a tool-less text turn. text_answer is a single
+# capture-style tool that wraps the deliverable; the judge reads it
+# back via assert_via=[intended_text].
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: feature/ORD-301-store-credit
+
+# Custom user-message — turns the reviewer into a one-shot
+# concerns-extractor. Without this the reviewer follows its default
+# flow (spawn investigators, post inline comments, set verdict),
+# which is exactly the wrong behaviour for a unit test.
+user_message_from: diffgraph:diffgraph/test_prompts/reviewer/concerns-text.md
+
+pr_state:
+  metadata:
+    title: "ORD-301: Add customer store credit redemption"
+    description: |
+      Adds a store-credit balance per customer plus an endpoint
+      to redeem credit at checkout. Touches StoreCreditService,
+      a new repository, and the customer controller.
+    pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/301"
+    bot_user: "diffgraph-bot"
+
+  # No existing threads for this fixture — concerns-only mode
+  # reads only the diff. Later fixtures may add a thread graph
+  # to test incremental_awareness.
+  comments: []
+
+trigger:
+  type: comment
+  text: "/review"
+  comment_id: 0
+
+agent_data: {}
+
+# ── Judge (concerns-text reviewer) ───────────────────────────────────────
+# The agent runs in concerns-text mode (see concerns-text.md), so it
+# never posts inline comments / sets verdict. The deliverable is the
+# `text` arg of the final `text_answer(text=...)` capture-tool call.
+# The judge extracts that text from invocations.json and matches each
+# concern_focuses keyword group (AND-of-OR semantics: at least one
+# keyword from the group must appear somewhere in the text).
+#
+# Concerns chosen from the actual content the agent sees via diff_*
+# tools, which use 3-dot (merge-base) diff = "what this branch
+# contributes since branching from master". Master commits that
+# landed AFTER feature branched off (AGENTS.md tightening,
+# .gitignore + gradle wrapper additions) are NOT visible in the
+# agent's diff view — they were never part of the PR's change set.
+# Previously this fixture listed an "agents-md-deletion" concern
+# based on `git diff master..feature` (2-dot) which conflates
+# "feature deleted X" with "master added X after branching"; that
+# concern was structurally unreachable for any correct reviewer.
+# See plan 217 run d433714500ea for the wild-type discussion.
+#
+# Real concerns from feature/ORD-301-store-credit's actual changes:
+#   • redeemCredit(creditId, orderId) lacks ownership checks → IDOR.
+#     AGENTS.md mandates ownership verification on every endpoint.
+#   • isRedeemed() check inside @Transactional is not pessimistic-locked
+#     → two concurrent redeems can both pass. AGENTS.md flags "concurrency
+#     matters" for this multi-instance service.
+#   • credit.setRedeemed(true) is unconditional even when only part of
+#     the credit covers order.total → user loses the leftover.
+#
+# Threshold tuned conservatively (0.5) because the diff is large and a
+# reviewer hitting 2/3 groups is already a useful signal. Tighten after
+# we have a few attempt batches to calibrate.
+expected_output:
+  assert_via: [intended_text]
+  required_comments: []
+  forbidden_comments:
+    - description: "Inline comments — reviewer was told concerns-text; no posting allowed."
+  concern_focuses:
+    - id: redeem-authorization
+      description_keywords: ["authorization", "ownership", "currentUser", "IDOR", "auth check", "belong", "verify"]
+      rationale: "redeemCredit(creditId, orderId) does not verify that the credit or the order belong to the authenticated customer. AGENTS.md explicitly mandates ownership verification on every endpoint."
+    - id: concurrent-redeem
+      description_keywords: ["concurrent", "race", "pessimistic", "lock", "isRedeemed", "double-redeem", "atomic"]
+      rationale: "isRedeemed() check inside @Transactional is not pessimistic-locked. Two concurrent requests can both pass the check and redeem the same credit twice. AGENTS.md notes concurrency matters in this multi-instance service."
+    - id: partial-redemption
+      description_keywords: ["partial", "leftover", "remainder", "min(", "setRedeemed(true)", "fully consumed", "amount"]
+      rationale: "credit.setRedeemed(true) is unconditional even when credit.amount > order.total (`credit.amount.min(order.total)` applies only part). The remainder is silently lost."
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+  thresholds:
+    min_score: 0.5
+    min_required_found: 0
+    max_false_positives: 1
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: medium
+  scenario_type: agent_unit
+  capabilities: [reviewer, concern_forming, look_phase, agents_md_awareness, security_authz]

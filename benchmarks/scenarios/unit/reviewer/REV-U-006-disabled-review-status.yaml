@@ -1,0 +1,92 @@
+id: REV-U-006-disabled-review-status
+agent: reviewer
+tags: [tier:unit, agent:reviewer, isolation, tool-mock, sticky-mock, stability]
+
+# Stability regression: the reviewer must complete its run even when
+# one of its tools is neutralised via a sticky tool-mock. The user-
+# facing motivation is the "temporarily disable set_review_status"
+# webhook scenario — we want to be able to silence the verdict step
+# without recompiling prompts or changing agent code, by passing
+#   --mocks orchestra/fixtures/mocks/disable-review-status.yaml
+# to `cli.py run`. This fixture pins that path: a real reviewer run
+# that calls set_review_status, gets the canned "disabled" string
+# every time, and still finishes gracefully.
+#
+# Mocks (see ../../../fixtures/mocks/reviewer-disabled-status.yaml):
+#   • spawn_agent — sticky empty investigator (unit-tier isolation;
+#     this isn't a quality test of sub-agent reasoning).
+#   • set_review_status — sticky canned-disabled reply; the actual
+#     thing this scenario verifies. Same string as the diff-graph
+#     canonical orchestra/fixtures/mocks/disable-review-status.yaml.
+#
+# What we DON'T grade here: finding quality, false-positive rate,
+# reply copy. Those live in REV-U-001/002/003. This is purely
+# "did the reviewer survive a disabled tool".
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmark.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: feature/ORD-301-store-credit
+
+mocks: ../../../fixtures/mocks/reviewer-disabled-status.yaml
+
+pr_state:
+  metadata:
+    title: "ORD-301: Customer store credit redemption"
+    description: |
+      Adds store-credit redemption against open orders. Touches
+      StoreCreditService, a new repository, and the customer
+      controller.
+    pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/301"
+    bot_user: "diffgraph-bot"
+  comments: []
+
+trigger:
+  type: comment
+  text: "/review"
+  comment_id: 0
+
+agent_data: {}
+
+# ── Judge — stability check only ─────────────────────────────────────
+# We grade three signals:
+#   1. The bench process exit code is 0 (asserted by the runner
+#      itself before the judge runs — a crash on the sticky reply
+#      never gets here).
+#   2. The reviewer posted at least one inline comment (proves it
+#      reached the post_comment stage after spawn_agent returned and
+#      didn't bail mid-flight). The store-credit branch has obvious
+#      issues; even a weak reviewer with no investigator help should
+#      find at least one.
+#   3. side_effects.review_status_change is false — the sticky mock
+#      replaced the real handler, so the fake bench sink's status
+#      never actually changes. Verifying this pins the mock's
+#      transparency end-to-end.
+#
+# Thresholds are loose: any non-crash that posts a finding passes.
+expected_output:
+  assert_via: [pr_comments]
+  required_comments: []
+  forbidden_comments:
+    - description: "Comments echoing the canned 'set_review_status is temporarily disabled' string back into the PR — the disable should be transparent to the user, not surfaced as agent output."
+  side_effects:
+    review_status_change: false
+  thresholds:
+    min_score: 0.0
+    min_required_found: 0
+    max_false_positives: 10
+  acknowledgement_required: false
+
+metadata:
+  difficulty: easy
+  language: java
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [reviewer, tool_mock_resilience, sticky_mock, stability]

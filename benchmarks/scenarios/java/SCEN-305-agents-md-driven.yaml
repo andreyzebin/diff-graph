@@ -1,0 +1,105 @@
+id: SCEN-305
+name: "AGENTS.md adherence — flag violations of conventions introduced in the same PR"
+tags: [java, agents-md, conventions, severity:major, tier:integration]
+
+# The ONE scenario in the suite where AGENTS.md is reachable by the
+# agent. Every other branch had AGENTS.md removed from history (orderflow
+# repo was rewritten with git-filter-repo so it never existed on master)
+# — see ../../../../scenarios history and the orderflow repo commit
+# `chore: onboarding doc + first OnboardingNotificationService`.
+#
+# This PR ships TWO things together:
+#   1. A fresh AGENTS.md onboarding doc (general engineering principles:
+#      SOLID, constructor injection, no N+1, atomic writes, auth,
+#      tests, style).
+#   2. A new OnboardingNotificationService that already VIOLATES two of
+#      those principles in the same diff — field injection instead of
+#      constructor injection, and N+1 inside notifyAll().
+#
+# The test: does the agent READ the AGENTS.md being introduced and
+# CONNECT it to violations in the rest of the same PR? A weak agent
+# reviewing this as "two unrelated files" will miss the link. A strong
+# agent recognises that introducing a convention while violating it in
+# the same commit is itself the bug.
+
+input:
+  bitbucket:
+    provider: real
+    pull_request:
+      from_branch: "chore/onboarding-add-agents-md"
+      to_branch: "master"
+      title: "chore: onboarding doc + first OnboardingNotificationService"
+      description: |
+        ## Onboarding documentation + first notification service
+
+        Two changes:
+
+        - Adds `AGENTS.md` — the team's onboarding doc covering engineering
+          principles, test expectations, and style.
+        - Adds `OnboardingNotificationService` — sends welcome emails after
+          a customer completes onboarding. Wired into the nightly cohort
+          job and the manual re-send admin endpoint. EmailGateway delegation
+          is stubbed pending the gateway interface PR.
+
+  trigger:
+    type: comment
+    text: "/review"
+
+expected_output:
+  required_comments:
+
+    - id: EXP-1
+      type: inline
+      severity: major
+      location:
+        file: "src/main/java/com/flowmart/orders/service/OnboardingNotificationService.java"
+        line: 19
+      description_keywords:
+        - ["@Autowired", "field injection", "constructor injection"]
+        - ["AGENTS.md", "principle", "convention", "team rule", "documented", "guideline"]
+      rationale: |
+        OnboardingNotificationService uses field injection
+        (`@Autowired private CustomerRepository`) while the AGENTS.md
+        being added in the SAME PR explicitly states "Constructor
+        injection only — no field or setter injection on services or
+        controllers." The reviewer must flag the contradiction and
+        ground the objection in the AGENTS.md rule that this very PR
+        introduces — that linkage is the whole point of the test.
+
+    - id: EXP-2
+      type: inline
+      severity: major
+      location:
+        file: "src/main/java/com/flowmart/orders/service/OnboardingNotificationService.java"
+        line: 27
+      description_keywords:
+        - ["N+1", "loop", "findById", "per-item", "per item", "batched", "findAllById"]
+        - ["AGENTS.md", "principle", "convention", "team rule", "documented", "guideline"]
+      rationale: |
+        notifyAll() calls `customerRepository.findById()` inside a
+        for-each over the supplied customer ids — one query per id.
+        AGENTS.md introduced in this PR says "No N+1 queries — never
+        call a repository inside a loop over a collection. Use batched
+        / In-style queries." Should be a single `findAllById(customerIds)`
+        call. The finding must cite AGENTS.md.
+
+  forbidden_comments:
+    - description: "Treating AGENTS.md and OnboardingNotificationService as independent unrelated changes — the test is precisely that they aren't"
+    - description: "Generic 'consider using constructor injection' suggestions that don't reference the AGENTS.md rule introduced in the same PR"
+
+  expected_status_change: "NEEDS_WORK"
+
+  thresholds:
+    min_score: 0.70
+    min_required_found: 1
+    max_false_positives: 5
+
+metadata:
+  difficulty: hard
+  language: java
+  pr_size: small
+  scenario_type: bug
+  capabilities: [agents_md_awareness, cross_file_reasoning, project_conventions]
+  status: "runnable"
+  author: "team"
+  created: "2026-05-05"
