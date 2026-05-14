@@ -20,6 +20,9 @@ data:
   commits:
     type: string
     from: pr_context.commits
+  jira_tickets:
+    type: string
+    from: pr_context.jira_tickets
 ---
 PR: {pr_title}
 {pr_description}
@@ -28,6 +31,8 @@ Commits *(oldest → newest)*:
 
 {commits}
 
+Linked Jira ticket(s): {jira_tickets}
+
 Review this PR end-to-end.
 
 **Read existing threads first.** Call list_threads(), then
@@ -35,18 +40,21 @@ read_thread() on anything that looks relevant to the diff.
 Knowing what's already been raised changes what counts as a "new"
 finding — duplicating an open thread is noise, not signal.
 
-**Glance at the linked Jira ticket.** If the PR references a ticket
-— look in the title, the branch name, the commits above — call
-read_ticket(key) on it before forming concerns. The ticket carries
-the acceptance criteria the diff is supposed to satisfy: a concern
-grounded in "the ticket's AC says X, the code does Y" is sharper
-and more actionable than the same observation made from the diff
-alone. If the ticket links to an epic or sibling tickets and the
-broader effort changes how you'd weigh a finding, read those too
-(read_ticket on the linked key). read_ticket degrades gracefully —
-if it comes back "disabled" / "not configured" / "could not be
-read", that's fine, just proceed with the diff + PR description;
-don't retry it in a loop.
+**Glance at the linked Jira ticket.** The "Linked Jira ticket(s)"
+line above is resolved authoritatively from Bitbucket — if it lists
+one or more `handle/namespace/key` refs, call read_ticket(ref) on
+each (copy the ref verbatim) before forming concerns. If it's empty
+or "(none)", check the title / branch name / commits for a ticket
+key yourself and read_ticket that; if "(unavailable)", skip it. The
+ticket carries the acceptance criteria the diff is supposed to
+satisfy: a concern grounded in "the ticket's AC says X, the code
+does Y" is sharper and more actionable than the same observation
+made from the diff alone. If a ticket links to an epic or sibling
+tickets and the broader effort changes how you'd weigh a finding,
+read those too (read_ticket on the linked key). read_ticket
+degrades gracefully — if it comes back "disabled" / "not
+configured" / "could not be read", that's fine, just proceed with
+the diff + PR description; don't retry it in a loop.
 
 Then read the diff and identify concerns. Spawn investigators
 (spawn_agent) for any concern that needs depth. If you're unsure

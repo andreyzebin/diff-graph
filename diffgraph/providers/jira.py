@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -382,3 +383,117 @@ class JiraProvider:
             log.info("read_ticket: %s not viewable (%s): %s",
                      key, type(exc).__name__, exc)
             return _not_viewable(key, exc)
+
+
+# ── Multi-server registry + reference parsing ──────────────────────
+
+_ENV_RE = re.compile(r"\$\{(\w+)\}")
+
+
+def _expand_env(value: str) -> str:
+    """`${VAR}` → os.environ value (empty if unset). Secrets stay in
+    the shell env; config.local.yaml only holds the ${VAR} reference."""
+    if not isinstance(value, str):
+        return value
+    return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
+
+
+@dataclass
+class JiraServer:
+    """One configured tracker instance. `handle` is the slash-free
+    logical id used in ticket refs; the URL + auth are attributes,
+    not the handle itself."""
+    handle: str
+    url: str
+    token: str = ""
+    ca_bundle: str = ""
+    client_cert: str = ""
+
+
+def parse_ticket_ref(ref: str) -> tuple[str, str, str]:
+    """`handle/namespace/ticket_id` → (handle, namespace, ticket_id).
+
+    Lenient — the agent copies refs verbatim from the PR's
+    `jira_tickets` list, but a hand-typed bare key should still work:
+      - 3+ parts  → (parts[0], parts[1], parts[-1])
+      - 2 parts   → (parts[0], "", parts[1])
+      - 1 part    → ("default", "", part)        # bare key
+      - empty     → ("default", "", "")
+    `namespace` is informational for Jira (the project is already in
+    the key); it's the generality hook for non-Jira trackers."""
+    parts = [p for p in (ref or "").strip().split("/") if p]
+    if len(parts) >= 3:
+        return parts[0], parts[1], parts[-1]
+    if len(parts) == 2:
+        return parts[0], "", parts[1]
+    return "default", "", (parts[0] if parts else "")
+
+
+class JiraRegistry:
+    """Resolves a server handle → `JiraProvider`.
+
+    Multi-server: `config.local.yaml` `jira_servers:` maps handles to
+    `{url, token, ...}`. The `default` handle (and any handle not in
+    the config) falls back to a bare `JiraProvider()`, which reads
+    `JIRA_URL` / `JIRA_TOKEN` from the env — so a single-server setup
+    needs no config at all.
+
+    The test-env overrides (`DIFFGRAPH_JIRA_DISABLED` /
+    `DIFFGRAPH_JIRA_FIXTURE`) need no special handling here:
+    `JiraProvider.__init__` reads them regardless of how it's
+    constructed, so a disabled / fixture run answers every handle the
+    same way."""
+
+    def __init__(self, servers: Optional[dict] = None):
+        self._servers: dict = servers or {}      # handle -> JiraServer
+        self._cache: dict = {}                   # handle -> JiraProvider
+
+    @classmethod
+    def from_config(cls, config_path: Optional[str] = None) -> "JiraRegistry":
+        """Load `jira_servers:` from config.local.yaml (repo root by
+        default). Missing file / missing block → an empty registry,
+        which still serves the env-based `default` provider."""
+        from pathlib import Path
+        p = Path(config_path) if config_path else (
+            Path(__file__).resolve().parents[2] / "config.local.yaml"
+        )
+        servers: dict = {}
+        if p.is_file():
+            try:
+                import yaml
+                raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                for handle, sd in (raw.get("jira_servers") or {}).items():
+                    sd = sd or {}
+                    servers[str(handle)] = JiraServer(
+                        handle=str(handle),
+                        url=_expand_env(sd.get("url", "")),
+                        token=_expand_env(sd.get("token", "")),
+                        ca_bundle=_expand_env(sd.get("ca_bundle", "")),
+                        client_cert=_expand_env(sd.get("client_cert", "")),
+                    )
+            except Exception as exc:
+                log.warning("jira_servers config load failed (%s) — "
+                            "falling back to env-based default", exc)
+        return cls(servers)
+
+    def provider_for(self, handle: str) -> JiraProvider:
+        handle = handle or "default"
+        if handle not in self._cache:
+            srv = self._servers.get(handle)
+            if srv:
+                self._cache[handle] = JiraProvider(
+                    url=srv.url, token=srv.token,
+                    ca_bundle=srv.ca_bundle, client_cert=srv.client_cert,
+                )
+            else:
+                # `default`, or an unknown handle — a bare provider
+                # that reads JIRA_URL / JIRA_TOKEN (and the
+                # DIFFGRAPH_JIRA_* test overrides) from the env.
+                self._cache[handle] = JiraProvider()
+        return self._cache[handle]
+
+    def fetch(self, ref: str) -> TicketContext:
+        """Parse a `handle/namespace/ticket_id` ref and fetch it from
+        the right server. The one call the `read_ticket` tool needs."""
+        handle, _namespace, ticket_id = parse_ticket_ref(ref)
+        return self.provider_for(handle).fetch_ticket(ticket_id)

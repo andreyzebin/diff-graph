@@ -149,9 +149,41 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
 
     # ── Data provider: pr_context (cached, hidden) ────────────────────────
 
+    def _resolve_jira_tickets() -> str:
+        """Authoritative PR→ticket resolution via Bitbucket's
+        Jira-integration endpoint. Returns a comma-joined list of
+        `default/<project>/<key>` refs the reviewer copies verbatim
+        into read_ticket — or a short status string when there's
+        nothing to resolve.
+
+        Short-circuits for non-real PR URLs (unit-tier `fake://`,
+        local `--repo` runs): those have no Bitbucket Jira link, and
+        ticket-backed unit scenarios get their refs from the
+        scenario's `agent_data.jira_tickets` instead. Any failure
+        (no Application Link, network) degrades to '(unavailable)' —
+        the reviewer just works from the diff."""
+        pr_url = getattr(ctx, "_pr_url", "") or ""
+        if not pr_url or pr_url.startswith("fake://"):
+            return ""
+        try:
+            from .bitbucket import pr_jira_issues
+            issues = pr_jira_issues(pr_url)
+        except Exception:
+            return "(unavailable)"
+        refs = []
+        for issue in issues:
+            key = (issue.get("key") or "").strip()
+            if not key:
+                continue
+            # handle/namespace/ticket_id — single-server `default`,
+            # namespace = the Jira project (the key's prefix).
+            project = key.split("-", 1)[0] if "-" in key else key
+            refs.append(f"default/{project}/{key}")
+        return ", ".join(refs) if refs else "(none)"
+
     @registry.register(
         name="pr_context",
-        description="PR context data provider (comments, commits).",
+        description="PR context data provider (comments, commits, jira_tickets).",
         hidden=True,
         cache=True,
     )
@@ -165,6 +197,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             ),
             "commits": _get_commit_list(ctx.repo_path, ctx.base_ref, ctx.source_ref)
                        if ctx.base_ref and ctx.source_ref else "(unavailable)",
+            "jira_tickets": _resolve_jira_tickets(),
         }
 
     def _default_ref() -> str:
@@ -450,17 +483,17 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             subject_pattern=_subject_pattern(),
         )
 
-    # One JiraProvider per tool-registration — its network client is
-    # lazy, so constructing it is free; it picks up JIRA_TOKEN or the
-    # DIFFGRAPH_JIRA_FIXTURE fake-path env at call time.
-    _jira_provider = None
+    # One JiraRegistry per tool-registration — loads jira_servers:
+    # from config.local.yaml once; per-handle JiraProvider instances
+    # are lazy (network client built on first use) and cached.
+    _jira_registry = None
 
     def _jira():
-        nonlocal _jira_provider
-        if _jira_provider is None:
-            from .providers.jira import JiraProvider
-            _jira_provider = JiraProvider()
-        return _jira_provider
+        nonlocal _jira_registry
+        if _jira_registry is None:
+            from .providers.jira import JiraRegistry
+            _jira_registry = JiraRegistry.from_config()
+        return _jira_registry
 
     @registry.register(
         name="read_ticket",
@@ -495,15 +528,12 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         ref = (ref or "").strip()
         if not ref:
             return "(ref is required)"
-        # Lenient parse: the ticket key is the last '/'-segment of a
-        # handle/namespace/ticket_id ref, or the whole string if it's
-        # a bare key. Real multi-server routing (handle → server)
-        # lands with the JiraRegistry; for now the provider resolves
-        # against its single configured server / the fake fixture.
-        key = ref.rsplit("/", 1)[-1]
+        # The registry parses `handle/namespace/ticket_id`, routes to
+        # the right server (or the env-based `default`), and fetches.
+        # A bare key works too — parse_ticket_ref defaults the handle.
         try:
             from .providers.jira import format_ticket
-            return format_ticket(_jira().fetch_ticket(key))
+            return format_ticket(_jira().fetch(ref))
         except Exception as exc:  # never crash the agent on a tracker hiccup
             return (
                 f"(read_ticket failed for {ref!r}: {type(exc).__name__}: "

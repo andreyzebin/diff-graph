@@ -167,6 +167,54 @@ def _get_pr_meta(
     return _api_get(url, token, ca_bundle, client_cert)
 
 
+def pr_jira_issues(
+    pr_url: str,
+    token: str | None = None,
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+) -> list[dict]:
+    """Jira issues Bitbucket associates with a PR — the authoritative
+    PR→ticket link.
+
+    Bitbucket Server's Jira-integration plugin parses branch name +
+    commit messages + PR title against the configured Application
+    Link and exposes the result at
+      GET /rest/jira/1.0/projects/{P}/repos/{R}/pull-requests/{id}/issues
+    → `[{"key": "ORD-301", "url": "..."}, ...]` — a flat list, no
+    "primary" flag, possibly empty.
+
+    Best-effort: any failure (no Application Link, plugin absent,
+    404, network) returns `[]`. A PR with no linked ticket is a
+    normal state, not an error — the reviewer just works from the
+    diff. Uses the Bitbucket bearer token (this is a Bitbucket
+    endpoint), NOT the Jira PAT.
+    """
+    token       = token       or os.environ.get("BITBUCKET_SERVER_BEARER_TOKEN") or os.environ.get("BITBUCKET_SERVER__BEARER_TOKEN")
+    ca_bundle   = ca_bundle   or os.environ.get("REQUESTS_CA_BUNDLE")
+    client_cert = client_cert or os.environ.get("BITBUCKET_SERVER_CLIENT_CERT") or os.environ.get("BITBUCKET_SERVER__CLIENT_CERT")
+    if not token:
+        return []
+    try:
+        server_url, project, repo, pr_id = parse_pr_url(pr_url)
+    except ValueError:
+        return []
+    url = (
+        f"{server_url}/rest/jira/1.0/projects/{project}/repos/{repo}"
+        f"/pull-requests/{pr_id}/issues"
+    )
+    try:
+        data = _api_get(url, token, ca_bundle, client_cert)
+    except Exception as exc:
+        log.info("pr_jira_issues: %s — no Jira links resolved (%s)",
+                 pr_url, exc)
+        return []
+    # The endpoint returns a JSON array; _api_get is typed -> dict but
+    # json.loads handles arrays fine. Be defensive about the shape.
+    if isinstance(data, list):
+        return [d for d in data if isinstance(d, dict) and d.get("key")]
+    return []
+
+
 def get_pr_info(
     pr_url: str,
     token: str | None = None,

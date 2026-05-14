@@ -33,3 +33,20 @@ review:
   bot_user: ""           # Bitbucket username/slug of the bot account — own comments marked [SELF]
   comment_tag: "dg"      # prefix for the traceability footer appended to posted comments
                          # (`<prefix>:<gen>:<mutation>:<run>`). Empty string disables tagging.
+
+# ── Jira servers (optional) ───────────────────────────────────────────────────
+# The `read_ticket` tool resolves a `handle/namespace/ticket_id` ref against
+# this registry. The `handle` is a slash-free logical id; the URL + auth are
+# attributes. A single-server setup needs NOTHING here — the `default` handle
+# falls back to JIRA_URL / JIRA_TOKEN from the env. Define entries only when
+# you have more than one tracker. Secrets stay in the env via ${VAR}.
+# Override per-machine in config.local.yaml.
+#
+# jira_servers:
+#   default:
+#     url: "https://jira.example.com"
+#     token: "${JIRA_TOKEN}"
+#     # ca_bundle / client_cert default to the shared Bitbucket TLS material
+#   other-tracker:
+#     url: "https://other.example/jira"
+#     token: "${OTHER_JIRA_TOKEN}"

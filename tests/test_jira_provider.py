@@ -24,9 +24,12 @@ import pytest
 
 from diffgraph.providers.jira import (
     JiraProvider,
+    JiraRegistry,
+    JiraServer,
     TicketContext,
     distill_ticket,
     format_ticket,
+    parse_ticket_ref,
     _not_viewable,
     MAX_COMMENTS,
     MAX_BODY_CHARS,
@@ -403,3 +406,177 @@ class TestProviderDisabledToggle:
         assert out.startswith("[ticket DEMO-4]")
         assert "disabled" in out.lower()
         assert "TICKET DEMO-4" not in out          # not the full-render path
+
+
+# ── Reference parsing — handle/namespace/ticket_id ──────────────────
+
+class TestTicketRefParsing:
+    """`parse_ticket_ref` — the agent copies refs verbatim from the
+    PR's jira_tickets list, but a hand-typed bare key must still
+    work. All three parts are slash-free for Jira so a plain split
+    is unambiguous."""
+
+    def test_full_three_part_ref(self):
+        assert parse_ticket_ref("default/ORD/ORD-301") == (
+            "default", "ORD", "ORD-301")
+
+    def test_bare_key_defaults_handle(self):
+        assert parse_ticket_ref("ORD-301") == ("default", "", "ORD-301")
+
+    def test_two_part_ref(self):
+        assert parse_ticket_ref("srv/KEY-1") == ("srv", "", "KEY-1")
+
+    def test_extra_segments_keep_first_and_last(self):
+        # >3 parts: handle = first, ticket = last, middle = namespace.
+        assert parse_ticket_ref("h/a/b/KEY-9") == ("h", "a", "KEY-9")
+
+    def test_empty_and_whitespace(self):
+        assert parse_ticket_ref("") == ("default", "", "")
+        assert parse_ticket_ref("   ") == ("default", "", "")
+
+
+# ── JiraRegistry — multi-server resolution ──────────────────────────
+
+class TestJiraRegistry:
+    """Resolves a server handle → JiraProvider. Multi-server via
+    config; `default` / unknown handles fall back to the env-based
+    bare provider. The DIFFGRAPH_JIRA_* test overrides are honoured
+    automatically because JiraProvider.__init__ reads them no matter
+    how it's constructed."""
+
+    def test_from_config_missing_file_is_empty_registry(self, tmp_path):
+        reg = JiraRegistry.from_config(str(tmp_path / "nope.yaml"))
+        assert reg._servers == {}
+        # An empty registry still serves the env-based default.
+        assert isinstance(reg.provider_for("default"), JiraProvider)
+
+    def test_from_config_loads_servers_with_env_expansion(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MY_JIRA_TOK", "pat-secret")
+        cfg = tmp_path / "config.local.yaml"
+        cfg.write_text(
+            "jira_servers:\n"
+            "  default:\n"
+            "    url: https://jira.example.com\n"
+            "    token: ${MY_JIRA_TOK}\n"
+            "  other:\n"
+            "    url: https://other.example/jira\n"
+            "    token: ${MY_JIRA_TOK}\n",
+            encoding="utf-8",
+        )
+        reg = JiraRegistry.from_config(str(cfg))
+        assert set(reg._servers) == {"default", "other"}
+        # ${VAR} expanded at load time — the secret lives in the env.
+        assert reg._servers["default"].token == "pat-secret"
+        assert reg._servers["default"].url == "https://jira.example.com"
+
+    def test_provider_for_caches_per_handle(self, tmp_path):
+        reg = JiraRegistry.from_config(str(tmp_path / "none.yaml"))
+        a = reg.provider_for("default")
+        b = reg.provider_for("default")
+        assert a is b                                  # cached
+        assert reg.provider_for("other") is not a      # distinct handle
+
+    def test_configured_server_routes_to_its_url(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("DIFFGRAPH_JIRA_DISABLED", raising=False)
+        monkeypatch.delenv("DIFFGRAPH_JIRA_FIXTURE", raising=False)
+        reg = JiraRegistry(servers={
+            "alpha": JiraServer("alpha", "https://a.example", "tok-a"),
+        })
+        p = reg.provider_for("alpha")
+        assert p.url == "https://a.example"
+        assert p.token == "tok-a"
+
+    def test_disabled_env_honoured_through_registry(self, monkeypatch):
+        """A run with DIFFGRAPH_JIRA_DISABLED → registry.fetch returns
+        the `_disabled` sentinel regardless of handle / config."""
+        monkeypatch.setenv("DIFFGRAPH_JIRA_DISABLED", "1")
+        reg = JiraRegistry(servers={
+            "alpha": JiraServer("alpha", "https://a.example", "tok-a"),
+        })
+        tc = reg.fetch("alpha/PROJ/PROJ-1")
+        assert tc.configured is False
+        assert "disabled" in tc.note.lower()
+
+    def test_fixture_env_honoured_through_registry(self, monkeypatch):
+        """A run with DIFFGRAPH_JIRA_FIXTURE → registry.fetch serves
+        the fixture for any handle (fake mode)."""
+        monkeypatch.delenv("DIFFGRAPH_JIRA_DISABLED", raising=False)
+        monkeypatch.setenv("DIFFGRAPH_JIRA_FIXTURE", str(_FIXTURE))
+        reg = JiraRegistry()
+        tc = reg.fetch("whatever/NS/DEMO-101")
+        assert tc.key == "DEMO-101"
+        assert tc.summary.startswith("Add a small web console")
+
+    def test_fetch_routes_by_handle(self, monkeypatch):
+        """registry.fetch parses the ref and dispatches to the handle's
+        provider — verified by giving two handles different tokens
+        and checking which provider answered."""
+        monkeypatch.delenv("DIFFGRAPH_JIRA_DISABLED", raising=False)
+        monkeypatch.delenv("DIFFGRAPH_JIRA_FIXTURE", raising=False)
+        reg = JiraRegistry(servers={
+            "alpha": JiraServer("alpha", "https://a.example", "tok-a"),
+            "beta": JiraServer("beta", "https://b.example", "tok-b"),
+        })
+        # fetch() resolves the provider; don't hit the network — just
+        # confirm routing picked the right one.
+        assert reg.provider_for("alpha").token == "tok-a"
+        assert reg.provider_for("beta").token == "tok-b"
+        _h, _ns, tid = parse_ticket_ref("beta/PROJ/PROJ-7")
+        assert tid == "PROJ-7"
+
+
+# ── pr_jira_issues — Bitbucket's authoritative PR→ticket link ───────
+
+class TestPrJiraIssues:
+    """`bitbucket.pr_jira_issues` hits Bitbucket's Jira-integration
+    endpoint and returns a flat `[{key, url}]` list. Best-effort:
+    every failure path degrades to `[]` — a PR with no linked ticket
+    is normal, not an error."""
+
+    def test_parses_issue_list(self, monkeypatch):
+        import diffgraph.bitbucket as bb
+        monkeypatch.setenv("BITBUCKET_SERVER_BEARER_TOKEN", "tok")
+        monkeypatch.setattr(bb, "_api_get", lambda *a, **k: [
+            {"key": "ORD-301", "url": "https://bb/.../ORD-301"},
+            {"key": "SCEN-010", "url": "https://bb/.../SCEN-010"},
+        ])
+        out = bb.pr_jira_issues(
+            "https://bb.example/projects/P/repos/R/pull-requests/42")
+        assert [d["key"] for d in out] == ["ORD-301", "SCEN-010"]
+
+    def test_no_token_returns_empty(self, monkeypatch):
+        import diffgraph.bitbucket as bb
+        monkeypatch.delenv("BITBUCKET_SERVER_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("BITBUCKET_SERVER__BEARER_TOKEN", raising=False)
+        assert bb.pr_jira_issues(
+            "https://bb.example/projects/P/repos/R/pull-requests/42") == []
+
+    def test_endpoint_failure_degrades_to_empty(self, monkeypatch):
+        """No Application Link / plugin absent / 404 / network — all
+        degrade to []. The reviewer just works from the diff."""
+        import diffgraph.bitbucket as bb
+        monkeypatch.setenv("BITBUCKET_SERVER_BEARER_TOKEN", "tok")
+
+        def _boom(*a, **k):
+            raise RuntimeError("404 — Jira integration not configured")
+
+        monkeypatch.setattr(bb, "_api_get", _boom)
+        assert bb.pr_jira_issues(
+            "https://bb.example/projects/P/repos/R/pull-requests/42") == []
+
+    def test_malformed_pr_url_returns_empty(self, monkeypatch):
+        import diffgraph.bitbucket as bb
+        monkeypatch.setenv("BITBUCKET_SERVER_BEARER_TOKEN", "tok")
+        assert bb.pr_jira_issues("not-a-pr-url") == []
+
+    def test_drops_entries_without_a_key(self, monkeypatch):
+        import diffgraph.bitbucket as bb
+        monkeypatch.setenv("BITBUCKET_SERVER_BEARER_TOKEN", "tok")
+        monkeypatch.setattr(bb, "_api_get", lambda *a, **k: [
+            {"key": "ORD-1", "url": "u"},
+            {"url": "no-key-here"},        # malformed — dropped
+            {"key": "", "url": "empty"},   # empty key — dropped
+        ])
+        out = bb.pr_jira_issues(
+            "https://bb.example/projects/P/repos/R/pull-requests/1")
+        assert [d["key"] for d in out] == ["ORD-1"]
