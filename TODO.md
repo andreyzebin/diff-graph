@@ -2344,163 +2344,262 @@ every open ticket with label `null-safety`".
 
 - **`atlassian-python-api` is already a dependency** (folded into
   `requirements.txt` during the monorepo merge — the bench uses it
-  for Bitbucket). It ships an `atlassian.Jira` class with
-  `.issue()`, `.jql()`, `.get_issue_changelog()`,
-  `.get_issue_comments()`, `.issue_remote_links()`, etc. **No new
-  library to add.**
+  for Bitbucket). `atlassian.Jira` ships `.issue()`, `.jql()`,
+  `.get_issue_changelog()`, etc. **No new library.** Its
+  `AtlassianRestAPI` base takes `token`, `verify_ssl` (CA bundle
+  path), `cert` (mTLS client cert) — so the same TLS material the
+  Bitbucket provider uses plugs straight in.
 - **Jira lives on the same host as Bitbucket** —
-  `https://sberworks.ru/jira`, REST at `/jira/rest/api/2/`. A probe
-  (`GET /jira/rest/api/2/issue/SBLOOM-144`) with the Bitbucket
-  Server bearer token returned **HTTP 401 "Login Required"** — so
-  **Jira needs its own PAT**, the Bitbucket token does not carry
-  over. The probe *did* reach Jira's app layer (structured JSON
-  error, not a TLS/connection failure) — meaning the **mTLS client
-  cert + CA bundle are shared**; only the auth token differs.
-- Env shape (confirmed):
-  ```
-  JIRA_URL="https://sberworks.ru/jira"        # new
-  JIRA_TOKEN="..."                            # new — separate Jira PAT
-  # REQUESTS_CA_BUNDLE + BITBUCKET_SERVER__CLIENT_CERT — reused as-is
-  ```
-  Create the PAT in Jira → Profile → Personal Access Tokens.
+  `https://sberworks.ru/jira`, REST at `/jira/rest/api/2/`. Probe
+  `GET /jira/rest/api/2/issue/SBLOOM-144` with the *Bitbucket*
+  bearer token → **HTTP 401 "Login Required"**: Jira needs its own
+  PAT. The probe reached Jira's app layer (structured JSON error,
+  not TLS failure) → **mTLS client cert + CA bundle are shared**,
+  only the auth token differs.
+- **`issue(key, expand="changelog")` is a one-shot** — a single
+  request returns fields + comments + changelog + issue links.
+- **PR→ticket association is authoritative via Bitbucket, not
+  regex.** Bitbucket Server's Jira-integration plugin exposes
+  `GET /rest/jira/1.0/projects/{P}/repos/{R}/pull-requests/{id}/issues`
+  — a **Bitbucket** endpoint (Bitbucket token, not Jira). Probe of
+  PR 1630 in `code-review-example-orderflow` returned
+  `[{"key":"SCEN-010",...},{"key":"ORD-301",...}]` — a **flat list
+  of keys**, no "primary" flag. (`SCEN-010` leaked from the old
+  `[BENCHMARK] SCEN-010:` PR title — extra proof that dropping that
+  prefix in commit 1ecc425 was right; it was polluting Bitbucket's
+  Jira resolution too.) The endpoint can return `[]` for a PR with
+  no ticket — that's "no ticket", not an error.
 
-### Provider — `diffgraph/providers/jira.py`
+### Already built in the spike (uncommitted as of this writing)
 
-Mirrors the existing providers (`providers/bitbucket_pr.py`,
-`providers/git_repo.py` — note the old §5b said `diffgraph/jira.py`,
-but providers moved into `providers/`). Thin wrapper over
-`atlassian.Jira`:
+- `diffgraph/providers/jira.py` — `JiraProvider` (single-server,
+  thin `atlassian.Jira` wrapper) split into `fetch_ticket_raw(key)`
+  (network) + `distill_ticket(raw)` (PURE: raw JSON → `TicketContext`,
+  context discipline lives here) + `fetch_ticket = ` the composition.
+  Dataclasses `TicketContext / TicketComment / StatusChange /
+  TicketLink`. Graceful `configured=False` sentinel when no token.
+- Test-fired against live Jira: `SBLOOM-144` (sparse — empty
+  comments/changelog/links, distilled clean) and `SBLOOM-141` (rich
+  — 3 comments, 2 status transitions extracted correctly).
+- `tests/fixtures/jira_issue_sample.json` — sanitized composite of
+  real SBLOOM-141 (comments+changelog) + SBLOOM-137 (issue link)
+  structure, all PII/keys/text replaced. `tests/test_jira_provider.py`
+  — 11 tests pinning `distill_ticket` + graceful degradation.
 
-- `fetch_ticket(key) → TicketContext` — summary, issue type, status,
-  description / acceptance-criteria, **comments** (capped count,
-  truncated bodies), **changelog reduced to status transitions
-  only**, **issue links inline** (key + relationship + direction).
-- `list_links(key) → list[Link]` — if needed standalone; in practice
-  links are already inline in `TicketContext`.
-- `search(jql) → list[TicketRef]` — JQL search (Phase 2).
-- `dev_info(key) → DevPanel` — commits / branches / PRs from the
-  dev-status API `/rest/dev-status/1.0/issue/detail` (Phase 2;
-  `atlassian-python-api` may not wrap this cleanly — likely a raw
-  `jira.get(...)` call).
-- Auth + base URL from `JIRA_URL` / `JIRA_TOKEN`; TLS from the
-  shared `REQUESTS_CA_BUNDLE` + `BITBUCKET_SERVER__CLIENT_CERT`.
-- **Graceful degradation:** `JIRA_TOKEN` unset → the provider
-  returns a "Jira not configured" sentinel rather than raising, so
-  diff-graph still builds + runs standalone.
+The single-server `JiraProvider` evolves into the multi-server
+`JiraRegistry` below; `distill_ticket` / `TicketContext` / the
+fixture / the tests all carry over unchanged.
+
+### Reference shape — `handle / namespace / ticket_id` (multi-server)
+
+`read_ticket` takes a **structured reference**, not a bare key, so a
+second tracker server is config-only later (no tool-signature or
+prompt change):
+
+- **`handle`** — slash-free logical id of a configured server.
+  Resolved against the registry (below). Decision **A**: the handle
+  is a short opaque name, *not* a raw URL — the URL is a registry
+  attribute. (A raw URL has slashes and would break `split`.)
+- **`namespace`** — generality hook so `read_ticket` isn't
+  Jira-specific. For Jira: the project key (`SBLOOM`, `ORD`). For a
+  future GitHub-issues backend: `owner/repo`-ish. The provider
+  decides how to use it; it's routing/display, not necessarily
+  needed to reconstruct the API call.
+- **`ticket_id`** — the tracker's native id (`ORD-301` for Jira).
+
+Encoding decision **C**: the agent **never constructs** a ref — it
+only **copies one verbatim** from the `jira_tickets` list that
+`pr_context` puts in its prompt. So the encoding only has to
+round-trip on the diff-graph side. Slash-delimited
+`handle/namespace/ticket_id` works because all three parts are
+slash-free for Jira; if a future tracker needs slashes in
+`namespace`, switch to `split("/", 2)` or structured args then.
+
+### Server registry — `config.local.yaml`
+
+Replaces the single `JIRA_URL` / `JIRA_TOKEN` env pair. A
+`jira_servers:` block, one entry per tracker instance:
+
+```yaml
+jira_servers:
+  default:                                  # the `handle`
+    url: "https://sberworks.ru/jira"
+    token: "${JIRA_TOKEN}"                  # ${ENV} expansion — secret stays in .env
+    # ca_bundle / client_cert default to the shared Bitbucket TLS material
+  # another-tracker:
+  #   url: "https://other.example/jira"
+  #   token: "${OTHER_JIRA_TOKEN}"
+```
+
+`JIRA_TOKEN` still lives in `.env` (referenced via `${...}`); only
+the *routing table* moves to `config.local.yaml`. A `default`
+handle keeps the common single-server case ergonomic.
+
+### Provider — `JiraRegistry` + `JiraProvider`
+
+- `JiraProvider` (already built) — bound to ONE server's url+token.
+  `fetch_ticket_raw` / `distill_ticket` / `fetch_ticket` as above.
+- `JiraRegistry` — loads `jira_servers:` from `config.local.yaml`;
+  `provider_for(handle) → JiraProvider` (cached per handle).
+- `format_ticket(tc: TicketContext) → str` — **stable text render**
+  of a `TicketContext`. Critical: the tool's return contract is
+  *text*, so the fake provider (tests) and the real provider are
+  indistinguishable to the agent. Markdown-ish block — summary /
+  type / status, description-AC, capped comments, status history,
+  links inline. Must be designed FIRST — both the real tool and
+  every fixture depend on its shape.
+- **Graceful degradation:** an unconfigured handle (or no
+  `jira_servers:` at all) → `fetch_ticket` returns a
+  `configured=False` `TicketContext` sentinel, never raises.
 
 ### Context discipline
 
-Tickets can carry dozens of comments and a fat changelog — one
-unbounded `read_ticket` would blow the agent's token budget (same
-risk the diff tools cap at 30k chars). The provider must:
-- cap comment count (keep most recent N), truncate each body;
-- reduce the changelog to **status transitions only** (drop field
-  edits, assignee churn, etc.);
-- truncate description / AC bodies.
+Tickets carry dozens of comments + a fat changelog — an unbounded
+`read_ticket` blows the agent's token budget (same risk the diff
+tools cap at 30k chars). `distill_ticket` (already implemented):
+- caps comment count (keeps most recent N), truncates each body;
+- reduces the changelog to **status transitions only** (drops field
+  edits, assignee churn);
+- truncates description / AC bodies.
 
 ### Tools
 
 **Phase 1 — reviewer, ONE tool:**
-- `read_ticket(key=None)` — returns the `TicketContext`: summary /
-  type / status / description-AC / capped comments / status-only
-  changelog / **issue links inline**. Because the links are inline,
-  the agent can call `read_ticket` again on a linked key — so a
-  single tool gives **agent-driven depth traversal** (the ReAct
-  pattern: same as the reviewer walking the diff file by file). No
-  server-side recursion → naturally budget-bounded, the agent
-  prioritises which links are worth expanding.
-- Drop the old §5b `walk_to_epic` / separate `list_ticket_links` —
-  agent-driven traversal over the inline links covers it with less
-  surface and no runaway-recursion risk.
+- `read_ticket(ref)` — `ref` is the `handle/namespace/ticket_id`
+  string (copied verbatim from `jira_tickets`). Returns the
+  `format_ticket` text render: summary / type / status /
+  description-AC / capped comments / status-only changelog /
+  **issue links inline**. Links inline → the agent can call
+  `read_ticket` again on a linked key for **agent-driven depth
+  traversal** (ReAct, same as walking the diff file by file). No
+  server-side recursion, no `walk_to_epic`, no separate
+  `list_ticket_links`. **No argless default / no `_Ctx`
+  singleton** — the ref is always explicit, the agent reads it
+  straight out of its prompt.
+- Self-correcting on junk keys: a bogus ref (e.g. the historical
+  `SCEN-010`) → `read_ticket` returns a graceful "ticket not found",
+  the agent moves on. No need to pre-filter the `jira_tickets` list.
 
 **Phase 2 — investigators, deeper:**
 - `search_tickets(jql)` — JQL search ("all open tickets with label
-  X", "tickets touching this component", …). Returns key + summary
-  + status refs.
-- `jira_dev_info(key)` — commits / branches / PRs Jira links to the
-  issue (dev-status API).
-- Investigators get these in their `tools_add`; the reviewer stays
-  at just `read_ticket`.
+  X"). Returns key + summary + status refs.
+- `jira_dev_info(ref)` — commits / branches / PRs Jira links to the
+  issue (dev-status API `/rest/dev-status/1.0/issue/detail`;
+  `atlassian-python-api` may need a raw `jira.get(...)`).
+- Investigators get these in `tools_add`; the reviewer stays at
+  just `read_ticket`.
 
-### Ticket-key resolution
+### PR→ticket resolution — no regex, no primary
 
-- Pull the key from the PR title / branch name with `[A-Z]+-\d+`
-  (e.g. `ORD-287` from `hotfix/ORD-287-cancel-npe`, `SBLOOM-144`
-  from a title).
-- Inject as `_Ctx.jira_ticket_id` at run start; `read_ticket`
-  defaults to it when called without args.
-- Also surface it in the reviewer's `data:` block so the user
-  prompt can name it (`{jira_ticket_id}`) in the nudge.
+- `pr_context` calls a new `BitbucketPRProvider.pr_jira_issues(
+  project, repo, pr_id)` →
+  `GET /rest/jira/1.0/.../pull-requests/{id}/issues` (Bitbucket
+  endpoint, Bitbucket token). Authoritative — Bitbucket already
+  parsed branch name + commits + title against the Application Link.
+- Maps each returned issue to a `handle` (single-server: everything
+  → `default`; multi-server later: match the issue's Jira host
+  against the registry) and builds full `handle/namespace/ticket_id`
+  refs.
+- Injects the **flat list** as `jira_tickets` into the reviewer's
+  `data:` block — **no "primary"**. "Primary" isn't in the data
+  (Bitbucket returns a flat list), the branch-match heuristic is
+  fragile, and a PR genuinely can span multiple tickets. The agent
+  gets the list and calls `read_ticket` on whichever it judges
+  relevant — exactly the `diff_list_files → diff_read_file` pattern,
+  which has no "primary file" concept either.
+- Empty list → `jira_tickets: []`, reviewer proceeds on diff +
+  description alone. Not an error.
+- **Regex fallback (`[A-Z]+-\d+` on branch/title) is deferred** —
+  the authoritative endpoint is confirmed working; add the fallback
+  only if a non-Application-Link deployment actually needs it.
 
 ### Reviewer wiring
 
-- `reviewer.user.md` — add `read_ticket` to `tools_add`.
-- LOOK-phase methodology nudge: "If the PR claims to address a Jira
-  ticket, read it before forming concerns. If the ticket is part of
-  a larger initiative (epic, sibling tickets), skim those too — a
-  one-line hotfix inside a wider null-safety effort calls for
-  different severity calibration than the same line in isolation."
+- `reviewer.user.md` — add `read_ticket` to `tools_add`. (Until
+  the production rollout: the new TEST scenario carries `read_ticket`
+  in its own prompt variant only — see below — so production
+  reviewer behaviour is unchanged while the feature is proven out.)
+- LOOK-phase nudge: "The PR is associated with these Jira tickets:
+  {jira_tickets}. Read the relevant one(s) before forming concerns.
+  If a ticket is part of a larger initiative (epic, sibling
+  tickets), skim those too — a one-line hotfix inside a wider
+  null-safety effort calls for different severity calibration than
+  the same line in isolation."
 
-### Toggle — two layers
+### Mocking — two distinct mechanisms, do not conflate
 
-The agent should keep working when Jira is unavailable or
-deliberately switched off in prod. Two independent mechanisms:
+1. **Test scenarios = fake provider, NOT a tool-mock.** Mirrors
+   fake-bitbucket: a fixture-fed `JiraRegistry` / `JiraProvider`
+   whose `fetch_ticket` reads a fixture JSON instead of the network.
+   Wired the fake-bitbucket way — the unit fixture declares the
+   ticket(s) (a `jira_tickets:` block or a fixture path),
+   `run_unit.py` materialises it and passes the path via env, the
+   provider checks that env var. Because the fake returns a real
+   `TicketContext` through the real `distill_ticket` + `format_ticket`,
+   the agent sees the *exact* real format — `distill_ticket` is
+   genuinely exercised, not bypassed. `tests/fixtures/jira_issue_sample.json`
+   is already the right shape.
+2. **Prod toggle = sticky `ToolMocks`.** Separate concern: turning
+   the tool *off* in production. `orchestra/fixtures/mocks/disable-jira.yaml`,
+   one-line sticky shortcut `read_ticket: "Jira integration is
+   currently disabled — proceed with the PR diff + description
+   alone."`. Pass `--mocks=...` to `cli.py run` / a webhook agent;
+   inherited parent→child (`agent.py:162`). Same pattern as
+   `disable-review-status.yaml` (commit 260c89d).
 
-1. **Prod toggle = sticky tool-mock.** Ship
-   `orchestra/fixtures/mocks/disable-jira.yaml` using the one-line
-   sticky-mock shortcut:
-   ```yaml
-   read_ticket: "Jira integration is currently disabled — proceed with the PR diff + description alone."
-   ```
-   Pass `--mocks=orchestra/fixtures/mocks/disable-jira.yaml` to
-   `cli.py run` (or a webhook `[agents.*]` command) and every
-   `read_ticket` call short-circuits with that line — at any depth,
-   since `ToolMocks` is inherited parent→child (see
-   `orchestra/agent.py:162`). This is the same pattern as
-   `disable-review-status.yaml` (§ tool_mocks / commit 260c89d).
-2. **Auto-degradation = unconfigured provider.** Independently, if
-   `JIRA_TOKEN` is unset the provider itself returns a "not
-   configured" sentinel — no crash, no mock needed. The mock is the
-   *explicit* opt-out even when Jira *is* configured; the sentinel
-   is the *implicit* fallback when it isn't.
+Plus the provider's own `configured=False` sentinel — the implicit
+fallback when no server is configured at all.
 
-### Bench (Phase 3)
+### Test scenario — ticket-backed concerns
 
-`setup.jira_tickets:` block — load fixtures from a YAML file
-mirroring Jira's REST shape so scenarios run hermetically without
-hitting a live Jira. Or a mock provider in the `bitbucket/base.py`
-ABC style. Lets scenario authors plant a ticket + its links and
-assert the agent consulted them.
+A new unit-tier reviewer scenario, **A/B against REV-U-001**
+(same branch `feature/ORD-301-store-credit`, same diff):
+
+- `diffgraph/test_prompts/reviewer/concerns-text-with-ticket.md` —
+  like `concerns-text.md` but `tools_add: [text_answer, read_ticket]`
+  + the LOOK nudge. Keeps `read_ticket` user-level and scoped to
+  this one test, production prompts untouched.
+- `benchmarks/fixtures/jira/store-credit-ticket.json` — a
+  realistic ORD-301 ticket fixture (AC: credit applied pre-tax to
+  subtotal, cannot apply twice, expired credits rejected), fed to
+  the fake provider.
+- `benchmarks/scenarios/unit/reviewer/REV-U-00X-store-credit-ticket-backed.yaml`
+  — `user_message_from` → the new prompt variant, `jira_tickets:` →
+  the fixture.
+- `concern_focuses` require concerns that are **sharper because of
+  the ticket** — not "credit looks mis-applied" but "code applies
+  credit post-tax to total, violating the ticket's AC: pre-tax on
+  subtotal". The A/B contrast with REV-U-001 (no ticket) is the
+  whole point.
 
 ### Phasing
 
-- **Phase 1** — `providers/jira.py` + `read_ticket` tool +
-  ticket-key resolution + reviewer `tools_add` + LOOK nudge + env
-  (`JIRA_URL` / `JIRA_TOKEN` in `.env.example`) + sticky-mock
-  fixture + graceful no-token degradation + tests (provider with a
-  mocked `atlassian.Jira`, tool schema, key-resolution regex,
-  no-token path, sticky-mock disable path).
-- **Phase 2** — `search_tickets(jql)` + `jira_dev_info(key)` for
-  investigators. Deep link traversal already works via repeated
-  `read_ticket` on linked keys.
-- **Phase 3** — bench `setup.jira_tickets:` fixtures for hermetic
-  scenario testing.
+- **Phase 1** — `format_ticket` → `read_ticket(ref)` tool +
+  `JiraRegistry` + `config.local.yaml` `jira_servers:` →
+  fake-provider-via-env → `pr_jira_issues` in the Bitbucket provider
+  + `pr_context` wiring (`jira_tickets` in `data:`) → the test
+  scenario (prompt variant + fixture + scenario yaml) → tests →
+  `disable-jira.yaml` prod toggle → update this section's status.
+  (`diffgraph/providers/jira.py` + its fixture + tests are already
+  built — the registry wraps them.)
+- **Phase 2** — `search_tickets(jql)` + `jira_dev_info(ref)` for
+  investigators.
+- **Phase 3** — bench `setup.jira_tickets:` infra for hermetic
+  scenario testing more broadly than the one test scenario above.
 
-**What we'd see in a passing run.**
-- Agent reads `ORD-287` ticket, walks `is_part_of` link to
-  `ORD-EPIC-NULL-SAFETY`.
-- One of the findings cites the epic explicitly: "Epic
-  EP-NULL-SAFETY mandates @PostLoad-driven invariants for all
-  @OneToMany; this hotfix masks the symptom rather than meeting
-  that direction."
-- agent_warnings stays clean — no "methodology-gap: didn't
-  consult ticket" because the agent did.
+**What we'd see in a passing run.** Agent reads the PR's
+`jira_tickets`, calls `read_ticket` on the ORD-301 ref, finds the
+AC, and one concern cites it explicitly: "the ticket's AC says
+store credit is a pre-tax deduction on subtotal; the code subtracts
+it from the post-tax total — direct AC violation, not just a smell."
+agent_warnings stays clean — no "methodology-gap: didn't consult
+ticket".
 
-**Effort:** Medium. Phase 1 is well-trodden — `atlassian-python-api`
-is already vendored, the provider/tool/prompt pattern is the same as
-Bitbucket, and the toggle reuses the existing sticky-mock infra. The
-biggest Phase-2/3 work is the dev-status API (less library support)
-and the bench fixture infra so scenarios run without a live Jira.
+**Effort:** Medium. The provider + distill + fixture + tests exist;
+Phase 1 is the registry wrapper, `format_ticket`, the tool, the
+Bitbucket `pr_jira_issues` call + `pr_context` wiring, and the test
+scenario. Heaviest Phase-2/3 work is the dev-status API and the
+bench fixture infra.
 
 ---
 

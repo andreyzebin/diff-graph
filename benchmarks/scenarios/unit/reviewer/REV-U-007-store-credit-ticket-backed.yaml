@@ -1,0 +1,130 @@
+id: REV-U-007-store-credit-ticket-backed
+agent: reviewer
+tags: [tier:unit, agent:reviewer, isolation, concerns-only, jira-ticket]
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmarks.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# A/B partner of REV-U-001-store-credit-concerns: SAME branch, SAME
+# generic PR description, SAME concerns-text deliverable channel —
+# the ONE difference is this fixture hands the reviewer the ORD-301
+# Jira ticket (via the fake JiraProvider + read_ticket tool). The
+# ticket carries the acceptance criteria the diff is supposed to
+# satisfy; REV-U-001 has to infer intent from the diff alone, this
+# one can ground concerns in the AC. The contrast IS the test —
+# does ticket context produce sharper, AC-grounded concerns?
+#
+# The Jira side is faked at the PROVIDER level (not via ToolMocks):
+# `jira_fixture` below is passed to cli.py as DIFFGRAPH_JIRA_FIXTURE,
+# and JiraProvider reads that JSON instead of hitting a live Jira —
+# the fake-bitbucket pattern. The agent sees the exact real
+# `format_ticket` rendering because distill_ticket + format_ticket
+# genuinely run; nothing about the tool's output is hand-mocked.
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: feature/ORD-301-store-credit
+
+# concerns-text WITH the read_ticket tool + a LOOK nudge to consult
+# the ticket. read_ticket is user-level here, scoped to this test —
+# production reviewer.user.md is untouched (TODO §5b Phase 1).
+user_message_from: diffgraph:diffgraph/test_prompts/reviewer/concerns-text-with-ticket.md
+
+# Fake JiraProvider data source — read_ticket serves this fixture
+# for any key it's called with. Resolved relative to the scenario
+# yaml, same as `mocks:`.
+jira_fixture: ../../../fixtures/jira/store-credit-ticket.json
+
+pr_state:
+  metadata:
+    title: "ORD-301: Add customer store credit redemption"
+    # Deliberately the SAME generic description as REV-U-001 — the
+    # acceptance criteria live in the ticket, not the PR body. That's
+    # the point: the reviewer must read ORD-301 to get the real
+    # contract. (Leaking AC into the description would collapse the
+    # A/B — see TODO §5b / the SCEN-009/010/011 leak cleanup.)
+    description: |
+      Adds a store-credit balance per customer plus an endpoint
+      to redeem credit at checkout. Touches StoreCreditService,
+      a new repository, and the customer controller.
+    pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/301"
+    bot_user: "diffgraph-bot"
+  comments: []
+
+trigger:
+  type: comment
+  text: "/review"
+  comment_id: 0
+
+# The PR's associated Jira ticket ref(s). In production pr_context
+# resolves these from Bitbucket's Jira-integration endpoint; here the
+# scenario supplies them. Shape: handle/namespace/ticket_id — the
+# agent copies the ref verbatim into read_ticket(ref). The fake
+# provider ignores the routing parts and returns jira_fixture, but
+# the ref shape is the real production contract.
+agent_data:
+  jira_tickets: "default/ORD/ORD-301"
+
+# ── Judge (concerns-text reviewer, ticket-backed) ────────────────────────
+# Same machinery as REV-U-001: assert_via=[intended_text], the judge
+# reads the final text_answer payload and matches each concern_focuses
+# group (AND-of-OR keywords).
+#
+# These three focuses are the bugs in feature/ORD-301-store-credit,
+# but framed against the ORD-301 acceptance criteria the agent now
+# has access to:
+#   • credit-pretax-vs-ac — the discriminator. ORD-301 AC: "store
+#     credit is a PRE-TAX deduction off the subtotal, tax recomputed;
+#     never subtracted from the post-tax total." The diff does the
+#     opposite. From the diff ALONE this reads as "the math looks
+#     odd"; WITH the ticket it's a flat AC violation. A reviewer
+#     without the ticket rarely surfaces this cleanly — that's the
+#     A/B signal vs REV-U-001.
+#   • redeem-ownership — ORD-301 AC: "a customer may redeem only
+#     their OWN credit against their OWN order." redeemCredit() does
+#     no ownership check → IDOR. The ticket turns a generic
+#     authz smell into a named AC breach.
+#   • apply-once-concurrency — ORD-301 AC: "applied at most once,
+#     idempotent" + the tech-lead's ticket comment that the guard
+#     "has to hold under concurrent requests." isRedeemed() is a
+#     plain read-then-write, not pessimistic-locked.
+#
+# Threshold conservative (0.5) like REV-U-001 — calibrate after a
+# few attempt batches. The interesting comparison is per-focus hit
+# rate against REV-U-001's, not the absolute score.
+expected_output:
+  assert_via: [intended_text]
+  required_comments: []
+  forbidden_comments:
+    - description: "Inline comments — reviewer was told concerns-text; no posting allowed."
+  concern_focuses:
+    - id: credit-pretax-vs-ac
+      description_keywords:
+        ["pre-tax", "subtotal", "post-tax", "total", "tax recalcul", "recompute tax", "AC", "acceptance criteria", "ticket"]
+      rationale: "ORD-301 AC: store credit is a pre-tax deduction off the subtotal with tax recomputed on the reduced subtotal — never subtracted from the post-tax total. The diff applies the credit to the post-tax total. This is the discriminator concern: hard to state confidently from the diff alone, clear once the ticket AC is read."
+    - id: redeem-ownership
+      description_keywords:
+        ["ownership", "own credit", "own order", "IDOR", "belongs", "authorization", "currentUser"]
+      rationale: "ORD-301 AC: a customer may redeem only their own credit against their own order. redeemCredit(creditId, orderId) verifies neither — any authenticated customer can redeem anyone's credit. The ticket turns a generic authz smell into a named AC breach."
+    - id: apply-once-concurrency
+      description_keywords:
+        ["concurrent", "race", "idempotent", "at most once", "lock", "pessimistic", "isRedeemed", "double-redeem", "read-then-write"]
+      rationale: "ORD-301 AC: a credit can be applied at most once (idempotent), and the tech-lead's ticket comment stresses the guard must hold under concurrent requests. isRedeemed() inside @Transactional is a plain read-then-write — two concurrent redeems both pass."
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+  thresholds:
+    min_score: 0.5
+    min_required_found: 0
+    max_false_positives: 1
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: medium
+  scenario_type: agent_unit
+  capabilities: [reviewer, concern_forming, look_phase, jira_ticket_awareness, ac_grounding, security_authz]

@@ -450,6 +450,66 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             subject_pattern=_subject_pattern(),
         )
 
+    # One JiraProvider per tool-registration — its network client is
+    # lazy, so constructing it is free; it picks up JIRA_TOKEN or the
+    # DIFFGRAPH_JIRA_FIXTURE fake-path env at call time.
+    _jira_provider = None
+
+    def _jira():
+        nonlocal _jira_provider
+        if _jira_provider is None:
+            from .providers.jira import JiraProvider
+            _jira_provider = JiraProvider()
+        return _jira_provider
+
+    @registry.register(
+        name="read_ticket",
+        description=(
+            "Read the issue tracker ticket a PR claims to address — "
+            "its summary, type, status, description / acceptance "
+            "criteria, recent comments, status history, and linked "
+            "issues. `ref` is copied verbatim from the PR's "
+            "`jira_tickets` list (shape `handle/namespace/ticket_id`); "
+            "a bare ticket key also works. Linked issues come back "
+            "inline — call `read_ticket` again on a linked key to go "
+            "deeper. If the ticket can't be reached (not found, Jira "
+            "not configured) the tool says so plainly — proceed with "
+            "the diff + PR description alone, don't retry in a loop."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": (
+                        "Ticket reference — `handle/namespace/ticket_id` "
+                        "as given in the PR's jira_tickets list, or a "
+                        "bare ticket key (e.g. ORD-301)."
+                    ),
+                },
+            },
+            "required": ["ref"],
+        },
+    )
+    def read_ticket_tool(ref: str = "") -> str:
+        ref = (ref or "").strip()
+        if not ref:
+            return "(ref is required)"
+        # Lenient parse: the ticket key is the last '/'-segment of a
+        # handle/namespace/ticket_id ref, or the whole string if it's
+        # a bare key. Real multi-server routing (handle → server)
+        # lands with the JiraRegistry; for now the provider resolves
+        # against its single configured server / the fake fixture.
+        key = ref.rsplit("/", 1)[-1]
+        try:
+            from .providers.jira import format_ticket
+            return format_ticket(_jira().fetch_ticket(key))
+        except Exception as exc:  # never crash the agent on a tracker hiccup
+            return (
+                f"(read_ticket failed for {ref!r}: {type(exc).__name__}: "
+                f"{exc} — proceed with the diff + PR description alone)"
+            )
+
     @registry.register(
         name="post_comment",
         description=(

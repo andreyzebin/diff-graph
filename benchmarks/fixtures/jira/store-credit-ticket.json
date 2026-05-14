@@ -1,0 +1,144 @@
+{
+  "_fixture_note": "Synthetic Jira `issue(key, expand=changelog)` payload for the ORD-301 store-credit ticket. Shape matches a real sberworks issue (see tests/fixtures/jira_issue_sample.json — derived from real SBLOOM tickets); content is hand-authored to give the reviewer concrete acceptance criteria to check the feature/ORD-301-store-credit diff against. Fed to the fake JiraProvider via DIFFGRAPH_JIRA_FIXTURE for REV-U-007.",
+  "expand": "renderedFields,names,schema,changelog",
+  "id": "5901301",
+  "self": "https://jira.example.com/rest/api/2/issue/5901301",
+  "key": "ORD-301",
+  "fields": {
+    "summary": "Customer store credit redemption at checkout",
+    "issuetype": {
+      "self": "https://jira.example.com/rest/api/2/issuetype/7",
+      "id": "7",
+      "name": "Story"
+    },
+    "status": {
+      "self": "https://jira.example.com/rest/api/2/status/3",
+      "name": "In Progress",
+      "id": "3"
+    },
+    "description": "As a customer I want to redeem my store-credit balance against an open order at checkout, so credits earned from returns and promotions actually get used.\n\nAcceptance criteria:\n- A customer may redeem only their OWN credit, and only against their OWN order. Reject any attempt to redeem a credit or touch an order that belongs to a different customer.\n- Store credit is a PRE-TAX deduction: it comes off the order subtotal, and tax is recalculated on the reduced subtotal. It must never be subtracted from the post-tax total directly.\n- A credit can be applied at most once — redemption is idempotent; a second attempt on an already-redeemed credit is rejected.\n- Expired credits cannot be redeemed.\n- If the credit is larger than the order subtotal, only the needed part is consumed; the remainder stays on the customer's balance.\n\nSee the FlowMart pricing rules in AGENTS.md — PricingService is the single source of truth for any total/tax recalculation.",
+    "comment": {
+      "comments": [
+        {
+          "self": "https://jira.example.com/rest/api/2/issue/5901301/comment/1",
+          "id": "7100001",
+          "author": {
+            "self": "https://jira.example.com/rest/api/2/user?username=pm",
+            "name": "pm",
+            "key": "JIRAUSER100001",
+            "emailAddress": "pm@example.com",
+            "displayName": "Priya Manager",
+            "active": true,
+            "timeZone": "Europe/Moscow"
+          },
+          "body": "Confirming the pre-tax point with finance: yes, store credit reduces the taxable subtotal — the customer should not be taxed on the part covered by credit. Please make sure tax is recomputed, not just the total adjusted.",
+          "created": "2026-03-25T11:30:00.000+0300",
+          "updated": "2026-03-25T11:30:00.000+0300"
+        },
+        {
+          "self": "https://jira.example.com/rest/api/2/issue/5901301/comment/2",
+          "id": "7100002",
+          "author": {
+            "self": "https://jira.example.com/rest/api/2/user?username=tl",
+            "name": "tl",
+            "key": "JIRAUSER100002",
+            "emailAddress": "tl@example.com",
+            "displayName": "Timur Lead",
+            "active": true,
+            "timeZone": "Europe/Moscow"
+          },
+          "body": "This is a multi-instance service — whatever guards 'apply at most once' has to hold under concurrent requests, not just sequential ones. A plain isRedeemed() read-then-write isn't enough.",
+          "created": "2026-03-26T09:05:00.000+0300",
+          "updated": "2026-03-26T09:05:00.000+0300"
+        }
+      ],
+      "maxResults": 2,
+      "total": 2,
+      "startAt": 0
+    },
+    "issuelinks": [
+      {
+        "id": "6600001",
+        "self": "https://jira.example.com/rest/api/2/issueLink/6600001",
+        "type": {
+          "id": "10300",
+          "name": "PartOf",
+          "inward": "consists of",
+          "outward": "is part of",
+          "self": "https://jira.example.com/rest/api/2/issueLinkType/10300"
+        },
+        "outwardIssue": {
+          "id": "5800300",
+          "key": "ORD-290",
+          "self": "https://jira.example.com/rest/api/2/issue/5800300",
+          "fields": {
+            "summary": "Customer loyalty & credits — Q2 epic",
+            "status": {
+              "self": "https://jira.example.com/rest/api/2/status/3",
+              "name": "In Progress",
+              "id": "3"
+            },
+            "issuetype": {
+              "self": "https://jira.example.com/rest/api/2/issuetype/6",
+              "id": "6",
+              "name": "Epic"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "changelog": {
+    "startAt": 0,
+    "maxResults": 2,
+    "total": 2,
+    "histories": [
+      {
+        "id": "21000001",
+        "author": {
+          "self": "https://jira.example.com/rest/api/2/user?username=pm",
+          "name": "pm",
+          "key": "JIRAUSER100001",
+          "emailAddress": "pm@example.com",
+          "displayName": "Priya Manager",
+          "active": true,
+          "timeZone": "Europe/Moscow"
+        },
+        "created": "2026-03-24T15:00:00.000+0300",
+        "items": [
+          {
+            "field": "priority",
+            "fieldtype": "jira",
+            "from": "3",
+            "fromString": "Medium",
+            "to": "2",
+            "toString": "High"
+          }
+        ]
+      },
+      {
+        "id": "21000002",
+        "author": {
+          "self": "https://jira.example.com/rest/api/2/user?username=adev",
+          "name": "adev",
+          "key": "JIRAUSER100003",
+          "emailAddress": "adev@example.com",
+          "displayName": "Anna Dev",
+          "active": true,
+          "timeZone": "Europe/Moscow"
+        },
+        "created": "2026-03-25T09:40:00.000+0300",
+        "items": [
+          {
+            "field": "status",
+            "fieldtype": "jira",
+            "from": "1",
+            "fromString": "Open",
+            "to": "3",
+            "toString": "In Progress"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+# Drop-in tool-mock fixture for `cli.py run --mocks <path>`.
+#
+# What it does: every `read_ticket` call short-circuits with the
+# canned reply below — the tool stays in the agent's tool list (no
+# prompt recompile), the agent simply sees "Jira is off, work from
+# the diff" and proceeds.
+#
+# Use case: turn the Jira integration off in production — e.g. the
+# Jira PAT expired, the instance is down for maintenance, or you
+# just don't want tracker calls on a given route — without rolling
+# new prompts or touching agent code.
+#
+# This is the PROD TOGGLE, distinct from two other "no ticket"
+# paths the agent already handles:
+#   - JiraProvider with no token / no fixture  → `_not_configured`
+#     sentinel ("Jira not configured").
+#   - a configured Jira that 404s/403s on a key → `_not_viewable`
+#     sentinel ("ticket deleted or no permission").
+# All three end the same way for the agent — a one-line note, then
+# carry on with the diff + PR description. This fixture is the
+# *explicit operator opt-out*; the sentinels are implicit fallbacks.
+#
+# Form: the one-line sticky-mock shortcut (orchestra/tool_mocks.py)
+# — a bare string at the tool key = a single STICKY entry returning
+# that string verbatim, forever, no MockExhaustedError however many
+# times (and at whatever spawn depth — ToolMocks is inherited
+# parent→child) the agent calls read_ticket.
+#
+# Pairs with: orchestra/fixtures/mocks/disable-review-status.yaml
+#             (same pattern, for set_review_status).
+
+read_ticket: "Jira integration is currently disabled — proceed with the PR diff + description alone; do not retry."

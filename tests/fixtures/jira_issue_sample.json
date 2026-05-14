@@ -1,0 +1,247 @@
+{
+  "_fixture_note": "Sanitized Jira `issue(key, expand=changelog)` payload. Derived from real sberworks SBLOOM tickets (141 = comments + changelog, 137 = issue link), structure preserved verbatim, all PII / ticket keys / free text replaced with synthetic values. Exercises every distill_ticket() path: fields, capped+truncated comments, status-only changelog filter, inward+outward link flattening.",
+  "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+  "id": "5900001",
+  "self": "https://jira.example.com/rest/api/2/issue/5900001",
+  "key": "DEMO-101",
+  "fields": {
+    "summary": "Add a small web console for the internal proxy",
+    "issuetype": {
+      "self": "https://jira.example.com/rest/api/2/issuetype/3",
+      "id": "3",
+      "description": "A task that needs to be done.",
+      "name": "Task"
+    },
+    "status": {
+      "self": "https://jira.example.com/rest/api/2/status/5",
+      "description": "A resolution has been taken.",
+      "name": "Resolved",
+      "id": "5"
+    },
+    "description": "We keep hitting the proxy with raw curl. Build a thin web UI so the team can manage routes without the CLI. Acceptance: list routes, add/edit a route, no auth beyond the existing SSO.",
+    "comment": {
+      "comments": [
+        {
+          "self": "https://jira.example.com/rest/api/2/issue/5900001/comment/1",
+          "id": "7000001",
+          "author": {
+            "self": "https://jira.example.com/rest/api/2/user?username=adev",
+            "name": "adev",
+            "key": "JIRAUSER000001",
+            "emailAddress": "adev@example.com",
+            "displayName": "Alex Developer",
+            "active": true,
+            "timeZone": "Europe/Moscow"
+          },
+          "body": "First cut is up on the feature branch — see the PR. The route table renders, add/edit still stubbed.",
+          "created": "2026-03-20T10:15:00.000+0300",
+          "updated": "2026-03-20T10:15:00.000+0300"
+        },
+        {
+          "self": "https://jira.example.com/rest/api/2/issue/5900001/comment/2",
+          "id": "7000002",
+          "author": {
+            "self": "https://jira.example.com/rest/api/2/user?username=breviewer",
+            "name": "breviewer",
+            "key": "JIRAUSER000002",
+            "emailAddress": "breviewer@example.com",
+            "displayName": "Bella Reviewer",
+            "active": true,
+            "timeZone": "Europe/Moscow"
+          },
+          "body": "Looks good. One concern: the edit form posts the whole route list back instead of a single route — fine for now, revisit if the table grows.",
+          "created": "2026-03-21T14:02:30.000+0300",
+          "updated": "2026-03-21T14:02:30.000+0300"
+        },
+        {
+          "self": "https://jira.example.com/rest/api/2/issue/5900001/comment/3",
+          "id": "7000003",
+          "author": {
+            "self": "https://jira.example.com/rest/api/2/user?username=adev",
+            "name": "adev",
+            "key": "JIRAUSER000001",
+            "emailAddress": "adev@example.com",
+            "displayName": "Alex Developer",
+            "active": true,
+            "timeZone": "Europe/Moscow"
+          },
+          "body": "Add/edit wired up, tests green. Moving to Resolved.",
+          "created": "2026-04-08T12:25:00.000+0300",
+          "updated": "2026-04-08T12:25:00.000+0300"
+        }
+      ],
+      "maxResults": 3,
+      "total": 3,
+      "startAt": 0
+    },
+    "issuelinks": [
+      {
+        "id": "6500001",
+        "self": "https://jira.example.com/rest/api/2/issueLink/6500001",
+        "type": {
+          "id": "10300",
+          "name": "PartOf",
+          "inward": "consists of",
+          "outward": "is part of",
+          "self": "https://jira.example.com/rest/api/2/issueLinkType/10300"
+        },
+        "outwardIssue": {
+          "id": "5800001",
+          "key": "DEMO-200",
+          "self": "https://jira.example.com/rest/api/2/issue/5800001",
+          "fields": {
+            "summary": "Internal proxy — Q2 hardening epic",
+            "status": {
+              "self": "https://jira.example.com/rest/api/2/status/10865",
+              "description": "",
+              "name": "In Progress",
+              "id": "10865"
+            },
+            "issuetype": {
+              "self": "https://jira.example.com/rest/api/2/issuetype/6",
+              "id": "6",
+              "name": "Epic"
+            }
+          }
+        }
+      },
+      {
+        "id": "6500002",
+        "self": "https://jira.example.com/rest/api/2/issueLink/6500002",
+        "type": {
+          "id": "10000",
+          "name": "Blocks",
+          "inward": "is blocked by",
+          "outward": "blocks",
+          "self": "https://jira.example.com/rest/api/2/issueLinkType/10000"
+        },
+        "inwardIssue": {
+          "id": "5800002",
+          "key": "DEMO-099",
+          "self": "https://jira.example.com/rest/api/2/issue/5800002",
+          "fields": {
+            "summary": "SSO middleware must expose the current user to the console",
+            "status": {
+              "self": "https://jira.example.com/rest/api/2/status/3",
+              "description": "",
+              "name": "Open",
+              "id": "3"
+            },
+            "issuetype": {
+              "self": "https://jira.example.com/rest/api/2/issuetype/3",
+              "id": "3",
+              "name": "Task"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "changelog": {
+    "startAt": 0,
+    "maxResults": 4,
+    "total": 4,
+    "histories": [
+      {
+        "id": "20000001",
+        "author": {
+          "self": "https://jira.example.com/rest/api/2/user?username=adev",
+          "name": "adev",
+          "key": "JIRAUSER000001",
+          "emailAddress": "adev@example.com",
+          "displayName": "Alex Developer",
+          "active": true,
+          "timeZone": "Europe/Moscow"
+        },
+        "created": "2026-03-19T16:04:11.784+0300",
+        "items": [
+          {
+            "field": "Rank",
+            "fieldtype": "custom",
+            "from": "",
+            "fromString": "",
+            "to": "",
+            "toString": "Ranked higher"
+          }
+        ]
+      },
+      {
+        "id": "20000002",
+        "author": {
+          "self": "https://jira.example.com/rest/api/2/user?username=adev",
+          "name": "adev",
+          "key": "JIRAUSER000001",
+          "emailAddress": "adev@example.com",
+          "displayName": "Alex Developer",
+          "active": true,
+          "timeZone": "Europe/Moscow"
+        },
+        "created": "2026-03-19T17:05:48.033+0300",
+        "items": [
+          {
+            "field": "assignee",
+            "fieldtype": "jira",
+            "from": null,
+            "fromString": null,
+            "to": "JIRAUSER000001",
+            "toString": "Alex Developer"
+          }
+        ]
+      },
+      {
+        "id": "20000003",
+        "author": {
+          "self": "https://jira.example.com/rest/api/2/user?username=adev",
+          "name": "adev",
+          "key": "JIRAUSER000001",
+          "emailAddress": "adev@example.com",
+          "displayName": "Alex Developer",
+          "active": true,
+          "timeZone": "Europe/Moscow"
+        },
+        "created": "2026-03-19T17:05:50.958+0300",
+        "items": [
+          {
+            "field": "status",
+            "fieldtype": "jira",
+            "from": "1",
+            "fromString": "Open",
+            "to": "3",
+            "toString": "In Progress"
+          }
+        ]
+      },
+      {
+        "id": "20000004",
+        "author": {
+          "self": "https://jira.example.com/rest/api/2/user?username=breviewer",
+          "name": "breviewer",
+          "key": "JIRAUSER000002",
+          "emailAddress": "breviewer@example.com",
+          "displayName": "Bella Reviewer",
+          "active": true,
+          "timeZone": "Europe/Moscow"
+        },
+        "created": "2026-04-08T12:28:44.573+0300",
+        "items": [
+          {
+            "field": "resolution",
+            "fieldtype": "jira",
+            "from": null,
+            "fromString": null,
+            "to": "1",
+            "toString": "Fixed"
+          },
+          {
+            "field": "status",
+            "fieldtype": "jira",
+            "from": "3",
+            "fromString": "In Progress",
+            "to": "5",
+            "toString": "Resolved"
+          }
+        ]
+      }
+    ]
+  }
+}

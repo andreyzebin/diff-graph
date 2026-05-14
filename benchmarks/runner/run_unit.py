@@ -48,6 +48,12 @@ class UnitFixture:
     # dispatcher-tests can short-circuit spawn_agent(reviewer) with a
     # canned response instead of running the heavy chain.
     mocks: Optional[str] = None
+    # Optional Jira fixture path — fake-provider data source for
+    # ticket-backed scenarios. Resolved like `mocks`, plumbed to
+    # cli.py as the DIFFGRAPH_JIRA_FIXTURE env var; the JiraProvider
+    # reads the fixture instead of hitting a live Jira (the
+    # fake-bitbucket pattern: same class, env-switched source).
+    jira_fixture: Optional[str] = None
     # Optional scenario-shape blocks — when present the runner can
     # invoke an LLM judge against the agent's invocations.json after
     # the subprocess finishes (TODO §5d.3 / §5e.14 Stage 4). Stored
@@ -154,6 +160,17 @@ def load_fixture(fixture_path: str | Path) -> UnitFixture:
                 f"{p}: mocks -> {mp} does not exist"
             )
         mocks_resolved = str(mp)
+    # jira_fixture path — same resolution rules. The fake-provider
+    # data source for ticket-backed scenarios.
+    jira_fixture_raw = raw.get("jira_fixture")
+    jira_fixture_resolved: Optional[str] = None
+    if jira_fixture_raw:
+        jp = _resolve_prompt_path(str(jira_fixture_raw), p.parent)
+        if not jp.exists():
+            raise FileNotFoundError(
+                f"{p}: jira_fixture -> {jp} does not exist"
+            )
+        jira_fixture_resolved = str(jp)
     return UnitFixture(
         fixture_path=p,
         fixture_id=str(raw.get("id") or p.stem),
@@ -166,6 +183,7 @@ def load_fixture(fixture_path: str | Path) -> UnitFixture:
         trigger=dict(raw.get("trigger") or {}),
         user_message_from=umf,
         mocks=mocks_resolved,
+        jira_fixture=jira_fixture_resolved,
         expected_output=dict(raw.get("expected_output") or {}),
         tags=list(raw.get("tags") or []),
         raw=raw,
@@ -370,6 +388,11 @@ def run_unit_fixture(
         os.close(snk_fd)
         env["DIFFGRAPH_FAKE_PR_FILE"] = fake_pr_path
         env["DIFFGRAPH_FAKE_PR_SINK"] = sink_path
+        if fixture.jira_fixture:
+            # Fake JiraProvider data source — read_ticket serves this
+            # fixture instead of hitting a live Jira (fake-bitbucket
+            # pattern, same class, env-switched source).
+            env["DIFFGRAPH_JIRA_FIXTURE"] = fixture.jira_fixture
         if agent_dir is not None:
             # cli.py reads DIFFGRAPH_TRACE_PATH and routes both OTel
             # filesystem and SQLite trace inserts under it. We hand

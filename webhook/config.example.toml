@@ -51,6 +51,20 @@ trigger = "cli"
 command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id} --mocks=orchestra/fixtures/mocks/disable-review-status.yaml'
 timeout = 600
 
+# DiffGraph — dispatcher entry point with the Jira integration off.
+# --mocks short-circuits every read_ticket call (at any spawn depth)
+# with a canned "Jira is off, work from the diff" reply. Use when the
+# Jira PAT has expired, the instance is down, or a given route just
+# shouldn't make tracker calls — no prompt or code change needed. The
+# agent reads the diff + PR description as usual; only ticket lookups
+# are silenced. (Same sticky-mock pattern as dg-no-status; the two
+# --mocks files can also be combined into one fixture if you want
+# both off.)
+[agents.dg-no-jira]
+trigger = "cli"
+command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id} --mocks=orchestra/fixtures/mocks/disable-jira.yaml'
+timeout = 600
+
 # DiffGraph — direct reviewer (skip dispatcher, always review)
 [agents.dg-review]
 trigger = "cli"
