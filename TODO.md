@@ -2588,7 +2588,9 @@ A new unit-tier reviewer scenario, **A/B against REV-U-001**
   (`diffgraph/providers/jira.py` + its fixture + tests are already
   built — the registry wraps them.)
 - **Phase 2** — `search_tickets(jql)` + `jira_dev_info(ref)` for
-  investigators.
+  investigators. `jira_dev_info` is the bridge into §10 (cross-source
+  investigation toolset): it emits PR-refs that §10's `read_pr`
+  consumes. See §10.8 Phase A.
 - **Phase 3** — bench `setup.jira_tickets:` infra for hermetic
   scenario testing more broadly than the one test scenario above.
 
@@ -2873,6 +2875,10 @@ Store review state per PR for incremental review across multiple runs.
 **Where:** `orchestra/trace_db.py` or new `diffgraph/pr_state.py`.
 **Effort:** Large.
 
+**Related to §11** — this is the PR-level slice of the multi-level
+memory system. The `pr_state` table is the natural substrate for
+PR-scoped memos; §11 generalises the scope/lifetime/curation model.
+
 ### Rollout strategy
 
 ```
@@ -2936,6 +2942,8 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 7.8 | Evolution dashboard + capability heatmap | High | Medium-Large | Do third |
 | 7.9 | Evolution meta-agent (gardener) | Medium | Medium | Later |
 | 7.10 | Cross-run memory per repo | Medium | Medium | Later |
+| 10  | Cross-source investigation toolset (read_pr/list_prs/diff_* repo=) | **High** | Large | Do second |
+| 11  | Multi-level agent memory (memo: KV + documents, PR/repo/team/company) | **High** | Medium-Large | Do second |
 
 ---
 
@@ -3196,6 +3204,10 @@ Per-repo learned patterns injected into prompts:
 - "Team prefers explicit error handling over @SneakyThrows"
 - Aggregated from trace DB + pr-analytics acceptance by repo.
 - New `{learned_patterns}` placeholder in prompts, updated weekly.
+
+**Superseded by §11** — this is the repo-level slice of the multi-level
+memory system. Keep here for the `{learned_patterns}` injection idea;
+the storage/curation model now lives in §11.
 
 ### 7.11 Population visualization
 
@@ -3596,3 +3608,295 @@ materialiser (`repos.py`, `jira.py`, `past_reviews.py`,
 `build_workspace(pr_meta) → workspace_dir` after primary clone.
 **Effort:** Phase 9-A small (1 day), 9-B small (½ day), 9-C
 medium (2-3 days), 9-D each medium, 9-E small per tool.
+
+---
+
+## 10. Cross-source investigation toolset — investigator over the project graph
+
+**Status:** design only (recorded 2026-05-14, "только думай" spike). No
+code. Supersedes nothing — it's the *tool-traversal* counterpart to §9's
+*file-materialisation* approach; the two must be reconciled (see §10.7).
+
+### 10.1 The frame — a project knowledge graph
+
+The investigator should operate over a **graph of project knowledge**:
+Jira tickets ↔ PRs ↔ repos ↔ discussions ↔ docs. Each tool is "follow
+one type of edge", agent-driven, budget-bounded, strictly read-only:
+
+| Edge | Tool | State |
+|---|---|---|
+| ticket → linked tickets | `read_ticket` (links inline) | done (§5b Phase 1) |
+| ticket → PRs/branches/commits | `jira_dev_info(ref)` | §5b Phase 2 |
+| ticket discovery | `search_tickets(jql)` | §5b Phase 2 |
+| PR → its coordinates (meta + base/source/state/author) | `read_pr(repo, pr_id)` | **new** |
+| repo → its PRs (discovery) | `list_prs(repo, …)` | **new** |
+| PR/repo → code | `diff_*` gains `repo=` param | **new (param)** |
+| PR → discussion | `list_threads/read_thread/read_comment` gain `repo=`+`pr=` | **new (param)** |
+| repo → repo | AGENTS.md `## Related repositories` manifest | §9.2, reused |
+
+This is **§5b (Jira) and §9 (workspace) converging** into one
+cross-source surface. §9 today is framed as "files/sources"; this
+extends it to "repos as navigable PR/code graphs", not just folders of
+files.
+
+### 10.2 Tool surface — parameterize, don't proliferate
+
+Hard rule: **~2 genuinely new tools + a `repo=` param on existing ones.**
+Not 10 new tools.
+
+- `diff_*` (`diff_read_file/diff_list_files/diff_search/diff_outline`)
+  get `repo=<handle>` (default: current repo). The VFS is already
+  `ref`-parameterized — only "which repo" is missing. And the existing
+  `ref=` already covers both access patterns (see §10.3): no new
+  concept, just one param.
+- `list_threads/read_thread/read_comment` get `repo=`+`pr=` (default:
+  current PR's comment graph).
+- **Genuinely new — two tools:** `read_pr(repo, pr_id)` resolves a PR →
+  meta + base/source SHA + state + author (for the *current* PR this is
+  pre-filled in `ctx`; `read_pr` does that resolution for *other* PRs);
+  `list_prs(repo, …)` is discovery.
+
+### 10.3 Two access patterns — both served by `repo=` + `ref=`
+
+1. **Read another repo's code at a point** (the lib repo, migrations,
+   k8s, docs) — no PR involved. `diff_*(repo="lib", ref="main")` or a
+   tag. Pure browsing.
+2. **Read a change + its review** (prior PRs in this repo, or a PR in
+   another repo) — `read_pr(repo, id)` → base/source SHAs →
+   `diff_*(repo, ref="<base>..<source>")` + `list_threads(repo, pr=id)`.
+
+The existing `ref=` distinguishes them: `ref="main"` = code-at-a-point,
+`ref="a..b"` = a diff. Nothing new needed.
+
+### 10.4 AGENTS.md manifest = map + trust boundary = `RepoRegistry`
+
+"Подключать репы через указание в agents md" → a **`RepoRegistry`,
+mirroring the `JiraRegistry`** already built for §5b. Same shape: handle
+→ resource. Reuses §9.2's `## Related repositories` section verbatim
+(`- **lib** — \`ssh://…\`` + free-text trigger hint).
+
+- `repo=<handle>` accepts only declared handles → the manifest is a
+  **scope allowlist** (the investigator cannot wander into arbitrary
+  repos).
+- The real gate is still the bot's Bitbucket permissions: a declared
+  repo the bot can't see → graceful "not accessible" (the `_not_viewable`
+  pattern from §5b), not a crash.
+- Ref symmetry with Jira: a PR-ref reads `repo_handle/pr_id`, just like
+  a ticket-ref reads `handle/namespace/ticket_id`.
+
+So the full picture: `JiraRegistry` (Jira server handles) +
+`RepoRegistry` (repo handles, from AGENTS.md) + edge-follower tools —
+all read-only, all agent-driven, all budget-capped.
+
+### 10.5 The three user use-cases → capabilities
+
+| Use case | Closed by | Maturity |
+|---|---|---|
+| Investigate business stories / bugs (Jira) **and** jump into code, PRs, discussions | `read_ticket` → `jira_dev_info` → `read_pr` → `diff_*`/`list_threads` | dev_info = §5b Phase 2; rest = new |
+| Respect the review team's rules/focuses by reading prior PRs | `list_prs(repo=current, state=merged, path=…)` → `read_pr`/`list_threads` on similar PRs | **fuzziest** — needs `list_prs` filters (path/author/recency); result is calibration/impression, not a hard rule |
+| Connect "other repos" (lib / migrations / k8s / docs) | AGENTS.md manifest + `RepoRegistry` + `diff_*(repo=…)` | = §9; this gives §9 a first concrete consumer |
+
+Note `list_prs(repo=current)` naturally serves the "learn the team's
+culture" case — no separate mechanism; `repo=` just defaults to current.
+
+### 10.6 Key tensions
+
+1. **Budget — risk #1.** Today the investigator works on ONE diff.
+   "Read any PR in any repo" is a combinatorial explosion of reachable
+   context. Discipline is mandatory: agent-driven traversal (not
+   server-side recursion — like `read_ticket` follows links one hop at a
+   time); per-call caps (`diff_*` already truncates ~30k; `read_pr`
+   needs the same); possibly a per-run cross-fetch budget. Without this,
+   one investigator spiders a dozen repos.
+2. **Strictly read-only.** The investigator never posts. Cross-repo
+   must add zero write doors — no `post_comment` on other repos, by
+   design.
+3. **Clone cost.** Workspace cache (`~/.diffgraph/workspace-cache/`),
+   lazy materialization. The git_repo provider already does lazy clone —
+   extend to N repos.
+4. **Investigator-only; reviewer stays lean.** The reviewer reads the
+   ticket (light) and *delegates* the cross-repo dig to an investigator
+   with a focus ("сверь с паттернами в shared-lib"). Division: reviewer
+   = ticket-aware triage, investigator = full cross-source dig. Unlike
+   `read_ticket` (in both base prompts), the cross-repo tools are
+   **investigator-only**.
+5. **The review-culture use-case is the least crisp.** "Learn from the
+   team via prior PRs" is powerful but fuzzy — which PRs? needs
+   `list_prs` filters, and the output is an impression, not a rule.
+   Lower priority; later phase within this section.
+
+### 10.7 Open question — reconcile with §9 (files vs tools)
+
+§9's philosophy is **"zero new tools — materialise documents to files,
+use existing `list_files/read_file/search`"**. This section is
+**tool-traversal** — `read_pr`, `list_prs`, edge-follower tools. They
+overlap (both cover "other repos", "prior reviews", "Jira"). They are
+not obviously the same approach. Must decide:
+
+- Are repos materialised as sibling mounts (§9-A) **and** also reachable
+  via `diff_*(repo=)` — i.e. the mount IS the `repo=` target? (likely
+  yes — `repo=<handle>` resolves to a §9 sibling mount.)
+- Is "PR as a change+review" a *document* (§9-B past-reviews
+  materializer renders `reviews/PR-N.md`) or a *tool* (`read_pr` +
+  `list_threads`)? The user explicitly asked for tools here — but §9-B
+  already plans the file form. Pick one, or define when each applies
+  (static snapshot of *our* past reviews → files; live exploration of
+  *arbitrary* PRs → tools).
+- `RepoRegistry` (§10.4) vs §9's `manifest.py` parser — same AGENTS.md
+  section, must be one parser, not two.
+
+Recommended resolution: **§9 materialises the bounded, known-relevant
+set at run start (siblings, PR-description Jira, our own past reviews);
+§10 tools let the investigator reach *beyond* that set on demand**
+(arbitrary PR in a declared repo, JQL search, dev-info link-walking).
+Files = the pre-staged context; tools = the agent-driven expansion. The
+manifest and the registries are shared infrastructure.
+
+### 10.8 Phasing
+
+- **Phase A — finish Jira (§5b Phase 2):** `search_tickets(jql)` +
+  `jira_dev_info(ref)`. `jira_dev_info` is the **bridge** — ticket →
+  linked commits/branches/PRs → the entry point into cross-repo PR
+  reading. Phase A and Phase C are coupled: `jira_dev_info` emits
+  PR-refs, `read_pr` consumes them, so Phase A naturally introduces the
+  PR-ref shape.
+- **Phase B — workspace manifest + `RepoRegistry`:** AGENTS.md
+  `## Related repositories` → registry (mirror of `JiraRegistry`);
+  `diff_*` gets `repo=`. This is §9-A territory — do it once, shared.
+- **Phase C — PR-as-resource:** `read_pr`, `list_prs`, cross-repo
+  `list_threads/read_thread`. Heaviest (clones, budget).
+- **Phase D — review-culture calibration:** `list_prs` filters
+  (path/author/recency) + an investigator-prompt nudge to "check how the
+  team reviewed similar changes". Fuzziest, last.
+
+Start with **Phase A** — it was already next per §5b, and it introduces
+the PR-ref shape that Phase C builds on.
+
+**Effort:** Phase A medium (dev-status API + JQL), Phase B small-medium
+(shared with §9-A), Phase C large (cross-repo clone + budget
+discipline), Phase D small.
+
+---
+
+## 11. Multi-level agent memory
+
+**Status:** design only (recorded 2026-05-14, "только думай" spike). No
+code. Generalises §7.10 (cross-run memory per repo) and §6.8 (persistent
+PR review state) into one multi-level system. Consumed by §10
+(review-culture calibration writes its lessons here).
+
+### 11.1 The frame — the missing quadrant
+
+We already have memory, just not this kind:
+
+- **`traces.db`** — a log: immutable, machine-written, append-only.
+  "What did we find last time" is already here.
+- **AGENTS.md** — human-authored repo knowledge.
+- **comment graph / Jira / §9 workspace** — external context.
+
+What's missing is the **agent-authored + mutable + curated** quadrant:
+the agent itself decides what's worth remembering, writes it, later
+revises or deletes it. This is exactly the auto-memory model already in
+use for Claude Code in this repo (`MEMORY.md` index + typed entries +
+"what NOT to save" + update-over-append + verify-before-trust). **Do not
+rebuild `traces.db`** — close this empty quadrant only.
+
+### 11.2 Two orthogonal axes (not one)
+
+"Levels" and "structures with different life-scope" are **two
+independent axes**:
+
+1. **Scope / level** — who can see it: **PR / repo / team / company**.
+   ("company" = the top scope of one tenant — the deployment's own
+   shared memory, not cross-tenant. Cross-tenant isolation is the
+   deployment boundary *above* this axis, not a level on it.)
+2. **Lifetime** — when it's GC'd: PR-lifetime / time-boxed (decays) /
+   permanent. Lifetime is best attached to the **entry type**, as in
+   auto-memory (reference = permanent, project = decays), not to the
+   level. A repo-scoped entry can be either permanent ("build command")
+   or decaying ("currently mid-migration to X").
+
+### 11.3 "Memo" is the product name; the substrate is trivial
+
+**memo** is the *business/product* concept — agent-authored notes. The
+*technical* structure is deliberately super-simple, one of:
+
+- **KV** — `key → value` (+ optional TTL). For derived/computed facts:
+  "build command", "test fixture path", "resolved Jira tickets for
+  PR-1630".
+- **documents** — md files (or a mongo-like doc store): typed entry with
+  name / description / body + an index. For prose observations: "this
+  class had a prod NPE", "the team always wants N+1 checked".
+
+No bespoke data structures beyond these two. "memo" spans both — it is
+*what we call the feature*, not a third structure.
+
+### 11.4 Levels → use cases → existing TODO sections
+
+| Level | Use case | Already in TODO |
+|---|---|---|
+| **PR** | re-review of an updated PR: "I raised BLOCKER X — is it fixed?" | **§6.8** (persistent PR review state), §5d.2 |
+| **repo** | "PricingService had a prod NPE", "team always wants N+1", calibration to the team's review focuses | **§7.10** (cross-run memory per repo) |
+| **team** | same across several repos — needs a team→repos map (where? config? AGENTS.md?) | — |
+| **company** | tenant-wide shared knowledge (DiffGraph operational facts, company-wide conventions) — keep to operational/convention knowledge, not project content | — |
+
+This request **generalises §7.10 and §6.8** into one multi-level system.
+And §10 (review-culture calibration) is a *consumer* of repo-memory:
+§10 reads prior PRs, memory **writes down the lesson** so §10 doesn't
+re-read every time.
+
+### 11.5 Key implementation insight — reads are cheap, writes are the new primitive
+
+Reading memory can be free: mount `memory/` into the §9 workspace, the
+agent reads it with the existing `list_files/read_file/search`.
+**Writing** is what the agent cannot do today — that's the genuinely new
+capability, and it's exactly where all the risk lives. So effort
+concentrates on the write path. (This is the §9-files vs §10-tools fork
+again: reads follow the §9 philosophy; writes must be a tool.)
+
+### 11.6 Key tensions
+
+1. **Write discipline — risk #1.** An agent writing memory every run
+   turns repo-memory into a junk drawer that poisons every future
+   review within a week. Proposed split of *write rights* by level:
+   PR-memory — review agents write freely (small blast radius, GC'd with
+   the PR); repo / team / company — promoted only via a separate
+   **curator step** after a review (reads the trace, decides what's
+   worth promoting). A deliberate act, not a side effect. This is the
+   most important architectural call here.
+2. **Staleness / provenance.** A repo-memo "PricingService is fragile"
+   from 6 months ago — the code moved. Every entry carries provenance
+   (when, by which review, at which commit); the reader judges
+   freshness. KV especially — "build command = X" simply goes wrong
+   after a repo change. verify-before-trust, as in auto-memory.
+3. **Scope leakage / multi-tenancy.** team-level needs a team→repos map.
+   company-level is tenant-wide — fine within a tenant, but the
+   cross-tenant boundary (deployment isolation) must sit above the
+   whole axis. Keep company-level to operational/convention knowledge,
+   never raw project content.
+4. **Context injection — hybrid.** Not eager-everything, not
+   lazy-everything. **Eager: a small index** (titles + one-line
+   descriptions, like `MEMORY.md`); **lazy: bodies + KV values**. The
+   index is cheap to always-inject; bodies are pulled on demand. The
+   pattern is already proven — it is `MEMORY.md`.
+
+### 11.7 Starting slice + open decision
+
+Start with the memo feature over the two trivial substrates (KV +
+documents). Open fork — **which level to start with**:
+
+- **PR-level** — safest (minimal blast radius, natural GC, clean
+  re-review use case), lower value. Coincides with §6.8.
+- **repo-level** — highest value (§7.10 + feeds §10 calibration), highest
+  junk-drawer risk — needs the curator step from day one.
+
+Recommendation: start with **PR-level + memo (KV + documents)**, work out
+write-discipline and provenance at small scale, then add repo-level
+*with* the curator. But this is a "safety vs value" call — open for the
+user to decide.
+
+**Template:** the auto-memory system already in this repo
+(`/home/andrey/.claude/projects/.../memory/`) — typed entries,
+`MEMORY.md` index, "what NOT to save", update-over-append.
+**Effort:** PR-level slice small-medium; curator + repo-level medium;
+team/company later.
