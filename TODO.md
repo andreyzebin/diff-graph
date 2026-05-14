@@ -1129,40 +1129,29 @@ Until that audit lands, the two-handed pattern (drop word arrays,
 expand `rationale` with explicit REQUIRED/FORBIDDEN semantics) is
 the workaround. See DISP-U-001 / DISP-U-002 for the canonical shape.
 
-### 5d.5 Stale bench-test mocks — 4 pre-existing failures
+### ~~5d.5 Stale bench-test mocks — 4 pre-existing failures~~ — fixed
 
-`pytest` over the merged tree reports **4 failures in
-`benchmarks/tests/`** that are NOT regressions — they fail
-identically in the pre-merge `code-review-benchmarks` history and
-came in untouched with the subtree (`0e66f3c`). The production code
-they exercise evolved; the hand-written test doubles didn't follow.
-Both are stale-mock fixes, small and self-contained:
+`pytest` over the merged tree had 4 red tests in `benchmarks/tests/`
+that were NOT regressions — they failed identically in the pre-merge
+`code-review-benchmarks` history and rode in untouched with the
+subtree (`0e66f3c`). Both were stale hand-written mocks the
+production code had outgrown; both fixed:
 
-- **`test_judge.py::test_judge_found_comment_passes` /
-  `::test_judge_missed_comment_fails`** —
-  `TypeError: MockProxy.get_review_status() takes 1 positional
-  argument but 2 were given`. `judge.py:241` now calls
-  `get_review_status(self._verdict_source)`; the test's `MockProxy`
-  still defines the old zero-arg signature. Fix: add the
-  `verdict_source` parameter to `MockProxy.get_review_status` (it
-  can ignore it — the mock returns a fixed status).
+- **`test_judge.py` (×2)** — `MockProxy.get_review_status` was
+  zero-arg but `judge.py:241` now calls
+  `get_review_status(self._verdict_source)`. Fixed: `MockProxy`
+  signature now mirrors `AgentPRView` / `FakeBenchPRView`
+  (`verdict_source` param, ignored — the mock returns a fixed
+  status).
+- **`test_bitbucket_proxy.py` (×2)** — `_decline_via_rest` was
+  rewritten to go through `client.post(..., advanced_mode=True)` and
+  check `resp.status_code`, but the close tests still mocked the old
+  `client.decline_pull_request` API and the response was a bare
+  `MagicMock` (`>= 400` → TypeError). Fixed: the tests now mock
+  `client.post` with a `status_code=204` response and assert the
+  `.../decline` POST shape.
 
-- **`test_bitbucket_proxy.py::test_close_declines_pr_with_current_version`
-  / `::test_close_uses_version_zero_when_missing`** —
-  `TypeError: '>=' not supported between instances of 'MagicMock'
-  and 'int'` at `real_factory.py:218` (`if resp.status_code >= 400`).
-  `_decline_via_rest` was rewritten to go through
-  `self._client.post(..., advanced_mode=True)` and check
-  `resp.status_code`; the test's mock client returns a bare
-  `MagicMock` for the response. Fix: set
-  `client.post.return_value.status_code = 204` (or similar) in the
-  test's fixture.
-
-Neither is scenario-tier — they're plain `pytest` unit tests, not
-in the auto-plan. Low effort, just nobody re-ran `benchmarks/tests/`
-after the `judge.py` / `real_factory.py` changes landed. Worth
-clearing so the merged-tree suite is green and a real regression
-isn't lost in the noise.
+Merged-tree `pytest` is fully green (715 passed).
 
 ### 5d.1 Live, progressive run dashboard (per-provider throughput)
 

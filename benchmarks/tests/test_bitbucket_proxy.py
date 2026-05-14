@@ -189,20 +189,37 @@ async def test_get_review_status_calls_participants_endpoint(proxy, client):
 # ── close ────────────────────────────────────────────────────────────────────
 
 async def test_close_declines_pr_with_current_version(proxy, client):
+    # close() goes through _decline_via_rest → client.post(...,
+    # advanced_mode=True), NOT atlassian-python-api's
+    # decline_pull_request (which silently 403s on Bitbucket Server
+    # without the X-Atlassian-Token header). The post returns a raw
+    # Response; close() checks .status_code.
     client.get_pull_request.return_value = {"id": 42, "version": 3}
+    client.post.return_value = MagicMock(status_code=204)
 
     await proxy.close()
 
     client.get_pull_request.assert_called_once_with("PROJ", "myrepo", 42)
-    client.decline_pull_request.assert_called_once_with("PROJ", "myrepo", 42, 3)
+    client.post.assert_called_once_with(
+        "rest/api/1.0/projects/PROJ/repos/myrepo/pull-requests/42/decline",
+        params={"version": 3},
+        headers={"X-Atlassian-Token": "no-check"},
+        advanced_mode=True,
+    )
 
 
 async def test_close_uses_version_zero_when_missing(proxy, client):
     client.get_pull_request.return_value = {"id": 42}
+    client.post.return_value = MagicMock(status_code=204)
 
     await proxy.close()
 
-    client.decline_pull_request.assert_called_once_with("PROJ", "myrepo", 42, 0)
+    client.post.assert_called_once_with(
+        "rest/api/1.0/projects/PROJ/repos/myrepo/pull-requests/42/decline",
+        params={"version": 0},
+        headers={"X-Atlassian-Token": "no-check"},
+        advanced_mode=True,
+    )
 
 
 # ── pr_id property ───────────────────────────────────────────────────────────

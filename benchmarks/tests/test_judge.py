@@ -47,7 +47,12 @@ class MockProxy(AgentPRView):
     async def get_comments(self) -> list[CommentThread]:
         return self._comments
 
-    async def get_review_status(self) -> ReviewStatus | None:
+    async def get_review_status(
+        self, verdict_source: str = "api",
+    ) -> ReviewStatus | None:
+        # Signature mirrors AgentPRView / FakeBenchPRView — judge.py
+        # calls get_review_status(verdict_source). The mock returns a
+        # fixed status regardless of source.
         return self._review_status
 
 
