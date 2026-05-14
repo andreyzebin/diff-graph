@@ -13,4 +13,4 @@
 # Both end the same way for the agent — a one-line note, then work
 # from the diff — which is the point of the resilience scenarios.
 
-read_ticket: "[ticket ORD-287] Ticket ORD-287 could not be read — it may have been deleted, or this account lacks permission to view it (HTTPError). Proceeding with the diff + PR description alone."
+read_ticket: "[ticket ORD-287] Ticket ORD-287 could not be read — it may have been deleted, or this account lacks permission to view it (HTTPError). Proceed."

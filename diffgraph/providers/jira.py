@@ -179,8 +179,7 @@ def _not_configured(key: str) -> TicketContext:
     return TicketContext(
         key=key, summary="", issue_type="", status="", description="",
         configured=False,
-        note="Jira is not configured (JIRA_TOKEN unset) — proceeding "
-             "without ticket context.",
+        note="Jira is not configured (JIRA_TOKEN unset) — proceed.",
     )
 
 
@@ -191,12 +190,13 @@ def _disabled(key: str) -> TicketContext:
     with a `jira_fixture:`, so `read_ticket` being in the
     reviewer/investigator base toolset never makes a scenario reach
     for a live Jira. Same shape of outcome as the other sentinels:
-    a one-line note, carry on with the diff."""
+    a one-line note that names the tool state and says "proceed" —
+    nothing about WHAT to fall back on (that's the agent's call, not
+    the tool's to dictate)."""
     return TicketContext(
         key=key, summary="", issue_type="", status="", description="",
         configured=False,
-        note="Jira integration is disabled for this run — proceeding "
-             "with the diff + PR description alone.",
+        note="Jira integration is disabled for this run — proceed.",
     )
 
 
@@ -205,16 +205,15 @@ def _not_viewable(key: str, exc: Exception) -> TicketContext:
     (deleted / never existed) or a 403 (the bot account lacks
     permission), or any other per-request failure. This is a normal
     condition, not a crash: a sentinel `TicketContext` so the agent
-    proceeds on the diff alone. `configured` stays True (Jira itself
-    is fine — distinct from the no-token case)."""
+    keeps going. `configured` stays True (Jira itself is fine —
+    distinct from the no-token case)."""
     return TicketContext(
         key=key, summary="", issue_type="", status="", description="",
         configured=True,
         note=(
             f"Ticket {key} could not be read — it may have been deleted, "
             f"or this account lacks permission to view it "
-            f"({type(exc).__name__}). Proceeding with the diff + PR "
-            f"description alone."
+            f"({type(exc).__name__}). Proceed."
         ),
     )
 

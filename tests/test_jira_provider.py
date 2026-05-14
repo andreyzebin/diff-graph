@@ -351,7 +351,8 @@ class TestJiraDisabledToggle:
             for i in range(40)
         }
         assert len(seen) == 1                       # same reply every call
-        assert "proceed with the PR diff" in seen.pop()
+        reply = seen.pop().lower()
+        assert "disabled" in reply and "proceed" in reply
 
 
 # ── Provider-level disabled toggle (DIFFGRAPH_JIRA_DISABLED) ─────────

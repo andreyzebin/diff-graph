@@ -135,6 +135,29 @@ the LLM sees. `registry.dispatch(name, args, raw_args=...)`:
 5. Call the handler with `**args`.
 6. Truncate the result to `td.result_limit` and return.
 
+#### Tool-result convention: report state, don't dictate the next move
+
+When a tool can't do its job — disabled, unconfigured, the resource
+is gone — its result should **name the state plainly and say
+"proceed", then stop**. It must NOT prescribe what the agent should
+fall back on ("…proceed with the diff + PR description alone").
+
+Why: a general-purpose tool doesn't know what task it's serving.
+The prompt already frames what the agent is doing; a tool result
+that re-narrates the fallback is both redundant and brittle — it
+bakes one caller's task shape into a tool every caller shares, and
+it quietly competes with the prompt for control of the agent's
+next step. The tool's job is to be honest about *its own* status;
+choosing the fallback is the agent's judgment, set by the prompt.
+
+Concrete examples in-tree: the Jira `read_ticket` sentinels
+(`_disabled` / `_not_configured` / `_not_viewable` in
+`diffgraph/providers/jira.py`) and the `disable-*.yaml` mock
+fixtures — `"Jira integration is disabled for this run — proceed."`,
+not `"… — proceed with the diff alone."`. Same rule for the
+`tool_mocks.py` canned strings: state the mock's effect, leave the
+"what now" to the prompt.
+
 ### `orchestra/tools/builtin.py` — framework-provided tools
 
 Registers `reflect`, `done`, `spawn_agent`, `list_agents` when the

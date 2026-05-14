@@ -29,4 +29,4 @@
 # Pairs with: orchestra/fixtures/mocks/disable-review-status.yaml
 #             (same pattern, for set_review_status).
 
-read_ticket: "Jira integration is currently disabled — proceed with the PR diff + description alone; do not retry."
+read_ticket: "Jira integration is currently disabled — proceed; do not retry."
