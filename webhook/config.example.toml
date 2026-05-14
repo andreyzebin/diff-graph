@@ -38,6 +38,19 @@ trigger = "cli"
 command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id}'
 timeout = 600
 
+# DiffGraph — dispatcher entry point with set_review_status disabled.
+# Same as dg above, but --mocks is passed to the dispatcher (the root
+# agent). ToolMocks is inherited by every spawned child — the
+# dispatcher's spawned reviewer, and any investigators that reviewer
+# spawns in turn — so set_review_status is short-circuited at any
+# depth, not just on a directly-invoked reviewer. The dispatcher still
+# routes /ask, /help, plain text normally; only the verdict step in
+# the /review subtree is silenced.
+[agents.dg-no-status]
+trigger = "cli"
+command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id} --mocks=orchestra/fixtures/mocks/disable-review-status.yaml'
+timeout = 600
+
 # DiffGraph — direct reviewer (skip dispatcher, always review)
 [agents.dg-review]
 trigger = "cli"
