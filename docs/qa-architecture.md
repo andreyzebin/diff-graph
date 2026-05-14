@@ -66,7 +66,7 @@ spawn fan-out, no real Bitbucket. Score is judge verdict on
 `reflect(...)` / `done(findings=...)` / fake-PR sink — whichever
 channel that agent uses.
 
-Lives in `code-review-benchmarks/benchmark/scenarios/unit/*`
+Lives in `benchmarks/scenarios/unit/*`
 (yaml). Runner is `bench run-unit`. Fake provider is
 `diff-graph/diffgraph/bitbucket_fake.py` (class-based, isolated per
 test). After the agent subprocess exits, run_unit builds a
@@ -365,9 +365,18 @@ for the last step.
 
 ## Repository topology
 
-The QA system spans **four sibling repositories** under
-`/home/andrey/repos/`, each owning a distinct concern. They
-communicate via shared SQLite databases and a small contract:
+> **May-2026 merge:** the bench (`code-review-benchmarks/benchmark/`)
+> is now a subtree of this repo at `benchmarks/` — history preserved
+> via `git subtree`. One checkout, one `.venv`, one `.env`;
+> `quality_api.config.bench_repo()` just returns the repo root. The
+> ASCII diagram + table below still show the old two-repo split for
+> historical context — read "code-review-benchmarks" as "the
+> `benchmarks/` subtree" everywhere.
+
+The QA system spans **three sibling repositories** under
+`/home/andrey/repos/` (was four before the bench merge), each owning
+a distinct concern. They communicate via shared SQLite databases and
+a small contract:
 agent comments carry a footer `` `dg:<generation>:<hash>:<run_id>` ``
 that lets pr-analytics join its prod observations back to
 diff-graph's trace storage by run_id.
@@ -430,8 +439,7 @@ diff-graph's trace storage by run_id.
 
 | Repo | Owns | Doesn't own |
 |---|---|---|
-| **diff-graph** | the agent (orchestra, prompts, tools, cli.py), trace storage (traces.db schema + writers), QA orchestration server (quality_api, tracing/server FastAPI), QA orchestration CLI (quality_cli), the FAKE bitbucket impl that bench's unit tier consumes | scenarios, judge, fixture repo content |
-| **code-review-benchmarks** | scenario yamls (integration + unit), the judge (LLMJudge + judge.txt prompt), runners (run / run-unit), the fake-PR-view shim for the judge, leak-detection tests | the agent under test, the fixture code, prod metrics |
+| **diff-graph** | the agent (orchestra, prompts, tools, cli.py), trace storage (traces.db schema + writers), QA orchestration server (quality_api, tracing/server FastAPI), QA orchestration CLI (quality_cli), the FAKE bitbucket impl, **and `benchmarks/`** — scenario yamls (integration + unit), the judge (LLMJudge + judge.txt prompt), runners (run / run-unit), the fake-PR-view shim, leak-detection tests | the fixture repo content, prod metrics |
 | **code-review-examples** | the orderflow fixture repo — Spring Boot Java app with intentional bugs, AGENTS.md, branches per scenario | anything CI-related; it's a static fixture |
 | **pr-analytics** | production data cache (bitbucket_cache.db), merge_acceptance_rate / feedback_acceptance_rate LLM judges, select-golden pipeline, trend plotting | the agent, scenarios, bench |
 
@@ -767,10 +775,10 @@ pages).
 
 ## Reference
 
-- `code-review-benchmarks/README.md` — bench user guide
-- `code-review-benchmarks/AGENTS.md` — bench architecture (loaders, factories, judge interface)
-- `code-review-benchmarks/benchmark/runner/run_unit.py` — unit tier runner + judge wiring
-- `code-review-benchmarks/benchmark/runner/fake_view.py` — fake-bitbucket view for the judge
+- `benchmarks/README.md` — bench user guide
+- `benchmarks/AGENTS.md` — bench architecture (loaders, factories, judge interface)
+- `benchmarks/runner/run_unit.py` — unit tier runner + judge wiring
+- `benchmarks/runner/fake_view.py` — fake-bitbucket view for the judge
 - `diff-graph/diffgraph/bitbucket_fake.py` — class-based fake provider
 - `diff-graph/tracing/README.md` — trace storage + CLI
 - `diff-graph/TODO.md` §5d.3, §5e.14, §5e.16 — open work items in the QA roadmap

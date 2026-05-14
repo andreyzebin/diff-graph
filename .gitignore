@@ -13,3 +13,9 @@ build/
 .server.pid
 logs/
 .claude/
+
+# benchmarks/ subtree — local config + runtime artefacts
+benchmarks/config.local.yaml
+benchmarks/results/
+benchmarks/reports/*.html
+*.local.md

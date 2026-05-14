@@ -5,7 +5,7 @@ Two ways to drive this module:
 1. **Subprocess mode (legacy).** Set `DIFFGRAPH_FAKE_PR_FILE` to a JSON
    payload path; diff-graph's `bitbucket.py` tail-rebinds its exports
    here at import time. Used by bench's unit-tier runner
-   (`code-review-benchmarks/benchmark/runner/run_unit.py`) which
+   (`benchmarks/runner/run_unit.py`) which
    shells out to `cli.py`.
 
 2. **In-process mode (new — for §5e.14 isolated agent unit tests).**

@@ -14,8 +14,9 @@ special "judge tracing" code path anywhere.
 How to use:
 
     judge_cfg["backend"] = "orchestra"  # in config.local.yaml
-    judge_cfg["diffgraph_repo"] = "/home/andrey/repos/diff-graph"
     judge_cfg["agent"] = "judge.raw"
+    # diffgraph_repo defaults to the repo root (benchmarks/ lives
+    # inside diff-graph); only set it explicitly for unusual layouts.
 
 The bench's `_make_llm_client` then returns `_SubprocessLLMClient`
 instead of OpenAILLMClient/AnthropicLLMClient; the rest of LLMJudge
@@ -34,6 +35,10 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+# benchmarks/ lives inside diff-graph → repo root is this file's
+# third parent (runner → benchmarks → diff-graph).
+_DIFFGRAPH_REPO_DEFAULT = str(Path(__file__).resolve().parents[2])
+
 
 class SubprocessLLMClient:
     """LLMClient stand-in: shells out to `diffgraph cli.py run --agent=judge.raw`.
@@ -46,7 +51,7 @@ class SubprocessLLMClient:
     """
 
     def __init__(self,
-                 diffgraph_repo: str | Path = "/home/andrey/repos/diff-graph",
+                 diffgraph_repo: str | Path = _DIFFGRAPH_REPO_DEFAULT,
                  agent: str = "judge.raw",
                  prompts_subdir: str = "diffgraph/prompts/judges/",
                  timeout: int = 600,

@@ -16,7 +16,7 @@ python -m evolution measure --branch main
 
 # Run benchmark suite
 export EVOLUTION_BENCHMARK_CMD=".venv/bin/python benchmark/cli.py"
-export EVOLUTION_BENCHMARK_CWD="$HOME/repos/code-review-benchmarks"
+export EVOLUTION_BENCHMARK_CWD="$HOME/repos/diff-graph"
 python -m evolution benchmark --branch main
 
 # Full status (JSON)
@@ -103,7 +103,7 @@ Returns branches, measurements, and config as JSON. Useful for dashboards and au
 |---|---|---|
 | `EVOLUTION_ANALYTICS_DB` | Path to pr-analytics SQLite DB | `~/repos/pr-analytics/output/bitbucket_cache.db` |
 | `EVOLUTION_BENCHMARK_CMD` | Benchmark CLI command | `.venv/bin/python benchmark/cli.py` |
-| `EVOLUTION_BENCHMARK_CWD` | Benchmark working directory | `~/repos/code-review-benchmarks` |
+| `EVOLUTION_BENCHMARK_CWD` | Benchmark working directory | `~/repos/diff-graph` |
 | `EVOLUTION_WEBHOOK_URL` | Webhook router URL | `http://localhost:8000` |
 
 ## Fitness model

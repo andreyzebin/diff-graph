@@ -1,11 +1,11 @@
 # Unit tier: cheap per-agent fixtures, fires on every diff-graph
 # commit (via DiscoverySupervisor + branch_pattern=master).
-# Resolved on the server side: ${BENCH_REPO_PATH} from env (or
-# falls back to ~/repos/code-review-benchmarks); repo_path empty
-# → quality_api.config.diffgraph_repo().
+# Both repo_path and bench_repo_path are empty — benchmarks/ is a
+# subtree of diff-graph now, so the server resolves both to the
+# same checkout via quality_api.config (diffgraph_repo == bench_repo).
 name:           diff-graph-unit-tier
 repo_path:      ""                       # → server resolves diff-graph checkout
-bench_repo_path: "${BENCH_REPO_PATH}"
+bench_repo_path: ""                      # → same checkout (benchmarks/ is in-repo)
 branch_pattern: master
 providers:      [deepseek, qwen3-6]
 scenario_tags:  [tier:unit]

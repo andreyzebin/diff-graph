@@ -27,7 +27,7 @@ Yaml shape (one file per schedule, or one file with `schedules:` array):
     min_gap_seconds: 0
     mode:           auto                 # auto | on_demand
     enabled:        true
-    bench_repo_path: "${BENCH_REPO_PATH}" # optional; falls back to config
+    bench_repo_path: ""                   # benchmarks/ is in-repo; leave empty
 
 Anywhere `${ENV}` appears in a path-like field, env-substitution runs;
 unresolved env vars stay literal so they're visible in the UI.

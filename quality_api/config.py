@@ -1,13 +1,18 @@
 """Server-side config resolution — replaces hardcoded paths.
 
-Reads from env first (`BENCH_REPO_PATH`, `DIFFGRAPH_REPO_PATH`,
-`QUALITY_PYTHON`), falls back to well-known dev layouts. One
-module, every other quality_api / quality_cli site imports from
-here — no `/home/andrey/...` literals anywhere else.
+Reads from env first (`DIFFGRAPH_REPO_PATH`, `QUALITY_PYTHON`),
+falls back to well-known dev layouts. One module, every other
+quality_api / quality_cli site imports from here — no
+`/home/andrey/...` literals anywhere else.
+
+The bench (`benchmarks/`) now lives INSIDE this repo, so
+`bench_repo()` is just `diffgraph_repo()` — no separate checkout,
+no `BENCH_REPO_PATH` env. The function is kept as a named seam so
+callers that conceptually mean "the bench root" stay readable, and
+so a future split-out can re-introduce the env override in one place.
 
 Override in production via:
 
-    BENCH_REPO_PATH=/srv/bench
     DIFFGRAPH_REPO_PATH=/srv/diff-graph
     QUALITY_PYTHON=/srv/diff-graph/.venv/bin/python
 """
@@ -24,14 +29,6 @@ def _from_env(name: str) -> Optional[Path]:
     return Path(v).expanduser().resolve() if v else None
 
 
-def _sibling(repo_dir: str) -> Optional[Path]:
-    """Look for `<sibling>` next to this checkout — a common dev
-    layout where repos sit in `~/repos/`."""
-    here = Path(__file__).resolve().parents[2]   # ~/repos
-    cand = here / repo_dir
-    return cand if cand.exists() else None
-
-
 @lru_cache(maxsize=1)
 def diffgraph_repo() -> Path:
     """Root of this diff-graph checkout."""
@@ -39,12 +36,12 @@ def diffgraph_repo() -> Path:
 
 
 @lru_cache(maxsize=1)
-def bench_repo() -> Optional[Path]:
-    """Root of the bench (code-review-benchmarks) checkout.
-    Returns None if not found — callers decide whether that's fatal.
-    """
-    return (_from_env("BENCH_REPO_PATH")
-            or _sibling("code-review-benchmarks"))
+def bench_repo() -> Path:
+    """Root of the bench tree. The bench (`benchmarks/`) is a
+    subtree of this repo, so this is just `diffgraph_repo()`.
+    Kept as a named function so callers reading "the bench root"
+    stay self-documenting and a future split-out has one seam."""
+    return diffgraph_repo()
 
 
 @lru_cache(maxsize=1)
@@ -63,17 +60,14 @@ def python_executable() -> str:
 
 def default_bench_cmd_template() -> str:
     """Template for the worker's bench subprocess. {scenario},
-    {provider}, etc. are filled in by the worker via .format()."""
-    bench = bench_repo()
-    if bench is None:
-        # No bench root resolved — return a template that will
-        # fail loudly so the operator knows to set BENCH_REPO_PATH.
-        return ("echo 'BENCH_REPO_PATH not set / bench repo not found' "
-                "&& exit 64")
+    {provider}, etc. are filled in by the worker via .format().
+    Runs from the repo root — `benchmarks/` is a subtree here, so
+    the bench CLI is just `benchmarks/cli.py` and it shares the
+    repo's single `.venv` + `.env`."""
     return (
-        f"cd {bench} && source .env "
+        f"cd {diffgraph_repo()} && source .env "
         f"&& unset ALL_PROXY all_proxy "
-        f"&& .venv/bin/python benchmark/cli.py run -s {{scenario}} -p {{provider}}"
+        f"&& .venv/bin/python benchmarks/cli.py run -s {{scenario}} -p {{provider}}"
     )
 
 

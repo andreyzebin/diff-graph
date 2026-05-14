@@ -37,7 +37,7 @@ tags: [tier:unit, agent:reviewer, isolation, continuation-review, staleness, app
 bench_cmd: >
   cd {bench_root} && source .env
   && unset ALL_PROXY all_proxy
-  && .venv/bin/python -m benchmark.cli run-unit
+  && .venv/bin/python -m benchmarks.cli run-unit
   {fixture_path}
   --provider={provider}
 

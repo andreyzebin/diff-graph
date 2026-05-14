@@ -39,13 +39,13 @@ def _bench_root() -> Optional[Path]:
     whether that's fatal; for listing UI an empty result is fine)."""
     from . import config as _qa_config
     p = _qa_config.bench_repo()
-    if p is None or not (p / "benchmark" / "scenarios").is_dir():
+    if p is None or not (p / "benchmarks" / "scenarios").is_dir():
         return None
     return p
 
 
 def list_scenarios() -> list[ScenarioEntry]:
-    """Recursive scan of <bench>/benchmark/scenarios/. Skips drafts/.
+    """Recursive scan of <bench>/benchmarks/scenarios/. Skips drafts/.
 
     Yaml is the source of truth: `id`, `agent`, `tags`, `bench_cmd`
     all come from the file. No path-based classification — "tier"
@@ -55,7 +55,7 @@ def list_scenarios() -> list[ScenarioEntry]:
     root = _bench_root()
     if root is None:
         return []
-    scenarios_dir = root / "benchmark" / "scenarios"
+    scenarios_dir = root / "benchmarks" / "scenarios"
     out: list[ScenarioEntry] = []
     for p in sorted(scenarios_dir.rglob("*.yaml")):
         rel = p.relative_to(scenarios_dir)

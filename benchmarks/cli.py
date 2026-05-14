@@ -30,7 +30,7 @@ SCENARIOS_DIR = BASE_DIR / "scenarios"
 RESULTS_DIR = BASE_DIR / "results"
 CONFIG_FILE = BASE_DIR / "config.yaml"
 
-# Make benchmark package importable
+# Make benchmarks package importable
 sys.path.insert(0, str(BASE_DIR))
 
 # When this CLI is spawned by the QA worker as part of a task, opt

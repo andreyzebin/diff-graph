@@ -18,7 +18,7 @@
 #
 # Pairs with: orchestra/tool_mocks.py (loader),
 #             tests/test_tool_mocks_sticky.py (semantics tests),
-#             code-review-benchmarks/benchmark/scenarios/unit/reviewer/
+#             benchmarks/scenarios/unit/reviewer/
 #               REV-U-006-disabled-review-status.yaml (regression
 #               scenario that exercises the reviewer end-to-end with
 #               this fixture active).

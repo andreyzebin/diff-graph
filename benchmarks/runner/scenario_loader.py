@@ -13,16 +13,21 @@ import jsonschema
 #
 # Mirrors `runner/run_unit.py:_resolve_prompt_path`. Two URI shapes:
 #   - plain relative path → relative to the scenario yaml's directory
-#   - `diffgraph:<path>`  → relative to diff-graph repo root (env
-#                            DIFFGRAPH_REPO, default /home/andrey/...)
+#   - `diffgraph:<path>`  → relative to the diff-graph repo root
 #
 # The diffgraph: shape lets task prompts live in diff-graph next to
 # production agent prompts (diffgraph/test_prompts/<agent>/<file>.md)
 # so unit + integration scenarios + production share one source of
 # truth, avoiding drift.
+#
+# Since benchmarks/ now lives INSIDE diff-graph, the repo root is just
+# this file's third parent (runner → benchmarks → diff-graph). The
+# DIFFGRAPH_REPO env var still overrides for unusual layouts (e.g. a
+# detached benchmarks/ checkout), but the default no longer hardcodes
+# anyone's home directory.
 
 
-_DIFFGRAPH_REPO_DEFAULT = "/home/andrey/repos/diff-graph"
+_DIFFGRAPH_REPO_DEFAULT = str(Path(__file__).resolve().parents[2])
 
 
 def _resolve_prompt_path(spec: str, fixture_dir: Path) -> Path:

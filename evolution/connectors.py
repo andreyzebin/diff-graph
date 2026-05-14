@@ -18,7 +18,7 @@ class ConnectorConfig:
     tracing_db: str = ""            # path to traces.db (default: ~/.diffgraph/traces.db)
     analytics_cmd: str = ""          # e.g. "python /path/to/pr_analytics.py"
     analytics_db: str = ""           # path to pr-analytics DB
-    benchmark_cmd: str = ""          # e.g. "python /path/to/benchmark/cli.py"
+    benchmark_cmd: str = ""          # e.g. "python diff-graph/benchmarks/cli.py"
     benchmark_cwd: str = ""          # working dir for benchmark
     webhook_url: str = ""            # e.g. "http://localhost:8000"
 

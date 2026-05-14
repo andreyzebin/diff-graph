@@ -85,7 +85,7 @@ metadata:
 #      hotfix/ORD-287-cancel-npe-step0  (current step0 — buggy: missing guard)
 #      hotfix/ORD-287-cancel-npe-step1  (step0 + the null-guard fix commit)
 #
-# 2. Implement BranchUpdater in benchmark/runner/branch_update.py:
+# 2. Implement BranchUpdater in benchmarks/runner/branch_update.py:
 #      - fast-forward: push HEAD of *_step1 onto *_step0 branch
 #      - force-push: alternative that overwrites
 #

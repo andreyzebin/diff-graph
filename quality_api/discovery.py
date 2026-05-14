@@ -60,7 +60,7 @@ class AutoPlanConfig:
     name: str
     repo_path: str                       # repo to watch (git branches × HEAD shas)
     branch_pattern: str                  # CSV of globs — git-side pattern matched against actual git branches
-    bench_repo_path: str                 # where benchmark/scenarios/*.yaml lives
+    bench_repo_path: str                 # where benchmarks/scenarios/*.yaml lives
     providers: list[str]
     scenarios: list[str]                 # explicit scenario ids
     scenario_tags: list[str]             # tag filter (resolved at discover-time)
@@ -170,14 +170,14 @@ def _resolve_bench_root(bench_repo_path: str) -> Optional[Path]:
     unsubstituted `${ENV}` placeholder."""
     if bench_repo_path and "${" not in bench_repo_path:
         p = Path(bench_repo_path).expanduser()
-        if (p / "benchmark" / "scenarios").is_dir():
+        if (p / "benchmarks" / "scenarios").is_dir():
             return p
     from . import config as _qa_config
     return _qa_config.bench_repo()
 
 
 def scan_scenarios(bench_repo_path: str) -> list[dict]:
-    """Walk <bench_repo>/benchmark/scenarios/**/*.yaml and return
+    """Walk <bench_repo>/benchmarks/scenarios/**/*.yaml and return
     [{id, tags: [...]}, ...]. Used to resolve scenario_tags filters
     at discover-time.
 
@@ -186,7 +186,7 @@ def scan_scenarios(bench_repo_path: str) -> list[dict]:
     bench = _resolve_bench_root(bench_repo_path)
     if bench is None:
         return []
-    root = bench / "benchmark" / "scenarios"
+    root = bench / "benchmarks" / "scenarios"
     if not root.exists():
         return []
     try:

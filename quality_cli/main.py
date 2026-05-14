@@ -1304,7 +1304,7 @@ def worker_loop(
         "",
         help="Shell command template; {scenario} and {provider} are substituted from the task. "
              "Empty (default) uses the template resolved from quality_api.config — "
-             "honours BENCH_REPO_PATH env. Override to plug a different runner.",
+             "runs benchmarks/cli.py from the repo root. Override to plug a different runner.",
     ),
     poll_seconds: int = typer.Option(3, help="poll interval when queue is empty"),
     lease_seconds: int = typer.Option(120, help="lease duration; heartbeat resets it"),
@@ -1652,7 +1652,7 @@ def auto_add(
     branch_pattern: str = typer.Option("master,feature/*",
         help="comma-separated globs"),
     bench_repo: str = typer.Option("",
-        help="path to bench repo with benchmark/scenarios/*.yaml — required if using --tags"),
+        help="path to bench repo with benchmarks/scenarios/*.yaml — required if using --tags"),
     providers: str = typer.Option(..., help="comma-separated"),
     scenarios: Optional[str] = typer.Option(None,
         help="explicit scenario ids (CSV); if set, --tags ignored"),

@@ -96,7 +96,7 @@ def test_cli_pretty_print_path_does_not_raise(fat_cli_output, monkeypatch, capsy
     handler and assert it returns cleanly."""
     from runner.run_unit import UnitRunResult
     from pathlib import Path
-    import benchmark.cli as bench_cli
+    import benchmarks.cli as bench_cli
 
     fake_result = UnitRunResult(
         fixture_id="INV-U-TEST",

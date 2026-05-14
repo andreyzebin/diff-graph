@@ -83,8 +83,11 @@ class UnitRunResult:
 
 # ── Path resolution: relative-to-yaml or diffgraph:<path> ─────────────────
 
-
-_DIFFGRAPH_REPO_DEFAULT = "/home/andrey/repos/diff-graph"
+# benchmarks/ lives inside diff-graph, so the repo root is this file's
+# third parent (runner → benchmarks → diff-graph). DIFFGRAPH_REPO env
+# still overrides for unusual layouts; the default no longer hardcodes
+# a home directory.
+_DIFFGRAPH_REPO_DEFAULT = str(Path(__file__).resolve().parents[2])
 
 
 def _resolve_prompt_path(spec: str, fixture_dir: Path) -> Path:
@@ -93,13 +96,11 @@ def _resolve_prompt_path(spec: str, fixture_dir: Path) -> Path:
     Two URI shapes supported:
 
     - Plain relative (default): `../../path.md` → resolved against
-      the fixture yaml's directory. Stays inside the bench repo.
-    - `diffgraph:<path>`: resolved against the diff-graph repo root
-      (env `DIFFGRAPH_REPO`, default `/home/andrey/repos/diff-graph`).
+      the fixture yaml's directory. Stays inside the bench tree.
+    - `diffgraph:<path>`: resolved against the diff-graph repo root.
       Used when a prompt lives next to production agent prompts in
-      diff-graph/diffgraph/test_prompts/ — sharing a single source
-      of truth across unit + integration scenarios + production
-      avoids drift.
+      diffgraph/test_prompts/ — sharing a single source of truth
+      across unit + integration scenarios + production avoids drift.
     """
     import os as _os
     if spec.startswith("diffgraph:"):
@@ -260,7 +261,7 @@ def _build_fake_pr_payload(
 def run_unit_fixture(
     fixture_path: str | Path,
     *,
-    diffgraph_repo: str | Path = "/home/andrey/repos/diff-graph",
+    diffgraph_repo: str | Path = _DIFFGRAPH_REPO_DEFAULT,
     provider: Optional[str] = None,
     timeout: int = 300,
     keep_tmp_on_success: bool = False,

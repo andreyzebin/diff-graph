@@ -1,16 +1,9 @@
-atlassian-python-api==3.41.4
-fastapi>=0.111.0
-uvicorn>=0.29.0
-httpx>=0.27.0
-anthropic>=0.28.0
-openai>=1.30.0
-pyyaml>=6.0
-jsonschema>=4.22.0
-pydantic>=2.7.0
-jinja2>=3.1.4
-typer>=0.12.0
-pytest>=8.2.0
-pytest-asyncio>=0.23.0
-anyio>=4.4.0
-rich>=13.7.0
-truststore>=0.9.0
+# The bench is a subtree of diff-graph — dependencies are managed in
+# the repo-root requirements.txt (which folds in the bench-only deps:
+# atlassian-python-api, anthropic, pydantic, pytest-asyncio, anyio).
+#
+# Install once from the repo root:
+#     pip install -r requirements.txt
+#
+# This file is kept as a pointer so anyone landing in benchmarks/
+# doesn't try to install a stale, partial dependency set.

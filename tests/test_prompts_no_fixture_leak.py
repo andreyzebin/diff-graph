@@ -69,22 +69,25 @@ _GENERIC_VOCABULARY = {
 
 
 def _bench_root() -> Path | None:
-    """Locate the code-review-benchmarks repo. Several common layouts:
+    """Locate the bench tree — the directory that directly contains
+    `scenarios/`. It's a subtree of diff-graph now (`benchmarks/`),
+    so the default is just the in-repo path. The $BENCHMARK_REPO env
+    override is kept for unusual layouts; it may point either at the
+    `benchmarks/` dir itself or at a repo root that contains it.
 
-      - sibling of diff-graph (typical dev box)
-      - $BENCHMARK_REPO env var (CI)
-
-    Returns None when not found — the test should xfail / skip rather
-    than crash, because diff-graph CAN be built standalone.
+    Returns None when not found — the test should skip rather than
+    crash, since the bench subtree could theoretically be absent
+    from a partial checkout.
     """
     env = os.environ.get("BENCHMARK_REPO", "").strip()
     if env:
         p = Path(env).expanduser().resolve()
-        if (p / "benchmark" / "scenarios" / "unit").exists():
-            return p
-    sibling = _DIFFGRAPH_ROOT.parent / "code-review-benchmarks"
-    if (sibling / "benchmark" / "scenarios" / "unit").exists():
-        return sibling
+        for cand in (p, p / "benchmarks"):
+            if (cand / "scenarios" / "unit").exists():
+                return cand
+    in_repo = _DIFFGRAPH_ROOT / "benchmarks"
+    if (in_repo / "scenarios" / "unit").exists():
+        return in_repo
     return None
 
 
@@ -95,7 +98,7 @@ def _collect_fixture_keywords(bench_root: Path) -> dict[str, list[Path]]:
     insensitive."""
     import yaml as yaml_lib
     out: dict[str, list[Path]] = {}
-    unit_dir = bench_root / "benchmark" / "scenarios" / "unit"
+    unit_dir = bench_root / "scenarios" / "unit"
     for yp in unit_dir.rglob("*.yaml"):
         raw = yaml_lib.safe_load(yp.read_text(encoding="utf-8")) or {}
         eo = raw.get("expected_output") or {}
@@ -160,7 +163,7 @@ def test_no_fixture_specific_symbols_in_agent_prompts():
     bench = _bench_root()
     if bench is None:
         pytest.skip(
-            "code-review-benchmarks repo not found alongside diff-graph; "
+            "benchmarks/ subtree not found in this checkout; "
             "set BENCHMARK_REPO env var to enable this guard"
         )
 
