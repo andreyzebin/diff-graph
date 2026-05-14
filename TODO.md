@@ -2333,39 +2333,158 @@ reviewer reads the Jira ticket the PR claims to fix, follows links
 and walks up to the epic to understand the broader effort. That
 context turns a "cancelOrder NPE hotfix" diff from a single-line
 review into "is this hotfix consistent with the wider null-safety
-initiative the epic is tracking?"
+initiative the epic is tracking?". Beyond the ticket body the agent
+should be able to see the discussion (comments), the state history
+(changelog — status transitions), the linked tickets, and — deeper —
+the development panel (commits / branches / PRs Jira associates with
+the issue). And it should be able to *search* Jira (JQL) — e.g. "find
+every open ticket with label `null-safety`".
 
-**Sketch.**
+### Findings from the May-2026 spike
 
-- New domain tools the reviewer (and possibly investigator) can call:
-  - `read_ticket(ticket_id)` — fetch summary, description, status,
-    AC, current state, parent epic. Truncate huge bodies.
-  - `list_ticket_links(ticket_id)` — return outgoing links with
-    type and direction (`relates_to`, `blocks`, `is_blocked_by`,
-    `parent`, `epic_link`, `duplicates`, …).
-  - Optional: `walk_to_epic(ticket_id, max_depth=3)` — traverses
-    parent / epic_link until it finds a ticket of type Epic; returns
-    the path. Cheaper than asking the agent to compose two tools.
-- Resolution:
-  - Pull ticket id from PR title / branch name (e.g. `ORD-287` from
-    `hotfix/ORD-287-cancel-npe`).
-  - Make it a `_Ctx._jira_ticket_id` injected at run start; tools
-    default to it when the agent calls them without args.
-- Methodology nudge in reviewer.prompt LOOK phase:
-  - "If the PR claims to address a Jira ticket, read it before
-    forming concerns. If the ticket is part of a larger initiative
-    (epic, sibling tickets), skim those too — a one-line hotfix
-    inside a wider null-safety effort calls for different
-    severity calibration than the same line in isolation."
-- Provider abstraction: `diffgraph/jira.py` mirroring
-  `bitbucket.py` — `fetch_ticket(id) → TicketContext` and
-  `list_links(id) → list[Link]`. Auth + base URL via env vars
-  (`JIRA_URL`, `JIRA_TOKEN`). Should be drop-in for any other
-  tracker that exposes a similar shape.
-- Bench scenarios: `setup.jira_tickets:` block — load fixtures
-  from a YAML file mirroring Jira's REST shape so scenarios run
-  hermetically without hitting a real Jira. Or stub via a mock
-  provider in `bitbucket/base.py`-style.
+- **`atlassian-python-api` is already a dependency** (folded into
+  `requirements.txt` during the monorepo merge — the bench uses it
+  for Bitbucket). It ships an `atlassian.Jira` class with
+  `.issue()`, `.jql()`, `.get_issue_changelog()`,
+  `.get_issue_comments()`, `.issue_remote_links()`, etc. **No new
+  library to add.**
+- **Jira lives on the same host as Bitbucket** —
+  `https://sberworks.ru/jira`, REST at `/jira/rest/api/2/`. A probe
+  (`GET /jira/rest/api/2/issue/SBLOOM-144`) with the Bitbucket
+  Server bearer token returned **HTTP 401 "Login Required"** — so
+  **Jira needs its own PAT**, the Bitbucket token does not carry
+  over. The probe *did* reach Jira's app layer (structured JSON
+  error, not a TLS/connection failure) — meaning the **mTLS client
+  cert + CA bundle are shared**; only the auth token differs.
+- Env shape (confirmed):
+  ```
+  JIRA_URL="https://sberworks.ru/jira"        # new
+  JIRA_TOKEN="..."                            # new — separate Jira PAT
+  # REQUESTS_CA_BUNDLE + BITBUCKET_SERVER__CLIENT_CERT — reused as-is
+  ```
+  Create the PAT in Jira → Profile → Personal Access Tokens.
+
+### Provider — `diffgraph/providers/jira.py`
+
+Mirrors the existing providers (`providers/bitbucket_pr.py`,
+`providers/git_repo.py` — note the old §5b said `diffgraph/jira.py`,
+but providers moved into `providers/`). Thin wrapper over
+`atlassian.Jira`:
+
+- `fetch_ticket(key) → TicketContext` — summary, issue type, status,
+  description / acceptance-criteria, **comments** (capped count,
+  truncated bodies), **changelog reduced to status transitions
+  only**, **issue links inline** (key + relationship + direction).
+- `list_links(key) → list[Link]` — if needed standalone; in practice
+  links are already inline in `TicketContext`.
+- `search(jql) → list[TicketRef]` — JQL search (Phase 2).
+- `dev_info(key) → DevPanel` — commits / branches / PRs from the
+  dev-status API `/rest/dev-status/1.0/issue/detail` (Phase 2;
+  `atlassian-python-api` may not wrap this cleanly — likely a raw
+  `jira.get(...)` call).
+- Auth + base URL from `JIRA_URL` / `JIRA_TOKEN`; TLS from the
+  shared `REQUESTS_CA_BUNDLE` + `BITBUCKET_SERVER__CLIENT_CERT`.
+- **Graceful degradation:** `JIRA_TOKEN` unset → the provider
+  returns a "Jira not configured" sentinel rather than raising, so
+  diff-graph still builds + runs standalone.
+
+### Context discipline
+
+Tickets can carry dozens of comments and a fat changelog — one
+unbounded `read_ticket` would blow the agent's token budget (same
+risk the diff tools cap at 30k chars). The provider must:
+- cap comment count (keep most recent N), truncate each body;
+- reduce the changelog to **status transitions only** (drop field
+  edits, assignee churn, etc.);
+- truncate description / AC bodies.
+
+### Tools
+
+**Phase 1 — reviewer, ONE tool:**
+- `read_ticket(key=None)` — returns the `TicketContext`: summary /
+  type / status / description-AC / capped comments / status-only
+  changelog / **issue links inline**. Because the links are inline,
+  the agent can call `read_ticket` again on a linked key — so a
+  single tool gives **agent-driven depth traversal** (the ReAct
+  pattern: same as the reviewer walking the diff file by file). No
+  server-side recursion → naturally budget-bounded, the agent
+  prioritises which links are worth expanding.
+- Drop the old §5b `walk_to_epic` / separate `list_ticket_links` —
+  agent-driven traversal over the inline links covers it with less
+  surface and no runaway-recursion risk.
+
+**Phase 2 — investigators, deeper:**
+- `search_tickets(jql)` — JQL search ("all open tickets with label
+  X", "tickets touching this component", …). Returns key + summary
+  + status refs.
+- `jira_dev_info(key)` — commits / branches / PRs Jira links to the
+  issue (dev-status API).
+- Investigators get these in their `tools_add`; the reviewer stays
+  at just `read_ticket`.
+
+### Ticket-key resolution
+
+- Pull the key from the PR title / branch name with `[A-Z]+-\d+`
+  (e.g. `ORD-287` from `hotfix/ORD-287-cancel-npe`, `SBLOOM-144`
+  from a title).
+- Inject as `_Ctx.jira_ticket_id` at run start; `read_ticket`
+  defaults to it when called without args.
+- Also surface it in the reviewer's `data:` block so the user
+  prompt can name it (`{jira_ticket_id}`) in the nudge.
+
+### Reviewer wiring
+
+- `reviewer.user.md` — add `read_ticket` to `tools_add`.
+- LOOK-phase methodology nudge: "If the PR claims to address a Jira
+  ticket, read it before forming concerns. If the ticket is part of
+  a larger initiative (epic, sibling tickets), skim those too — a
+  one-line hotfix inside a wider null-safety effort calls for
+  different severity calibration than the same line in isolation."
+
+### Toggle — two layers
+
+The agent should keep working when Jira is unavailable or
+deliberately switched off in prod. Two independent mechanisms:
+
+1. **Prod toggle = sticky tool-mock.** Ship
+   `orchestra/fixtures/mocks/disable-jira.yaml` using the one-line
+   sticky-mock shortcut:
+   ```yaml
+   read_ticket: "Jira integration is currently disabled — proceed with the PR diff + description alone."
+   ```
+   Pass `--mocks=orchestra/fixtures/mocks/disable-jira.yaml` to
+   `cli.py run` (or a webhook `[agents.*]` command) and every
+   `read_ticket` call short-circuits with that line — at any depth,
+   since `ToolMocks` is inherited parent→child (see
+   `orchestra/agent.py:162`). This is the same pattern as
+   `disable-review-status.yaml` (§ tool_mocks / commit 260c89d).
+2. **Auto-degradation = unconfigured provider.** Independently, if
+   `JIRA_TOKEN` is unset the provider itself returns a "not
+   configured" sentinel — no crash, no mock needed. The mock is the
+   *explicit* opt-out even when Jira *is* configured; the sentinel
+   is the *implicit* fallback when it isn't.
+
+### Bench (Phase 3)
+
+`setup.jira_tickets:` block — load fixtures from a YAML file
+mirroring Jira's REST shape so scenarios run hermetically without
+hitting a live Jira. Or a mock provider in the `bitbucket/base.py`
+ABC style. Lets scenario authors plant a ticket + its links and
+assert the agent consulted them.
+
+### Phasing
+
+- **Phase 1** — `providers/jira.py` + `read_ticket` tool +
+  ticket-key resolution + reviewer `tools_add` + LOOK nudge + env
+  (`JIRA_URL` / `JIRA_TOKEN` in `.env.example`) + sticky-mock
+  fixture + graceful no-token degradation + tests (provider with a
+  mocked `atlassian.Jira`, tool schema, key-resolution regex,
+  no-token path, sticky-mock disable path).
+- **Phase 2** — `search_tickets(jql)` + `jira_dev_info(key)` for
+  investigators. Deep link traversal already works via repeated
+  `read_ticket` on linked keys.
+- **Phase 3** — bench `setup.jira_tickets:` fixtures for hermetic
+  scenario testing.
 
 **What we'd see in a passing run.**
 - Agent reads `ORD-287` ticket, walks `is_part_of` link to
@@ -2377,9 +2496,11 @@ initiative the epic is tracking?"
 - agent_warnings stays clean — no "methodology-gap: didn't
   consult ticket" because the agent did.
 
-**Effort:** Medium. Tools + provider + prompt nudge + scenario
-fixtures. Mostly well-trodden REST + closure pattern; biggest
-work is fixture infra so bench can run without a live Jira.
+**Effort:** Medium. Phase 1 is well-trodden — `atlassian-python-api`
+is already vendored, the provider/tool/prompt pattern is the same as
+Bitbucket, and the toggle reuses the existing sticky-mock infra. The
+biggest Phase-2/3 work is the dev-status API (less library support)
+and the bench fixture infra so scenarios run without a live Jira.
 
 ---
 
