@@ -24,6 +24,13 @@ value parses as a JSON object whose keys cover every missing-required
 key, those keys are lifted to the top level and the stringified
 container is dropped. Off by default; opt-in per provider profile
 (`fix_qwen3_stringification_bug = true` in `.llm_creds.toml`).
+
+`_repair_stringified_args` handles two sub-shapes (see its
+docstring): the OBJECT shape (the string value is a complete escaped
+JSON object) and the TAIL-FRAGMENT shape (the model started
+stringifying at a property's value, so the string is
+`<value>, "sib": ..., }` — recovered by re-attaching the property's
+own key in front). `TestTailFragmentSubShape` below pins the second.
 """
 from __future__ import annotations
 
@@ -226,3 +233,128 @@ class TestDispatchRepairToggle:
         assert cloned.fix_qwen3_stringification_bug is True
         result = cloned.dispatch("reflect_probe", self.BAD_ARGS)
         assert isinstance(result, dict)
+
+
+# ── Tail-fragment sub-shape ─────────────────────────────────────────
+
+# The actual `questions_remaining` value from the trace: the model
+# started stringifying at this property's VALUE, so the string holds
+# the array it meant to emit, then its sibling keys, then the object's
+# closing brace — `<value>, "confidence": ..., "next_action": ...}`.
+# Leading/trailing `\n\n` is exactly what the model emitted. Faithful
+# so the test fails loudly if the repair stops recovering it.
+REAL_TAIL_FRAGMENT_VALUE = (
+    "\n\n"
+    '[{"id": "Q1", "text": "Does the implementation verify that the credit '
+    'belongs to the same customer as the order being redeemed against?"}, '
+    '{"id": "Q2", "text": "Does the implementation recalculate tax on the '
+    'reduced subtotal using PricingService, or just subtract from the total?"}, '
+    '{"id": "Q3", "text": "Is the \'apply at most once\' guard '
+    'concurrency-safe with database-level or optimistic locking?"}, '
+    '{"id": "Q4", "text": "Does the code check for expired credits?"}, '
+    '{"id": "Q5", "text": "If credit > subtotal, does the remainder stay '
+    'on balance?"}, '
+    '{"id": "Q6", "text": "Is PricingService the single source of truth '
+    'for tax per AGENTS.md?"}], '
+    '"confidence": "high", '
+    '"next_action": "Read AGENTS.md to confirm conventions, then submit '
+    'findings via text_answer."}'
+    "\n\n"
+)
+
+# After json.loads of the raw arguments — a well-formed 2-key object;
+# `confidence` / `next_action` are trapped inside the second value.
+REAL_TAIL_FRAGMENT_ARGS = {
+    "learned": "Analyzed all the code. AC1 ownership check missing, AC2 tax "
+               "not recalculated, AC3 concurrency unsafe, AC5 partial "
+               "consumption wrong. Need to check AGENTS.md then submit.",
+    "questions_remaining": REAL_TAIL_FRAGMENT_VALUE,
+}
+
+# reflect with `questions_remaining` as a real array property.
+TAIL_FRAGMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "learned": {"type": "string"},
+        "questions_remaining": {"type": "array"},
+        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        "next_action": {"type": "string"},
+    },
+    "required": ["learned", "questions_remaining", "confidence", "next_action"],
+}
+
+
+class TestTailFragmentSubShape:
+    """`_repair_stringified_args` second sub-shape: the stringified
+    value isn't a `{...}` object but a `<value>, "sib": ...}` fragment
+    — recovered by re-attaching the property's own key."""
+
+    def test_real_tail_fragment_gets_lifted(self):
+        """The exact trace payload: `confidence` / `next_action` are
+        trapped after the `questions_remaining` array inside one
+        string. Re-prefixing the key reconstructs the object."""
+        repaired = _repair_stringified_args(
+            REAL_TAIL_FRAGMENT_ARGS, TAIL_FRAGMENT_SCHEMA)
+        assert repaired is not None, "tail-fragment shape must be recognised"
+        assert repaired["confidence"] == "high"
+        assert repaired["next_action"].startswith("Read AGENTS.md")
+        # `learned` was a clean top-level key — untouched.
+        assert repaired["learned"] == REAL_TAIL_FRAGMENT_ARGS["learned"]
+
+    def test_questions_remaining_recovered_as_array(self):
+        """Bonus over the object sub-shape: the property's own value is
+        recovered with its real type. `questions_remaining` comes back
+        as a list of dicts, not the original trapped string."""
+        repaired = _repair_stringified_args(
+            REAL_TAIL_FRAGMENT_ARGS, TAIL_FRAGMENT_SCHEMA)
+        qr = repaired["questions_remaining"]
+        assert isinstance(qr, list)
+        assert len(qr) == 6
+        assert qr[0] == {"id": "Q1", "text": qr[0]["text"]}
+        assert qr[2]["text"].startswith("Is the 'apply at most once'")
+
+    def test_tail_fragment_re_validates_against_schema(self):
+        """End-to-end via the registry: the recovered args pass schema
+        validation and the handler fires with the real kwargs."""
+        reg = ToolRegistry(fix_qwen3_stringification_bug=True)
+        from orchestra.tools.registry import ToolDef
+        reg.register_tool_def(ToolDef(
+            name="reflect_q", description="reflect with questions",
+            parameters=TAIL_FRAGMENT_SCHEMA,
+            handler=lambda **kw: {"got": kw},
+        ))
+        result = reg.dispatch("reflect_q", REAL_TAIL_FRAGMENT_ARGS)
+        assert isinstance(result, dict), f"expected handler to fire; got {result!r}"
+        assert result["got"]["confidence"] == "high"
+        assert len(result["got"]["questions_remaining"]) == 6
+
+    def test_partial_tail_fragment_rejected(self):
+        """Same ALL-or-nothing contract as the object sub-shape: if the
+        fragment doesn't cover every missing-required key, no lift."""
+        args = {
+            "learned": "ok",
+            # fragment carries confidence but NOT next_action
+            "questions_remaining": '[{"id": "Q1"}], "confidence": "high"}',
+        }
+        assert _repair_stringified_args(args, TAIL_FRAGMENT_SCHEMA) is None
+
+    def test_value_not_ending_with_brace_skipped(self):
+        """The cheap pre-check: a normal `learned` body ends with prose,
+        not `}`. It can't be either sub-shape — skipped before any
+        parse attempt."""
+        args = {
+            "learned": "Analyzed the code, found a BLOCKER in PricingService.",
+            "questions_remaining": "still just plain prose, no braces here",
+        }
+        assert _repair_stringified_args(args, TAIL_FRAGMENT_SCHEMA) is None
+
+    def test_object_sub_shape_still_works(self):
+        """Regression: adding the tail-fragment branch didn't break the
+        original object sub-shape (`{...}` value)."""
+        inner = {"learned": "x", "questions_remaining": [],
+                 "confidence": "low", "next_action": "stop"}
+        args = {"learned": json.dumps(inner)}
+        repaired = _repair_stringified_args(args, TAIL_FRAGMENT_SCHEMA)
+        assert repaired is not None
+        assert repaired["confidence"] == "low"
+        assert repaired["next_action"] == "stop"

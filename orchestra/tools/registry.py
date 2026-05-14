@@ -640,27 +640,45 @@ def _repair_stringified_args(args: dict, schema: dict) -> Optional[dict]:
 
     Failure shape (see qwen-code#379, vllm#21711, observed in our
     reviewer reflect spam loop on Qwen3-Coder via vLLM): the model
-    emits ONE top-level string property whose value is an escaped
-    JSON object containing all the other fields it should have
-    produced separately. Example for `reflect(learned, confidence,
-    next_action, ...)`:
+    packs fields it should have emitted as separate top-level
+    properties INTO one string-typed property's value. `json.loads`
+    of the raw args succeeds — it's a well-formed object — but the
+    trapped fields aren't visible to schema validation, which rejects
+    with e.g. "'confidence' is a required property".
 
-        {"learned": "...findings...\", \"confidence\": \"high\",
-                    \"next_action\": \"...\""}
+    Two sub-shapes, depending on where the model started stringifying:
 
-    `confidence`/`next_action` live INSIDE the `learned` string,
-    not next to it, so JSON-Schema validation rejects with
-    "'confidence' is a required property".
+      1. OBJECT — the string value is itself a complete escaped JSON
+         object carrying the sibling fields:
 
-    This helper looks for ONE string-typed top-level property whose
-    value parses as a JSON object and contains every required key
-    currently missing from the top level. If found, returns a flat
-    args dict with the lifted keys merged in (and the now-redundant
-    stringified container dropped — its content is fully hoisted).
+            {"learned": "...\", \"confidence\": \"high\", ...\""}
+
+         (`confidence` etc. live inside the `learned` string.)
+
+      2. TAIL-FRAGMENT — the model started stringifying at a
+         property's VALUE, so the string is `<value>, "sib": ..., }`
+         — it ends with the object's closing brace but does NOT start
+         with `{`:
+
+            {"learned": "...",
+             "questions_remaining": "[{...}], \"confidence\": \"high\",
+                                     \"next_action\": \"...\"}"}
+
+         Re-attaching the property's own key in front
+         (`{"questions_remaining": <value>`) reconstructs the complete
+         object the model meant to emit, siblings and all.
+
+    For each string-typed property this helper tries whichever
+    sub-shape applies; if the recovered object is a dict covering
+    EVERY currently-missing required key, it returns a flat args dict
+    with those keys lifted in and the stringified container dropped
+    (its content is fully hoisted — for the tail-fragment shape that
+    includes the property's own real value).
 
     Returns None if no safe repair is possible. Conservative on
     purpose: never modifies args that schema-validate; never lifts
-    if the candidate string doesn't cover ALL missing-required keys.
+    if the candidate doesn't cover ALL missing-required keys; the
+    framework re-validates the result against the schema regardless.
     """
     if not isinstance(args, dict) or not isinstance(schema, dict):
         return None
@@ -673,12 +691,22 @@ def _repair_stringified_args(args: dict, schema: dict) -> Optional[dict]:
         if not isinstance(val, str):
             continue
         s = val.strip()
-        # Cheap pre-check: skip strings that don't even look like
-        # a JSON object (saves the parse cost on every long `learned`).
-        if not (s.startswith("{") and s.endswith("}")):
+        # Cheap pre-check: both sub-shapes end with the object's
+        # closing brace. A string that doesn't (a normal long
+        # `learned` body) can't be either shape — skip the parse.
+        if not s.endswith("}"):
             continue
+        # Sub-shape 1 (object): the value is a complete JSON object.
+        # Sub-shape 2 (tail-fragment): the value is `<my-value>,
+        # "sib": ...}` — re-attach this property's own key to rebuild
+        # the object the model meant to emit. `json.dumps(key)` keeps
+        # the key correctly quoted/escaped.
+        if s.startswith("{"):
+            candidate = s
+        else:
+            candidate = "{" + json.dumps(key) + ": " + s
         try:
-            lifted = json.loads(s)
+            lifted = json.loads(candidate)
         except Exception:
             continue
         if not isinstance(lifted, dict):
@@ -689,6 +717,8 @@ def _repair_stringified_args(args: dict, schema: dict) -> Optional[dict]:
         # overlay the lifted keys. Lifted wins on overlap — the model's
         # "real" value for any duplicate key is the one it intended at
         # the inner JSON level (the top-level string is just a wrapper).
+        # For the tail-fragment shape `lifted` re-includes `key` itself
+        # with its proper, non-stringified value.
         repaired = {k: v for k, v in args.items() if k != key}
         repaired.update(lifted)
         return repaired
