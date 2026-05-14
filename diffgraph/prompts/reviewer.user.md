@@ -1,10 +1,8 @@
 ---
-# End-to-end production review — extend the base diff toolkit with
-# thread reading, delegation, publishing, and verdict.
+# End-to-end production review — the base surface (diff reading +
+# thread reading) is in reviewer.system.md; tools_add here is the
+# acting-on-outputs surface: delegation, publishing, and verdict.
 tools_add:
-  - list_threads
-  - read_thread
-  - read_comment
   - list_agents
   - spawn_agent
   - post_comment

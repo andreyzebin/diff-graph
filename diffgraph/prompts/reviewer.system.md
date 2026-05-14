@@ -6,14 +6,24 @@ summary: >
   to diff size, spawns focused investigators, consolidates findings.
   Three-phase methodology: analyze, investigate (one round), judge.
 
-# Minimum surface every reviewer task needs. Thread reading,
-# delegation, publishing, and verdict opt in per-task via the user
-# message's `tools_add:` — reviewer.user.md adds the production set.
+# Base surface: everything a reviewer needs to GATHER input —
+# read the diff AND read the existing thread graph — plus
+# reflect/done. Thread reading is foundational, not implementation-
+# specific: every reviewer task wants to know what's already been
+# discussed. What VARIES per task is how the reviewer ACTS on what
+# it found — whether it delegates (spawn_agent), where/how it
+# replies (post_comment), whether it sets a verdict
+# (set_review_status). Those acting-on-outputs tools opt in
+# per-task via the user message's `tools_add:` — see
+# reviewer.user.md for the production set.
 tools:
   - diff_read_file
   - diff_outline
   - diff_list_files
   - diff_search
+  - list_threads
+  - read_thread
+  - read_comment
   - reflect
   - done
 

@@ -1,11 +1,9 @@
 ---
 # Consolidation deduplicates against existing PR threads + publishes
-# findings + sets verdict. Reviewer's base @tools is read-only on
-# the diff; add the thread-reading + publishing surface.
+# findings + sets verdict. Diff reading + thread reading are the
+# reviewer's base surface (reviewer.system.md); tools_add here is
+# the publishing surface.
 tools_add:
-  - list_threads
-  - read_thread
-  - read_comment
   - react_to_comment
   - post_comment
   - set_review_status

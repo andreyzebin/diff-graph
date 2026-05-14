@@ -3,12 +3,10 @@
 # issue; the author's latest commit addressed it. The agent's job is
 # to confirm the fix landed (reply in the existing thread) and
 # APPROVE — NOT to re-raise the original concern as a fresh inline
-# finding. Tools_add limited to thread reading + publishing +
-# verdict; no spawn so the test stays unit-isolated.
+# finding. Thread reading is part of the reviewer's base surface
+# (reviewer.system.md); tools_add here is just publishing + verdict
+# — no spawn, so the test stays unit-isolated.
 tools_add:
-  - list_threads
-  - read_thread
-  - read_comment
   - post_comment
   - set_review_status
 
