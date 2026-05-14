@@ -285,14 +285,16 @@ class TestDefaultQwen3Chain:
         assert "not of type" in out or "integer" in out
 
     def test_default_chain_order(self):
-        """The three built-ins must come back in the documented order:
+        """The four built-ins must come back in the documented order:
         truncated_json (narrowest regex, args-empty), over_escaped_keys
-        (global unescape, args-empty), stringified_args (lift nested
-        JSON, args-non-empty). Order matters for predictability when
-        multiple handlers could theoretically apply."""
+        (global unescape, args-empty), python_literals (ast round-trip,
+        args-empty), stringified_args (lift nested JSON, args-non-empty).
+        Order matters for predictability when multiple handlers could
+        theoretically apply."""
         chain = default_qwen3_chain()
         assert [h.name for h in chain] == [
-            "truncated_json", "over_escaped_keys", "stringified_args",
+            "truncated_json", "over_escaped_keys", "python_literals",
+            "stringified_args",
         ]
 
     def test_clone_preserves_chain(self):

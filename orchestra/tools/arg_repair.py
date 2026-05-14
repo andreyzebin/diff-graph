@@ -30,7 +30,17 @@ Handler order in the default qwen3 chain:
    bug). Skips when args came in non-empty (parse worked, so
    truncated-key repair has nothing to do).
 
-2. StringifiedArgsHandler — operates on the already-parsed dict.
+2. OverEscapedKeysHandler — RAW string. Un-escapes `\\"X\\":`
+   top-level keys. Fires only when the raw parsed to {} and
+   contains `\\"`.
+
+3. PythonLiteralsHandler — RAW string. Round-trips a Python dict
+   repr (`None`/`True`/`False`, single quotes) through
+   `ast.literal_eval` + `json.dumps`. Fires only when the raw
+   parsed to {}. Broadest transform — runs after the narrow regex
+   handlers.
+
+4. StringifiedArgsHandler — operates on the already-parsed dict.
    Walks string-typed properties looking for nested JSON whose
    keys cover the missing-required set.
 
@@ -192,6 +202,51 @@ class OverEscapedKeysHandler:
         return parsed if isinstance(parsed, dict) else None
 
 
+class PythonLiteralsHandler:
+    """Recover from the "model emitted a Python dict repr" shape.
+
+    Wild-type (qwen3 reviewer, parallel `post_comment` batch):
+    `"parent_id": None` — the Python literal `None` instead of JSON
+    `null` (also `True`/`False`, single-quoted strings). One bare
+    literal makes `json.loads` reject an otherwise well-formed
+    object; the parse falls back to {} and validation reports the
+    first required key as missing — even though the model included
+    it.
+
+    Pre-conditions for firing:
+      - `error` is a missing-required validation error
+      - `args` is empty (the Python literal made the parse fall back)
+      - `raw_args` is a non-trivial string
+
+    `_repair_python_literals` round-trips the raw text through
+    `ast.literal_eval` + `json.dumps`. If that yields a parseable
+    dict, the framework re-validates and commits only if it passes.
+
+    Ordered LAST among the RAW-string handlers: `ast.literal_eval`
+    accepts the whole Python-repr grammar, so it's the broadest
+    transform — the narrower regex handlers (truncated keys,
+    over-escaped quotes) get first refusal."""
+
+    name = "python_literals"
+
+    def try_repair(self, *, raw_args, args, schema, error):
+        # Missing-required gate enforced by the chain harness.
+        # Precondition: args came in empty (parse fell back).
+        if args:
+            return None
+        if not isinstance(raw_args, str) or not raw_args.strip():
+            return None
+        from orchestra.tools.registry import _repair_python_literals
+        repaired = _repair_python_literals(raw_args)
+        if repaired == raw_args:
+            return None
+        try:
+            parsed = json.loads(repaired)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+
 class StringifiedArgsHandler:
     """Recover from the qwen3 "all args packed into one escaped-JSON
     string" failure mode (qwen-code#379).
@@ -222,19 +277,23 @@ class StringifiedArgsHandler:
 
 
 def default_qwen3_chain() -> list[ArgRepairHandler]:
-    """The three-handler chain enabled by
+    """The four-handler chain enabled by
     `ToolRegistry(fix_qwen3_stringification_bug=True)`. Order
     matters:
 
-      1. TruncatedJson  — narrow regex over `"key": ,` / `"key": }`
-                          (precondition: args empty)
+      1. TruncatedJson   — narrow regex over `"key": ,` / `"key": }`
+                           (precondition: args empty)
       2. OverEscapedKeys — global `\\"`→`"` un-escape
-                          (precondition: args empty + `\\"` in raw)
-      3. StringifiedArgs — lift nested JSON from a string property
-                          (precondition: args non-empty)
+                           (precondition: args empty + `\\"` in raw)
+      3. PythonLiterals  — `ast.literal_eval` + `json.dumps` round-trip
+                           (precondition: args empty)
+      4. StringifiedArgs — lift nested JSON from a string property
+                           (precondition: args non-empty)
 
-    First two share the `args empty` precondition so order between
-    them is by repair specificity (truncated is narrower, runs
-    first). Stringified takes the non-empty branch."""
+    The first three share the `args empty` precondition; order among
+    them is by repair specificity — the two narrow regex handlers run
+    before `ast.literal_eval`, which accepts the whole Python-repr
+    grammar and is the broadest transform. Stringified takes the
+    non-empty branch."""
     return [TruncatedJsonHandler(), OverEscapedKeysHandler(),
-            StringifiedArgsHandler()]
+            PythonLiteralsHandler(), StringifiedArgsHandler()]

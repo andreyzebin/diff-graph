@@ -271,6 +271,26 @@ class ToolRegistry:
                     args = candidate
                     error = None
                     break
+        if error and raw_args is not None and not args:
+            # The schema error we're about to surface ("'X' is a
+            # required property") is misleading when the real failure
+            # was a JSON syntax error: `args` fell back to {} because
+            # `raw_args` didn't parse, so EVERY required field looks
+            # missing and validation just names the first one. Repairs
+            # above had their shot and didn't recover it — re-attempt
+            # the bare parse, and if it still fails, surface the
+            # syntax error instead. That's the thing the model
+            # actually has to fix. (If it now parses, the {} was a
+            # genuine empty payload, not a syntax bug — leave the
+            # schema error as-is.)
+            try:
+                json.loads(raw_args or "{}")
+            except json.JSONDecodeError as exc:
+                return (
+                    f"error: malformed JSON in arguments — {exc.msg} "
+                    f"(line {exc.lineno} col {exc.colno}); "
+                    f"re-emit the call with valid JSON"
+                )
         if error:
             return error
 
@@ -485,6 +505,9 @@ def _parse_tool_arguments(raw: str, *, fix_qwen3: bool = False) -> dict:
          keys when the model emitted `\\"X\\":` instead of `"X":`
          (qwen3 wild-type: reflect with `\\"learned\\": "...", \\"
          confidence\\": "..."`, → "Unterminated string" on parse).
+      3. `_repair_python_literals` — round-trips a Python dict repr
+         through `ast.literal_eval` + `json.dumps` (qwen3 wild-type:
+         `"parent_id": None` — the Python literal instead of `null`).
 
     Repairs are tried independently against the ORIGINAL raw input;
     if one shape doesn't apply, the next runs from scratch. Chaining
@@ -505,7 +528,8 @@ def _parse_tool_arguments(raw: str, *, fix_qwen3: bool = False) -> dict:
         if not fix_qwen3:
             return {}
         result = None
-        for repair in (_repair_truncated_json, _repair_over_escaped_keys):
+        for repair in (_repair_truncated_json, _repair_over_escaped_keys,
+                       _repair_python_literals):
             repaired = repair(s)
             if repaired == s:
                 continue
@@ -563,6 +587,52 @@ def _repair_over_escaped_keys(raw: str) -> str:
     if '\\"' not in raw:
         return raw  # cheap reject — nothing to un-escape
     return raw.replace('\\"', '"')
+
+
+def _repair_python_literals(raw: str) -> str:
+    """Recover from the "model emitted a Python dict repr instead of
+    JSON" emission shape.
+
+    Wild-type (qwen3 reviewer, parallel `post_comment` batch): the
+    model emits `"parent_id": None` — the Python literal `None`
+    instead of JSON `null`. `True`/`False` leak the same way. The
+    rest of the payload is well-formed JSON; one bare Python literal
+    is enough to make `json.loads` reject the whole object, the parse
+    falls back to `{}`, and schema validation then reports the FIRST
+    required key as missing — a misleading error, since the model
+    actually included it.
+
+    Repair: parse the raw string with `ast.literal_eval` — Python's
+    safe literal evaluator, which accepts `None`/`True`/`False` (and
+    the broader Python-repr grammar: single-quoted strings, tuples)
+    — then re-serialise to JSON via `json.dumps`. The round-trip
+    guarantees the output is valid JSON or the helper returns `raw`
+    unchanged.
+
+    Conservative, same contract as the other `_repair_*` helpers:
+    only fires on a `JSONDecodeError` fallback, only commits a dict,
+    and the framework re-validates against the schema before
+    accepting it. `ast.literal_eval` is strict (literals only — no
+    calls, names, or operators), so a non-literal payload raises and
+    we return `raw` untouched.
+
+    Returns the (possibly unchanged) raw string. Idempotent: a
+    second call sees valid JSON, which is also a valid Python literal,
+    and round-trips to itself."""
+    if not isinstance(raw, str) or not raw.strip():
+        return raw
+    import ast
+    try:
+        parsed = ast.literal_eval(raw)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        return raw
+    if not isinstance(parsed, dict):
+        return raw
+    try:
+        return json.dumps(parsed)
+    except (TypeError, ValueError):
+        # Non-JSON-serialisable content (e.g. a tuple as a dict key).
+        return raw
 
 
 def _repair_stringified_args(args: dict, schema: dict) -> Optional[dict]:

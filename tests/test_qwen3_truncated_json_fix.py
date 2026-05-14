@@ -400,14 +400,14 @@ class TestOverEscapedKeysHandlerInChain:
         ))
 
     def test_default_chain_includes_over_escaped_handler(self):
-        """The default qwen3 chain ships three handlers in
-        documented order. Order is part of the contract — narrower
-        repairs first, broader ones after."""
+        """The default qwen3 chain ships four handlers in documented
+        order. Order is part of the contract — narrower repairs
+        first, broader ones after."""
         from orchestra.tools.arg_repair import default_qwen3_chain
         chain = default_qwen3_chain()
         names = [h.name for h in chain]
         assert names == ["truncated_json", "over_escaped_keys",
-                          "stringified_args"]
+                          "python_literals", "stringified_args"]
 
     def test_dispatch_recovers_over_escaped_reflect(self):
         """End-to-end: dispatch a tool call whose raw arguments
@@ -426,13 +426,19 @@ class TestOverEscapedKeysHandlerInChain:
         assert out["got"]["confidence"] == "high"
         assert "Submit findings" in out["got"]["next_action"]
 
-    def test_dispatch_with_chain_off_returns_validation_error(self):
-        """Without the flag, no chain → legacy validation error
-        surfaces. Sanity that the fix is gated behind opt-in."""
+    def test_dispatch_with_chain_off_returns_error(self):
+        """Without the flag, no chain → the over-escaped payload is
+        NOT recovered. Sanity that the fix is gated behind opt-in.
+
+        The error surfaced is the honest JSON syntax error (the
+        over-escape leaves the raw string unparseable), not the
+        misleading `'learned' is a required property` — the
+        honest-error check lives in `dispatch` itself, not the
+        repair chain, so it fires even with no handlers."""
         from orchestra.tools.registry import ToolRegistry
         reg = ToolRegistry()  # no chain
         self._register(reg)
         out = reg.dispatch("reflect_probe", {},
                             raw_args=REAL_OVER_ESCAPED_REFLECT)
         assert isinstance(out, str)
-        assert "required property" in out
+        assert out.startswith("error: malformed JSON in arguments")
