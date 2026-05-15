@@ -283,7 +283,7 @@ class TestWriteSide:
                                    line=5, severity="major")
         assert isinstance(nid, int) and nid >= 10_000
         rec = fake.sink_records[-1]
-        assert rec["kind"]     == "post_comment"
+        assert rec["kind"]     == "pr_post_comment"
         assert rec["new_id"]   == nid
         assert rec["text"]     == "hi"
         assert rec["file"]     == "A.java"
@@ -368,7 +368,7 @@ class TestWriteSideFileSink:
         lines = sink_file.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 2
         recs = [json.loads(l) for l in lines]
-        assert recs[0]["kind"] == "post_comment"
+        assert recs[0]["kind"] == "pr_post_comment"
         assert recs[1]["kind"] == "set_status"
 
     def test_file_sink_failure_does_not_crash_agent(self, tmp_path):
@@ -523,4 +523,4 @@ class TestEndToEndFlow:
 
         # All four actions visible on the single shared sink, in order.
         kinds = [r["kind"] for r in fake.sink_records]
-        assert kinds == ["post_comment", "set_status"]
+        assert kinds == ["pr_post_comment", "set_status"]

@@ -205,7 +205,7 @@ class OverEscapedKeysHandler:
 class PythonLiteralsHandler:
     """Recover from the "model emitted a Python dict repr" shape.
 
-    Wild-type (qwen3 reviewer, parallel `post_comment` batch):
+    Wild-type (qwen3 reviewer, parallel `pr_post_comment` batch):
     `"parent_id": None` — the Python literal `None` instead of JSON
     `null` (also `True`/`False`, single-quoted strings). One bare
     literal makes `json.loads` reject an otherwise well-formed

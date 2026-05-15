@@ -7,7 +7,7 @@
 # test is that the dispatcher made the spawn at all, and that it
 # didn't post the findings as its own.
 
-spawn_agent:
+agent_spawn:
   - return:
       output: |
         Review complete. 3 findings posted on the PR.

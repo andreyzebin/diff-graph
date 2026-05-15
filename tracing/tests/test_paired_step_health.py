@@ -6,7 +6,7 @@ Without health flags a reader has to expand every step to notice:
   - tool calls that came back as `validation error` (the agent
     *tried* to do something but every result was a parse/schema
     failure — see the qwen3 `"parent_id": }` case where all 6
-    post_comment calls failed),
+    pr_post_comment calls failed),
   - the same outbound payload re-emitted after seeing an error (a
     loop indicator — the model isn't learning from the feedback).
 
@@ -73,9 +73,9 @@ class TestToolCallSignature:
         """Two steps with the SAME tool_calls produce the same sig.
         Loop detector compares these tuples for equality."""
         resp = {"tool_calls": [
-            {"name": "post_comment", "arguments": '{"text":"hi"}'},
+            {"name": "pr_post_comment", "arguments": '{"text":"hi"}'},
         ]}
-        assert _tool_call_signature(resp) == (("post_comment", '{"text":"hi"}'),)
+        assert _tool_call_signature(resp) == (("pr_post_comment", '{"text":"hi"}'),)
 
     def test_handles_openai_function_envelope(self):
         """OpenAI wire shape nests under `function.{name, arguments}`.
@@ -145,11 +145,11 @@ class TestToolErrorsCount:
         calls, all results come back as `validation error: ...` in
         step 1's request messages."""
         steps = [
-            # step 0: emit 3 post_comment calls
+            # step 0: emit 3 pr_post_comment calls
             ([], {"tool_calls": [
-                {"name": "post_comment", "arguments": '{"text":"a"}'},
-                {"name": "post_comment", "arguments": '{"text":"b"}'},
-                {"name": "post_comment", "arguments": '{"text":"c"}'},
+                {"name": "pr_post_comment", "arguments": '{"text":"a"}'},
+                {"name": "pr_post_comment", "arguments": '{"text":"b"}'},
+                {"name": "pr_post_comment", "arguments": '{"text":"c"}'},
             ]}),
             # step 1: req contains the 3 tool results — all errors
             ([
@@ -170,9 +170,9 @@ class TestToolErrorsCount:
         without us having to also surface a success-count column."""
         steps = [
             ([], {"tool_calls": [
-                {"name": "post_comment", "arguments": '{"text":"a"}'},
-                {"name": "post_comment", "arguments": '{"text":"b"}'},
-                {"name": "post_comment", "arguments": '{"text":"c"}'},
+                {"name": "pr_post_comment", "arguments": '{"text":"a"}'},
+                {"name": "pr_post_comment", "arguments": '{"text":"b"}'},
+                {"name": "pr_post_comment", "arguments": '{"text":"c"}'},
             ]}),
             ([
                 {"role": "tool", "content": "validation error: 'text' is required"},
@@ -191,7 +191,7 @@ class TestRepeatsPrevStep:
         the loop indicator the UI badges. Models stuck in a JSON-
         validation loop do exactly this: same payload, same error,
         same next attempt."""
-        same_call = {"name": "post_comment", "arguments": '{"text":"hi"}'}
+        same_call = {"name": "pr_post_comment", "arguments": '{"text":"hi"}'}
         steps = [
             ([], {"tool_calls": [same_call]}),
             ([{"role": "tool", "content": "validation error"}],

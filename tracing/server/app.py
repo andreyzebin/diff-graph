@@ -434,7 +434,7 @@ async def api_step_tools(run_id: str, agent_id: str, step: int,
 
     Answers "what tools were actually on the table when the model
     decided what to do?" — primary use case: confirming that
-    optional surfaces like `spawn_agent` / `set_review_status` were
+    optional surfaces like `agent_spawn` / `set_review_status` were
     in fact present (and read whether the description was strong /
     weak enough to be invoked).
 

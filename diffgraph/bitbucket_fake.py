@@ -222,7 +222,7 @@ class FakeBitbucket:
         client_cert: Optional[str] = None,
     ) -> int:
         new_id = self._next_id()
-        self._record({"kind": "post_comment", "new_id": new_id,
+        self._record({"kind": "pr_post_comment", "new_id": new_id,
                       "text": text, "file": file, "line": line,
                       "severity": severity, "parent_id": int(parent_id),
                       "line_type": line_type})

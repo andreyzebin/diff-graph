@@ -1,6 +1,6 @@
 # Unit-tier reviewer mock — combines two sticky entries for REV-U-006.
 #
-# 1) spawn_agent — sticky empty investigator output. The reviewer is
+# 1) agent_spawn — sticky empty investigator output. The reviewer is
 #    isolated from real sub-agents (unit-tier convention); the
 #    investigator just returns "no findings" no matter how many times
 #    the reviewer spawns it.
@@ -18,7 +18,7 @@
 # the fake bench sink never observes a status change — that's
 # verifiable via side_effects.review_status_change in the scenario.
 
-spawn_agent:
+agent_spawn:
   - sticky: true
     return:
       output: "(no investigator findings — sub-agent disabled for unit-tier isolation)"

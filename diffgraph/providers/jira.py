@@ -187,7 +187,7 @@ def _disabled(key: str) -> TicketContext:
     """Jira deliberately switched OFF for this run — the operator
     toggle (DIFFGRAPH_JIRA_DISABLED), distinct from "never set up".
     The bench sets this for every unit scenario that doesn't opt in
-    with a `jira_fixture:`, so `read_ticket` being in the
+    with a `jira_fixture:`, so `jira_read_ticket` being in the
     reviewer/investigator base toolset never makes a scenario reach
     for a live Jira. Same shape of outcome as the other sentinels:
     a one-line note that names the tool state and says "proceed" —
@@ -219,7 +219,7 @@ def _not_viewable(key: str, exc: Exception) -> TicketContext:
 
 
 def format_ticket(tc: TicketContext) -> str:
-    """Stable text render of a `TicketContext` — the `read_ticket`
+    """Stable text render of a `TicketContext` — the `jira_read_ticket`
     tool's return contract.
 
     Why a fixed format matters: the fake (fixture-fed) provider and
@@ -303,7 +303,7 @@ class JiraProvider:
             "DIFFGRAPH_JIRA_FIXTURE", ""
         )
         # Operator toggle — DIFFGRAPH_JIRA_DISABLED forces every
-        # read_ticket to the `_disabled` sentinel regardless of token
+        # jira_read_ticket to the `_disabled` sentinel regardless of token
         # / fixture. The bench sets it for unit scenarios that don't
         # opt into Jira; it also stands alone as a "Jira off" switch.
         self.disabled = disabled or bool(
@@ -379,7 +379,7 @@ class JiraProvider:
         try:
             return distill_ticket(self.fetch_ticket_raw(key))
         except Exception as exc:
-            log.info("read_ticket: %s not viewable (%s): %s",
+            log.info("jira_read_ticket: %s not viewable (%s): %s",
                      key, type(exc).__name__, exc)
             return _not_viewable(key, exc)
 
@@ -493,6 +493,6 @@ class JiraRegistry:
 
     def fetch(self, ref: str) -> TicketContext:
         """Parse a `handle/namespace/ticket_id` ref and fetch it from
-        the right server. The one call the `read_ticket` tool needs."""
+        the right server. The one call the `jira_read_ticket` tool needs."""
         handle, _namespace, ticket_id = parse_ticket_ref(ref)
         return self.provider_for(handle).fetch_ticket(ticket_id)

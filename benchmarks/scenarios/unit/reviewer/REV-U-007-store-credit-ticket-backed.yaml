@@ -12,7 +12,7 @@ bench_cmd: >
 # A/B partner of REV-U-001-store-credit-concerns: SAME branch, SAME
 # generic PR description, SAME concerns-text deliverable channel —
 # the ONE difference is this fixture hands the reviewer the ORD-301
-# Jira ticket (via the fake JiraProvider + read_ticket tool). The
+# Jira ticket (via the fake JiraProvider + jira_read_ticket tool). The
 # ticket carries the acceptance criteria the diff is supposed to
 # satisfy; REV-U-001 has to infer intent from the diff alone, this
 # one can ground concerns in the AC. The contrast IS the test —
@@ -29,12 +29,12 @@ repo:
   base_branch: master
   source_branch: feature/ORD-301-store-credit
 
-# concerns-text WITH the read_ticket tool + a LOOK nudge to consult
-# the ticket. read_ticket is user-level here, scoped to this test —
+# concerns-text WITH the jira_read_ticket tool + a LOOK nudge to consult
+# the ticket. jira_read_ticket is user-level here, scoped to this test —
 # production reviewer.user.md is untouched (TODO §5b Phase 1).
 user_message_from: diffgraph:diffgraph/test_prompts/reviewer/concerns-text-with-ticket.md
 
-# Fake JiraProvider data source — read_ticket serves this fixture
+# Fake JiraProvider data source — jira_read_ticket serves this fixture
 # for any key it's called with. Resolved relative to the scenario
 # yaml, same as `mocks:`.
 jira_fixture: ../../../fixtures/jira/store-credit-ticket.json
@@ -63,7 +63,7 @@ trigger:
 # The PR's associated Jira ticket ref(s). In production pr_context
 # resolves these from Bitbucket's Jira-integration endpoint; here the
 # scenario supplies them. Shape: handle/namespace/ticket_id — the
-# agent copies the ref verbatim into read_ticket(ref). The fake
+# agent copies the ref verbatim into jira_read_ticket(ref). The fake
 # provider ignores the routing parts and returns jira_fixture, but
 # the ref shape is the real production contract.
 agent_data:

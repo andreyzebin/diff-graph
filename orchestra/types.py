@@ -114,8 +114,8 @@ class AgentConfig:
     # Counter resets when reflect actually fires.
     reflect_interval: int = 3
     sgr_extensions: Optional[dict[str, Any]] = None  # extra reflect() fields
-    # Every tool the agent can call — domain (post_comment, read_file, …)
-    # and framework (spawn_agent, reflect, list_agents). The presence of
+    # Every tool the agent can call — domain (pr_post_comment, read_file, …)
+    # and framework (agent_spawn, reflect, agent_list). The presence of
     # `reflect` here is what we used to call SGR; consumers check for it
     # directly rather than via a separate flag.
     tools: list[str] = field(default_factory=list)

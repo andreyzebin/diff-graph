@@ -357,7 +357,7 @@ class TestTimestampOrdering:
         w.on_event("agent_llm_request", agent_id="P", agent_name="reviewer", step=0, messages=[])
         w.on_event("agent_llm_response", agent_id="P", agent_name="reviewer", step=0,
                    tool_calls=[{"name": "diff_list_files", "arguments": "{}"}])
-        # step 1 — request carries tool result for step 0, then a spawn_agent
+        # step 1 — request carries tool result for step 0, then a agent_spawn
         w.on_event("agent_llm_request", agent_id="P", agent_name="reviewer", step=1,
                    messages=[{"role": "tool", "content": "ok"}])
         # Production code emits `agent_spawned` with `child_id`,
@@ -367,7 +367,7 @@ class TestTimestampOrdering:
         w.on_event("agent_spawned", parent_id="P",
                    child_id="C", agent_name="investigator", step=1)
         w.on_event("agent_llm_response", agent_id="P", agent_name="reviewer", step=1,
-                   tool_calls=[{"name": "spawn_agent",
+                   tool_calls=[{"name": "agent_spawn",
                                 "arguments": '{"agent":"investigator","focus":"x"}'}])
         # CHILD runs steps 0..3 — emitted before parent's step 2.
         # The LAST step is a `done(findings=[…])` tool call — that
@@ -395,7 +395,7 @@ class TestTimestampOrdering:
         w.on_event("agent_llm_request", agent_id="P", agent_name="reviewer", step=2,
                    messages=[])
         w.on_event("agent_llm_response", agent_id="P", agent_name="reviewer", step=2,
-                   tool_calls=[{"name": "post_comment",
+                   tool_calls=[{"name": "pr_post_comment",
                                 "arguments": '{"text":"done"}'}])
         w.on_event("agent_done", agent_id="P", agent_name="reviewer", step=3,
                    output=[])
@@ -434,18 +434,18 @@ class TestTimestampOrdering:
                 f"child event at idx {i} not bracketed by spawn={spawn_idx} done={done_idx}"
 
     def test_parent_step_after_done_comes_after_child(self, db_with_spawn):
-        """The reviewer's `post_comment` (step 2, after spawn) MUST
+        """The reviewer's `pr_post_comment` (step 2, after spawn) MUST
         come after the investigator's done — the bug we're fixing
         was that it sorted ahead by milliseconds."""
         db_path, rid = db_with_spawn
         events = events_from_runs([rid], db_path)
-        # Find post_comment by parent
+        # Find pr_post_comment by parent
         post_idx = next(i for i, e in enumerate(events)
-                        if "post_comment" in e.label)
+                        if "pr_post_comment" in e.label)
         done_idx = next(i for i, e in enumerate(events)
                         if e.kind == "agent_done" and "C" in e.actor)
         assert post_idx > done_idx, \
-            f"parent's post_comment at {post_idx} not after child's done at {done_idx}"
+            f"parent's pr_post_comment at {post_idx} not after child's done at {done_idx}"
 
 
 class TestStepLabels:
@@ -547,7 +547,7 @@ class TestFairCollapse:
             "agent_llm_response", agent_id="P", agent_name="reviewer",
             step=0,
             tool_calls=[
-                {"name": "spawn_agent",
+                {"name": "agent_spawn",
                  "arguments": f'{{"agent":"investigator","focus":"f{i}"}}'}
                 for i in range(12)
             ],

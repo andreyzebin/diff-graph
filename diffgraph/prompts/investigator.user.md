@@ -42,8 +42,8 @@ Workflow:
    - Keep `questions_remaining` for things you still need to check.
 
 5. **Optional dedup against existing PR discussion** — if your
-   focus could plausibly be already raised, call `list_threads()`
-   once and `read_thread(<id>)` on anything that looks related.
+   focus could plausibly be already raised, call `pr_list_threads()`
+   once and `pr_read_thread(<id>)` on anything that looks related.
    Don't re-report issues already covered by an open thread; cite
    the thread in your finding's `evidence` if relevant. Skip this
    step entirely when the focus is clearly novel.

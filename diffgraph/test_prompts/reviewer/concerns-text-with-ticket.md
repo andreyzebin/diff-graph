@@ -1,6 +1,6 @@
 ---
 # Ticket-backed concerns variant of concerns-text.md. Same
-# concerns-text deliverable channel; `read_ticket` is in the
+# concerns-text deliverable channel; `jira_read_ticket` is in the
 # reviewer's base surface (reviewer.system.md), so tools_add here
 # only carries the text_answer capture tool. The prompt body below
 # tells the reviewer the PR's associated Jira ticket(s) and nudges
@@ -48,15 +48,15 @@ Commits *(oldest → newest)*:
 
 This PR is associated with these Jira ticket(s): {jira_tickets}
 
-**Read the ticket(s) first.** Call `read_ticket(ref)` on each
+**Read the ticket(s) first.** Call `jira_read_ticket(ref)` on each
 associated ticket before forming concerns — copy the ref verbatim
 from the list above. The ticket carries the acceptance criteria the
 diff is supposed to satisfy; a concern grounded in "the ticket's AC
 says X, the code does Y" is sharper and more actionable than the
 same observation made from the diff alone. If a ticket links to an
 epic or sibling tickets and the broader effort changes how you'd
-weigh a finding, read those too (`read_ticket` on the linked key).
-If `read_ticket` says the ticket is unreachable, proceed with the
+weigh a finding, read those too (`jira_read_ticket` on the linked key).
+If `jira_read_ticket` says the ticket is unreachable, proceed with the
 diff + PR description alone — don't retry in a loop.
 
 Then identify the concerns this diff raises and submit them via

@@ -33,7 +33,7 @@ Canonical field order (see `diffgraph/prompts/reviewer.system.md` for a live exa
 ---
 agent: <name>                       # unique identifier in the registry
 mode: react | single                # ReAct tool loop vs one-shot
-summary: >                          # shown in list_agents() output
+summary: >                          # shown in agent_list() output
   <1–3 sentences>
 
 tools:                              # full base toolkit, flat list
@@ -72,9 +72,9 @@ Per-call task layer. Frontmatter is **additive only** — `tools:` (full-replace
 ```yaml
 ---
 tools_add:                          # additive only; full-replace via `tools:` is rejected
-  - list_threads
-  - spawn_agent
-  - post_comment
+  - pr_list_threads
+  - agent_spawn
+  - pr_post_comment
 extra_tools:                        # optional: capture-style tools registered per-run
   - name: text_answer
     description: "Submit your final text."
@@ -101,7 +101,7 @@ data:
 # system.md. The compiler merges both layers into one guards dict;
 # a trigger declared in both layers is a compile error.
 guards:
-  require_tool:post_comment: "..."
+  require_tool:pr_post_comment: "..."
 ---
 <user body — per-call task wording with {placeholder} interpolation>
 ```
@@ -113,7 +113,7 @@ The two layers split along a **methodology / interface** seam:
 | Layer | Carries | Examples |
 |---|---|---|
 | `system.md` | **Methodology** — what the agent IS, independent of the invocation surface | `tools:` (base capability), `summary:`, `budget:`, `reflect_interval:`, `llm:`, `guards: text_response`, methodology body |
-| `user.md` | **Interface** — how the agent is invoked in a concrete environment | `tools_add:` (interface tools — `post_comment`, `set_review_status`, …), `data:` (spawn-time args from the surface), `guards: require_tool:X` (interface guards), task wording |
+| `user.md` | **Interface** — how the agent is invoked in a concrete environment | `tools_add:` (interface tools — `pr_post_comment`, `set_review_status`, …), `data:` (spawn-time args from the surface), `guards: require_tool:X` (interface guards), task wording |
 
 Effect: the same `reviewer.system.md` can be reused under multiple `*.user.md` files (production Bitbucket, CLI, test prompts) — each declares its own interface contract without touching the methodology.
 
@@ -122,13 +122,13 @@ The compiler **merges** `data:` and `guards:` from both layers into one `AgentRe
 ### `data:` triple duty
 
 Each `data:` field simultaneously serves as:
-1. **Input schema** — what `spawn_agent` must provide
+1. **Input schema** — what `agent_spawn` must provide
 2. **Template variable** — `{field}` in prompt body is replaced with the actual value
-3. **Discovery docs** — shown in `list_agents()` output
+3. **Discovery docs** — shown in `agent_list()` output
 
 ### Tool registration
 
-All tools — domain (`diff_read_file`, `post_comment`, …) and framework (`spawn_agent`, `list_agents`, `reflect`, `done`) — live in **one flat list** under `tools:`. No separate `@capabilities` indirection. The presence of `reflect` in `tools` is what enables SGR; the presence of `spawn_agent` is what enables delegation.
+All tools — domain (`diff_read_file`, `pr_post_comment`, …) and framework (`agent_spawn`, `agent_list`, `reflect`, `done`) — live in **one flat list** under `tools:`. No separate `@capabilities` indirection. The presence of `reflect` in `tools` is what enables SGR; the presence of `agent_spawn` is what enables delegation.
 
 Framework tools are registered automatically by `orchestra/tools/builtin.py` based on `tools` ∪ `tools_add`. `done` is always available.
 
@@ -153,11 +153,11 @@ Reads `<name>.system.md` + `<name>.user.md` pairs and builds an **agent registry
 
 CLI: `--prompts` flag overrides default prompt directory. Enables A/B testing at the prompt level via webhook router — each agent config specifies its own `--prompts` URI.
 
-**Runtime access:** `list_agents` tool returns the registry. `spawn_agent` validates data against target's schema and injects into `{placeholders}`.
+**Runtime access:** `agent_list` tool returns the registry. `agent_spawn` validates data against target's schema and injects into `{placeholders}`.
 
 **Data inheritance:** Parent's `data_scope` is auto-injected into child `{placeholders}` when the child's `data:` field matches a key in the parent's scope. The child does not need to explicitly request `"inherit"` — matching fields are injected automatically.
 
-Example: the orchestrator sets `data_scope = {diff_summary, existing_comments, commits}` on the lead agent. When the lead spawns a reviewer, the reviewer's `data:` declares the same fields (`diff_summary`, `existing_comments`, `commits`, `focus`). The matching fields are copied from the lead's scope into the reviewer's prompt `{placeholders}`. The `focus` field comes from the `spawn_agent` call. Zero token waste on re-transmitting shared context.
+Example: the orchestrator sets `data_scope = {diff_summary, existing_comments, commits}` on the lead agent. When the lead spawns a reviewer, the reviewer's `data:` declares the same fields (`diff_summary`, `existing_comments`, `commits`, `focus`). The matching fields are copied from the lead's scope into the reviewer's prompt `{placeholders}`. The `focus` field comes from the `agent_spawn` call. Zero token waste on re-transmitting shared context.
 
 **No handoff context by default:** child agents get everything via their system prompt (with injected data), not from parent conversation history.
 
@@ -174,8 +174,8 @@ Two modes:
 
 The agent manages its own children. No external runner.
 
-- `spawn_agent(wait=true)` -- parent blocks, child runs, result returned as tool output
-- `spawn_agent(wait=false)` -- child runs in background thread, parent continues
+- `agent_spawn(wait=true)` -- parent blocks, child runs, result returned as tool output
+- `agent_spawn(wait=false)` -- child runs in background thread, parent continues
 - `spawn_many` -- N children in parallel via ThreadPoolExecutor, merged result returned
 - `fork` -- clone self into N branches, each with different focus, results merged
 
@@ -191,7 +191,7 @@ Clamped to valid ranges. Every change emits `param_adjusted` event.
 
 ### Agent discovery
 
-Agents find each other through the compiled registry via `list_agents`, not by hardcoded names. `spawn_agent` by name after consulting the registry.
+Agents find each other through the compiled registry via `agent_list`, not by hardcoded names. `agent_spawn` by name after consulting the registry.
 
 ---
 
@@ -209,13 +209,13 @@ Registered via Python `registry.register(...)` or YAML config. Each agent only s
 |---|---|
 | `done` | Submit output, stop the loop |
 | `reflect` | SGR self-reflection with question ID tracking |
-| `spawn_agent(agent, data, focus, context_handoff, wait)` | Create child agent. Data injected into `{placeholders}`. `"inherit"` copies from parent. |
+| `agent_spawn(agent, data, focus, context_handoff, wait)` | Create child agent. Data injected into `{placeholders}`. `"inherit"` copies from parent. |
 | `spawn_many(agents[], context_handoff, merge)` | Fan-out N agents in parallel. Merge: `union`, `best_confidence`, `llm_merge`, `raw`. |
 | `plan(goal, constraints)` | Single-shot planner returning structured JSON |
 | `fork(branches[], context_handoff, merge)` | Clone self into N parallel branches |
 | `adjust_agent(agent_id, temperature, penalties, model, inject_message, extend_budget_steps)` | Modify running child's LLM params, inject context, adjust budget |
 | `observe_agents()` | Status of all children: step, budget, SGR, behavioral signals |
-| `list_agents()` | Agent registry: names, summaries, capabilities, input schemas |
+| `agent_list()` | Agent registry: names, summaries, capabilities, input schemas |
 
 ### Shared tools (swarm)
 
@@ -431,7 +431,7 @@ Both views link to each other. `/runs/{id}` redirects to `/live` if running, `/t
 |---|---|
 | **Prompt = config** | Two sibling files per agent (`<name>.system.md` + `<name>.user.md`). Frontmatter declares capabilities; body defines behavior. |
 | **LLM compiler** | Reads prompt files -> builds agent registry. Deterministic + LLM fallback. |
-| **Agent discovery** | Agents find each other by summary via `list_agents`. |
+| **Agent discovery** | Agents find each other by summary via `agent_list`. |
 | **Max non-determinism** | The react loop has no predetermined steps. The LLM decides everything. |
 | **Tools, not pipelines** | Spawn, fork, adjust -- all tool calls. No topology runner. |
 | **Mutable params** | LLM generation parameters are live state. Supervisor agents tune them. |

@@ -171,13 +171,13 @@ class TestGuardsMerge:
             user_body=(
                 "---\n"
                 "guards:\n"
-                "  require_tool:post_comment: \"post first\"\n"
+                "  require_tool:pr_post_comment: \"post first\"\n"
                 "---\n"
                 "task\n"
             ),
         )
         e = _registry(tmp_path).get("x")
-        assert e.guards == {"require_tool:post_comment": "post first"}
+        assert e.guards == {"require_tool:pr_post_comment": "post first"}
 
     def test_merge_across_layers(self, tmp_path):
         _write_pair(tmp_path, "x",
@@ -194,7 +194,7 @@ class TestGuardsMerge:
             user_body=(
                 "---\n"
                 "guards:\n"
-                "  require_tool:post_comment: \"post first\"\n"
+                "  require_tool:pr_post_comment: \"post first\"\n"
                 "---\n"
                 "task\n"
             ),
@@ -202,7 +202,7 @@ class TestGuardsMerge:
         e = _registry(tmp_path).get("x")
         assert e.guards == {
             "text_response": "use tools",
-            "require_tool:post_comment": "post first",
+            "require_tool:pr_post_comment": "post first",
         }
 
     def test_conflict_raises(self, tmp_path, caplog):

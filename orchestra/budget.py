@@ -278,11 +278,11 @@ class FailedReflectGuard:
     Phase 1 apply: hide `reflect` from `ctx.current_tools` and inject
     a one-shot user message explaining the latch and the alternative
     tools. The model can't reflect after this — it has to use
-    `post_comment`, `done`, or whatever else its tools_add gave it.
+    `pr_post_comment`, `done`, or whatever else its tools_add gave it.
 
     Counter resets on a SUCCESSFUL reflect (validation passed).
     Non-reflect tool calls don't reset the counter — otherwise the
-    model could interleave a single read_thread to dodge the latch.
+    model could interleave a single pr_read_thread to dodge the latch.
 
     Latch is permanent within a run; once we conclude this LLM/model
     combination can't produce valid reflect, no amount of further

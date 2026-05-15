@@ -18,7 +18,7 @@ data:
     description: "Findings the agent emitted via done(findings=[...]) — the intended_findings channel."
   intended_concerns:
     type: string
-    description: "Concerns the agent reflected on (reflect(concerns=[...])) plus spawn_agent(focus=...) strings — the intended_concerns channel."
+    description: "Concerns the agent reflected on (reflect(concerns=[...])) plus agent_spawn(focus=...) strings — the intended_concerns channel."
   acknowledgement_required:
     type: string
     description: "yes if the agent was invoked via a PR comment and is expected to ack quickly; no otherwise."

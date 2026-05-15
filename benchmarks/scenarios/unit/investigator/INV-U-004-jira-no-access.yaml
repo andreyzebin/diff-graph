@@ -10,7 +10,7 @@ bench_cmd: >
   --provider={provider}
 
 # Sibling of INV-U-003. Same branch, same focus, same resilience
-# bar — the only difference is the degraded reply read_ticket comes
+# bar — the only difference is the degraded reply jira_read_ticket comes
 # back with. Here Jira is reachable but the SPECIFIC ticket isn't:
 # a 404 (deleted) or 403 (the bot account lacks permission), which
 # the real JiraProvider surfaces via the `_not_viewable` sentinel +
@@ -24,14 +24,14 @@ repo:
   base_branch: master
   source_branch: hotfix/ORD-287-cancel-npe
 
-# read_ticket → the sticky "ticket could not be read — deleted or no
+# jira_read_ticket → the sticky "ticket could not be read — deleted or no
 # permission" reply on every call (bench-side fixture; mirrors the
 # real _not_viewable / format_ticket output shape).
 mocks: ../../../fixtures/mocks/jira-no-access.yaml
 
 agent_data:
   # Same focus as INV-U-003 — does not telegraph the root cause or
-  # fix location; points at the ticket so read_ticket gets exercised
+  # fix location; points at the ticket so jira_read_ticket gets exercised
   # and meets the not-viewable reply.
   focus: |
     OrderService.cancelOrder() was hitting a NullPointerException on
@@ -41,12 +41,12 @@ agent_data:
     properly understood.
 
     The PR is associated with Jira ticket ORD-287 — read it
-    (read_ticket) for the acceptance criteria and incident context
+    (jira_read_ticket) for the acceptance criteria and incident context
     before forming your assessment.
 
 # ── Judge (investigator resilience) ──────────────────────────────────────
 # Same contract as INV-U-003: assert_via: intended_findings, the bar
-# is resilience not depth. read_ticket came back "ticket not viewable
+# is resilience not depth. jira_read_ticket came back "ticket not viewable
 # — deleted or no permission"; the investigator must STILL land the
 # core concern from the diff (the null guard on @OneToMany hides a
 # mapping / construction problem — provable from the code alone). The
@@ -59,7 +59,7 @@ expected_output:
       type: inline
       severity: major
       description_keywords: ["null guard", "@OneToMany", "Hibernate", "root cause", "mapping", "upstream", "never null"]
-      rationale: "The diff alone is enough to surface the core concern — the null guard on @OneToMany hides a mapping/construction problem. The investigator must reach this from the code even though its read_ticket call came back not-viewable."
+      rationale: "The diff alone is enough to surface the core concern — the null guard on @OneToMany hides a mapping/construction problem. The investigator must reach this from the code even though its jira_read_ticket call came back not-viewable."
   forbidden_comments:
     - description: "A 'finding' that just reports the Jira ticket being unreachable / deleted / permission-denied — that's a tool state, not a code-review finding. The investigator should absorb the not-viewable reply silently and work from the diff."
   side_effects:

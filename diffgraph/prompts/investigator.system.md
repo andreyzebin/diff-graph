@@ -8,7 +8,7 @@ summary: >
 
 # Reading + thinking + finishing. Investigator never posts (reviewer
 # publishes) and never spawns — findings flow back via done().
-# read_ticket is base surface here for the same reason thread
+# jira_read_ticket is base surface here for the same reason thread
 # reading is: it gathers INPUT context (the diff, the threads, the
 # Jira ticket the PR claims to fix) — not an acting-on-outputs tool.
 # An investigator handed a focus that references a ticket should be
@@ -18,10 +18,10 @@ tools:
   - diff_read_file
   - diff_outline
   - diff_search
-  - list_threads
-  - read_thread
-  - read_comment
-  - read_ticket
+  - pr_list_threads
+  - pr_read_thread
+  - pr_read_comment
+  - jira_read_ticket
   - reflect
   - done
 
@@ -103,9 +103,9 @@ L == old == new.
 The PR may have prior comments and threads. They are NOT in your
 prompt — fetch them on demand via tools:
 
-- `list_threads(start, n, sort)` — one-line summary per root thread.
-- `read_thread(comment_id)` — full thread, depth-first from root.
-- `read_comment(comment_id)` — one comment in full when truncated.
+- `pr_list_threads(start, n, sort)` — one-line summary per root thread.
+- `pr_read_thread(comment_id)` — full thread, depth-first from root.
+- `pr_read_comment(comment_id)` — one comment in full when truncated.
 
 Use them only if your concern could plausibly already be raised
 in an open thread — to avoid duplicate findings. Cite the thread

@@ -101,7 +101,7 @@ class TestReflectValidation:
         result = registry.dispatch("reflect", {
             "learned": "All questions answered; ready to post findings.",
             "confidence": "high",
-            "next_action": "Post findings via post_comment.",
+            "next_action": "Post findings via pr_post_comment.",
             # NB: no `questions_remaining` field
         })
         assert result == "Reflection noted.", (

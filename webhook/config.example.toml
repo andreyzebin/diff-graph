@@ -52,7 +52,7 @@ command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run -
 timeout = 600
 
 # DiffGraph — dispatcher entry point with the Jira integration off.
-# --mocks short-circuits every read_ticket call (at any spawn depth)
+# --mocks short-circuits every jira_read_ticket call (at any spawn depth)
 # with a canned "Jira is off, work from the diff" reply. Use when the
 # Jira PAT has expired, the instance is down, or a given route just
 # shouldn't make tracker calls — no prompt or code change needed. The

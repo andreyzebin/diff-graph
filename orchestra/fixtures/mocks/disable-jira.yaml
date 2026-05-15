@@ -1,6 +1,6 @@
 # Drop-in tool-mock fixture for `cli.py run --mocks <path>`.
 #
-# What it does: every `read_ticket` call short-circuits with the
+# What it does: every `jira_read_ticket` call short-circuits with the
 # canned reply below — the tool stays in the agent's tool list (no
 # prompt recompile), the agent simply sees "Jira is off, work from
 # the diff" and proceeds.
@@ -24,9 +24,9 @@
 # — a bare string at the tool key = a single STICKY entry returning
 # that string verbatim, forever, no MockExhaustedError however many
 # times (and at whatever spawn depth — ToolMocks is inherited
-# parent→child) the agent calls read_ticket.
+# parent→child) the agent calls jira_read_ticket.
 #
 # Pairs with: orchestra/fixtures/mocks/disable-review-status.yaml
 #             (same pattern, for set_review_status).
 
-read_ticket: "Jira integration is currently disabled — proceed; do not retry."
+jira_read_ticket: "Jira integration is currently disabled — proceed; do not retry."

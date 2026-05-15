@@ -82,7 +82,7 @@ class ForbiddenComment:
 @dataclass
 class ExpectedConcernFocus:
     """Concern the reviewer should have surfaced via reflect() or
-    spawn_agent.focus. Match by keyword groups against the union of
+    agent_spawn.focus. Match by keyword groups against the union of
     titles + descriptions extracted from invocations.json — same
     AND-of-OR semantics as ExpectedComment.description_keywords.
     """
@@ -161,7 +161,7 @@ class ScenarioSetup:
     `mocks` is a file path relative to the scenario YAML pointing at
     a tool-mock fixture (orchestra's --mocks format). When set, the
     bench passes it through to the agent CLI as --mocks <abspath>,
-    short-circuiting spawn_agent / read_file / etc. with canned
+    short-circuiting agent_spawn / read_file / etc. with canned
     responses for fast isolated unit tests of one agent at a time.
     Resolved to an absolute path at load time (see `mocks_path`).
     """
@@ -201,17 +201,17 @@ class ExpectedOutput:
     # Concerns the reviewer should have surfaced. Used by tests that
     # short-circuit the pipeline before INVESTIGATE (e.g. REV-001
     # concerns-only): judge extracts the concerns the reviewer wrote
-    # to reflect() and/or the focuses it passed to spawn_agent from
+    # to reflect() and/or the focuses it passed to agent_spawn from
     # invocations.json, then matches each concern_focuses keyword
     # group against the union.
     concern_focuses: list[ExpectedConcernFocus] = field(default_factory=list)
     # Channels the judge should match `required_comments` against:
-    #   "pr_comments"        — real comments posted via post_comment
+    #   "pr_comments"        — real comments posted via pr_post_comment
     #                          (default when assert_via is empty)
     #   "intended_findings"  — done(findings=[...]) args from
     #                          invocations.json
     #   "intended_concerns"  — reflect(concerns=[...]) +
-    #                          spawn_agent(focus=...) from invocations.json
+    #                          agent_spawn(focus=...) from invocations.json
     # The judge takes the UNION of enabled channels. Lets a scenario
     # explicitly say "investigator standalone — match against done(),
     # not the PR" or "reviewer concerns-only — match against reflect()".

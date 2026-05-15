@@ -90,7 +90,7 @@ deployed agent is good.
 ### Loop 2 — INTEGRATION (nightly + on merge candidate)
 
 Same scenarios run through the full pipeline against real
-Bitbucket PRs — actual post_comment / spawn_agent /
+Bitbucket PRs — actual pr_post_comment / agent_spawn /
 set_review_status. Catches everything the unit tier hides: parallel
 spawn ordering quirks, mocked-vs-real Bitbucket API divergences,
 end-to-end latency, multi-provider retry behavior.
@@ -299,12 +299,12 @@ A step in any agent's run is one of two shapes:
 
    The LLM dispatched one or more       The LLM returned only text —
    tools at this step (`done`,          no tool_calls. This is how
-   `diff_read_file`, `post_comment`,    mode:single agents (judges,
-   `spawn_agent`, …). Each call has     lead agents that don't loop)
+   `diff_read_file`, `pr_post_comment`,    mode:single agents (judges,
+   `agent_spawn`, …). Each call has     lead agents that don't loop)
    a matching result on the next        deliver their output. Text
    step's request (or — for control-    "to the human" is treated as
    flow tools like `done` /             a tool call to a virtual
-   `reflect` / `spawn_agent` — a        `system:human` target —
+   `reflect` / `agent_spawn` — a        `system:human` target —
    self-arrow or parent-bound arrow).   same renderer path, no
                                         kind-special case.
 ```

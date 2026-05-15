@@ -95,13 +95,13 @@ _SYSTEM_FOR: dict[str, str] = {
     "diff_read_file":   "diff",
     "diff_outline":     "diff",
     "diff_search":      "diff",
-    "list_threads":      "bitbucket",
-    "read_thread":       "bitbucket",
-    "read_comment":      "bitbucket",
-    "post_comment":      "bitbucket",
+    "pr_list_threads":      "bitbucket",
+    "pr_read_thread":       "bitbucket",
+    "pr_read_comment":      "bitbucket",
+    "pr_post_comment":      "bitbucket",
     "set_review_status": "bitbucket",
     # Control-flow primitives don't route through a system lane:
-    #   spawn_agent       → agent_spawn event (parent → child)
+    #   agent_spawn       → agent_spawn event (parent → child)
     #   done (child)      → agent_done event (child → parent),
     #                       the same event as the spawn's return
     #   done (root) / reflect → self-loop tool_call (actor == target)
@@ -577,7 +577,7 @@ def _walk_agent(agent: dict, *, run_id: str,
         by_name: dict[str, int] = {}
         for ti, tc in enumerate(tool_calls):
             tname = tc.get("name") or "?"
-            if tname == "spawn_agent":
+            if tname == "agent_spawn":
                 groups.append((tname, [(ti, tc)]))
                 continue
             idx = by_name.get(tname)
@@ -588,7 +588,7 @@ def _walk_agent(agent: dict, *, run_id: str,
                 groups[idx][1].append((ti, tc))
 
         for tname, calls in groups:
-            if tname == "spawn_agent":
+            if tname == "agent_spawn":
                 ti, tc = calls[0]
                 args_raw = tc.get("arguments") or ""
                 child = _match_spawn(args_raw, children_by_id,
@@ -619,7 +619,7 @@ def _walk_agent(agent: dict, *, run_id: str,
             #     return arrow to the parent. Emit as `agent_done`
             #     event (one event for both perspectives — call
             #     side AND return side of the same control flow
-            #     handoff). spawn_agent's matching return is
+            #     handoff). agent_spawn's matching return is
             #     handled here, NOT via a synthetic emit after the
             #     child walk.
             #   - ROOT agent (no parent_actor): no one to return
@@ -755,7 +755,7 @@ def _short(s: str, n: int) -> str:
 
 
 def _short_focus(args_raw: str) -> str:
-    """Pick `focus=` or `name=` out of spawn_agent args for the
+    """Pick `focus=` or `name=` out of agent_spawn args for the
     spawn arrow label."""
     try:
         a = json.loads(args_raw or "{}")
@@ -779,7 +779,7 @@ def _match_spawn(args_raw: str,
                  by_id: dict[str, dict],
                  in_order: list[dict],
                  used: set[str]) -> Optional[dict]:
-    """Match a spawn_agent tool call to one of the children of the
+    """Match a agent_spawn tool call to one of the children of the
     current agent. Prefer name match (from args) over positional."""
     name = None
     try:

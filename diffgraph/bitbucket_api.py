@@ -107,7 +107,7 @@ class BitbucketAPI(Protocol):
     ) -> str:
         """Rendered, human-readable thread starting at root of
         the chain containing `comment_id`. Returned as text the
-        agent's `read_thread` tool surfaces directly."""
+        agent's `pr_read_thread` tool surfaces directly."""
         ...
 
     # ── Write side ─────────────────────────────────────────────────────

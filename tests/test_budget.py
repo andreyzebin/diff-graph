@@ -401,7 +401,7 @@ class TestTokenBudgetPusher:
         """Different agents have different tools — the framework's
         budget pusher messages must not mention any specific tool by
         name. Use generic "submit your final output" / "wrap up"
-        phrasing instead of `done()` / `post_comment()` etc.
+        phrasing instead of `done()` / `pr_post_comment()` etc.
         Agent-specific wrap-up wording is the prompt's job.
 
         Pinned tool names that historically leaked into pusher
@@ -409,8 +409,8 @@ class TestTokenBudgetPusher:
         have that tool):
         """
         agent_tools = (
-            "done()", "reflect()", "post_comment", "set_review_status",
-            "spawn_agent", "list_threads", "read_thread",
+            "done()", "reflect()", "pr_post_comment", "set_review_status",
+            "agent_spawn", "pr_list_threads", "pr_read_thread",
             "text_answer", "diff_read_file", "diff_search",
         )
         for cls in (TokenBudgetPusher, TimeBudgetPusher):
@@ -653,7 +653,7 @@ class TestFailedReflectGuard:
     entire 50-step budget without posting findings."""
 
     def _ctx(self, tools: list[str] | None = None) -> StepContext:
-        return _ctx(tools=tools or ["reflect", "done", "post_comment"])
+        return _ctx(tools=tools or ["reflect", "done", "pr_post_comment"])
 
     def test_under_threshold_does_not_latch(self):
         guard = FailedReflectGuard(threshold=3)
@@ -722,12 +722,12 @@ class TestFailedReflectGuard:
     def test_non_reflect_tool_does_not_reset_streak(self):
         """Interleaving a non-reflect tool MUST NOT reset the
         counter — otherwise a model could dodge the latch by
-        alternating reflect+post_comment."""
+        alternating reflect+pr_post_comment."""
         guard = FailedReflectGuard(threshold=3)
         ctx = self._ctx()
-        ctx.step_outcomes = [("reflect", True), ("post_comment", False)]
+        ctx.step_outcomes = [("reflect", True), ("pr_post_comment", False)]
         guard.on_step_done(ctx)
-        ctx.step_outcomes = [("reflect", True), ("post_comment", False)]
+        ctx.step_outcomes = [("reflect", True), ("pr_post_comment", False)]
         guard.on_step_done(ctx)
         ctx.step_outcomes = [("reflect", True)]
         guard.on_step_done(ctx)
@@ -746,7 +746,7 @@ class TestFailedReflectGuard:
         guard.on_step_done(ctx)
         # Latched. Then many successful non-reflect calls follow:
         for _ in range(5):
-            ctx.step_outcomes = [("post_comment", False)]
+            ctx.step_outcomes = [("pr_post_comment", False)]
             guard.on_step_done(ctx)
         ctx2 = self._ctx()
         guard.apply(ctx2)

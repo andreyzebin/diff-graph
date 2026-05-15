@@ -157,12 +157,12 @@ class TestRenderCall:
         after."""
         out = render_call({
             "content": "Found the bug.",
-            "tool_calls": [{"function": {"name": "post_comment",
+            "tool_calls": [{"function": {"name": "pr_post_comment",
                                           "arguments": '{"text":"BLOCKER"}'}}],
         })
         assert "Found the bug." in out
-        assert "▶ post_comment" in out
-        assert out.index("Found the bug.") < out.index("▶ post_comment")
+        assert "▶ pr_post_comment" in out
+        assert out.index("Found the bug.") < out.index("▶ pr_post_comment")
 
     def test_truly_empty_payload(self):
         """No content, no tool_calls — explicit `(empty)` marker so

@@ -24,7 +24,7 @@ repo:
   source_branch: hotfix/ORD-287-cancel-npe
 
 agent_data:
-  # NB: don't telegraph the answer. A reviewer's spawn_agent focus
+  # NB: don't telegraph the answer. A reviewer's agent_spawn focus
   # would naturally describe the diff shape and the concern; it
   # would NOT name the suspected root cause or recommended fix
   # location ("mapping configuration / persistence layer" / "fix at
@@ -42,7 +42,7 @@ agent_data:
 
 # ── Judge (investigator standalone) ──────────────────────────────────────
 # Investigator runs its full LOOK→THINK→DONE loop on the given focus.
-# It does NOT post to the PR (no spawn, no post_comment). The judge
+# It does NOT post to the PR (no spawn, no pr_post_comment). The judge
 # scores invocations.json — specifically the done(findings=[...]) call.
 # Each required_comments entry's description_keywords are matched
 # (AND-of-OR) against the union of finding.{description, location} for

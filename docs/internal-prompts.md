@@ -31,14 +31,14 @@ the budget-capped final LLM call where only `done` is available.
 
 ## Live but stays in agent frontmatter
 
-### Dispatcher's `require_tool:post_comment` guard
+### Dispatcher's `require_tool:pr_post_comment` guard
 
 Defined in `diffgraph/prompts/dispatcher.md` (frontmatter `guards:`).
-Fires when the dispatcher stops without calling `post_comment`.
+Fires when the dispatcher stops without calling `pr_post_comment`.
 
 ```text
-You stopped without replying. The user can only see post_comment()
-output. Call post_comment(text=..., parent_id={comment_id}) once,
+You stopped without replying. The user can only see pr_post_comment()
+output. Call pr_post_comment(text=..., parent_id={comment_id}) once,
 then finish with done().
 ```
 
@@ -64,7 +64,7 @@ because removing the code is a separate cleanup.
 - **Handoff modes** (`orchestra/handoff.py`) — `findings_only`,
   `sgr_outcomes`, `all_sgr`, `findings_and_sgr`, `condensed`,
   `last_N`, `compose_handoff`. Activated only when an agent passes
-  `context_handoff="..."` to `spawn_agent`. None of the current
+  `context_handoff="..."` to `agent_spawn`. None of the current
   agent prompts do.
 - **Condensation** (`orchestra/condensation.py`) — `LLMSummary`,
   `SlidingWindow`, `DropToolResults`, `Hybrid`. Gated by

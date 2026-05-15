@@ -275,7 +275,7 @@ class Agent:
     def run(self) -> AgentResult:
         """Main entry point. Wrapped in one OTel span — same shape
         for root agent (called from cli.py) and spawned children
-        (called from spawn_agent), so the trace tree is uniform.
+        (called from agent_spawn), so the trace tree is uniform.
         """
         self.event_bus.emit(EventType.AGENT_STARTED,
                            agent_id=self.agent_id, agent_name=self.config.name,
@@ -715,7 +715,7 @@ class Agent:
                 for tc in msg.tool_calls:
                     tool_names.append(tc.function.name)
                     _called_tools.add(tc.function.name)
-                    if tc.function.name in ("done", "reflect", "spawn_agent"):
+                    if tc.function.name in ("done", "reflect", "agent_spawn"):
                         continue
                     # Mocked tools take the sequential _handle_tool_call
                     # path so their real handler never runs (would waste
@@ -981,7 +981,7 @@ class Agent:
         """Route all tool calls through registry.dispatch() — validation + handler.
 
         Mock interception lives here so it covers ANY tool, not just
-        `spawn_agent`. A configured tool with a matching `when:` returns
+        `agent_spawn`. A configured tool with a matching `when:` returns
         the canned response synchronously; no real handler runs.
         Configured tool but no matching entry → MissingMockMatchError
         (test author left a fixture hole — surface immediately).
@@ -1089,11 +1089,11 @@ class Agent:
             resolved[key] = str(val)
         return resolved
 
-    def _meta_spawn_agent(self, args: dict) -> str:
-        """spawn_agent: create and run a child agent with data injection.
+    def _meta_agent_spawn(self, args: dict) -> str:
+        """agent_spawn: create and run a child agent with data injection.
 
         Mock interception happens earlier (in `_handle_tool_call`) since
-        spawn_agent is a normal tool from the registry's perspective.
+        agent_spawn is a normal tool from the registry's perspective.
         By the time this method runs the call is real.
         """
         agent_name = args.get("agent", "")
@@ -1187,8 +1187,8 @@ class Agent:
             threading.Thread(target=_run, daemon=True).start()
             return json.dumps({"status": "spawned", "agent_id": child.agent_id})
 
-    def _meta_list_agents(self, args: dict) -> str:
-        """list_agents: return the agent registry for discovery."""
+    def _meta_agent_list(self, args: dict) -> str:
+        """agent_list: return the agent registry for discovery."""
         if self.agent_registry:
             return json.dumps(self.agent_registry.to_listing(), indent=2, ensure_ascii=False)
         # Fallback: list from agent_configs dict
@@ -1294,9 +1294,9 @@ class Agent:
         else:
             names = default_names
 
-        # Hide spawn_agent at max depth so we don't recurse infinitely.
+        # Hide agent_spawn at max depth so we don't recurse infinitely.
         if self.depth >= self.config.max_depth:
-            names = [t for t in names if t != "spawn_agent"]
+            names = [t for t in names if t != "agent_spawn"]
 
         # Meta dispatch — replace the LLM-visible schema with the two
         # meta-tools (list_tools / call_tool), which themselves expose

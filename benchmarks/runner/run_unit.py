@@ -45,7 +45,7 @@ class UnitFixture:
     user_message_from: Optional[str] = None
     # Optional ToolMocks fixture path — same shape integration tier
     # uses via setup.mocks. Plumbed as --mocks to cli.py so e.g.
-    # dispatcher-tests can short-circuit spawn_agent(reviewer) with a
+    # dispatcher-tests can short-circuit agent_spawn(reviewer) with a
     # canned response instead of running the heavy chain.
     mocks: Optional[str] = None
     # Optional Jira fixture path — fake-provider data source for
@@ -346,7 +346,7 @@ def run_unit_fixture(
             cmd.extend(["--user-message-from", fixture.user_message_from])
         if fixture.mocks:
             # cli.py --mocks=<path> ⇒ orchestra.ToolMocks intercepts the
-            # named tool calls (e.g. spawn_agent → canned reviewer
+            # named tool calls (e.g. agent_spawn → canned reviewer
             # response). Same as integration tier's setup.mocks plumbing.
             cmd.extend(["--mocks", fixture.mocks])
         for k, v in fixture.agent_data.items():
@@ -388,18 +388,18 @@ def run_unit_fixture(
         os.close(snk_fd)
         env["DIFFGRAPH_FAKE_PR_FILE"] = fake_pr_path
         env["DIFFGRAPH_FAKE_PR_SINK"] = sink_path
-        # Jira is OFF by default for unit scenarios. read_ticket is in
+        # Jira is OFF by default for unit scenarios. jira_read_ticket is in
         # the reviewer / investigator BASE toolset, but a scenario
         # that isn't about Jira must never make a real tracker call —
         # and the worker's env carries JIRA_TOKEN. So: drop JIRA_TOKEN
         # from the subprocess env unconditionally (a unit run can't
-        # reach a live Jira), then either point read_ticket at a
+        # reach a live Jira), then either point jira_read_ticket at a
         # fixture or flip the disabled toggle. A scenario opts IN to
         # Jira by declaring `jira_fixture:` — that one field is the
         # whole override; everything else gets `_disabled`.
         env.pop("JIRA_TOKEN", None)
         if fixture.jira_fixture:
-            # Fake JiraProvider data source — read_ticket serves this
+            # Fake JiraProvider data source — jira_read_ticket serves this
             # fixture instead of hitting a live Jira (fake-bitbucket
             # pattern, same class, env-switched source).
             env["DIFFGRAPH_JIRA_FIXTURE"] = fixture.jira_fixture

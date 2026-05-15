@@ -1,6 +1,6 @@
 """Comment-graph navigation primitives for agents.
 
-Three tools — `list_threads`, `read_thread`, `read_comment` — let an
+Three tools — `pr_list_threads`, `pr_read_thread`, `pr_read_comment` — let an
 agent paginate the PR's comment graph on demand instead of seeing a
 single pre-rendered EXISTING COMMENTS string in the prompt. The
 old static rendering is the source of "thread crosstalk" — the
@@ -14,7 +14,7 @@ present at the start of the run. All three tools filter to
 `id <= max_id`, so comments the agent itself posts mid-run (and
 which receive new monotonic ids) are NOT visible via these tools.
 The agent already has its own tool-call history; surfacing its
-post_comment outputs again here would create a moving target.
+pr_post_comment outputs again here would create a moving target.
 
 Identity
 --------
@@ -121,7 +121,7 @@ def _author_label(c: dict, bot_user: str, pat) -> tuple[str, str]:
     return ("[SELF]" if a.is_self else a.display_name), a.body
 
 
-def list_threads(
+def pr_list_threads(
     comments: list[dict],
     snapshot_max_id_value: int,
     bot_user: str = "",
@@ -132,7 +132,7 @@ def list_threads(
 ) -> str:
     """List root threads. Each row is a single line so the agent can
     eyeball the whole PR at a glance and pick which thread to expand
-    via `read_thread`.
+    via `pr_read_thread`.
 
     sort: "newest" (default — by descending root id), "most_active"
     (by descending reply count), "oldest" (by ascending root id).
@@ -218,12 +218,12 @@ def list_threads(
         out.append("")
         out.append(
             f"[{total - start - len(page)} more — "
-            f"call list_threads(start={start + len(page)})]"
+            f"call pr_list_threads(start={start + len(page)})]"
         )
     return "\n".join(out)
 
 
-def read_thread(
+def pr_read_thread(
     comments: list[dict],
     comment_id: int,
     snapshot_max_id_value: int,
@@ -242,11 +242,11 @@ def read_thread(
 
     Caps:
       - per-comment body cap (~2000 chars by default). Longer bodies
-        get truncated with a hint to call `read_comment(id)` for the
+        get truncated with a hint to call `pr_read_comment(id)` for the
         full text.
       - per-thread cumulative cap (~12000 chars). When exceeded, the
         rest of the depth-first walk is skipped with a hint to call
-        `read_thread(<sub_id>)` to explore further.
+        `pr_read_thread(<sub_id>)` to explore further.
     """
     comments = _filter_snapshot(comments, snapshot_max_id_value)
     by_id = {c["id"]: c for c in comments if c.get("id")}
@@ -304,7 +304,7 @@ def read_thread(
             out.append(shown)
             out.append(
                 f"[body truncated at {per_comment_cap_chars} chars; "
-                f"call read_comment({c['id']}) for the full text]"
+                f"call pr_read_comment({c['id']}) for the full text]"
             )
         else:
             out.append(body)
@@ -314,14 +314,14 @@ def read_thread(
             remaining = len(walk_order) - idx - 1
             out.append(
                 f"[{remaining} more comment(s) in this thread truncated; "
-                f"call read_thread(<sub_id>) on a specific branch to expand]"
+                f"call pr_read_thread(<sub_id>) on a specific branch to expand]"
             )
             break
 
     return "\n".join(out).rstrip()
 
 
-def read_comment(
+def pr_read_comment(
     comments: list[dict],
     comment_id: int,
     snapshot_max_id_value: int,
@@ -329,7 +329,7 @@ def read_comment(
     subject_pattern: Optional[re.Pattern] = None,
 ) -> str:
     """Render ONE comment, full body, no caps. For the rare case
-    where `read_thread`'s per-comment cap truncated something the
+    where `pr_read_thread`'s per-comment cap truncated something the
     agent really needs to see in full.
     """
     comments = _filter_snapshot(comments, snapshot_max_id_value)

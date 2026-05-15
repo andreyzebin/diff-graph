@@ -160,7 +160,7 @@ Two modes:
 - **single** -- one LLM call, no tools
 - **react** -- non-deterministic tool loop with SGR
 
-All 9 meta-tools built in: `spawn_agent`, `spawn_many`, `plan`, `fork`, `adjust_agent`, `observe_agents`, `list_agents`, `reflect`, `done`.
+All 9 meta-tools built in: `agent_spawn`, `spawn_many`, `plan`, `fork`, `adjust_agent`, `observe_agents`, `agent_list`, `reflect`, `done`.
 
 ### SGR with question IDs (`orchestra/sgr.py`)
 
@@ -229,7 +229,7 @@ Tree-sitter structural outline of a source file. Returns plain text:
 
 1. Create `diffgraph/prompts/<name>.system.md` (frontmatter + methodology) and `<name>.user.md` (per-call task template) — see [README → Prompt architecture](README.md#prompt-architecture--layered-extension-friendly) for the field shape
 2. The LLM compiler auto-discovers it -- no code changes needed
-3. Other agents can find it via `list_agents` and spawn it via `spawn_agent`
+3. Other agents can find it via `agent_list` and spawn it via `agent_spawn`
 
 ### Add a new domain tool
 

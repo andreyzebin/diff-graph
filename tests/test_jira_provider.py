@@ -234,7 +234,7 @@ class TestUnviewableTicket:
     404s (deleted / never existed) or 403s (the bot account lacks
     permission). That's a normal per-PR condition, not a crash: the
     reviewer must get a clean note and carry on with the diff. With
-    `read_ticket` heading into the reviewer's base toolset, this path
+    `jira_read_ticket` heading into the reviewer's base toolset, this path
     runs on real production reviews."""
 
     def test_fetch_ticket_returns_sentinel_on_network_error(self, monkeypatch):
@@ -292,7 +292,7 @@ class TestUnviewableTicket:
 
     def test_read_ticket_tool_returns_clean_text_not_exception(self, monkeypatch):
         """End-to-end at the tool boundary: a configured Jira that
-        errors on the key → the `read_ticket` tool returns a clean
+        errors on the key → the `jira_read_ticket` tool returns a clean
         text result the agent can read and move on from. Never a
         raised exception, never a stack-tracey blob."""
         monkeypatch.setenv("JIRA_TOKEN", "pat-xxxxx")
@@ -311,11 +311,11 @@ class TestUnviewableTicket:
 
         reg = ToolRegistry()
         register_diffgraph_tools(reg, _CtxStub())
-        out = reg.dispatch("read_ticket", {"ref": "default/ORD/ORD-301"})
+        out = reg.dispatch("jira_read_ticket", {"ref": "default/ORD/ORD-301"})
         assert isinstance(out, str)
         # Clean note, agent-facing — surfaced via the _not_viewable
         # sentinel + format_ticket, so it reads like a ticket note,
-        # not "(read_ticket failed: …)".
+        # not "(jira_read_ticket failed: …)".
         assert "[ticket ORD-301]" in out
         assert "could not be read" in out
 
@@ -325,7 +325,7 @@ class TestUnviewableTicket:
 class TestJiraDisabledToggle:
     """`orchestra/fixtures/mocks/disable-jira.yaml` — the operator
     opt-out. Passed via `cli.py run --mocks`, it short-circuits every
-    `read_ticket` call (at any spawn depth — ToolMocks is inherited
+    `jira_read_ticket` call (at any spawn depth — ToolMocks is inherited
     parent→child) with a "Jira is off, work from the diff" reply.
     These tests pin the fixture itself; the agent-keeps-going
     behaviour is scenario-tier (cf. REV-U-006 for set_review_status).
@@ -334,20 +334,20 @@ class TestJiraDisabledToggle:
     def test_fixture_loads_as_a_sticky_read_ticket_entry(self):
         from orchestra.tool_mocks import ToolMocks
         mocks = ToolMocks.from_yaml(_DISABLE_JIRA_FIXTURE)
-        assert mocks.has("read_ticket")
-        entries = mocks.by_tool["read_ticket"]
+        assert mocks.has("jira_read_ticket")
+        entries = mocks.by_tool["jira_read_ticket"]
         assert len(entries) == 1
         assert entries[0].sticky is True
         assert "disabled" in entries[0].return_data.lower()
 
     def test_read_ticket_replays_disabled_reply_indefinitely(self):
         """Sticky → however many times the reviewer (and any agent it
-        spawned) calls read_ticket, it keeps getting the disabled
+        spawned) calls jira_read_ticket, it keeps getting the disabled
         reply. No MockExhaustedError."""
         from orchestra.tool_mocks import ToolMocks
         mocks = ToolMocks.from_yaml(_DISABLE_JIRA_FIXTURE)
         seen = {
-            mocks.consume("read_ticket", {"ref": f"X/Y/Z-{i}"}).return_data
+            mocks.consume("jira_read_ticket", {"ref": f"X/Y/Z-{i}"}).return_data
             for i in range(40)
         }
         assert len(seen) == 1                       # same reply every call
@@ -359,7 +359,7 @@ class TestJiraDisabledToggle:
 
 class TestProviderDisabledToggle:
     """The provider's own `disabled` switch — distinct from the
-    ToolMocks fixture above. read_ticket is in the reviewer /
+    ToolMocks fixture above. jira_read_ticket is in the reviewer /
     investigator BASE toolset, so a scenario that isn't about Jira
     would still let the agent reach for a live tracker (the worker
     env carries JIRA_TOKEN). The bench's run_unit sets

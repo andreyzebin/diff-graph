@@ -1,7 +1,7 @@
 """Generic Mockito-style mocking for any tool dispatched by an agent.
 
-Every agent step is a sequence of tool calls (`spawn_agent`,
-`read_file`, `search`, `post_comment`, …). For isolated unit-tests
+Every agent step is a sequence of tool calls (`agent_spawn`,
+`read_file`, `search`, `pr_post_comment`, …). For isolated unit-tests
 of one agent at a time we short-circuit those tool calls with canned
 responses — Mockito's `when().thenReturn(a, b, c)` (sequential
 answers).
@@ -22,7 +22,7 @@ its faith in coherent investigator output.
 
 Fixture file shape:
 
-    spawn_agent:                # consumed in order
+    agent_spawn:                # consumed in order
       - return:
           findings:
             - severity: BLOCKER
@@ -58,7 +58,7 @@ Behaviour
   equivalent to writing out a one-element list with
   `sticky: true` + `return: "..."`.
 
-For `spawn_agent` specifically, the canned `return:` is wrapped into
+For `agent_spawn` specifically, the canned `return:` is wrapped into
 the JSON envelope the parent agent expects from a real spawn (status
 / output / sgr_summary / steps / tokens / mocked=true). For any
 other tool, the canned `return:` is passed through to
@@ -67,7 +67,7 @@ would have produced.
 
 Thread safety: `ToolMocks` is shared across a parent agent and all
 its mocked children. The consumed-set is protected by a Lock so
-parallel spawn_agent dispatches don't race.
+parallel agent_spawn dispatches don't race.
 """
 
 from __future__ import annotations
@@ -220,11 +220,11 @@ def render_mock_result(tool_name: str, entry: MockEntry, args: dict) -> Any:
     """Shape the canned return value to match what the real tool would
     have produced.
 
-    For `spawn_agent` the parent agent expects a JSON envelope with
+    For `agent_spawn` the parent agent expects a JSON envelope with
     status / output / sgr_summary / steps / tokens. For any other
     tool the canned return is passed through verbatim.
     """
-    if tool_name != "spawn_agent":
+    if tool_name != "agent_spawn":
         return entry.return_data
 
     ret = dict(entry.return_data) if isinstance(entry.return_data, dict) else {}

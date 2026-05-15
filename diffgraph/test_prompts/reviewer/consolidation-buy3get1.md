@@ -4,7 +4,7 @@
 # reviewer's base surface (reviewer.system.md); tools_add here is
 # the publishing surface.
 tools_add:
-  - post_comment
+  - pr_post_comment
   - set_review_status
 
 # Interface contract for this test prompt — same Bitbucket-PR shape
@@ -29,7 +29,7 @@ Commits *(oldest → newest)*:
 
 Investigators returned the findings below. Consolidate them
 (merge duplicates, keep the higher severity, drop anything already
-covered in an open thread), publish each via post_comment(file,
+covered in an open thread), publish each via pr_post_comment(file,
 line, severity, text), set the verdict via set_review_status, and
 finish with done(findings).
 

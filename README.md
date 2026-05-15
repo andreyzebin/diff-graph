@@ -50,7 +50,7 @@ PR comment / event
 |  /review → spawn reviewer             |
 |  plain   → treated as /ask            |
 +----------------------------------------+
-      |  spawn_agent("reviewer")
+      |  agent_spawn("reviewer")
       |  (lazy clone on first tool call)
       v
 +--- reviewer (react, spawns children) -+
@@ -407,8 +407,8 @@ When investigator is spawned without `diff_summary`, the framework calls `pr_con
 
 ```yaml
 guards:
-  text_response: "Your text was NOT delivered. Use post_comment()."
-  require_tool:post_comment: "You must reply before finishing."
+  text_response: "Your text was NOT delivered. Use pr_post_comment()."
+  require_tool:pr_post_comment: "You must reply before finishing."
 ```
 
 - `text_response` — model returned text without tool calls. Message injected, loop continues (max 2 retries).
@@ -462,7 +462,7 @@ Every react agent tracks reasoning via `reflect()`: `learned`, `questions_remain
 
 Prompt-defined agent framework. Agents defined by Markdown files with YAML frontmatter (`<name>.md`) plus sibling `<name>.system.md` / `<name>.user.md` body files. No topologies, no pipelines — agents create structure at runtime via tool calls.
 
-**Agent isolation for testing.** `--mocks <fixture.yaml>` short-circuits any `spawn_agent` / `read_file` / etc. tool call with a canned response (Mockito-style). `--user-message-from <file>` overrides the agent's default user template, so the same reviewer can be tested against different task framings (concerns-only, consolidation-only, full pipeline) without changing the system prompt. `--invocations-out <path>` captures every tool call to a JSON file for the test judge to verify against. See `orchestra/tool_mocks.py` for the fixture format.
+**Agent isolation for testing.** `--mocks <fixture.yaml>` short-circuits any `agent_spawn` / `read_file` / etc. tool call with a canned response (Mockito-style). `--user-message-from <file>` overrides the agent's default user template, so the same reviewer can be tested against different task framings (concerns-only, consolidation-only, full pipeline) without changing the system prompt. `--invocations-out <path>` captures every tool call to a JSON file for the test judge to verify against. See `orchestra/tool_mocks.py` for the fixture format.
 
 ### Prompt architecture — layered, extension-friendly
 
@@ -471,7 +471,7 @@ Every agent ships as **two sibling files** under `diffgraph/prompts/`:
 | File | Layer | What lives here |
 |---|---|---|
 | `<agent>.system.md` | **system / methodology** | What the agent *is*, independent of the invocation surface: base `tools:`, `summary:`, `budget:`, `reflect_interval:`, `llm:`, methodology guards (e.g. `text_response`), and the methodology body (severity rubric, finding shape, diff-view contract). |
-| `<agent>.user.md` | **user / interface** | How the agent is *invoked* in a concrete environment: `tools_add:` (interface tools — `post_comment`, `set_review_status`, …), `data:` (spawn-time args from the surface), interface guards (e.g. `require_tool:post_comment`), `extra_tools:`, `dispatch_mode`, and the per-call task wording with `{placeholder}` interpolation. |
+| `<agent>.user.md` | **user / interface** | How the agent is *invoked* in a concrete environment: `tools_add:` (interface tools — `pr_post_comment`, `set_review_status`, …), `data:` (spawn-time args from the surface), interface guards (e.g. `require_tool:pr_post_comment`), `extra_tools:`, `dispatch_mode`, and the per-call task wording with `{placeholder}` interpolation. |
 
 The system layer is the **closed-for-modification base class** (methodology); the user layer is the **open-for-extension** interface wrapper. The same `reviewer.system.md` is shared by production Bitbucket, every isolated test prompt, and every consolidation/concerns-text fixture — only the user layer changes per call.
 
@@ -518,11 +518,11 @@ Diff view, severity rubric, finding shape, … (the *how*).
 # rejected by the compiler at this layer to stop a per-task prompt
 # from silently overriding the agent's base contract.
 tools_add:
-  - list_threads
-  - read_thread
-  - list_agents
-  - spawn_agent
-  - post_comment
+  - pr_list_threads
+  - pr_read_thread
+  - agent_list
+  - agent_spawn
+  - pr_post_comment
   - set_review_status
 
 # Interface contract — data the reviewer receives at spawn time
@@ -542,7 +542,7 @@ PR: {pr_title}
 {pr_description}
 
 Review this PR end-to-end. Spawn investigators for any concern that
-needs depth; consolidate; publish via post_comment; verdict via
+needs depth; consolidate; publish via pr_post_comment; verdict via
 set_review_status; finish with done(findings).
 ```
 
@@ -588,7 +588,7 @@ The same model extends to dispatcher and investigator: `<agent>.system.md` defin
 |---|---|
 | `data:` + `from:tool.field` | Auto-resolve prompt data from cached tool calls |
 | `guards:` | Reactive guards: `text_response`, `require_tool:X` |
-| `tools: [spawn_agent, …]` | Agent can spawn children — `spawn_agent` lives in the same flat tool list as everything else |
+| `tools: [agent_spawn, …]` | Agent can spawn children — `agent_spawn` lives in the same flat tool list as everything else |
 | JSON Schema validation | All tool calls validated before dispatch (jsonschema) |
 | Trace system | SQLite WAL, live WebSocket view, navigator with per-step detail |
 | SGR | Self-Guided Reasoning with question IDs and fuzzy matching |

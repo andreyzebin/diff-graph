@@ -1,9 +1,9 @@
 """
-Builtin tools: reflect, done, spawn_agent, list_agents.
+Builtin tools: reflect, done, agent_spawn, agent_list.
 
 Registered automatically based on AgentConfig.tools — the same flat
 list every other tool comes from. The framework-built-in handlers
-live on the Agent (e.g. _meta_spawn_agent); these registrations just
+live on the Agent (e.g. _meta_agent_spawn); these registrations just
 provide the OpenAI function schemas.
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ def register_builtins(
     """Register builtin tools based on agent config.
 
     If agent is provided, meta-tools are registered with real handlers
-    (agent._meta_spawn_agent, etc.) so they go through registry.dispatch()
+    (agent._meta_agent_spawn, etc.) so they go through registry.dispatch()
     and get schema validation. Otherwise, placeholder handlers are used.
 
     The effective tool set is the UNION of `agent_config.tools` and any
@@ -35,7 +35,7 @@ def register_builtins(
     frontmatter (`agent._fm_meta`). Without this union we'd silently
     skip registering tools that the user prompt asks for as extensions
     — e.g. reviewer's @tools is now [diff_*, reflect, done] and
-    spawn_agent / list_agents live only in reviewer.user.md tools_add.
+    agent_spawn / agent_list live only in reviewer.user.md tools_add.
     Without the union the spawned reviewer's child registry would
     never get those builtins and _build_tool_names would raise.
     """
@@ -142,12 +142,12 @@ def register_builtins(
             return lambda **kw: method(kw)
         return lambda **kw: "handled by agent"
 
-    if "spawn_agent" in tool_names:
+    if "agent_spawn" in tool_names:
         registry.register_tool_def(ToolDef(
-            name="spawn_agent",
+            name="agent_spawn",
             description=(
                 "Spawn a sub-agent on a focused task. The sub-agent runs to "
-                "completion and its result is returned. Multiple spawn_agent "
+                "completion and its result is returned. Multiple agent_spawn "
                 "calls in the same step run in parallel."
             ),
             parameters={
@@ -155,7 +155,7 @@ def register_builtins(
                 "properties": {
                     "agent": {
                         "type": "string",
-                        "description": "Agent name from the registry (use list_agents() to see what's available).",
+                        "description": "Agent name from the registry (use agent_list() to see what's available).",
                     },
                     "focus": {
                         "type": "string",
@@ -164,19 +164,19 @@ def register_builtins(
                 },
                 "required": ["agent", "focus"],
             },
-            handler=_meta_handler("_meta_spawn_agent"),
+            handler=_meta_handler("_meta_agent_spawn"),
             is_builtin=True,
         ))
 
-    if "list_agents" in tool_names:
+    if "agent_list" in tool_names:
         registry.register_tool_def(ToolDef(
-            name="list_agents",
+            name="agent_list",
             description=(
                 "Get the registry of all available agents: names, summaries, "
                 "and required input data schemas. Use this to discover which "
                 "agent to spawn for a given task."
             ),
             parameters={"type": "object", "properties": {}},
-            handler=_meta_handler("_meta_list_agents"),
+            handler=_meta_handler("_meta_agent_list"),
             is_builtin=True,
         ))

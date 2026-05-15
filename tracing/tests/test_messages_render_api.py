@@ -74,7 +74,7 @@ def db_with_step(monkeypatch):
             },
         }},
         {"type": "function", "function": {
-            "name": "spawn_agent",
+            "name": "agent_spawn",
             "description": "Delegate a focused investigation to a sub-agent.",
             "parameters": {
                 "type": "object",
@@ -205,7 +205,7 @@ class TestCallEndpoint:
 class TestToolsEndpoint:
     """`/api/runs/{id}/step/{agent}/{n}/tools` — surfaces the tool
     list the LLM saw at step N. Primary debugging use case:
-    confirming a specific function (e.g. `spawn_agent`,
+    confirming a specific function (e.g. `agent_spawn`,
     `set_review_status`) was actually present in the request, and
     reading the description / parameter schema as the agent saw it."""
 
@@ -219,7 +219,7 @@ class TestToolsEndpoint:
         assert set(body.keys()) == {"tools", "tools_count"}
         assert body["tools_count"] == 2
         names = [t["function"]["name"] for t in body["tools"]]
-        assert names == ["diff_read_file", "spawn_agent"]
+        assert names == ["diff_read_file", "agent_spawn"]
         # Full schema landed — not just names.
         assert body["tools"][1]["function"]["description"].startswith("Delegate")
 
@@ -234,7 +234,7 @@ class TestToolsEndpoint:
         # Each tool surfaces its name + description.
         assert "▶ diff_read_file" in body
         assert "Read a slice of a file in the diff view." in body
-        assert "▶ spawn_agent" in body
+        assert "▶ agent_spawn" in body
         assert "Delegate a focused investigation" in body
         # Required parameters are marked with `*`, optional with ` `.
         assert "* agent_name: string" in body

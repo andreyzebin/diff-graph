@@ -44,7 +44,7 @@ concern_focuses,reply,thresholds,assert_via}`. The judge reads
 `assert_via` to pick its channel: `pr_comments` (real or fake-PR
 sink), `intended_findings` (`done(findings=...)` from
 invocations.json), `intended_concerns` (`reflect(...)` +
-`spawn_agent(focus=...)` from invocations.json).
+`agent_spawn(focus=...)` from invocations.json).
 
 For the broader quality-management architecture — how unit tier +
 integration tier + production pr-analytics fit together, what

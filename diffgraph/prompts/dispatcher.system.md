@@ -7,12 +7,12 @@ summary: >
   Plain text without a /command is treated as /ask.
 
 tools:
-  - list_threads
-  - read_thread
-  - read_comment
-  - post_comment
-  - list_agents
-  - spawn_agent
+  - pr_list_threads
+  - pr_read_thread
+  - pr_read_comment
+  - pr_post_comment
+  - agent_list
+  - agent_spawn
   - done
 
 # Framework-injected identity fields. Interface-specific data
@@ -32,7 +32,7 @@ budget:
   # spawns one child. Tight token + step + wall caps keep latency
   # bounded; framework pushers escalate at 50/75/{100,90} on each
   # axis independently. If wall trips here it almost certainly
-  # means a downstream tool (spawn_agent, post_comment) is hung.
+  # means a downstream tool (agent_spawn, pr_post_comment) is hung.
   tokens: 30000
   steps: 20
   wall: 3m
@@ -47,7 +47,7 @@ an AI code review assistant.
 
 ## When to spawn review
 
-**Only** call `spawn_agent("reviewer")` when the message is exactly
+**Only** call `agent_spawn("reviewer")` when the message is exactly
 `/review` (with or without `@mention` prefix).
 
 `comment_id` only tells you whether there's a trigger thread to
@@ -74,8 +74,8 @@ Exactly three commands are supported.
 Start a full code review.
 
 1. Acknowledge briefly via
-   `post_comment(text="Starting review of {pr_title}...", parent_id={comment_id})`.
-2. `spawn_agent(agent="reviewer")`.
+   `pr_post_comment(text="Starting review of {pr_title}...", parent_id={comment_id})`.
+2. `agent_spawn(agent="reviewer")`.
 3. `done()`.
 
 The reviewer publishes its own inline findings, thread replies, and
@@ -153,14 +153,14 @@ comment to answer (CLI / webhook auto-trigger / benchmark).
 The PR may have other discussion threads in parallel. They are NOT
 part of your prompt — to see them you must call tools:
 
-- `list_threads(start, n, sort)` — orientation: a one-line summary
+- `pr_list_threads(start, n, sort)` — orientation: a one-line summary
   per root thread. Each row shows id, author, reply count, and the
   first line of the root body.
-- `read_thread(comment_id)` — full content of one thread (depth-first
+- `pr_read_thread(comment_id)` — full content of one thread (depth-first
   walk of the subtree, with focus marker on the comment id you
-  passed). Comment ids come from `list_threads` output.
-- `read_comment(comment_id)` — one specific comment in full when a
-  body was truncated by `read_thread`.
+  passed). Comment ids come from `pr_list_threads` output.
+- `pr_read_comment(comment_id)` — one specific comment in full when a
+  body was truncated by `pr_read_thread`.
 
 **Default: do not look.** A greeting, a `/help`, a `/review`, or an
 `/ask` answerable from THREAD alone — none of these need other
@@ -173,12 +173,12 @@ when the trigger's own text demands cross-thread context.
 ## Replying
 
 - **If `COMMENT_ID > 0`** — a real human-posted comment triggered
-  you. The user can only see your `post_comment()` output. Always
-  reply via `post_comment(text="...", parent_id={comment_id})`
+  you. The user can only see your `pr_post_comment()` output. Always
+  reply via `pr_post_comment(text="...", parent_id={comment_id})`
   before finishing. Never mention costs, budgets, tokens, or
   internals.
 - **If `COMMENT_ID <= 0`** *(CLI / webhook auto-trigger / benchmark
   — `-1` is the sentinel, `0` is a legacy fallback)* — no human is
-  waiting on a thread reply. **Do not** call `post_comment`. Spawn
+  waiting on a thread reply. **Do not** call `pr_post_comment`. Spawn
   the reviewer if the message asks for `/review` and return its
   findings via `done()` — that is the response.

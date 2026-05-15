@@ -139,13 +139,13 @@ Bitbucket. Switching tiers does not touch judge code.
 ### `FakeBenchPRView` (`runner/fake_view.py`)
 
 Unit-tier view. Constructed after the agent subprocess finishes —
-takes `sink_records` (parsed JSONL the agent's post_comment /
+takes `sink_records` (parsed JSONL the agent's pr_post_comment /
 set_status writes landed in) and the original `payload` (repo_path,
 base/source SHAs, seed comments, metadata) and exposes them as
 the four `AgentPRView` reads the judge needs:
 
 - `get_comments()` → `CommentThread[]` synthesised from the four
-  sink kinds (`post_comment`, `post_general`, `review_comment`,
+  sink kinds (`pr_post_comment`, `post_general`, `review_comment`,
   `reply`) — reactions / resolves / verdict events are not comments
 - `get_all_comments()` → seed comments from `pr_state.comments`
   + the agent's posts (judge's full-thread reply path uses this)
@@ -301,7 +301,7 @@ pr_state:
       …
     pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/301"
     bot_user: "diffgraph-bot"
-  comments: []                        # seed threads, visible to list_threads
+  comments: []                        # seed threads, visible to pr_list_threads
 trigger:
   type: comment
   text: "/review"

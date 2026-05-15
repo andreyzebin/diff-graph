@@ -61,8 +61,8 @@ class AgentRegistryEntry:
         # equivalent @tools entries. New prompts skip @capabilities.
         cap_to_tools = {
             "sgr": ["reflect"],
-            "spawn": ["spawn_agent"],
-            "list_agents": ["list_agents"],
+            "spawn": ["agent_spawn"],
+            "agent_list": ["agent_list"],
         }
         for cap in self.capabilities:
             for t in cap_to_tools.get(cap, []):
@@ -83,7 +83,7 @@ class AgentRegistryEntry:
         )
 
     def to_listing(self) -> dict:
-        """Return summary for list_agents tool."""
+        """Return summary for agent_list tool."""
         return {
             "name": self.name,
             "summary": self.summary,
@@ -111,7 +111,7 @@ class AgentRegistry:
         return {name: e.to_agent_config() for name, e in self.entries.items()}
 
     def to_listing(self) -> list[dict]:
-        """Return all entries for list_agents tool."""
+        """Return all entries for agent_list tool."""
         return [e.to_listing() for e in self.entries.values()]
 
     def names(self) -> list[str]:

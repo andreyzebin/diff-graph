@@ -3,9 +3,9 @@
 # thread reading) is in reviewer.system.md; tools_add here is the
 # acting-on-outputs surface: delegation, publishing, and verdict.
 tools_add:
-  - list_agents
-  - spawn_agent
-  - post_comment
+  - agent_list
+  - agent_spawn
+  - pr_post_comment
   - set_review_status
 
 # Interface contract — Bitbucket-PR data the reviewer receives
@@ -35,34 +35,34 @@ Linked Jira ticket(s): {jira_tickets}
 
 Review this PR end-to-end.
 
-**Read existing threads first.** Call list_threads(), then
-read_thread() on anything that looks relevant to the diff.
+**Read existing threads first.** Call pr_list_threads(), then
+pr_read_thread() on anything that looks relevant to the diff.
 Knowing what's already been raised changes what counts as a "new"
 finding — duplicating an open thread is noise, not signal.
 
 **Glance at the linked Jira ticket.** The "Linked Jira ticket(s)"
 line above is resolved authoritatively from Bitbucket — if it lists
-one or more `handle/namespace/key` refs, call read_ticket(ref) on
+one or more `handle/namespace/key` refs, call jira_read_ticket(ref) on
 each (copy the ref verbatim) before forming concerns. If it's empty
 or "(none)", check the title / branch name / commits for a ticket
-key yourself and read_ticket that; if "(unavailable)", skip it. The
+key yourself and jira_read_ticket that; if "(unavailable)", skip it. The
 ticket carries the acceptance criteria the diff is supposed to
 satisfy: a concern grounded in "the ticket's AC says X, the code
 does Y" is sharper and more actionable than the same observation
 made from the diff alone. If a ticket links to an epic or sibling
 tickets and the broader effort changes how you'd weigh a finding,
-read those too (read_ticket on the linked key). read_ticket
+read those too (jira_read_ticket on the linked key). jira_read_ticket
 degrades gracefully — if it comes back "disabled" / "not
 configured" / "could not be read", that's fine, just proceed with
 the diff + PR description; don't retry it in a loop.
 
 Then read the diff and identify concerns. Spawn investigators
-(spawn_agent) for any concern that needs depth. If you're unsure
-which agent name to spawn, call list_agents() once to see the
+(agent_spawn) for any concern that needs depth. If you're unsure
+which agent name to spawn, call agent_list() once to see the
 registry.
 
 **Continuation review — scope to only the unseen commits.** If
-`list_threads()` shows at least one `[SELF in subtree]` thread,
+`pr_list_threads()` shows at least one `[SELF in subtree]` thread,
 you've reviewed this PR before. Treat the prior review as the
 baseline: only the commits that landed **after** your last [SELF]
 reply timestamp are new material worth re-reading.
@@ -87,7 +87,7 @@ default `ref` (whole PR) and review everything.
 **Match each concern against the threads you read.** Four outcomes:
 
 - **Already raised, no [SELF] reply yet** — leave a brief
-  `post_comment(text=..., parent_id=<root_comment_id>)` saying
+  `pr_post_comment(text=..., parent_id=<root_comment_id>)` saying
   whether your evidence confirms or refutes the original point.
   One line is enough.
 - **Already raised, you already replied [SELF]** — check the
@@ -99,7 +99,7 @@ default `ref` (whole PR) and review everything.
   that the new commits addressed it.
 - **Already raised, already resolved** — leave it alone. Don't
   re-litigate.
-- **Novel** — publish via `post_comment(file, line, severity, text)`
+- **Novel** — publish via `pr_post_comment(file, line, severity, text)`
   as a fresh inline finding.
 
 Thread comments now carry an ISO timestamp in the header

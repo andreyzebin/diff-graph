@@ -5,7 +5,7 @@ Sister fix to `test_qwen3_stringification_fix.py` (which handles the
 the **emission-layer** failure: qwen3 sometimes emits a key with no
 value before the closing brace, producing JSON that the standard
 parser rejects outright. Observed live on plan 192 reviewer step
-10 — all 6 `post_comment` tool calls came back as `validation
+10 — all 6 `pr_post_comment` tool calls came back as `validation
 error: 'text' is a required property` because every call ended in
 `"parent_id": }` (a key, a colon, then `}` with no value between
 them). The standard `json.loads` raises JSONDecodeError; the agent
@@ -24,7 +24,7 @@ family.
 This test file pins:
 
   - The exact repair shape via the actual failing payload from the
-    trace (one of the 6 post_comment calls, copied verbatim from
+    trace (one of the 6 pr_post_comment calls, copied verbatim from
     the run-data) — proves the fix recovers ALL of file/line/
     severity/text without damaging the long `text` content that
     contains commas, colons, backticks, and parentheses.
@@ -50,7 +50,7 @@ from orchestra.tools.registry import (
 # ── _repair_truncated_json: pure string transform ──────────────────
 
 # The actual broken JSON from plan 192 reviewer step 10, one of the
-# six post_comment calls. Pasted verbatim from
+# six pr_post_comment calls. Pasted verbatim from
 # /api/runs/604d9a278772/step/.../call?as=text so the test fails
 # loudly if the repair ever stops recovering the real-world shape.
 REAL_FAILING_ARGS = (
@@ -79,7 +79,7 @@ class TestRepairRealFailingPayload:
         assert isinstance(parsed, dict)
 
     def test_real_payload_preserves_every_other_field(self):
-        """The whole reason we can't just drop the post_comment call
+        """The whole reason we can't just drop the pr_post_comment call
         is that `file`, `line`, `severity`, and `text` were all
         correct — only `parent_id` was malformed. Verify each
         survives the repair byte-for-byte."""

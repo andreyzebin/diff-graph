@@ -7,7 +7,7 @@ tags: [tier:unit, agent:dispatcher, isolation, mocked-reviewer]
 # Dispatcher's /review handling: the reviewer subagent is mocked so
 # the test reduces to checking the dispatcher itself:
 #   1. Ack the trigger comment briefly ("Starting review…").
-#   2. spawn_agent("reviewer") exactly once (intercepted by the mock).
+#   2. agent_spawn("reviewer") exactly once (intercepted by the mock).
 #   3. NOT restate the (mocked) reviewer findings in its own reply
 #      or done() — the reviewer publishes them itself; mirroring
 #      would double every comment.
@@ -55,8 +55,8 @@ trigger:
 agent_data: {}
 
 # ── Judge — dispatcher routing + ack ─────────────────────────────────────
-# Dispatcher posts via post_comment (fake bitbucket sink captures it).
-# assert_via=[pr_comments] → judge reads sink-side post_comment kinds
+# Dispatcher posts via pr_post_comment (fake bitbucket sink captures it).
+# assert_via=[pr_comments] → judge reads sink-side pr_post_comment kinds
 # via FakeBenchPRView.get_comments(), matches against reply rules.
 expected_output:
   assert_via: [pr_comments]
@@ -70,7 +70,7 @@ expected_output:
     # must_address removed: judge interprets it as "reply must
     # SUBSTANTIVELY discuss the topic", which contradicts this
     # scenario's design — the dispatcher's job is a BRIEF ack +
-    # delegate to spawn_agent(reviewer). Substantive analysis is
+    # delegate to agent_spawn(reviewer). Substantive analysis is
     # the reviewer's responsibility, not the dispatcher's. The
     # `acknowledgement_required: true` below already pins the ack
     # contract; must_mention pins the ack copy. See plan 219 run

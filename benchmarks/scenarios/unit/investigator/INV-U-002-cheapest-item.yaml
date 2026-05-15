@@ -25,7 +25,7 @@ repo:
 
 agent_data:
   # NB: `selectFreeItem` is the legitimate scope of investigation —
-  # a reviewer's spawn_agent.focus would naturally name the method
+  # a reviewer's agent_spawn.focus would naturally name the method
   # under suspicion. It's whitelisted in `leak_allowlist` below.
   # The focus must NOT spell out the AC ("cheapest item free") or
   # the bug — those are what the investigator earns its score by
@@ -48,7 +48,7 @@ agent_data:
 leak_allowlist: ["selectFreeItem"]
 
 expected_output:
-  # Investigator returns findings via done() — it has no post_comment
+  # Investigator returns findings via done() — it has no pr_post_comment
   # tool. Match required_comments against intended_findings (done's
   # args from invocations.json), not the PR comments (empty by design).
   assert_via: [intended_findings]

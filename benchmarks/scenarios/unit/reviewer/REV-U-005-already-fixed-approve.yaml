@@ -28,7 +28,7 @@ tags: [tier:unit, agent:reviewer, isolation, continuation-review, staleness, app
 #
 # What the reviewer must NOT do:
 #   * Re-raise the null-guard concern as a fresh inline
-#     `post_comment(file=..., line=..., severity=BLOCKER)` — that's
+#     `pr_post_comment(file=..., line=..., severity=BLOCKER)` — that's
 #     the regression we're catching (agent ignores existing
 #     threads + re-raises already-addressed issues, ending in
 #     NEEDS_WORK).
@@ -48,7 +48,7 @@ repo:
 
 # Custom user-message — the reviewer is in continuation-review mode.
 # Read threads, compare timestamps, reply in the thread + APPROVE.
-# No spawn_agent (kept unit-isolated). Defines staleness rule.
+# No agent_spawn (kept unit-isolated). Defines staleness rule.
 user_message_from: diffgraph:diffgraph/test_prompts/reviewer/already-fixed-approve.md
 
 pr_state:
@@ -125,7 +125,7 @@ leak_allowlist:
   - "entity"
 
 # ── Judge ────────────────────────────────────────────────────────────────
-# assert_via=[pr_comments] (sink-side post_comment records). The
+# assert_via=[pr_comments] (sink-side pr_post_comment records). The
 # agent must:
 #   * leave a thread reply on alice's thread (parent_id=5001) saying
 #     the fix landed — judged via keyword match on the reply text.
@@ -153,7 +153,7 @@ expected_output:
 
   side_effects:
     # Hard count: at most one inline (the optional thread reply,
-    # IF the reviewer chose post_comment with parent_id rather than
+    # IF the reviewer chose pr_post_comment with parent_id rather than
     # a top-level reply). Zero fresh inline findings.
     inline_comments: 0
     review_status_change: true

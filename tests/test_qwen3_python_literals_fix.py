@@ -10,7 +10,7 @@ back to `{}` and schema validation then reports the FIRST required
 key as missing, a misleading error since the model actually included
 it.
 
-Observed live on a reviewer step: four parallel `post_comment` calls,
+Observed live on a reviewer step: four parallel `pr_post_comment` calls,
 the only one carrying `parent_id` emitted it as `"parent_id": None`.
 That call came back as `validation error: 'text' is a required
 property` while its three siblings (no `parent_id`, valid JSON)
@@ -47,7 +47,7 @@ from orchestra.tools.arg_repair import default_qwen3_chain
 
 # ── The real failing payload ───────────────────────────────────────
 
-# Copied verbatim from the trace: one of four parallel post_comment
+# Copied verbatim from the trace: one of four parallel pr_post_comment
 # calls, the only one with `parent_id` — emitted as the Python literal
 # `None` instead of JSON `null`. Everything else in the payload is
 # well-formed JSON; that single token makes `json.loads` reject it.
@@ -253,7 +253,7 @@ class TestPythonLiteralsHandlerInChain:
             "text": {"type": "string"},
             # parent_id intentionally unconstrained — the recovered
             # value is JSON `null`, which an `integer`-typed schema
-            # would (correctly) reject. The live post_comment schema
+            # would (correctly) reject. The live pr_post_comment schema
             # allows null; the probe mirrors that.
         },
         "required": ["text"],
@@ -262,7 +262,7 @@ class TestPythonLiteralsHandlerInChain:
     def _register(self, reg, name="comment_probe"):
         reg.register_tool_def(ToolDef(
             name=name,
-            description="post_comment-shaped probe",
+            description="pr_post_comment-shaped probe",
             parameters=self.SCHEMA,
             handler=lambda **kw: {"got": kw},
         ))

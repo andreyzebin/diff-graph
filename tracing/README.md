@@ -228,7 +228,7 @@ canonical kinds:
 ```
    tool_call        agent → system:<X>     dispatched a tool
    tool_result      system:<X> → agent     tool returned
-   agent_spawn      parent → child         spawn_agent()
+   agent_spawn      parent → child         agent_spawn()
    agent_done       child → parent         done() from a child
 ```
 

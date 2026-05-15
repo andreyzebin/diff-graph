@@ -121,7 +121,7 @@ calls in that step. The trace tree leans on this 1:1:N shape.
 Each `ToolDef` carries name, description, JSON Schema, the handler
 callable, and a few framework hints (`hidden` to drop from the
 agent-visible list, `cache=True` for data providers, `is_builtin`
-for `reflect`/`done`/`spawn_agent`).
+for `reflect`/`done`/`agent_spawn`).
 
 `registry.to_openai_schema(names)` produces the `tools=[...]` array
 the LLM sees. `registry.dispatch(name, args, raw_args=...)`:
@@ -150,7 +150,7 @@ it quietly competes with the prompt for control of the agent's
 next step. The tool's job is to be honest about *its own* status;
 choosing the fallback is the agent's judgment, set by the prompt.
 
-Concrete examples in-tree: the Jira `read_ticket` sentinels
+Concrete examples in-tree: the Jira `jira_read_ticket` sentinels
 (`_disabled` / `_not_configured` / `_not_viewable` in
 `diffgraph/providers/jira.py`) and the `disable-*.yaml` mock
 fixtures — `"Jira integration is disabled for this run — proceed."`,
@@ -160,7 +160,7 @@ not `"… — proceed with the diff alone."`. Same rule for the
 
 ### `orchestra/tools/builtin.py` — framework-provided tools
 
-Registers `reflect`, `done`, `spawn_agent`, `list_agents` when the
+Registers `reflect`, `done`, `agent_spawn`, `agent_list` when the
 prompt asks for them in its `tools:` list. Each builtin gets a
 schema derived from the agent's config (e.g. `done`'s `findings`
 field type comes from `agent_config.output_schema`; `reflect`'s
@@ -172,7 +172,7 @@ The reflect handler **only fires after** dispatch's
 
 ### `orchestra/tools/meta.py` — framework escape-hatches
 
-`spawn_agent`, `list_agents`, `pr_context` (data provider). These
+`agent_spawn`, `agent_list`, `pr_context` (data provider). These
 hook into `Agent` methods directly (the registry maps them through
 small bridge handlers).
 
@@ -438,7 +438,7 @@ Mockito-style ordinal mocks. A benchmark scenario can declare:
 
 ```yaml
 mocks:
-  - tool: post_comment
+  - tool: pr_post_comment
     when: { args.severity: "MAJOR" }
     return: { status: "posted", comment_id: 42 }
 ```
@@ -453,7 +453,7 @@ drift.
 ### `orchestra/handoff.py` + `orchestra/feedback.py`
 
 Inter-agent state. When a parent agent calls
-`spawn_agent("child", focus=...)`, the framework builds the child's
+`agent_spawn("child", focus=...)`, the framework builds the child's
 prompt with (a) the static system prompt, (b) the user-message
 template with placeholders resolved from `data`, (c) optional
 handoff context (last reflect, full reflect history, …) per the
@@ -466,7 +466,7 @@ attempts in this run.
 The diff-graph stack plugs in like this:
 
 - `diffgraph/orchestra_tools.py` — registers domain tools
-  (`diff_*`, `post_comment`, `set_review_status`, comment-graph
+  (`diff_*`, `pr_post_comment`, `set_review_status`, comment-graph
   tools, etc.) on a per-call `ToolRegistry`.
 - `diffgraph/prompts/` — the prompt directory passed to
   `compile_prompts`. Defines `dispatcher`, `reviewer`,
@@ -500,7 +500,7 @@ The default qwen3 chain (`fix_qwen3_stringification_bug=True`):
    pair. Drops the truncated key, re-parses, returns the dict.
 
    Observed wild-type: plan 192 reviewer step 10 emitted 6
-   `post_comment` calls all ending in `"parent_id": }`. The regex
+   `pr_post_comment` calls all ending in `"parent_id": }`. The regex
    recovers `text`, `file`, `line`, `severity` intact.
 
 2. **`StringifiedArgsHandler`** — operates on the already-parsed

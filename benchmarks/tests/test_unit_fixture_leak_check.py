@@ -14,7 +14,7 @@ diff itself or AGENTS.md, which the agent has to discover):
   - user_message_from file content
   - agent_data.* values (e.g. investigator's focus)
   - pr_state.metadata.title + description
-  - pr_state.comments[].text (seed thread visible via list_threads)
+  - pr_state.comments[].text (seed thread visible via pr_list_threads)
   - trigger.text
 
 Per-fixture override: a yaml may declare `leak_allowlist: [...]` to

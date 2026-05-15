@@ -64,7 +64,7 @@ class ReviewContext:
     # of "APPROVED" / "NEEDS_WORK" / "UNAPPROVED".
     review_status: Optional[str] = None
     review_status_reason: str = ""
-    # Comments the agent already published to the PR via the post_comment
+    # Comments the agent already published to the PR via the pr_post_comment
     # tool (immediate-post path). Each entry: {comment_id, mode, file, line,
     # parent_id}. Tracked here so cli.py can skip its bulk-publish (would
     # otherwise double-post) and downstream reporting can count what
@@ -330,7 +330,7 @@ def _get_commit_list(repo_path: str, base_ref: str, source_ref: str) -> str:
     - **Staleness comparison**: when the agent reviews a PR a second
       time it can compare each commit's timestamp against its prior
       [SELF] reply timestamps (rendered in the same `YYYY-MM-DDThh:mmZ`
-      shape on every `read_thread` header) — anything newer than the
+      shape on every `pr_read_thread` header) — anything newer than the
       last [SELF] comment is a "review only the new changes" target.
 
     Three-dot scope (`base...source`) so we only see the PR's actual

@@ -31,7 +31,7 @@ from bitbucket.base import (
 # Sink record `kind` values that represent agent-authored comments
 # the judge should treat as visible PR output. `react` and `resolve`
 # are agent actions on existing comments, not new comments.
-_COMMENT_KINDS = ("post_comment", "post_general", "review_comment", "reply")
+_COMMENT_KINDS = ("pr_post_comment", "post_general", "review_comment", "reply")
 
 
 def _seed_to_thread(c: dict) -> CommentThread:
@@ -63,7 +63,7 @@ def _sink_record_to_thread(rec: dict) -> CommentThread:
     other kinds (react/resolve/set_status) are filtered upstream."""
     kind = rec.get("kind", "")
     file_path = rec.get("file") or ""
-    if kind == "post_comment" and file_path:
+    if kind == "pr_post_comment" and file_path:
         anchor: Optional[CommentAnchor] = CommentAnchor(
             path=file_path,
             line=int(rec.get("line") or 0),
@@ -191,7 +191,7 @@ class FakeBenchPRView(AgentPRView):
         # Comment channel — scan general comments for [verdict:X] markers.
         if status in (None, "UNAPPROVED") and verdict_source in ("comment", "both"):
             for rec in self.sink_records:
-                if rec.get("kind") not in ("post_general", "post_comment"):
+                if rec.get("kind") not in ("post_general", "pr_post_comment"):
                     continue
                 text = str(rec.get("text") or "")
                 if "[verdict:APPROVED]" in text:

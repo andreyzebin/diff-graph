@@ -32,7 +32,7 @@ class ToolDef:
     parameters: dict  # JSON Schema
     handler: Callable[..., Any]
     result_limit: int = 6000
-    is_builtin: bool = False  # reflect, done, spawn_agent, etc.
+    is_builtin: bool = False  # reflect, done, agent_spawn, etc.
     hidden: bool = False      # hidden from agent tool list (data providers)
     cache: bool = False       # cache result after first call
     _cached_result: Any = field(default=None, repr=False)
@@ -428,7 +428,7 @@ def _repair_truncated_json(raw: str) -> str:
     unparseable. Idempotent — runs until a fixed point.
 
     Failure shape this targets (observed in plan 192 reviewer step 10
-    on qwen3-6, 6 post_comment calls all malformed the same way):
+    on qwen3-6, 6 pr_post_comment calls all malformed the same way):
 
         {"text": "...", "parent_id": }
 
@@ -593,7 +593,7 @@ def _repair_python_literals(raw: str) -> str:
     """Recover from the "model emitted a Python dict repr instead of
     JSON" emission shape.
 
-    Wild-type (qwen3 reviewer, parallel `post_comment` batch): the
+    Wild-type (qwen3 reviewer, parallel `pr_post_comment` batch): the
     model emits `"parent_id": None` — the Python literal `None`
     instead of JSON `null`. `True`/`False` leak the same way. The
     rest of the payload is well-formed JSON; one bare Python literal

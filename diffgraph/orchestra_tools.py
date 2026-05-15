@@ -120,9 +120,9 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     from .tools import list_files as _list_files_impl, read_file, search_text
     from .outline import get_outline
     from .comment_tools import (
-        list_threads as _list_threads_impl,
-        read_thread as _read_thread_impl,
-        read_comment as _read_comment_impl,
+        pr_list_threads as _list_threads_impl,
+        pr_read_thread as _read_thread_impl,
+        pr_read_comment as _read_comment_impl,
         snapshot_max_id as _snapshot_max_id,
     )
 
@@ -133,7 +133,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     def _comment_snapshot() -> int:
         """Cache the run-start max_comment_id on ctx the first time
         a comment tool is called. After that the value is fixed —
-        any post_comment we make during the run gets a higher id and
+        any pr_post_comment we make during the run gets a higher id and
         becomes invisible to these tools (consistent snapshot)."""
         v = getattr(ctx, "_comment_snapshot_max_id", None)
         if v is None:
@@ -153,7 +153,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         """Authoritative PR→ticket resolution via Bitbucket's
         Jira-integration endpoint. Returns a comma-joined list of
         `default/<project>/<key>` refs the reviewer copies verbatim
-        into read_ticket — or a short status string when there's
+        into jira_read_ticket — or a short status string when there's
         nothing to resolve.
 
         Short-circuits for non-real PR URLs (unit-tier `fake://`,
@@ -395,13 +395,13 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     # ── Comment-graph navigation (replaces baked EXISTING COMMENTS) ──────
 
     @registry.register(
-        name="list_threads",
+        name="pr_list_threads",
         description=(
             "List the PR's root comment threads — orientation across the "
             "discussion. Each row is one line with id, author, reply count, "
             "and the first line of the root body. Snapshot at run start: "
             "comments posted by the agent itself during the run are not "
-            "shown here. Use `read_thread(id)` to drill into a specific one."
+            "shown here. Use `pr_read_thread(id)` to drill into a specific one."
         ),
         parameters={
             "type": "object",
@@ -429,7 +429,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         )
 
     @registry.register(
-        name="read_thread",
+        name="pr_read_thread",
         description=(
             "Render the FULL thread containing the given comment, depth-first "
             "from the root. Pass any comment id — root, leaf, or middle of the "
@@ -437,7 +437,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "appears as a header block (`=== #id by author · reply to #X · …`) "
             "followed by its verbatim body (markdown / code blocks preserved). "
             "Long bodies and deep trees are truncated with explicit hints to "
-            "call `read_comment(id)` or `read_thread(<sub_id>)` to expand."
+            "call `pr_read_comment(id)` or `pr_read_thread(<sub_id>)` to expand."
         ),
         parameters={
             "type": "object",
@@ -459,10 +459,10 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         )
 
     @registry.register(
-        name="read_comment",
+        name="pr_read_comment",
         description=(
             "Render ONE specific comment in full, no caps. Use when "
-            "`read_thread` truncated a body and you need the rest."
+            "`pr_read_thread` truncated a body and you need the rest."
         ),
         parameters={
             "type": "object",
@@ -496,7 +496,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         return _jira_registry
 
     @registry.register(
-        name="read_ticket",
+        name="jira_read_ticket",
         description=(
             "Read the issue tracker ticket a PR claims to address — "
             "its summary, type, status, description / acceptance "
@@ -504,7 +504,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "issues. `ref` is copied verbatim from the PR's "
             "`jira_tickets` list (shape `handle/namespace/ticket_id`); "
             "a bare ticket key also works. Linked issues come back "
-            "inline — call `read_ticket` again on a linked key to go "
+            "inline — call `jira_read_ticket` again on a linked key to go "
             "deeper. If the ticket can't be reached (not found, Jira "
             "not configured) the tool says so plainly — proceed with "
             "the diff + PR description alone, don't retry in a loop."
@@ -536,12 +536,12 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             return format_ticket(_jira().fetch(ref))
         except Exception as exc:  # never crash the agent on a tracker hiccup
             return (
-                f"(read_ticket failed for {ref!r}: {type(exc).__name__}: "
+                f"(jira_read_ticket failed for {ref!r}: {type(exc).__name__}: "
                 f"{exc} — proceed with the diff + PR description alone)"
             )
 
     @registry.register(
-        name="post_comment",
+        name="pr_post_comment",
         description=(
             "Post a single comment on the PR. One tool covers all three "
             "shapes that share Bitbucket's comments endpoint:\n"

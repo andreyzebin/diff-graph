@@ -9,11 +9,11 @@ assert_via: {assert_via}
 
 Допустимые значения:
 - `pr_comments` — реальные комментарии опубликованные через
-  post_comment. По умолчанию (если assert_via пустой).
+  pr_post_comment. По умолчанию (если assert_via пустой).
 - `intended_findings` — `done(findings=[...])` из invocations.json.
   Используется когда агент по дизайну не публикует (investigator).
 - `intended_concerns` — `reflect(concerns=[...])` плюс
-  `spawn_agent(focus=...)` из invocations.json. Используется когда
+  `agent_spawn(focus=...)` из invocations.json. Используется когда
   тестируется только LOOK-фаза.
 - `intended_text` — текстовая выдача агента, захваченная через
   capture-tool (`text_answer` / `text`) в последнем вызове. Используется
@@ -48,7 +48,7 @@ assert_via: {assert_via}
 должна содержать хотя бы одно совпадение в этом тексте.
 
 Это всё что reviewer выписал через `reflect(concerns=[...])` плюс
-все `focus` строки которые он передал в `spawn_agent`. Используется
+все `focus` строки которые он передал в `agent_spawn`. Используется
 для тестов где reviewer вызван в режиме "concerns only" (без
 исследования и публикации) — там единственный сигнал это блок выше.
 

@@ -106,7 +106,7 @@ def prepare_for_template(trace: dict) -> dict:
     return _prepare_agent(trace, depth=0)
 
 
-_SKIP_ARGS = {"spawn_agent", "reflect", "done"}
+_SKIP_ARGS = {"agent_spawn", "reflect", "done"}
 _SKIP_PARAMS = {"changes_only", "before", "after", "line_numbers", "ref", "regex"}
 
 
@@ -248,7 +248,7 @@ def _prepare_agent(trace: dict, depth: int) -> dict:
         #     framework's known error prefixes. Lets the UI badge a
         #     step that emitted "valid"-looking tool calls but every
         #     result came back as a validation error (see e.g. the
-        #     qwen3 "parent_id: }" failure where 6 post_comment calls
+        #     qwen3 "parent_id: }" failure where 6 pr_post_comment calls
         #     all came back as `'text' is a required property`).
         #   - `repeats_prev_step`: True when this step's outbound
         #     (tool_name, arguments) signature is identical to the

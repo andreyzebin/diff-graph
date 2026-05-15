@@ -7,7 +7,7 @@
 # (reviewer.system.md); tools_add here is just publishing + verdict
 # — no spawn, so the test stays unit-isolated.
 tools_add:
-  - post_comment
+  - pr_post_comment
   - set_review_status
 
 # Same interface contract as production reviewer.user.md — the
@@ -32,8 +32,8 @@ Commits *(oldest → newest)*:
 
 Review this PR.
 
-**Step 1 — read existing threads.** Call `list_threads()`, then
-`read_thread()` on every thread that anchors to a file in the
+**Step 1 — read existing threads.** Call `pr_list_threads()`, then
+`pr_read_thread()` on every thread that anchors to a file in the
 diff. Existing comments may have raised real issues the author has
 since addressed.
 
@@ -52,12 +52,12 @@ the latest commit actually addressed the issue.
 **Step 4 — reply in the thread** with the verdict:
 
 - If the issue is fixed by a later commit: leave a one-line
-  `post_comment(text="Addressed in <sha7> — <short why>",
+  `pr_post_comment(text="Addressed in <sha7> — <short why>",
   parent_id=<root_id>)`.
 - If the issue still stands: leave a one-line confirmation reply
   instead of posting a fresh inline finding.
 
-**Do NOT** post a fresh inline `post_comment(file, line, ...)`
+**Do NOT** post a fresh inline `pr_post_comment(file, line, ...)`
 about an issue that is already raised in an existing thread —
 even a refuted or addressed one. The reply in the thread is the
 canonical channel for "I agree" / "fixed".

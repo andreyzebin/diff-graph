@@ -13,7 +13,7 @@ tags: [tier:unit, agent:reviewer, isolation, tool-mock, sticky-mock, stability]
 # every time, and still finishes gracefully.
 #
 # Mocks (see ../../../fixtures/mocks/reviewer-disabled-status.yaml):
-#   • spawn_agent — sticky empty investigator (unit-tier isolation;
+#   • agent_spawn — sticky empty investigator (unit-tier isolation;
 #     this isn't a quality test of sub-agent reasoning).
 #   • set_review_status — sticky canned-disabled reply; the actual
 #     thing this scenario verifies. Same string as the diff-graph
@@ -61,7 +61,7 @@ agent_data: {}
 #      itself before the judge runs — a crash on the sticky reply
 #      never gets here).
 #   2. The reviewer posted at least one inline comment (proves it
-#      reached the post_comment stage after spawn_agent returned and
+#      reached the pr_post_comment stage after agent_spawn returned and
 #      didn't bail mid-flight). The store-credit branch has obvious
 #      issues; even a weak reviewer with no investigator help should
 #      find at least one.

@@ -265,7 +265,7 @@ tool, `bitbucket.react_to_pr_comment` + `ReactionsUnsupportedError`,
 the fake/api provider methods, the `tools` / `tools_add` entries in
 the dispatcher + reviewer prompts, and `tests/test_react_unsupported.py`.
 Agents acknowledge / follow up on existing threads with
-`post_comment(parent_id=...)` — a thread reply is a richer signal
+`pr_post_comment(parent_id=...)` — a thread reply is a richer signal
 than an emoji anyway. If reactions are ever needed on Bitbucket
 Cloud (which does expose the API), re-add as a prompt-layer
 `tools_add` extension for that environment specifically.
@@ -808,7 +808,7 @@ pattern that generalises to any agent with `reflect` in @tools:
    stray spawn if the agent ignores the instruction; not required.)
 3. **Judge reads invocations.json** for `reflect(...)` args, treats
    them as the test signal. Pairs with the existing reading of
-   `done(findings)` and `spawn_agent.focus`.
+   `done(findings)` and `agent_spawn.focus`.
 4. **Expected output** is a list of keyword groups (existing
    `concern_focuses`/`description_keywords` infra), AND-of-OR match
    against title + description fields of each reflect entry.
@@ -819,7 +819,7 @@ Coverage matrix today:
 |--------------|--------------|--------|
 | reviewer     | yes          | REV-001-concerns ✅ landed (integration). Unit-tier fixtures: REV-U-001-store-credit-concerns + REV-U-002-cancel-npe-concerns ✅ — expected_output authored, judge wiring pending (Stage 4 below). |
 | investigator | yes          | INV-U-001-cancel-npe ✅ — expected_output authored, asserts via `intended_findings` (done().findings) for the focused null-items investigation. INV-002 (integration) still todo — same shape: focus + AGENTS.md citations + questions_remaining via `reflect(learned, questions_remaining)`. |
-| dispatcher   | no           | Add `reflect` to dispatcher's @tools if we want symmetric isolation, OR skip — dispatcher is a router with fewer "thinking" phases. Decide later. Unit fixture not yet authored — depends on the call: either we add reflect, or we assert directly on `spawn_agent.agent_name` + `post_comment.text` from invocations.json (needs a new ExpectedOutput channel — `intended_routing` or similar). |
+| dispatcher   | no           | Add `reflect` to dispatcher's @tools if we want symmetric isolation, OR skip — dispatcher is a router with fewer "thinking" phases. Decide later. Unit fixture not yet authored — depends on the call: either we add reflect, or we assert directly on `agent_spawn.agent_name` + `pr_post_comment.text` from invocations.json (needs a new ExpectedOutput channel — `intended_routing` or similar). |
 
 **Stage 4 — judge wiring landed.** `bench run-unit` now invokes
 LLMJudge after the agent subprocess finishes when (a) the fixture
@@ -876,11 +876,11 @@ one channel; there are others, each with its own ExpectedOutput
 
 | Channel              | What the judge reads                       | Used by |
 |----------------------|--------------------------------------------|---------|
-| `intended_concerns`  | `reflect(questions_remaining=...)` titles + `spawn_agent(focus=...)` | reviewer concerns-only |
+| `intended_concerns`  | `reflect(questions_remaining=...)` titles + `agent_spawn(focus=...)` | reviewer concerns-only |
 | `intended_findings`  | `done(findings=[...])` items                | investigator standalone (REV-U / INV-U / SCEN-009 isolation) |
-| `pr_comments`        | real `post_comment`/`post_general` posts via the fake PR sink | integration tier |
+| `pr_comments`        | real `pr_post_comment`/`post_general` posts via the fake PR sink | integration tier |
 | `intended_reply` — TODO | `done(text=...)` plain-text or first-final-message text | dispatcher /ask /help, future text-mode agents |
-| `intended_routing` — TODO | `spawn_agent(agent_name=...)` alone (ignore focus) | dispatcher routing-only |
+| `intended_routing` — TODO | `agent_spawn(agent_name=...)` alone (ignore focus) | dispatcher routing-only |
 | `intended_tool_call` — TODO | args of a test-only tool we hand the agent (e.g. `submit_answer(...)`) | agents that don't naturally end in done/reflect |
 
 The last three need new channel constants in scenario_loader's
@@ -987,7 +987,7 @@ spawned agents.
 #### Specialised subagents as extension points
 
 Subagents are first-class extension points. The reviewer's system
-prompt frames `spawn_agent` as a capability ("delegate depth to
+prompt frames `agent_spawn` as a capability ("delegate depth to
 investigators when the user message asks for it"); it doesn't
 hardcode that there's one general investigator. orchestra's
 `AgentRegistry` already lets us add specialised investigators by
@@ -1006,7 +1006,7 @@ diffgraph/prompts/
 
 Reviewer's system gets one extra paragraph:
 
-> "When you have a concern, call `list_agents()` first to see who
+> "When you have a concern, call `agent_list()` first to see who
 > can investigate it best. Pick the most specialised investigator
 > whose summary matches the concern's nature; fall back to the
 > generic `investigator` if none fits."
@@ -1030,7 +1030,7 @@ on SCEN-009 / SCEN-010 / SCEN-305 because the reviewer can
 explicitly delegate convention-checking to a focused agent
 instead of relying on the general investigator to remember.
 
-`list_agents()` is already implemented — works with both real and
+`agent_list()` is already implemented — works with both real and
 mocked spawns (the mock matches by `agent` name in args).
 
 #### Open question — single reflect vs full chain vs new "outcome"
@@ -2070,7 +2070,7 @@ findings together with thread context.
   (reviewer / investigator / nothing-aka-/help) given the
   message intent.
 - Assertions:
-  - Single `spawn_agent` call with `agent_name == expected`.
+  - Single `agent_spawn` call with `agent_name == expected`.
   - No re-prompting for clarification on unambiguous requests
     (`/review` doesn't trigger a clarifying question — it routes).
   - `forbidden_no_op`: dispatcher never returns "I'll review this"
@@ -2397,7 +2397,7 @@ fixture / the tests all carry over unchanged.
 
 ### Reference shape — `handle / namespace / ticket_id` (multi-server)
 
-`read_ticket` takes a **structured reference**, not a bare key, so a
+`jira_read_ticket` takes a **structured reference**, not a bare key, so a
 second tracker server is config-only later (no tool-signature or
 prompt change):
 
@@ -2405,7 +2405,7 @@ prompt change):
   Resolved against the registry (below). Decision **A**: the handle
   is a short opaque name, *not* a raw URL — the URL is a registry
   attribute. (A raw URL has slashes and would break `split`.)
-- **`namespace`** — generality hook so `read_ticket` isn't
+- **`namespace`** — generality hook so `jira_read_ticket` isn't
   Jira-specific. For Jira: the project key (`SBLOOM`, `ORD`). For a
   future GitHub-issues backend: `owner/repo`-ish. The provider
   decides how to use it; it's routing/display, not necessarily
@@ -2460,7 +2460,7 @@ handle keeps the common single-server case ergonomic.
 ### Context discipline
 
 Tickets carry dozens of comments + a fat changelog — an unbounded
-`read_ticket` blows the agent's token budget (same risk the diff
+`jira_read_ticket` blows the agent's token budget (same risk the diff
 tools cap at 30k chars). `distill_ticket` (already implemented):
 - caps comment count (keeps most recent N), truncates each body;
 - reduces the changelog to **status transitions only** (drops field
@@ -2470,19 +2470,19 @@ tools cap at 30k chars). `distill_ticket` (already implemented):
 ### Tools
 
 **Phase 1 — reviewer, ONE tool:**
-- `read_ticket(ref)` — `ref` is the `handle/namespace/ticket_id`
+- `jira_read_ticket(ref)` — `ref` is the `handle/namespace/ticket_id`
   string (copied verbatim from `jira_tickets`). Returns the
   `format_ticket` text render: summary / type / status /
   description-AC / capped comments / status-only changelog /
   **issue links inline**. Links inline → the agent can call
-  `read_ticket` again on a linked key for **agent-driven depth
+  `jira_read_ticket` again on a linked key for **agent-driven depth
   traversal** (ReAct, same as walking the diff file by file). No
   server-side recursion, no `walk_to_epic`, no separate
   `list_ticket_links`. **No argless default / no `_Ctx`
   singleton** — the ref is always explicit, the agent reads it
   straight out of its prompt.
 - Self-correcting on junk keys: a bogus ref (e.g. the historical
-  `SCEN-010`) → `read_ticket` returns a graceful "ticket not found",
+  `SCEN-010`) → `jira_read_ticket` returns a graceful "ticket not found",
   the agent moves on. No need to pre-filter the `jira_tickets` list.
 
 **Phase 2 — investigators, deeper:**
@@ -2492,7 +2492,7 @@ tools cap at 30k chars). `distill_ticket` (already implemented):
   issue (dev-status API `/rest/dev-status/1.0/issue/detail`;
   `atlassian-python-api` may need a raw `jira.get(...)`).
 - Investigators get these in `tools_add`; the reviewer stays at
-  just `read_ticket`.
+  just `jira_read_ticket`.
 
 ### PR→ticket resolution — no regex, no primary
 
@@ -2509,7 +2509,7 @@ tools cap at 30k chars). `distill_ticket` (already implemented):
   `data:` block — **no "primary"**. "Primary" isn't in the data
   (Bitbucket returns a flat list), the branch-match heuristic is
   fragile, and a PR genuinely can span multiple tickets. The agent
-  gets the list and calls `read_ticket` on whichever it judges
+  gets the list and calls `jira_read_ticket` on whichever it judges
   relevant — exactly the `diff_list_files → diff_read_file` pattern,
   which has no "primary file" concept either.
 - Empty list → `jira_tickets: []`, reviewer proceeds on diff +
@@ -2520,8 +2520,8 @@ tools cap at 30k chars). `distill_ticket` (already implemented):
 
 ### Reviewer wiring
 
-- `reviewer.user.md` — add `read_ticket` to `tools_add`. (Until
-  the production rollout: the new TEST scenario carries `read_ticket`
+- `reviewer.user.md` — add `jira_read_ticket` to `tools_add`. (Until
+  the production rollout: the new TEST scenario carries `jira_read_ticket`
   in its own prompt variant only — see below — so production
   reviewer behaviour is unchanged while the feature is proven out.)
 - LOOK-phase nudge: "The PR is associated with these Jira tickets:
@@ -2546,7 +2546,7 @@ tools cap at 30k chars). `distill_ticket` (already implemented):
    is already the right shape.
 2. **Prod toggle = sticky `ToolMocks`.** Separate concern: turning
    the tool *off* in production. `orchestra/fixtures/mocks/disable-jira.yaml`,
-   one-line sticky shortcut `read_ticket: "Jira integration is
+   one-line sticky shortcut `jira_read_ticket: "Jira integration is
    currently disabled — proceed with the PR diff + description
    alone."`. Pass `--mocks=...` to `cli.py run` / a webhook agent;
    inherited parent→child (`agent.py:162`). Same pattern as
@@ -2561,8 +2561,8 @@ A new unit-tier reviewer scenario, **A/B against REV-U-001**
 (same branch `feature/ORD-301-store-credit`, same diff):
 
 - `diffgraph/test_prompts/reviewer/concerns-text-with-ticket.md` —
-  like `concerns-text.md` but `tools_add: [text_answer, read_ticket]`
-  + the LOOK nudge. Keeps `read_ticket` user-level and scoped to
+  like `concerns-text.md` but `tools_add: [text_answer, jira_read_ticket]`
+  + the LOOK nudge. Keeps `jira_read_ticket` user-level and scoped to
   this one test, production prompts untouched.
 - `benchmarks/fixtures/jira/store-credit-ticket.json` — a
   realistic ORD-301 ticket fixture (AC: credit applied pre-tax to
@@ -2579,7 +2579,7 @@ A new unit-tier reviewer scenario, **A/B against REV-U-001**
 
 ### Phasing
 
-- **Phase 1** — `format_ticket` → `read_ticket(ref)` tool +
+- **Phase 1** — `format_ticket` → `jira_read_ticket(ref)` tool +
   `JiraRegistry` + `config.local.yaml` `jira_servers:` →
   fake-provider-via-env → `pr_jira_issues` in the Bitbucket provider
   + `pr_context` wiring (`jira_tickets` in `data:`) → the test
@@ -2589,13 +2589,13 @@ A new unit-tier reviewer scenario, **A/B against REV-U-001**
   built — the registry wraps them.)
 - **Phase 2** — `search_tickets(jql)` + `jira_dev_info(ref)` for
   investigators. `jira_dev_info` is the bridge into §10 (cross-source
-  investigation toolset): it emits PR-refs that §10's `read_pr`
+  investigation toolset): it emits PR-refs that §10's `pr_get`
   consumes. See §10.8 Phase A.
 - **Phase 3** — bench `setup.jira_tickets:` infra for hermetic
   scenario testing more broadly than the one test scenario above.
 
 **What we'd see in a passing run.** Agent reads the PR's
-`jira_tickets`, calls `read_ticket` on the ORD-301 ref, finds the
+`jira_tickets`, calls `jira_read_ticket` on the ORD-301 ref, finds the
 AC, and one concern cites it explicitly: "the ticket's AC says
 store credit is a pre-tax deduction on subtotal; the code subtracts
 it from the post-tax total — direct AC violation, not just a smell."
@@ -2942,7 +2942,7 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 7.8 | Evolution dashboard + capability heatmap | High | Medium-Large | Do third |
 | 7.9 | Evolution meta-agent (gardener) | Medium | Medium | Later |
 | 7.10 | Cross-run memory per repo | Medium | Medium | Later |
-| 10  | Cross-source investigation toolset (read_pr/list_prs/diff_* repo=) | **High** | Large | Do second |
+| 10  | Cross-source investigation toolset (pr_get/pr_list/diff_* repo=) | **High** | Large | Do second |
 | 11  | Multi-level agent memory (memo: KV + documents, PR/repo/team/company) | **High** | Medium-Large | Do second |
 
 ---
@@ -3504,7 +3504,7 @@ Same shape for Confluence, ADRs, postmortems, past reviews —
 metadata up top, prose below. `linked: [...]` lists are how the
 agent walks the cross-source graph: read `BUG-512.md`, see it
 references `ORD-234`, open that, etc. — same UX as
-`read_thread(parent_id)`.
+`pr_read_thread(parent_id)`.
 
 ### 9.6 Closes-the-loop value
 
@@ -3625,13 +3625,13 @@ one type of edge", agent-driven, budget-bounded, strictly read-only:
 
 | Edge | Tool | State |
 |---|---|---|
-| ticket → linked tickets | `read_ticket` (links inline) | done (§5b Phase 1) |
+| ticket → linked tickets | `jira_read_ticket` (links inline) | done (§5b Phase 1) |
 | ticket → PRs/branches/commits | `jira_dev_info(ref)` | §5b Phase 2 |
 | ticket discovery | `search_tickets(jql)` | §5b Phase 2 |
-| PR → its coordinates (meta + base/source/state/author) | `read_pr(repo, pr_id)` | **new** |
-| repo → its PRs (discovery) | `list_prs(repo, …)` | **new** |
+| PR → its coordinates (meta + base/source/state/author) | `pr_get(repo, pr_id)` | **new** |
+| repo → its PRs (discovery) | `pr_list(repo, …)` | **new** |
 | PR/repo → code | `diff_*` gains `repo=` param | **new (param)** |
-| PR → discussion | `list_threads/read_thread/read_comment` gain `repo=`+`pr=` | **new (param)** |
+| PR → discussion | `pr_list_threads/pr_read_thread/pr_read_comment` gain `repo=`+`pr=` | **new (param)** |
 | repo → repo | AGENTS.md `## Related repositories` manifest | §9.2, reused |
 
 This is **§5b (Jira) and §9 (workspace) converging** into one
@@ -3649,12 +3649,12 @@ Not 10 new tools.
   `ref`-parameterized — only "which repo" is missing. And the existing
   `ref=` already covers both access patterns (see §10.3): no new
   concept, just one param.
-- `list_threads/read_thread/read_comment` get `repo=`+`pr=` (default:
+- `pr_list_threads/pr_read_thread/pr_read_comment` get `repo=`+`pr=` (default:
   current PR's comment graph).
-- **Genuinely new — two tools:** `read_pr(repo, pr_id)` resolves a PR →
+- **Genuinely new — two tools:** `pr_get(repo, pr_id)` resolves a PR →
   meta + base/source SHA + state + author (for the *current* PR this is
-  pre-filled in `ctx`; `read_pr` does that resolution for *other* PRs);
-  `list_prs(repo, …)` is discovery.
+  pre-filled in `ctx`; `pr_get` does that resolution for *other* PRs);
+  `pr_list(repo, …)` is discovery.
 
 ### 10.3 Two access patterns — both served by `repo=` + `ref=`
 
@@ -3662,8 +3662,8 @@ Not 10 new tools.
    k8s, docs) — no PR involved. `diff_*(repo="lib", ref="main")` or a
    tag. Pure browsing.
 2. **Read a change + its review** (prior PRs in this repo, or a PR in
-   another repo) — `read_pr(repo, id)` → base/source SHAs →
-   `diff_*(repo, ref="<base>..<source>")` + `list_threads(repo, pr=id)`.
+   another repo) — `pr_get(repo, id)` → base/source SHAs →
+   `diff_*(repo, ref="<base>..<source>")` + `pr_list_threads(repo, pr=id)`.
 
 The existing `ref=` distinguishes them: `ref="main"` = code-at-a-point,
 `ref="a..b"` = a diff. Nothing new needed.
@@ -3692,11 +3692,11 @@ all read-only, all agent-driven, all budget-capped.
 
 | Use case | Closed by | Maturity |
 |---|---|---|
-| Investigate business stories / bugs (Jira) **and** jump into code, PRs, discussions | `read_ticket` → `jira_dev_info` → `read_pr` → `diff_*`/`list_threads` | dev_info = §5b Phase 2; rest = new |
-| Respect the review team's rules/focuses by reading prior PRs | `list_prs(repo=current, state=merged, path=…)` → `read_pr`/`list_threads` on similar PRs | **fuzziest** — needs `list_prs` filters (path/author/recency); result is calibration/impression, not a hard rule |
+| Investigate business stories / bugs (Jira) **and** jump into code, PRs, discussions | `jira_read_ticket` → `jira_dev_info` → `pr_get` → `diff_*`/`pr_list_threads` | dev_info = §5b Phase 2; rest = new |
+| Respect the review team's rules/focuses by reading prior PRs | `pr_list(repo=current, state=merged, path=…)` → `pr_get`/`pr_list_threads` on similar PRs | **fuzziest** — needs `pr_list` filters (path/author/recency); result is calibration/impression, not a hard rule |
 | Connect "other repos" (lib / migrations / k8s / docs) | AGENTS.md manifest + `RepoRegistry` + `diff_*(repo=…)` | = §9; this gives §9 a first concrete consumer |
 
-Note `list_prs(repo=current)` naturally serves the "learn the team's
+Note `pr_list(repo=current)` naturally serves the "learn the team's
 culture" case — no separate mechanism; `repo=` just defaults to current.
 
 ### 10.6 Key tensions
@@ -3704,12 +3704,12 @@ culture" case — no separate mechanism; `repo=` just defaults to current.
 1. **Budget — risk #1.** Today the investigator works on ONE diff.
    "Read any PR in any repo" is a combinatorial explosion of reachable
    context. Discipline is mandatory: agent-driven traversal (not
-   server-side recursion — like `read_ticket` follows links one hop at a
-   time); per-call caps (`diff_*` already truncates ~30k; `read_pr`
+   server-side recursion — like `jira_read_ticket` follows links one hop at a
+   time); per-call caps (`diff_*` already truncates ~30k; `pr_get`
    needs the same); possibly a per-run cross-fetch budget. Without this,
    one investigator spiders a dozen repos.
 2. **Strictly read-only.** The investigator never posts. Cross-repo
-   must add zero write doors — no `post_comment` on other repos, by
+   must add zero write doors — no `pr_post_comment` on other repos, by
    design.
 3. **Clone cost.** Workspace cache (`~/.diffgraph/workspace-cache/`),
    lazy materialization. The git_repo provider already does lazy clone —
@@ -3718,18 +3718,18 @@ culture" case — no separate mechanism; `repo=` just defaults to current.
    ticket (light) and *delegates* the cross-repo dig to an investigator
    with a focus ("сверь с паттернами в shared-lib"). Division: reviewer
    = ticket-aware triage, investigator = full cross-source dig. Unlike
-   `read_ticket` (in both base prompts), the cross-repo tools are
+   `jira_read_ticket` (in both base prompts), the cross-repo tools are
    **investigator-only**.
 5. **The review-culture use-case is the least crisp.** "Learn from the
    team via prior PRs" is powerful but fuzzy — which PRs? needs
-   `list_prs` filters, and the output is an impression, not a rule.
+   `pr_list` filters, and the output is an impression, not a rule.
    Lower priority; later phase within this section.
 
 ### 10.7 Open question — reconcile with §9 (files vs tools)
 
 §9's philosophy is **"zero new tools — materialise documents to files,
 use existing `list_files/read_file/search`"**. This section is
-**tool-traversal** — `read_pr`, `list_prs`, edge-follower tools. They
+**tool-traversal** — `pr_get`, `pr_list`, edge-follower tools. They
 overlap (both cover "other repos", "prior reviews", "Jira"). They are
 not obviously the same approach. Must decide:
 
@@ -3737,8 +3737,8 @@ not obviously the same approach. Must decide:
   via `diff_*(repo=)` — i.e. the mount IS the `repo=` target? (likely
   yes — `repo=<handle>` resolves to a §9 sibling mount.)
 - Is "PR as a change+review" a *document* (§9-B past-reviews
-  materializer renders `reviews/PR-N.md`) or a *tool* (`read_pr` +
-  `list_threads`)? The user explicitly asked for tools here — but §9-B
+  materializer renders `reviews/PR-N.md`) or a *tool* (`pr_get` +
+  `pr_list_threads`)? The user explicitly asked for tools here — but §9-B
   already plans the file form. Pick one, or define when each applies
   (static snapshot of *our* past reviews → files; live exploration of
   *arbitrary* PRs → tools).
@@ -3758,14 +3758,14 @@ manifest and the registries are shared infrastructure.
   `jira_dev_info(ref)`. `jira_dev_info` is the **bridge** — ticket →
   linked commits/branches/PRs → the entry point into cross-repo PR
   reading. Phase A and Phase C are coupled: `jira_dev_info` emits
-  PR-refs, `read_pr` consumes them, so Phase A naturally introduces the
+  PR-refs, `pr_get` consumes them, so Phase A naturally introduces the
   PR-ref shape.
 - **Phase B — workspace manifest + `RepoRegistry`:** AGENTS.md
   `## Related repositories` → registry (mirror of `JiraRegistry`);
   `diff_*` gets `repo=`. This is §9-A territory — do it once, shared.
-- **Phase C — PR-as-resource:** `read_pr`, `list_prs`, cross-repo
-  `list_threads/read_thread`. Heaviest (clones, budget).
-- **Phase D — review-culture calibration:** `list_prs` filters
+- **Phase C — PR-as-resource:** `pr_get`, `pr_list`, cross-repo
+  `pr_list_threads/pr_read_thread`. Heaviest (clones, budget).
+- **Phase D — review-culture calibration:** `pr_list` filters
   (path/author/recency) + an investigator-prompt nudge to "check how the
   team reviewed similar changes". Fuzziest, last.
 

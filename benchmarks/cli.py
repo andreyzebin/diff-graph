@@ -1017,8 +1017,8 @@ def run_unit(
         console.print(f"  posted by agent ({len(result.posted)} actions):")
         for rec in result.posted:
             kind = rec.get("kind", "?")
-            if kind == "post_comment":
-                console.print(f"    [cyan]post_comment[/cyan] #{rec.get('new_id')} "
+            if kind == "pr_post_comment":
+                console.print(f"    [cyan]pr_post_comment[/cyan] #{rec.get('new_id')} "
                               f"{rec.get('file','')}:{rec.get('line','')} "
                               f"[{rec.get('severity','')}] {(rec.get('text','') or '')[:80]}")
             elif kind == "reply":

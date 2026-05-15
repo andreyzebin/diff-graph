@@ -16,7 +16,7 @@ bench_cmd: >
 # branch. The user-message override (see user_message_from) tells
 # the agent: read diff, submit concerns as TEXT via the `text_answer`
 # capture tool, call done(empty). Reflect stays as the agent's private
-# working memory. No spawn_agent, no post_comment, no set_review_status
+# working memory. No agent_spawn, no pr_post_comment, no set_review_status
 # — the test measures concern-forming, nothing else.
 #
 # Why text (not reflect): deepseek runs with tool_choice=required, so

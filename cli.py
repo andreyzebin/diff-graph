@@ -265,7 +265,7 @@ def _run_with_dispatcher(
     _trace_db = TraceDBWriter(run_id=_pre_run_id)
 
     # Build the dg footer + author prefix decorators up front so the
-    # post_comment tool can apply them when the reviewer publishes
+    # pr_post_comment tool can apply them when the reviewer publishes
     # mid-run instead of waiting for the parent's done() to come back.
     from diffgraph.comment_meta import build_comment_meta as _bcm
     _early_meta = _bcm(
@@ -561,7 +561,7 @@ def _run_with_dispatcher(
     if findings:
         _print_findings(findings)
 
-    # Agents publish on the fly via post_comment / set_review_status
+    # Agents publish on the fly via pr_post_comment / set_review_status
     # tools. The runner no longer bulk-publishes findings from done()
     # — that path was deprecated and removed ("agents only post via
     # tools"). Replies + review status still go through
@@ -621,7 +621,7 @@ def run(
     comment_id:    Optional[str] = typer.Option(None,  "--comment-id",         help="Bitbucket comment ID that triggered this invocation. Empty string is accepted (auto-triggered events from the webhook substitute an empty {comment_id} placeholder)."),
     agent:         Optional[str] = typer.Option(None,  "--agent",              help="Run a specific agent by name (dispatcher, reviewer, investigator)"),
     data:          Optional[list[str]] = typer.Option(None, "--data", "-d",    help="Data key=value pairs for the agent (e.g. -d focus='null safety')"),
-    mocks:         Optional[str] = typer.Option(None,  "--mocks",              help="Path to a YAML file of canned tool responses (spawn_agent, read_file, …). Tool calls matching the fixture short-circuit with the canned reply. Mockito-style. See orchestra/tool_mocks.py for the format."),
+    mocks:         Optional[str] = typer.Option(None,  "--mocks",              help="Path to a YAML file of canned tool responses (agent_spawn, read_file, …). Tool calls matching the fixture short-circuit with the canned reply. Mockito-style. See orchestra/tool_mocks.py for the format."),
     invocations_out: Optional[str] = typer.Option(None, "--invocations-out",   help="Write a JSON list of every tool invocation made during the run (tool name, args, mocked, mock_when, step, agent) to this path on exit. Used by the bench judge for Mockito-style verify on agent unit tests."),
     user_message:  Optional[str] = typer.Option(None,  "--user-message",       help="Override the agent's default user-message template. Useful for unit tests where you want to keep the system prompt (methodology) intact but change the task framing — e.g. give the reviewer pre-investigated findings and ask only for consolidation."),
     user_message_from: Optional[str] = typer.Option(None, "--user-message-from", help="Same as --user-message but reads the override text from a file. Convenient for multi-line message templates."),
@@ -1011,7 +1011,7 @@ def run(
         run_id=_trace_db.run_id,
         prefix=comment_tag_resolved,
     )
-    # Agents publish via post_comment on the fly; runner-side bulk
+    # Agents publish via pr_post_comment on the fly; runner-side bulk
     # findings publish was deprecated and removed.
     _publish_to_pr(
         pr_url,
@@ -1458,7 +1458,7 @@ def _finding_to_comment(finding):
 def _publish_to_pr(
     pr_url: str,
     *,
-    findings: list = (),     # deprecated: agents publish via post_comment;
+    findings: list = (),     # deprecated: agents publish via pr_post_comment;
                               # kept for call-site compat, ignored.
     replies: list = (),
     diff_result=None,         # unused (kept for call-site compat)
@@ -1472,7 +1472,7 @@ def _publish_to_pr(
     """End-of-run helper: queued replies + review-status verdict.
 
     Findings and inline comments flow through the agents' tools
-    (post_comment) on the fly — runner-side bulk publish was
+    (pr_post_comment) on the fly — runner-side bulk publish was
     deprecated. This helper now only drains comment_replies (queued
     by some flows) and applies the final review_status if set.
     """
@@ -1499,7 +1499,7 @@ def _publish_to_pr(
 
     # resolve_comment was removed: target Bitbucket doesn't expose the
     # resolve operation we'd need. Agents acknowledge / follow up on
-    # existing threads with post_comment(parent_id=...) instead.
+    # existing threads with pr_post_comment(parent_id=...) instead.
 
     if review_status:
         mode = (verdict_mode or "api").strip().lower()
@@ -1633,7 +1633,7 @@ def _make_event_handler(model: str):
 
     def _format_args(tool: str, args: dict) -> str:
         """Build compact args string for a tool call."""
-        if tool == "spawn_agent":
+        if tool == "agent_spawn":
             agent = args.get("agent", "?")
             data = args.get("data", {})
             focus = data.get("focus", args.get("focus", ""))

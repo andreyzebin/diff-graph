@@ -70,7 +70,7 @@ pr_state:
     # rather than `comment_id=0` (auto-trigger / CLI / benchmark =
     # the dispatcher's spawn-the-reviewer path). Without the
     # non-zero id qwen3-6 follows the auto-trigger branch verbatim
-    # ("call spawn_agent when comment_id is 0") and the test
+    # ("call agent_spawn when comment_id is 0") and the test
     # mis-pins a routing decision the production prompt explicitly
     # ASKS for in the auto-trigger case.
     - id: 200
@@ -92,7 +92,7 @@ agent_data: {}
 
 # ── Judge — dispatcher must NOT spawn on plain greeting ─────────────────
 # assert_via=[pr_comments]: judge reads FakeBenchPRView.get_comments()
-# (sink-side post_comment kinds). reply.must_mention covers acceptable
+# (sink-side pr_post_comment kinds). reply.must_mention covers acceptable
 # greet-back text; forbidden_topics flags Starting-review-ack bleeds.
 expected_output:
   assert_via: [pr_comments]

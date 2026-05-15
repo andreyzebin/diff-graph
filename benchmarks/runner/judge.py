@@ -352,7 +352,7 @@ class LLMJudge(Judge):
 
     def _load_intended_findings(self) -> list[dict]:
         """Findings the agent passed to its final `done()` call. Used
-        when an agent without post_comment (e.g. investigator) is
+        when an agent without pr_post_comment (e.g. investigator) is
         scored — the judge sees done() args as a virtual comment list
         parallel to the real PR comments.
         """
@@ -381,7 +381,7 @@ class LLMJudge(Judge):
         Two sources, merged:
           1. `reflect(concerns=[{title, description}, ...])` calls —
              the canonical place reviewers list concerns.
-          2. `spawn_agent(focus=...)` args — when the reviewer
+          2. `agent_spawn(focus=...)` args — when the reviewer
              actually spawns investigators, the focus string is the
              concern in another shape.
 
@@ -416,11 +416,11 @@ class LLMJudge(Judge):
                             "title": q[:80],
                             "description": q,
                         })
-            elif tool == "spawn_agent":
+            elif tool == "agent_spawn":
                 focus = str(args.get("focus", ""))
                 if focus:
                     out.append({
-                        "source": "spawn_agent",
+                        "source": "agent_spawn",
                         "title": focus[:80],
                         "description": focus,
                     })
@@ -630,11 +630,11 @@ def _build_prompt(
 
 def _format_intended_concerns(concerns: list[dict]) -> str:
     """Serialise the agent's surfaced concerns (from reflect() args
-    and/or spawn_agent.focus) for the judge. For agents whose only
+    and/or agent_spawn.focus) for the judge. For agents whose only
     job in this run is concern identification (e.g. reviewer
     concerns-only mode) this is the test signal."""
     if not concerns:
-        return "(none — agent did not call reflect(concerns=...) or spawn_agent(focus=...))"
+        return "(none — agent did not call reflect(concerns=...) or agent_spawn(focus=...))"
     out: list[str] = []
     for i, c in enumerate(concerns, 1):
         title = (c.get("title") or "").strip()
@@ -657,7 +657,7 @@ def _format_intended_text(text: str) -> str:
 def _format_intended_findings(findings: list[dict]) -> str:
     """Serialise the agent's done(findings=...) args for the judge.
     These are findings the agent INTENDED to publish — for agents that
-    don't have post_comment in their tool list (e.g. investigator) this
+    don't have pr_post_comment in their tool list (e.g. investigator) this
     is the only signal."""
     if not findings:
         return "(none — agent did not pass a non-empty findings list to done())"

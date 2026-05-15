@@ -10,13 +10,13 @@ bench_cmd: >
   --provider={provider}
 
 # Resilience scenario: the investigator's focus tells it to read the
-# PR's Jira ticket, but read_ticket is mocked-disabled — the
+# PR's Jira ticket, but jira_read_ticket is mocked-disabled — the
 # disable-jira.yaml operator toggle. The investigator must take the
 # "Jira is off" reply in stride and still complete its investigation
 # from the diff: not stall, not retry in a loop, not turn the
 # disabled-message into a finding. Same branch + same core concern
 # as INV-U-001, so the diff-only path is a known-good baseline —
-# this fixture isolates "does a degraded read_ticket derail the
+# this fixture isolates "does a degraded jira_read_ticket derail the
 # investigator?".
 
 repo:
@@ -24,7 +24,7 @@ repo:
   base_branch: master
   source_branch: hotfix/ORD-287-cancel-npe
 
-# read_ticket → the sticky "Jira integration is currently disabled"
+# jira_read_ticket → the sticky "Jira integration is currently disabled"
 # reply on every call. Referenced straight from the canonical
 # orchestra-side fixture via the diffgraph: URI — no bench-side copy
 # to drift.
@@ -34,7 +34,7 @@ agent_data:
   # Focus deliberately does NOT name the root cause or the fix
   # location (same discipline as INV-U-001) — those are the
   # investigator's to derive. It DOES point at the ticket, so the
-  # investigator exercises read_ticket and meets the disabled reply.
+  # investigator exercises jira_read_ticket and meets the disabled reply.
   focus: |
     OrderService.cancelOrder() was hitting a NullPointerException on
     `order.getItems()`. The hotfix in this diff wraps that loop in
@@ -43,12 +43,12 @@ agent_data:
     properly understood.
 
     The PR is associated with Jira ticket ORD-287 — read it
-    (read_ticket) for the acceptance criteria and incident context
+    (jira_read_ticket) for the acceptance criteria and incident context
     before forming your assessment.
 
 # ── Judge (investigator resilience) ──────────────────────────────────────
 # assert_via: intended_findings — the judge scores done(findings=[...]).
-# The bar here is resilience, not depth: read_ticket came back
+# The bar here is resilience, not depth: jira_read_ticket came back
 # "disabled", and the investigator must STILL land the core concern
 # from the diff (the null guard on @OneToMany hides a mapping /
 # construction problem — provable from the code alone, no ticket
@@ -61,9 +61,9 @@ expected_output:
       type: inline
       severity: major
       description_keywords: ["null guard", "@OneToMany", "Hibernate", "root cause", "mapping", "upstream", "never null"]
-      rationale: "The diff alone is enough to surface the core concern — the null guard on @OneToMany hides a mapping/construction problem. The investigator must reach this from the code even though its read_ticket call came back disabled."
+      rationale: "The diff alone is enough to surface the core concern — the null guard on @OneToMany hides a mapping/construction problem. The investigator must reach this from the code even though its jira_read_ticket call came back disabled."
   forbidden_comments:
-    - description: "A 'finding' that just reports Jira / read_ticket being disabled or unavailable — that's a tool state, not a code-review finding. The investigator should absorb the disabled reply silently and work from the diff."
+    - description: "A 'finding' that just reports Jira / jira_read_ticket being disabled or unavailable — that's a tool state, not a code-review finding. The investigator should absorb the disabled reply silently and work from the diff."
   side_effects:
     inline_comments: 0
     review_status_change: false

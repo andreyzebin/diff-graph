@@ -1,4 +1,4 @@
-"""Comment timestamps in `read_thread` / `read_comment` / `list_threads`.
+"""Comment timestamps in `pr_read_thread` / `pr_read_comment` / `pr_list_threads`.
 
 Reviewer needs to compare its prior [SELF] reply against the latest
 commit on the PR to decide whether the reply is still current or
@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from diffgraph.comment_tools import list_threads, read_thread, read_comment
+from diffgraph.comment_tools import pr_list_threads, pr_read_thread, pr_read_comment
 
 
 def _ms(dt_str: str) -> int:
@@ -61,7 +61,7 @@ def sample_comments() -> list[dict]:
 class TestReadThreadTimestamps:
 
     def test_header_contains_timestamp(self, sample_comments):
-        out = read_thread(
+        out = pr_read_thread(
             sample_comments, comment_id=101,
             snapshot_max_id_value=999, bot_user="diffgraph-bot",
         )
@@ -74,7 +74,7 @@ class TestReadThreadTimestamps:
         """The whole point of the timestamp is so reviewer can spot
         whether its OWN past reply is stale. The [SELF] tag and the
         timestamp must coexist in the same header line."""
-        out = read_thread(
+        out = pr_read_thread(
             sample_comments, comment_id=101,
             snapshot_max_id_value=999, bot_user="diffgraph-bot",
         )
@@ -96,7 +96,7 @@ class TestReadThreadTimestamps:
             "file": "", "line": 0, "resolved": False, "anchored": False,
             # no created_ms
         }]
-        out = read_thread(comments, comment_id=1, snapshot_max_id_value=99)
+        out = pr_read_thread(comments, comment_id=1, snapshot_max_id_value=99)
         assert "old comment" in out
         # No date markers leaked.
         assert "T" not in out.split("===")[1] or "1970" not in out
@@ -104,7 +104,7 @@ class TestReadThreadTimestamps:
 
 class TestReadCommentTimestamp:
     def test_single_comment_header_has_timestamp(self, sample_comments):
-        out = read_comment(
+        out = pr_read_comment(
             sample_comments, comment_id=101,
             snapshot_max_id_value=999, bot_user="diffgraph-bot",
         )
@@ -136,24 +136,24 @@ class TestAnchorRendering:
         return c
 
     def test_anchor_shows_short_sha(self):
-        out = read_thread([self._anchored()], comment_id=1,
+        out = pr_read_thread([self._anchored()], comment_id=1,
                           snapshot_max_id_value=99)
         # Path:line followed by @<7-char short sha>.
         assert "src/X.java:47@abcdef1" in out
 
     def test_outdated_anchor_marked(self):
         c = self._anchored(anchor_orphaned=True)
-        out = read_thread([c], comment_id=1, snapshot_max_id_value=99)
+        out = pr_read_thread([c], comment_id=1, snapshot_max_id_value=99)
         assert "(outdated)" in out
 
     def test_non_outdated_no_tag(self):
-        out = read_thread([self._anchored()], comment_id=1,
+        out = pr_read_thread([self._anchored()], comment_id=1,
                           snapshot_max_id_value=99)
         assert "(outdated)" not in out
 
     def test_missing_anchor_to_hash_renders_path_only(self):
         c = self._anchored(anchor_to_hash="")
-        out = read_thread([c], comment_id=1, snapshot_max_id_value=99)
+        out = pr_read_thread([c], comment_id=1, snapshot_max_id_value=99)
         # No `@<sha>` clause, but the path:line still shows.
         assert "src/X.java:47" in out
         assert "@" not in out.split("src/X.java:47", 1)[1].split("===")[0]
@@ -162,15 +162,15 @@ class TestAnchorRendering:
         """General PR comments (no file/line) get no `@ <path>` part
         at all — the renderer skips the whole clause."""
         c = self._anchored(file="", line=0, anchored=False)
-        out = read_thread([c], comment_id=1, snapshot_max_id_value=99)
+        out = pr_read_thread([c], comment_id=1, snapshot_max_id_value=99)
         # The `@` wouldn't appear in author/header without an anchor.
         # Sanity check: file path is empty so the clause is omitted.
         assert "src/X.java" not in out
 
     def test_anchor_in_read_comment(self):
-        """Same anchor rendering applies to `read_comment` (single
-        comment, full body, used when read_thread truncated)."""
-        out = read_comment([self._anchored(anchor_orphaned=True)],
+        """Same anchor rendering applies to `pr_read_comment` (single
+        comment, full body, used when pr_read_thread truncated)."""
+        out = pr_read_comment([self._anchored(anchor_orphaned=True)],
                            comment_id=1, snapshot_max_id_value=99)
         assert "src/X.java:47@abcdef1" in out
         assert "(outdated)" in out
@@ -178,10 +178,10 @@ class TestAnchorRendering:
 
 class TestListThreadsTimestamps:
     def test_thread_summary_shows_last_activity(self, sample_comments):
-        """Reviewer scrolling `list_threads` should see "last
+        """Reviewer scrolling `pr_list_threads` should see "last
         <timestamp>" so it knows which threads were touched
         recently."""
-        out = list_threads(
+        out = pr_list_threads(
             sample_comments, snapshot_max_id_value=999,
             bot_user="diffgraph-bot",
         )
@@ -193,7 +193,7 @@ class TestListThreadsTimestamps:
     def test_self_tag_and_timestamp_compose(self, sample_comments):
         """`[SELF in subtree]` and the `last <ts>` tag both belong
         on the same summary line."""
-        out = list_threads(
+        out = pr_list_threads(
             sample_comments, snapshot_max_id_value=999,
             bot_user="diffgraph-bot",
         )

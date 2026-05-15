@@ -35,7 +35,7 @@ review:
                          # (`<prefix>:<gen>:<mutation>:<run>`). Empty string disables tagging.
 
 # ── Jira servers (optional) ───────────────────────────────────────────────────
-# The `read_ticket` tool resolves a `handle/namespace/ticket_id` ref against
+# The `jira_read_ticket` tool resolves a `handle/namespace/ticket_id` ref against
 # this registry. The `handle` is a slash-free logical id; the URL + auth are
 # attributes. A single-server setup needs NOTHING here — the `default` handle
 # falls back to JIRA_URL / JIRA_TOKEN from the env. Define entries only when
