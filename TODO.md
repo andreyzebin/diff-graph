@@ -2942,7 +2942,7 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 7.8 | Evolution dashboard + capability heatmap | High | Medium-Large | Do third |
 | 7.9 | Evolution meta-agent (gardener) | Medium | Medium | Later |
 | 7.10 | Cross-run memory per repo | Medium | Medium | Later |
-| 10  | Cross-source investigation toolset (pr_get/pr_list/diff_* repo=) | **High** | Large | Do second |
+| 10  | Cross-source investigation toolset (pr_get/pr_list/repo_list + URI standard + diff_*/pr_* repo=/pr=) | **High** | Large | Do second |
 | 11  | Multi-level agent memory (memo: KV + documents, PR/repo/team/company) | **High** | Medium-Large | Do second |
 
 ---
@@ -3613,8 +3613,10 @@ medium (2-3 days), 9-D each medium, 9-E small per tool.
 
 ## 10. Cross-source investigation toolset — investigator over the project graph
 
-**Status:** design only (recorded 2026-05-14, "только думай" spike). No
-code. Supersedes nothing — it's the *tool-traversal* counterpart to §9's
+**Status:** design only (originally recorded 2026-05-14; Phase B
+refined 2026-05-15 — see §10.2/§10.4/§10.8 for URI standard, `"default"`
+literal, soft-introduction, full-API discovery). No code. Supersedes
+nothing — it's the *tool-traversal* counterpart to §9's
 *file-materialisation* approach; the two must be reconciled (see §10.7).
 
 ### 10.1 The frame — a project knowledge graph
@@ -3627,12 +3629,13 @@ one type of edge", agent-driven, budget-bounded, strictly read-only:
 |---|---|---|
 | ticket → linked tickets | `jira_read_ticket` (links inline) | done (§5b Phase 1) |
 | ticket → PRs/branches/commits | `jira_dev_info(ref)` | §5b Phase 2 |
-| ticket discovery | `search_tickets(jql)` | §5b Phase 2 |
-| PR → its coordinates (meta + base/source/state/author) | `pr_get(repo, pr_id)` | **new** |
-| repo → its PRs (discovery) | `pr_list(repo, …)` | **new** |
+| ticket discovery | `jira_search_tickets(jql)` | §5b Phase 2 |
+| PR → its coordinates (meta + base/source/state/author) | `pr_get(repo, pr)` | **new** |
+| repo → its PRs (discovery, Bitbucket API) | `pr_list(repo, …)` | **new** |
+| server/project/repo → repos (discovery, Bitbucket API) | `repo_list(repo, …)` | **new** |
 | PR/repo → code | `diff_*` gains `repo=` param | **new (param)** |
-| PR → discussion | `pr_list_threads/pr_read_thread/pr_read_comment` gain `repo=`+`pr=` | **new (param)** |
-| repo → repo | AGENTS.md `## Related repositories` manifest | §9.2, reused |
+| PR → discussion | `pr_list_threads/pr_read_thread/pr_read_comment/pr_post_comment` gain `repo=`+`pr=` | **new (param)** |
+| repo → repo (project guidance) | AGENTS.md `## Related repositories` — regular file, read via `diff_read_file` | §9.2, informational |
 
 This is **§5b (Jira) and §9 (workspace) converging** into one
 cross-source surface. §9 today is framed as "files/sources"; this
@@ -3641,20 +3644,45 @@ files.
 
 ### 10.2 Tool surface — parameterize, don't proliferate
 
-Hard rule: **~2 genuinely new tools + a `repo=` param on existing ones.**
-Not 10 new tools.
+Hard rule: **3 genuinely new tools + `repo=` (and `pr=` where relevant)
+on existing ones.** Not 10 new tools.
 
-- `diff_*` (`diff_read_file/diff_list_files/diff_search/diff_outline`)
-  get `repo=<handle>` (default: current repo). The VFS is already
-  `ref`-parameterized — only "which repo" is missing. And the existing
+URI standard for all repo addresses: `bitbucket://<handle>/<project>/<repo>`
+— three hierarchical levels (handle / project / repo). Leaf (3 segments)
+required for tools acting on a specific repo or PR; any level accepted
+for discovery tools. `<handle>` is logical (from `bitbucket_servers:` in
+`config.local.yaml`, mirroring `jira_servers:` — see §10.4), not a
+hostname.
+
+**The `"default"` literal.** Every `repo=` and `pr=` parameter accepts
+the literal `"default"`, resolved at tool entry to the current PR's URI
+/ id from `ctx`. Omitting the param is equivalent. Phase B agents pass
+only `"default"` (see §10.8) — production behaviour is unchanged.
+Phase C onwards exercises real URIs / PR ids.
+
+- **`diff_*`** (`diff_read_file/diff_list_files/diff_search/diff_outline`)
+  get `repo=<uri|"default">` (default `"default"`). The VFS is already
+  `ref`-parameterized — only "which repo" is missing. The existing
   `ref=` already covers both access patterns (see §10.3): no new
-  concept, just one param.
-- `pr_list_threads/pr_read_thread/pr_read_comment` get `repo=`+`pr=` (default:
-  current PR's comment graph).
-- **Genuinely new — two tools:** `pr_get(repo, pr_id)` resolves a PR →
-  meta + base/source SHA + state + author (for the *current* PR this is
-  pre-filled in `ctx`; `pr_get` does that resolution for *other* PRs);
-  `pr_list(repo, …)` is discovery.
+  concept, just one param. Non-leaf URI → error.
+- **`pr_list_threads/pr_read_thread/pr_read_comment/pr_post_comment`**
+  get `repo=` + `pr=` (both default `"default"`). All four tools — the
+  write tool included, since "post to current PR" is the existing
+  behaviour and `"default"` keeps it that way. Restrictions on
+  cross-PR write are a Phase C+ concern, not Phase B.
+- **Genuinely new — three tools:**
+  - `pr_get(repo, pr)` — resolves a PR → meta + base/source SHA + state
+    + author (for the *current* PR this is pre-filled in `ctx`;
+    `pr_get` does that resolution for any other PR).
+  - `pr_list(repo, …)` — list PRs at the URI level (Bitbucket API,
+    token-scoped, **not manifest-filtered** — see §10.4). Server-level
+    URI → cross-project PR feed (Bitbucket's dashboard endpoint);
+    project-level → PRs across project repos; leaf → that repo's PRs.
+  - `repo_list(repo, …)` — list repos at the URI level (Bitbucket API,
+    token-scoped). Server-level → all repos visible to the token;
+    project-level → repos in that project; leaf → that one repo's meta.
+    `repo_list()` with no arg defaults to server-level for the current
+    handle (`bitbucket://<current-handle>`).
 
 ### 10.3 Two access patterns — both served by `repo=` + `ref=`
 
@@ -3668,25 +3696,44 @@ Not 10 new tools.
 The existing `ref=` distinguishes them: `ref="main"` = code-at-a-point,
 `ref="a..b"` = a diff. Nothing new needed.
 
-### 10.4 AGENTS.md manifest = map + trust boundary = `RepoRegistry`
+### 10.4 URI standard + `RepoRegistry` — token is the security boundary
 
-"Подключать репы через указание в agents md" → a **`RepoRegistry`,
-mirroring the `JiraRegistry`** already built for §5b. Same shape: handle
-→ resource. Reuses §9.2's `## Related repositories` section verbatim
-(`- **lib** — \`ssh://…\`` + free-text trigger hint).
+The URI standard: `bitbucket://<handle>/<project>/<repo>`. Hierarchical
+(1, 2, or 3 segments are all valid addresses, see §10.2). `<handle>` is
+a logical name (e.g. `default`, `internal`), NOT a hostname.
 
-- `repo=<handle>` accepts only declared handles → the manifest is a
-  **scope allowlist** (the investigator cannot wander into arbitrary
-  repos).
-- The real gate is still the bot's Bitbucket permissions: a declared
-  repo the bot can't see → graceful "not accessible" (the `_not_viewable`
-  pattern from §5b), not a crash.
-- Ref symmetry with Jira: a PR-ref reads `repo_handle/pr_id`, just like
-  a ticket-ref reads `handle/namespace/ticket_id`.
+**`RepoRegistry`** mirrors `JiraRegistry` (already shipped for §5b) but
+is deliberately **simpler — just `handle → server provider config`**, no
+allowlist. Each handle in `bitbucket_servers:` (a new block in
+`config.local.yaml`, parallel to `jira_servers:`) maps to:
+`{base_url, token_env, ca_bundle, client_cert}`. The current PR's
+handle is auto-registered from the run's existing Bitbucket config.
 
-So the full picture: `JiraRegistry` (Jira server handles) +
-`RepoRegistry` (repo handles, from AGENTS.md) + edge-follower tools —
-all read-only, all agent-driven, all budget-capped.
+**The trust boundary is the bot's token, not the manifest.** The bot's
+Bitbucket Server token already scopes what repos / PRs it can see —
+that's the real security perimeter. `pr_list` and `repo_list` query
+the Bitbucket API directly and return whatever the token reveals at
+the requested URI level. **No manifest-driven allowlist** — earlier
+drafts had one and it was the wrong call: scoping at the tool layer
+duplicates auth and gets in the way of legitimate exploration.
+
+**AGENTS.md `## Related repositories` becomes a regular file**, not a
+registry input. The agent reads it via `diff_read_file(path="AGENTS.md")`
+like any project file — informational guidance ("here are the repos
+relevant to this codebase"), parsed by the LLM through normal
+reading, not a tool-level gate. §9.2's section format still stands as
+the convention for *what to write* in AGENTS.md; the agent decides
+whether to consult it.
+
+Symmetry with Jira: a PR-ref is the URI `bitbucket://h/PROJ/repo` +
+`pr=<id>` (or rolled into one as `bitbucket://h/PROJ/repo/pull/<id>` —
+TBD; for now two params).
+
+So the full picture: `JiraRegistry` (Jira server handles, from
+`jira_servers:`) + `RepoRegistry` (Bitbucket server handles, from
+`bitbucket_servers:`) + edge-follower tools that hit each system's API
+directly, token-scoped — all read-only on the investigator side,
+agent-driven, budget-capped.
 
 ### 10.5 The three user use-cases → capabilities
 
@@ -3694,7 +3741,7 @@ all read-only, all agent-driven, all budget-capped.
 |---|---|---|
 | Investigate business stories / bugs (Jira) **and** jump into code, PRs, discussions | `jira_read_ticket` → `jira_dev_info` → `pr_get` → `diff_*`/`pr_list_threads` | dev_info = §5b Phase 2; rest = new |
 | Respect the review team's rules/focuses by reading prior PRs | `pr_list(repo=current, state=merged, path=…)` → `pr_get`/`pr_list_threads` on similar PRs | **fuzziest** — needs `pr_list` filters (path/author/recency); result is calibration/impression, not a hard rule |
-| Connect "other repos" (lib / migrations / k8s / docs) | AGENTS.md manifest + `RepoRegistry` + `diff_*(repo=…)` | = §9; this gives §9 a first concrete consumer |
+| Connect "other repos" (lib / migrations / k8s / docs) | `repo_list` discovery + `diff_*(repo=…)` against any token-visible repo; AGENTS.md as project guidance (regular file, agent reads if it judges relevant) | tool layer = Phase B; agent-side AGENTS.md usage = prompt-level decision later |
 
 Note `pr_list(repo=current)` naturally serves the "learn the team's
 culture" case — no separate mechanism; `repo=` just defaults to current.
@@ -3708,19 +3755,39 @@ culture" case — no separate mechanism; `repo=` just defaults to current.
    time); per-call caps (`diff_*` already truncates ~30k; `pr_get`
    needs the same); possibly a per-run cross-fetch budget. Without this,
    one investigator spiders a dozen repos.
-2. **Strictly read-only.** The investigator never posts. Cross-repo
-   must add zero write doors — no `pr_post_comment` on other repos, by
-   design.
-3. **Clone cost.** Workspace cache (`~/.diffgraph/workspace-cache/`),
+2. **Strictly read-only on the investigator side.** The investigator
+   never posts. `pr_post_comment` gains `repo=`/`pr=` for shape symmetry
+   (Phase B), but the reviewer's prompt continues to write only to the
+   current PR (default values). Cross-PR posting is an explicit Phase C+
+   policy decision, not an emergent capability.
+3. **Token is the security boundary, not the manifest.** The bot's
+   Bitbucket token already scopes what's visible — that's the real
+   gate. The tool layer trusts it. AGENTS.md is informational project
+   guidance (a regular file the agent reads), not an allowlist. Earlier
+   draft had a manifest-driven allowlist at the registry level — wrong
+   call, removed in Phase B refinement (2026-05-15). Confidentiality
+   between deployments is enforced at deployment/auth setup, not in the
+   tool layer.
+4. **Clone cost.** Workspace cache (`~/.diffgraph/workspace-cache/`),
    lazy materialization. The git_repo provider already does lazy clone —
    extend to N repos.
-4. **Investigator-only; reviewer stays lean.** The reviewer reads the
-   ticket (light) and *delegates* the cross-repo dig to an investigator
-   with a focus ("сверь с паттернами в shared-lib"). Division: reviewer
-   = ticket-aware triage, investigator = full cross-source dig. Unlike
-   `jira_read_ticket` (in both base prompts), the cross-repo tools are
-   **investigator-only**.
-5. **The review-culture use-case is the least crisp.** "Learn from the
+5. **Soft-introduction across all agents.** Phase B wires `repo=` /
+   `pr=` parameters across all relevant tools, but agents are NOT taught
+   to USE them yet. Every agent prompt's existing tool-call examples get
+   the parameter shown with value `"default"` — nothing else. No new
+   paragraphs, no caveats. The LLM sees the parameter as part of normal
+   tool shape; production behaviour is identical (`"default"` resolves
+   to current). Phase C is the first real exercise (isolated scenarios).
+   Risk: some models will try non-default values speculatively; the
+   tool implementation tolerates `repo=<current's-actual-URI>` as
+   silently equivalent to `"default"`. Beyond that is exercised territory.
+6. **Investigator-led on the heavy stuff; reviewer stays lean.** The
+   reviewer reads the ticket (light) and *delegates* cross-repo digs to
+   an investigator with a focus ("сверь с паттернами в shared-lib").
+   Division: reviewer = ticket-aware triage; investigator = full
+   cross-source dig. Unlike `jira_read_ticket` (in both base prompts),
+   active cross-repo exploration is investigator territory.
+7. **The review-culture use-case is the least crisp.** "Learn from the
    team via prior PRs" is powerful but fuzzy — which PRs? needs
    `pr_list` filters, and the output is an impression, not a rule.
    Lower priority; later phase within this section.
@@ -3742,8 +3809,12 @@ not obviously the same approach. Must decide:
   already plans the file form. Pick one, or define when each applies
   (static snapshot of *our* past reviews → files; live exploration of
   *arbitrary* PRs → tools).
-- `RepoRegistry` (§10.4) vs §9's `manifest.py` parser — same AGENTS.md
-  section, must be one parser, not two.
+- AGENTS.md parser: §10 (post Phase B refinement) does **not** parse
+  AGENTS.md at the tool layer — agents read it as a regular file via
+  `diff_read_file`, and `RepoRegistry` only maps `bitbucket_servers:`
+  handles (no manifest input). §9 still wants a parser for *its own*
+  use (sibling-mount materialisation). One parser, used by §9 only —
+  no duplication.
 
 Recommended resolution: **§9 materialises the bounded, known-relevant
 set at run start (siblings, PR-description Jira, our own past reviews);
@@ -3754,27 +3825,73 @@ manifest and the registries are shared infrastructure.
 
 ### 10.8 Phasing
 
-- **Phase A — finish Jira (§5b Phase 2):** `search_tickets(jql)` +
+- **Phase A — finish Jira (§5b Phase 2):** `jira_search_tickets(jql)` +
   `jira_dev_info(ref)`. `jira_dev_info` is the **bridge** — ticket →
   linked commits/branches/PRs → the entry point into cross-repo PR
-  reading. Phase A and Phase C are coupled: `jira_dev_info` emits
+  reading. Phase A and Phase D are coupled: `jira_dev_info` emits
   PR-refs, `pr_get` consumes them, so Phase A naturally introduces the
   PR-ref shape.
-- **Phase B — workspace manifest + `RepoRegistry`:** AGENTS.md
-  `## Related repositories` → registry (mirror of `JiraRegistry`);
-  `diff_*` gets `repo=`. This is §9-A territory — do it once, shared.
-- **Phase C — PR-as-resource:** `pr_get`, `pr_list`, cross-repo
-  `pr_list_threads/pr_read_thread`. Heaviest (clones, budget).
-- **Phase D — review-culture calibration:** `pr_list` filters
-  (path/author/recency) + an investigator-prompt nudge to "check how the
-  team reviewed similar changes". Fuzziest, last.
+
+- **Phase B — URI standard + `RepoRegistry` + plumbing, soft-introduction
+  in all prompts.** Wire everything; nothing exercised yet. After
+  Phase B every tool call still routes to the current PR by default;
+  agents see the new parameters in examples without being taught to
+  USE non-defaults.
+  - URI standard `bitbucket://<handle>/<project>/<repo>` (1/2/3
+    hierarchical levels; see §10.2). Validate level appropriate to the
+    tool (`diff_*`/`pr_get` need leaf; `pr_list`/`repo_list` accept any).
+  - `bitbucket_servers:` block in `config.local.yaml`, mirror of
+    `jira_servers:`. Per-entry: `{base_url, token_env, ca_bundle,
+    client_cert}`. Current PR's server auto-registered.
+  - `RepoRegistry` (simple `handle → provider config`; **no allowlist**,
+    see §10.4 / §10.6).
+  - `"default"` literal recognised for every `repo=` / `pr=` parameter,
+    resolved to current PR's URI / id from `ctx`. Omitting the param is
+    equivalent.
+  - **New tools:** `pr_get`, `pr_list`, `repo_list` (Bitbucket API
+    direct, token-scoped, NOT manifest-filtered).
+  - **Parameter additions on existing tools:** `diff_*` get `repo=`;
+    `pr_list_threads/pr_read_thread/pr_read_comment/pr_post_comment` get
+    `repo=` + `pr=`. All default `"default"`.
+  - **Soft-introduction in prompts (all agents):** in each agent's
+    existing tool-call examples, add `repo="default"` (and `pr="default"`
+    where applicable) to the signature. No new paragraphs, no caveats.
+    Minimal touch — the example values teach the LLM "leave them as
+    default".
+
+- **Phase C — isolated cross-repo scenarios.** First real exercise of
+  cross-repo. Before scaling, prove the wiring on tightly-controlled
+  unit scenarios.
+  - Unit scenario: AGENTS.md declares a second fake-repo (e.g.
+    `bitbucket://default/PROJ/shared-lib` with seeded files).
+  - Reviewer/investigator scenario where the correct answer requires
+    reading something in the lib repo (cite a util signature, check a
+    constant, …) — tests end-to-end `diff_read_file(repo=<lib-URI>)`.
+  - `repo_list` scenario: agent sees several manifest-suggested repos,
+    picks the right one, reads it.
+  - Optional: scenario where the LLM ignores the manifest and relies on
+    `repo_list` discovery alone — validates that AGENTS.md is genuinely
+    advisory, not gating.
+
+- **Phase D — PR-as-resource at scale (was old Phase C):** `pr_get`,
+  `pr_list`, cross-repo `pr_list_threads/pr_read_thread`/etc. exercised
+  broadly. Investigator follows `jira_dev_info` PR-refs into other PRs;
+  cross-repo clone + per-call caps + per-run cross-fetch budget enforced.
+  Heaviest phase.
+
+- **Phase E — review-culture calibration (was old Phase D):** `pr_list`
+  filters (path/author/recency) + an investigator-prompt nudge to "check
+  how the team reviewed similar changes". Fuzziest, last.
 
 Start with **Phase A** — it was already next per §5b, and it introduces
-the PR-ref shape that Phase C builds on.
+the PR-ref shape that Phase D builds on. Phase B is the next-after that
+(small-medium, mostly plumbing).
 
-**Effort:** Phase A medium (dev-status API + JQL), Phase B small-medium
-(shared with §9-A), Phase C large (cross-repo clone + budget
-discipline), Phase D small.
+**Effort:** Phase A medium (dev-status API + JQL); Phase B small-medium
+(URI standard + registry + 3 new tools + universal-prompt soft-inject);
+Phase C small-medium (isolated scenarios — bench infra + 2-3 unit
+fixtures); Phase D large (cross-repo clone + budget discipline at
+scale); Phase E small.
 
 ---
 
