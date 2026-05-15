@@ -39,11 +39,7 @@ budget:
     # is agent-specific (spawn / condense / wrap up), so the pusher
     # just reports state and leaves the response to each agent's
     # prompt.
-    nudge: >-
-      Half of this agent's configured LLM context window is now used.
-      The window holds the prompt + every accumulated tool result and
-      reflect output — they're all submitted on each LLM call, and
-      the total only grows as the run proceeds.
+    nudge: Conversation history fills 50% of this agent's LLM context window.
 
 reflect:
   cadence:
