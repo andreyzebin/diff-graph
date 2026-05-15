@@ -49,9 +49,3 @@ reflect:
       Pause and call reflect(confidence=…, learned=…,
       questions_remaining=[…]) — consolidate what you've learned,
       what's still open, and what's resolved. Then continue.
-
-# `FailedReflectGuard` keeps its wording inline in
-# orchestra/budget.py — the guard is NOT in the default tracker
-# chain (only its class + tests exist), so there's no production
-# call site to tune. If the guard gets wired in, lift its
-# `reflect.failed_guard.locked` template into this file then.
