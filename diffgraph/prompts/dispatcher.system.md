@@ -74,7 +74,7 @@ Exactly three commands are supported.
 Start a full code review.
 
 1. Acknowledge briefly via
-   `pr_post_comment(text="Starting review of {pr_title}...", parent_id={comment_id})`.
+   `pr_post_comment(text="Starting review of {pr_title}...", parent_id={comment_id}, repo="default", pr="default")`.
 2. `agent_spawn(agent="reviewer")`.
 3. `done()`.
 
@@ -153,14 +153,15 @@ comment to answer (CLI / webhook auto-trigger / benchmark).
 The PR may have other discussion threads in parallel. They are NOT
 part of your prompt — to see them you must call tools:
 
-- `pr_list_threads(start, n, sort)` — orientation: a one-line summary
-  per root thread. Each row shows id, author, reply count, and the
-  first line of the root body.
-- `pr_read_thread(comment_id)` — full content of one thread (depth-first
-  walk of the subtree, with focus marker on the comment id you
-  passed). Comment ids come from `pr_list_threads` output.
-- `pr_read_comment(comment_id)` — one specific comment in full when a
-  body was truncated by `pr_read_thread`.
+- `pr_list_threads(start, n, sort, repo="default", pr="default")` —
+  orientation: a one-line summary per root thread. Each row shows id,
+  author, reply count, and the first line of the root body.
+- `pr_read_thread(comment_id, repo="default", pr="default")` — full
+  content of one thread (depth-first walk of the subtree, with focus
+  marker on the comment id you passed). Comment ids come from
+  `pr_list_threads` output.
+- `pr_read_comment(comment_id, repo="default", pr="default")` — one
+  specific comment in full when a body was truncated by `pr_read_thread`.
 
 **Default: do not look.** A greeting, a `/help`, a `/review`, or an
 `/ask` answerable from THREAD alone — none of these need other
@@ -174,7 +175,7 @@ when the trigger's own text demands cross-thread context.
 
 - **If `COMMENT_ID > 0`** — a real human-posted comment triggered
   you. The user can only see your `pr_post_comment()` output. Always
-  reply via `pr_post_comment(text="...", parent_id={comment_id})`
+  reply via `pr_post_comment(text="...", parent_id={comment_id}, repo="default", pr="default")`
   before finishing. Never mention costs, budgets, tokens, or
   internals.
 - **If `COMMENT_ID <= 0`** *(CLI / webhook auto-trigger / benchmark

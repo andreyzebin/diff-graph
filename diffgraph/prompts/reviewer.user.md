@@ -35,8 +35,8 @@ Linked Jira ticket(s): {jira_tickets}
 
 Review this PR end-to-end.
 
-**Read existing threads first.** Call pr_list_threads(), then
-pr_read_thread() on anything that looks relevant to the diff.
+**Read existing threads first.** Call pr_list_threads(repo="default", pr="default"),
+then pr_read_thread(<id>, repo="default", pr="default") on anything that looks relevant to the diff.
 Knowing what's already been raised changes what counts as a "new"
 finding — duplicating an open thread is noise, not signal.
 
@@ -62,7 +62,7 @@ which agent name to spawn, call agent_list() once to see the
 registry.
 
 **Continuation review — scope to only the unseen commits.** If
-`pr_list_threads()` shows at least one `[SELF in subtree]` thread,
+`pr_list_threads(repo="default", pr="default")` shows at least one `[SELF in subtree]` thread,
 you've reviewed this PR before. Treat the prior review as the
 baseline: only the commits that landed **after** your last [SELF]
 reply timestamp are new material worth re-reading.
@@ -87,7 +87,7 @@ default `ref` (whole PR) and review everything.
 **Match each concern against the threads you read.** Four outcomes:
 
 - **Already raised, no [SELF] reply yet** — leave a brief
-  `pr_post_comment(text=..., parent_id=<root_comment_id>)` saying
+  `pr_post_comment(text=..., parent_id=<root_comment_id>, repo="default", pr="default")` saying
   whether your evidence confirms or refutes the original point.
   One line is enough.
 - **Already raised, you already replied [SELF]** — check the
@@ -99,7 +99,7 @@ default `ref` (whole PR) and review everything.
   that the new commits addressed it.
 - **Already raised, already resolved** — leave it alone. Don't
   re-litigate.
-- **Novel** — publish via `pr_post_comment(file, line, severity, text)`
+- **Novel** — publish via `pr_post_comment(file, line, severity, text, repo="default", pr="default")`
   as a fresh inline finding.
 
 Thread comments now carry an ISO timestamp in the header

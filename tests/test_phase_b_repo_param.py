@@ -1,0 +1,243 @@
+"""Phase B: `repo=` / `pr=` parameters across the tool surface (§10.8).
+
+Phase B wires the cross-repo plumbing without exercising it. The
+contract these tests pin:
+
+  - Every tool that gained the parameters accepts `repo="default"` and
+    `pr="default"` without breaking existing behaviour.
+  - Schema-side: the new params show up in `parameters.properties`
+    but NOT in `required` — agents that omit them dispatch fine.
+  - Handler-side: a non-default URI returns the Phase B message. An
+    explicit URI matching the current context is silently accepted
+    (§10.6 — tolerates `repo=<current's-actual-URI>` as equivalent
+    to `"default"`).
+  - The three NEW tools (`pr_get`, `pr_list`, `repo_list`) are
+    registered, return current-PR-scope data for default, and surface
+    the Phase B message for non-default URIs. Real cross-repo
+    enumeration is Phase C.
+
+These tests use a stub ctx — Phase B's gate runs BEFORE any VFS
+materialisation or Bitbucket API call, so no real git repo is needed
+to exercise it.
+"""
+from __future__ import annotations
+
+import pytest
+
+from diffgraph.orchestra_tools import register_diffgraph_tools
+from orchestra import ToolRegistry
+
+
+# A realistic Bitbucket PR URL — matches the
+# /projects/<P>/repos/<R>/pull-requests/<id> shape that the URI
+# parser turns into bitbucket://default/ORD/orderflow + pr=1630.
+REAL_PR_URL = (
+    "https://bitbucket.example.com/projects/ORD/repos/orderflow/"
+    "pull-requests/1630"
+)
+REAL_PR_URI = "bitbucket://default/ORD/orderflow"
+REAL_PR_ID = "1630"
+
+
+@pytest.fixture
+def ctx_and_registry():
+    """Stub ctx with a real-shape PR URL — enough for the Phase B gate
+    to extract a current-repo URI and PR id from `_pr_url`."""
+    from diffgraph.orchestrator import _Ctx, ReviewContext
+    from diffgraph.diff_parser import DiffResult
+
+    ctx = _Ctx(
+        diff_text="",
+        diff_result=DiffResult(files={}, changed_files=[], changed_lines={}),
+        repo_path="/tmp/_phase_b_stub",
+        existing_comments=[],
+        review_context=ReviewContext(),
+        base_ref="", source_ref="",
+        _pr_url=REAL_PR_URL,
+        _initialized=True,
+    )
+    reg = ToolRegistry()
+    register_diffgraph_tools(reg, ctx)
+    return ctx, reg
+
+
+# ── Schema contract: params present, NOT required ─────────────────
+
+class TestSchemaShape:
+    """`repo=` / `pr=` must be optional — agents that omit them today
+    keep working unchanged."""
+
+    @pytest.mark.parametrize("tool_name", [
+        "diff_list_files", "diff_read_file", "diff_outline", "diff_search",
+    ])
+    def test_diff_star_gains_repo_optional(self, ctx_and_registry, tool_name):
+        _, reg = ctx_and_registry
+        params = reg._tools[tool_name].parameters
+        assert "repo" in params["properties"], f"{tool_name} missing repo"
+        assert "repo" not in params.get("required", []), (
+            f"{tool_name} must NOT mark repo as required"
+        )
+
+    @pytest.mark.parametrize("tool_name", [
+        "pr_list_threads", "pr_read_thread", "pr_read_comment", "pr_post_comment",
+    ])
+    def test_pr_star_gains_repo_and_pr_optional(self, ctx_and_registry, tool_name):
+        _, reg = ctx_and_registry
+        params = reg._tools[tool_name].parameters
+        assert "repo" in params["properties"]
+        assert "pr" in params["properties"]
+        req = params.get("required", [])
+        assert "repo" not in req and "pr" not in req
+
+    def test_new_tools_registered_with_no_required_params(self, ctx_and_registry):
+        """`pr_get` / `pr_list` / `repo_list` are net-new tools. The
+        agent should be able to call any of them with no arguments
+        (they default to the current scope)."""
+        _, reg = ctx_and_registry
+        for tool_name in ("pr_get", "pr_list", "repo_list"):
+            assert tool_name in reg._tools, f"{tool_name} not registered"
+            params = reg._tools[tool_name].parameters
+            assert params.get("required", []) == [], (
+                f"{tool_name} must accept zero-arg calls"
+            )
+
+
+# ── Phase B gate on existing tools ─────────────────────────────────
+
+class TestPhaseGateOnDiffStar:
+    """`diff_*` tools — the gate runs before any VFS access, so we
+    can probe it without a real git repo."""
+
+    def test_non_default_repo_rejected(self, ctx_and_registry):
+        _, reg = ctx_and_registry
+        # diff_list_files has no required params, so the gate is the
+        # only thing the call exercises before the handler body.
+        out = reg.dispatch("diff_list_files",
+                            {"repo": "bitbucket://default/PROJ/shared-lib"})
+        assert isinstance(out, str)
+        assert "Phase B" in out
+
+    def test_malformed_repo_returns_invalid_uri_error(self, ctx_and_registry):
+        _, reg = ctx_and_registry
+        out = reg.dispatch("diff_list_files", {"repo": "not-a-uri"})
+        assert isinstance(out, str)
+        assert "invalid repo URI" in out
+
+    def test_explicit_matching_uri_silently_accepted(self, ctx_and_registry):
+        """A model that emits `repo=<current's URI>` instead of
+        `"default"` must pass the gate — tolerated equivalence per
+        §10.6. We can tell the gate passed by what comes back: a
+        non-error string from the underlying handler (which may itself
+        be empty/short on this stub ctx, but is NOT the Phase B message)."""
+        _, reg = ctx_and_registry
+        out = reg.dispatch("diff_list_files", {"repo": REAL_PR_URI})
+        assert "Phase B" not in str(out), out
+        assert "invalid repo URI" not in str(out), out
+
+
+class TestPhaseGateOnPrStar:
+    """`pr_*` tools — same gate, with `pr=` also checked."""
+
+    def test_non_default_pr_rejected(self, ctx_and_registry):
+        _, reg = ctx_and_registry
+        out = reg.dispatch("pr_list_threads", {"pr": "9999"})
+        assert isinstance(out, str)
+        assert "Phase B" in out
+        assert "pr" in out
+
+    def test_matching_pr_id_silently_accepted(self, ctx_and_registry):
+        """`pr="1630"` (matching ctx's PR) is accepted — the gate
+        falls through to the underlying handler. The handler returns
+        whatever `pr_list_threads` produces on an empty comment list
+        (a string, not the Phase B rejection)."""
+        _, reg = ctx_and_registry
+        out = reg.dispatch("pr_list_threads", {"pr": REAL_PR_ID})
+        assert "Phase B" not in str(out)
+
+    def test_post_comment_rejects_non_default_repo(self, ctx_and_registry):
+        """`pr_post_comment` returns a dict — the rejection comes
+        through the same `_phase_b_gate` but is wrapped as a dict
+        with status=error so the post-call flow can branch on it."""
+        _, reg = ctx_and_registry
+        out = reg.dispatch("pr_post_comment", {
+            "text": "x",
+            "repo": "bitbucket://default/PROJ/shared-lib",
+        })
+        assert isinstance(out, dict)
+        assert out["status"] == "error"
+        assert "Phase B" in out["message"]
+
+
+# ── New tools (pr_get / pr_list / repo_list) ───────────────────────
+
+class TestNewTools:
+    """`pr_get` / `pr_list` / `repo_list` registered in Phase B.
+    For default scope they return current-PR data (lightweight
+    plumbing); non-default surfaces the Phase B message — the real
+    Bitbucket API enumeration arrives in Phase C scenarios."""
+
+    def test_pr_get_default_returns_current_pr(self, ctx_and_registry):
+        _, reg = ctx_and_registry
+        out = reg.dispatch("pr_get", {})
+        assert isinstance(out, dict)
+        assert out["uri"] == REAL_PR_URI
+        assert out["pr"] == REAL_PR_ID
+        assert out["pr_url"] == REAL_PR_URL
+        assert "error" not in out
+
+    def test_pr_get_non_default_returns_phase_b_error(self, ctx_and_registry):
+        _, reg = ctx_and_registry
+        out = reg.dispatch("pr_get", {"pr": "9999"})
+        assert isinstance(out, dict)
+        assert "error" in out
+        assert "Phase B" in out["error"]
+
+    def test_pr_list_default_returns_current_pr_only(self, ctx_and_registry):
+        _, reg = ctx_and_registry
+        out = reg.dispatch("pr_list", {})
+        assert isinstance(out, list)
+        # Phase B placeholder: just the current PR.
+        assert len(out) == 1
+        assert out[0]["uri"] == REAL_PR_URI
+        assert out[0]["pr"] == REAL_PR_ID
+
+    def test_pr_list_non_default_rejected(self, ctx_and_registry):
+        _, reg = ctx_and_registry
+        out = reg.dispatch(
+            "pr_list", {"repo": "bitbucket://default/PROJ/shared-lib"})
+        assert isinstance(out, list)
+        assert len(out) == 1
+        assert "error" in out[0]
+        assert "Phase B" in out[0]["error"]
+
+    def test_repo_list_default_returns_current_repo(self, ctx_and_registry):
+        _, reg = ctx_and_registry
+        out = reg.dispatch("repo_list", {})
+        assert isinstance(out, list)
+        assert len(out) == 1
+        assert out[0]["uri"] == REAL_PR_URI
+
+    def test_repo_list_non_default_rejected(self, ctx_and_registry):
+        _, reg = ctx_and_registry
+        out = reg.dispatch(
+            "repo_list", {"repo": "bitbucket://internal/SOME/thing"})
+        assert "Phase B" in out[0]["error"]
+
+
+# ── Default-omission stays unchanged ───────────────────────────────
+
+class TestOmittedParamsActAsDefault:
+    """Most existing scenarios call tools without the new params at
+    all. That has to keep working — omitted equals default equals
+    current context."""
+
+    def test_diff_list_files_no_repo_arg(self, ctx_and_registry):
+        _, reg = ctx_and_registry
+        out = reg.dispatch("diff_list_files", {})
+        assert "Phase B" not in str(out)
+        assert "invalid repo URI" not in str(out)
+
+    def test_pr_list_threads_no_repo_no_pr(self, ctx_and_registry):
+        _, reg = ctx_and_registry
+        out = reg.dispatch("pr_list_threads", {})
+        assert "Phase B" not in str(out)

@@ -83,15 +83,15 @@ L == old == new.
 
 **For inspecting code (all operate on the diff view above):**
 
-- `diff_list_files(pattern)` — list paths visible in the diff view.
-- `diff_read_file(path, changes_only=true, before=3, after=3)` — read just
-  the changed hunks of a file with ±N context lines.
-- `diff_read_file(path, start_line, end_line)` — read an L range with full
-  unified-diff annotations (markers + old/new columns).
-- `diff_outline(path)` — structural outline. Changed symbols marked
-  `*`; changed methods show separate `Lold:..` and `Lnew:..` ranges.
-- `diff_search(query, glob?, regex?, before?, after?)` — diff_search across
-  files in the diff view; hits carry `+`/`-`/` ` markers.
+- `diff_list_files(pattern, repo="default")` — list paths visible in the diff view.
+- `diff_read_file(path, changes_only=true, before=3, after=3, repo="default")` —
+  read just the changed hunks of a file with ±N context lines.
+- `diff_read_file(path, start_line, end_line, repo="default")` — read an L range
+  with full unified-diff annotations (markers + old/new columns).
+- `diff_outline(path, repo="default")` — structural outline. Changed symbols
+  marked `*`; changed methods show separate `Lold:..` and `Lnew:..` ranges.
+- `diff_search(query, glob?, regex?, before?, after?, repo="default")` —
+  diff_search across files in the diff view; hits carry `+`/`-`/` ` markers.
 
 **For surfacing thinking and finishing:**
 
@@ -103,9 +103,12 @@ L == old == new.
 The PR may have prior comments and threads. They are NOT in your
 prompt — fetch them on demand via tools:
 
-- `pr_list_threads(start, n, sort)` — one-line summary per root thread.
-- `pr_read_thread(comment_id)` — full thread, depth-first from root.
-- `pr_read_comment(comment_id)` — one comment in full when truncated.
+- `pr_list_threads(start, n, sort, repo="default", pr="default")` — one-line
+  summary per root thread.
+- `pr_read_thread(comment_id, repo="default", pr="default")` — full thread,
+  depth-first from root.
+- `pr_read_comment(comment_id, repo="default", pr="default")` — one comment
+  in full when truncated.
 
 Use them only if your concern could plausibly already be raised
 in an open thread — to avoid duplicate findings. Cite the thread

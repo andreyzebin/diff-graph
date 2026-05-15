@@ -147,6 +147,42 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     def _subject_pattern():
         return getattr(ctx, "_subject_pattern", None)
 
+    # ── Phase B: repo/pr parameter resolution (§10.4 + §10.6) ──────────
+    # The `"default"` literal resolves to the current PR's URI / id from
+    # ctx; an explicit URI matching ctx is tolerated; anything else
+    # returns a clear Phase B message. Phase C wires real cross-repo
+    # dispatch — see TODO §10.8.
+    from .repo_uri import (
+        ctx_repo_uri_from_pr_url as _uri_from_pr_url,
+        ctx_pr_id_from_pr_url as _pr_id_from_pr_url,
+        resolve_repo_param as _resolve_repo,
+        resolve_pr_param as _resolve_pr,
+    )
+
+    def _ctx_repo_uri():
+        """Current PR's repo URI, or None for fake/local runs whose
+        pr_url doesn't carry Bitbucket's `/projects/<P>/repos/<R>/` shape."""
+        return _uri_from_pr_url(getattr(ctx, "_pr_url", "") or "")
+
+    def _ctx_pr_id():
+        """Current PR's id as a string, or None when not extractable."""
+        return _pr_id_from_pr_url(getattr(ctx, "_pr_url", "") or "")
+
+    def _phase_b_gate(repo: str = "default", pr: str = "default"):
+        """Resolve repo+pr params; return error string or None.
+
+        `None` means proceed with existing in-context behaviour
+        (default / matching). A non-None return is the Phase B
+        rejection message — handler should surface it and stop.
+        """
+        _, err = _resolve_repo(repo, ctx_uri=_ctx_repo_uri())
+        if err:
+            return err
+        _, err = _resolve_pr(pr, ctx_pr=_ctx_pr_id())
+        if err:
+            return err
+        return None
+
     # ── Data provider: pr_context (cached, hidden) ────────────────────────
 
     def _resolve_jira_tickets() -> str:
@@ -240,6 +276,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                 "changes_only": {"type": "boolean", "description": "Default true — only files with status M/A/D/R/C/T. Set false to also include unchanged context files."},
                 "start": {"type": "integer", "description": "Pagination offset (default 0)."},
                 "n": {"type": "integer", "description": "Page size (default 50)."},
+                "repo": {"type": "string", "description": 'Repo URI "bitbucket://<handle>/<project>/<repo>" or "default" (the current PR\'s repo). Defaults to "default"; in this release leave as default.'},
             },
             # Nothing is required — every field has a sensible default.
             # Marking pattern as required earlier caused tool-schema
@@ -255,7 +292,11 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         changes_only: bool = True,
         start: int = 0,
         n: int = 50,
+        repo: str = "default",
     ) -> str:
+        err = _phase_b_gate(repo=repo)
+        if err:
+            return err
         _ensure()
         ref = ref or _default_ref()
         vfs_dir = _get_vfs(ctx, ref)
@@ -297,13 +338,17 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                 "before": {"type": "integer", "description": "Context lines before each hunk when changes_only=true (default 3)."},
                 "after": {"type": "integer", "description": "Context lines after each hunk when changes_only=true (default 3)."},
                 "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
+                "repo": {"type": "string", "description": 'Repo URI "bitbucket://<handle>/<project>/<repo>" or "default" (the current PR\'s repo). Defaults to "default"; in this release leave as default.'},
             },
             "required": ["path"],
         },
     )
     def read_file_tool(path: str = "", start_line: int = None, end_line: int = None,
                        changes_only: bool = False, before: int = 3, after: int = 3,
-                       ref: str = "") -> str:
+                       ref: str = "", repo: str = "default") -> str:
+        err = _phase_b_gate(repo=repo)
+        if err:
+            return err
         _ensure()
         ref = ref or _default_ref()
         if not changes_only and start_line is not None and end_line is not None and (end_line - start_line) > 100:
@@ -336,11 +381,15 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "properties": {
                 "path": {"type": "string"},
                 "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
+                "repo": {"type": "string", "description": 'Repo URI "bitbucket://<handle>/<project>/<repo>" or "default" (the current PR\'s repo). Defaults to "default"; in this release leave as default.'},
             },
             "required": ["path"],
         },
     )
-    def read_outline_tool(path: str = "", ref: str = "") -> str:
+    def read_outline_tool(path: str = "", ref: str = "", repo: str = "default") -> str:
+        err = _phase_b_gate(repo=repo)
+        if err:
+            return err
         _ensure()
         ref = ref or _default_ref()
         vfs_dir = _get_vfs(ctx, ref)
@@ -368,12 +417,17 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                 "before": {"type": "integer", "description": "Context lines before each match (default 0)."},
                 "after": {"type": "integer", "description": "Context lines after each match (default 0)."},
                 "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
+                "repo": {"type": "string", "description": 'Repo URI "bitbucket://<handle>/<project>/<repo>" or "default" (the current PR\'s repo). Defaults to "default"; in this release leave as default.'},
             },
             "required": ["query"],
         },
     )
     def search_tool(query: str = "", glob: str = "**/*", regex: bool = False,
-                    before: int = 0, after: int = 0, ref: str = "") -> str:
+                    before: int = 0, after: int = 0, ref: str = "",
+                    repo: str = "default") -> str:
+        err = _phase_b_gate(repo=repo)
+        if err:
+            return err
         _ensure()
         ref = ref or _default_ref()
         vfs_dir = _get_vfs(ctx, ref)
@@ -413,11 +467,17 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                     "enum": ["newest", "most_active", "oldest"],
                     "description": "Order. 'newest' (default) = recent root first; 'most_active' = most replies; 'oldest' = chronological.",
                 },
+                "repo": {"type": "string", "description": 'Repo URI or "default" (current PR\'s repo). Defaults to "default".'},
+                "pr": {"type": "string", "description": 'PR id (string) or "default" (current PR). Defaults to "default".'},
             },
             "required": [],
         },
     )
-    def list_threads_tool(start: int = 0, n: int = 30, sort: str = "newest") -> str:
+    def list_threads_tool(start: int = 0, n: int = 30, sort: str = "newest",
+                          repo: str = "default", pr: str = "default") -> str:
+        err = _phase_b_gate(repo=repo, pr=pr)
+        if err:
+            return err
         return _list_threads_impl(
             ctx.existing_comments or [],
             snapshot_max_id_value=_comment_snapshot(),
@@ -443,11 +503,17 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "type": "object",
             "properties": {
                 "comment_id": {"type": "integer", "description": "Any comment id in the thread of interest."},
+                "repo": {"type": "string", "description": 'Repo URI or "default" (current PR\'s repo). Defaults to "default".'},
+                "pr": {"type": "string", "description": 'PR id (string) or "default" (current PR). Defaults to "default".'},
             },
             "required": ["comment_id"],
         },
     )
-    def read_thread_tool(comment_id: int = 0) -> str:
+    def read_thread_tool(comment_id: int = 0,
+                         repo: str = "default", pr: str = "default") -> str:
+        err = _phase_b_gate(repo=repo, pr=pr)
+        if err:
+            return err
         if not comment_id:
             return "(comment_id is required)"
         return _read_thread_impl(
@@ -468,11 +534,17 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "type": "object",
             "properties": {
                 "comment_id": {"type": "integer"},
+                "repo": {"type": "string", "description": 'Repo URI or "default" (current PR\'s repo). Defaults to "default".'},
+                "pr": {"type": "string", "description": 'PR id (string) or "default" (current PR). Defaults to "default".'},
             },
             "required": ["comment_id"],
         },
     )
-    def read_comment_tool(comment_id: int = 0) -> str:
+    def read_comment_tool(comment_id: int = 0,
+                          repo: str = "default", pr: str = "default") -> str:
+        err = _phase_b_gate(repo=repo, pr=pr)
+        if err:
+            return err
         if not comment_id:
             return "(comment_id is required)"
         return _read_comment_impl(
@@ -482,6 +554,96 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             bot_user=_bot_user(),
             subject_pattern=_subject_pattern(),
         )
+
+    # ── Cross-repo discovery + PR resource (§10.2, Phase B plumbing) ──
+    # In Phase B these tools return only the current PR / repo scope;
+    # non-default URIs hit the `_phase_b_gate` and surface a clear
+    # "Phase C" message. Phase C scenarios drive the real Bitbucket API
+    # enumeration these tools will dispatch to.
+
+    @registry.register(
+        name="pr_get",
+        description=(
+            "Read a PR's coordinates — meta + base/source SHA + state + "
+            "author. For the current PR these values are pre-filled in "
+            "context; `pr_get` exposes the same data through the tool "
+            "surface (and, in Phase C, resolves it for OTHER PRs in "
+            "other repos)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": 'Repo URI "bitbucket://<handle>/<project>/<repo>" or "default" (current PR\'s repo).'},
+                "pr": {"type": "string", "description": 'PR id (string) or "default" (current PR).'},
+            },
+            "required": [],
+        },
+    )
+    def pr_get_tool(repo: str = "default", pr: str = "default") -> dict:
+        err = _phase_b_gate(repo=repo, pr=pr)
+        if err:
+            return {"error": err}
+        uri = _ctx_repo_uri()
+        return {
+            "uri": str(uri) if uri else "",
+            "pr": _ctx_pr_id() or "",
+            "base_ref": ctx.base_ref or "",
+            "source_ref": ctx.source_ref or "",
+            "pr_url": getattr(ctx, "_pr_url", "") or "",
+        }
+
+    @registry.register(
+        name="pr_list",
+        description=(
+            "List PRs at the given URI level — server / project / repo. "
+            "Phase B placeholder: returns only the current PR. Phase C "
+            "scenarios drive the real Bitbucket API enumeration (cross-"
+            "repo / cross-project PR feeds, token-scoped — no manifest "
+            "allowlist, see §10.4)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": 'Repo URI (any level: handle / handle/project / handle/project/repo) or "default" (current repo).'},
+            },
+            "required": [],
+        },
+    )
+    def pr_list_tool(repo: str = "default") -> list:
+        err = _phase_b_gate(repo=repo)
+        if err:
+            return [{"error": err}]
+        uri = _ctx_repo_uri()
+        pr = _ctx_pr_id()
+        if not uri or not pr:
+            return []
+        return [{"uri": str(uri), "pr": pr}]
+
+    @registry.register(
+        name="repo_list",
+        description=(
+            "List repos at the given URI level. With no arg (or "
+            '"default"), lists repos at server level for the current '
+            "handle. Phase B placeholder: returns only the current "
+            "repo. Phase C scenarios drive the real Bitbucket API "
+            "enumeration (token-scoped, no manifest allowlist)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": 'Repo URI (any level) or "default" — server-level for the current handle.'},
+            },
+            "required": [],
+        },
+    )
+    def repo_list_tool(repo: str = "default") -> list:
+        err = _phase_b_gate(repo=repo)
+        if err:
+            return [{"error": err}]
+        uri = _ctx_repo_uri()
+        if not uri:
+            return []
+        return [{"uri": str(uri)}]
 
     # One JiraRegistry per tool-registration — loads jira_servers:
     # from config.local.yaml once; per-handle JiraProvider instances
@@ -563,6 +725,8 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                     "description": "Only meaningful for inline comments.",
                 },
                 "parent_id": {"type": "integer", "description": "Comment id to reply under."},
+                "repo": {"type": "string", "description": 'Repo URI or "default" (current PR\'s repo). Defaults to "default".'},
+                "pr": {"type": "string", "description": 'PR id (string) or "default" (current PR). Defaults to "default".'},
             },
             "required": ["text"],
         },
@@ -571,7 +735,12 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                           file: str = "",
                           line: int = 0,
                           severity: str = "",
-                          parent_id: int = 0) -> dict:
+                          parent_id: int = 0,
+                          repo: str = "default",
+                          pr: str = "default") -> dict:
+        err = _phase_b_gate(repo=repo, pr=pr)
+        if err:
+            return {"status": "error", "message": err}
         pr_url = getattr(ctx, "_pr_url", "") or ""
         if not pr_url:
             return {"status": "skipped",
