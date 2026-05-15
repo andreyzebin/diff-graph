@@ -131,11 +131,12 @@ class TestRatioPusher:
 class TestStepCadencePusher:
     """Same class wired for `counter_attr="steps_since_reflect"`."""
 
-    def _pusher(self, threshold=5):
+    def _pusher(self, threshold=5, force_reflect_multiplier=None):
         return ReflectCadencePusher(
             kind="reflect", threshold=threshold,
             counter_attr="steps_since_reflect",
             nudge_template="N={threshold:.0f}",
+            force_reflect_multiplier=force_reflect_multiplier,
         )
 
     def test_zero_threshold_disabled(self):
@@ -181,9 +182,26 @@ class TestStepCadencePusher:
             else:
                 assert ctx.actions == [], f"unexpected re-fire at {n}"
 
-    def test_force_reflect_at_double_threshold(self):
-        pusher = self._pusher()
-        # Walk 1..10. At 5 → NUDGE, at 10 → FORCE_REFLECT, rest empty.
+    def test_force_reflect_default_disabled(self):
+        """Default: FORCE_REFLECT is opt-in
+        (`force_reflect_multiplier=None`). Walking the counter past
+        2× threshold emits only the NUDGE — no FORCE_REFLECT action.
+        Why default-off: narrowing tools to reflect-only dead-ends
+        the agent when reflect itself fails validation."""
+        pusher = self._pusher()  # no multiplier
+        seen: list[tuple[int, PusherType]] = []
+        for n in range(1, 11):
+            ctx = _ctx(steps_since_reflect=n)
+            pusher.apply(ctx)
+            for a in ctx.actions:
+                seen.append((n, a.type))
+        # Only the NUDGE at the threshold — no FORCE_REFLECT.
+        assert seen == [(5, PusherType.NUDGE)]
+
+    def test_force_reflect_at_double_threshold_when_opted_in(self):
+        """With `force_reflect_multiplier=2`, FORCE_REFLECT fires at
+        2× threshold — the pre-refactor default, now opt-in."""
+        pusher = self._pusher(force_reflect_multiplier=2)
         seen: list[tuple[int, PusherType]] = []
         for n in range(1, 11):
             ctx = _ctx(steps_since_reflect=n)
@@ -198,7 +216,10 @@ class TestStepCadencePusher:
     def test_rearm_on_counter_drop(self):
         """When the agent loop resets the counter (reflect fired), the
         handler should re-arm and nudge again on the next cycle."""
-        pusher = self._pusher()
+        # Use FORCE_REFLECT opt-in so the "first cycle reaches 10 =
+        # 2× threshold" path is exercised fully — re-arm has to clear
+        # both latches.
+        pusher = self._pusher(force_reflect_multiplier=2)
         # First cycle to 5 → NUDGE; tick to 10 → FORCE_REFLECT.
         for n in range(1, 11):
             ctx = _ctx(steps_since_reflect=n)
@@ -260,10 +281,27 @@ class TestTimeBudgetPusher:
         assert a.threshold == pytest.approx(0.5)
         assert a.ratio == pytest.approx(0.55, abs=0.05)
 
-    def test_escalates_through_three_levels(self):
-        """Walk wall_ratio through 0.3, 0.6, 0.8, 1.05. Each new level
-        fires once; below-threshold ticks emit nothing."""
+    def test_default_escalation_skips_force_reflect(self):
+        """Default escalation is 2-level: NUDGE → FORCE_DONE.
+        FORCE_REFLECT is opt-in (see
+        `test_escalates_through_three_levels_when_opted_in` below).
+        Why default-off: narrowing tools to reflect-only dead-ends
+        the agent when reflect itself fails validation."""
         pusher = TimeBudgetPusher()
+        seen: list[PusherType] = []
+        for wall_used in [30, 60, 80, 105]:
+            ctx = self._ctx_with_wall(wall_used=wall_used, wall_max=100)
+            pusher.apply(ctx)
+            seen.extend(a.type for a in ctx.actions)
+        assert seen == [
+            PusherType.NUDGE,         # crossed 0.5 at wall_used=60
+            PusherType.FORCE_DONE,    # crossed 1.0 at wall_used=105
+        ]
+
+    def test_escalates_through_three_levels_when_opted_in(self):
+        """Opt-in: passing `force_reflect_at=0.75` restores the
+        pre-refactor 3-level escalation."""
+        pusher = TimeBudgetPusher(force_reflect_at=0.75)
         seen: list[PusherType] = []
         for wall_used in [30, 60, 80, 105]:
             ctx = self._ctx_with_wall(wall_used=wall_used, wall_max=100)
@@ -365,8 +403,22 @@ class TestTokenBudgetPusher:
         # "budget gone" line.
         assert "token" in a.message.lower()
 
-    def test_escalates_through_three_levels(self):
+    def test_default_escalation_skips_force_reflect(self):
+        """Default: 2-level NUDGE → FORCE_DONE. FORCE_REFLECT opt-in
+        (see `..._when_opted_in` below)."""
         pusher = TokenBudgetPusher()
+        seen: list[PusherType] = []
+        for used in [300, 600, 800, 1050]:
+            ctx = self._ctx_with_tokens(tokens_used=used, tokens_max=1000)
+            pusher.apply(ctx)
+            seen.extend(a.type for a in ctx.actions)
+        assert seen == [
+            PusherType.NUDGE,         # crossed 0.5 at used=600
+            PusherType.FORCE_DONE,    # crossed 1.0 at used=1050 (clamped to 1.0)
+        ]
+
+    def test_escalates_through_three_levels_when_opted_in(self):
+        pusher = TokenBudgetPusher(force_reflect_at=0.75)
         seen: list[PusherType] = []
         for used in [300, 600, 800, 1050]:
             ctx = self._ctx_with_tokens(tokens_used=used, tokens_max=1000)
@@ -482,10 +534,11 @@ class TestStepBudgetPusher:
         # gets actionable feedback on the right axis.
         assert "step" in a.message.lower()
 
-    def test_escalates_through_three_levels(self):
-        """Walk step_ratio through 0.40, 0.60, 0.80, 0.95. Each
-        threshold fires once in order; FORCE_DONE at 0.90 is the
-        critical one — fires BEFORE the hard cap (1.0)."""
+    def test_default_escalation_skips_force_reflect(self):
+        """Default: NUDGE → FORCE_DONE (FORCE_REFLECT opt-in). The
+        critical thing for the step axis is FORCE_DONE at 0.90 firing
+        BEFORE the hard cap (1.0) — that's covered here and in
+        `test_force_done_fires_before_hard_cap`."""
         pusher = StepBudgetPusher()
         seen: list[PusherType] = []
         for used in [40, 60, 80, 95]:
@@ -494,8 +547,21 @@ class TestStepBudgetPusher:
             seen.extend(a.type for a in ctx.actions)
         assert seen == [
             PusherType.NUDGE,         # crossed 0.50 at used=60
-            PusherType.FORCE_REFLECT, # crossed 0.75 at used=80
             PusherType.FORCE_DONE,    # crossed 0.90 at used=95 — BEFORE hard cap
+        ]
+
+    def test_escalates_through_three_levels_when_opted_in(self):
+        """Opt-in: 3-level escalation, FORCE_DONE still at 0.90."""
+        pusher = StepBudgetPusher(force_reflect_at=0.75)
+        seen: list[PusherType] = []
+        for used in [40, 60, 80, 95]:
+            ctx = self._ctx_with_steps(steps_used=used, steps_max=100)
+            pusher.apply(ctx)
+            seen.extend(a.type for a in ctx.actions)
+        assert seen == [
+            PusherType.NUDGE,         # crossed 0.50 at used=60
+            PusherType.FORCE_REFLECT, # crossed 0.75 at used=80
+            PusherType.FORCE_DONE,    # crossed 0.90 at used=95
         ]
 
     def test_force_done_fires_before_hard_cap(self):
@@ -770,12 +836,18 @@ class TestApplyActionsHandler:
         ApplyActionsHandler().apply(ctx)
         assert ctx.messages == []
 
-    def test_force_reflect_narrows_tools(self):
+    def test_force_reflect_is_no_op(self):
+        """FORCE_REFLECT no longer narrows tools — the action is kept
+        as a telemetry-visible signal (so BUDGET_THRESHOLD_HIT events
+        still surface "would have force-reflected"), but the tool
+        surface is never reduced to reflect-only. See
+        `ApplyActionsHandler` docstring."""
         ctx = _ctx(tools=["reflect", "done", "diff_read_file"])
+        before = [t["function"]["name"] for t in ctx.current_tools]
         ctx.actions.append(PusherAction(type=PusherType.FORCE_REFLECT))
         ApplyActionsHandler().apply(ctx)
-        names = [t["function"]["name"] for t in ctx.current_tools]
-        assert names == ["reflect"]
+        after = [t["function"]["name"] for t in ctx.current_tools]
+        assert after == before
 
     def test_force_done_narrows_tools(self):
         ctx = _ctx(tools=["reflect", "done", "diff_read_file"])
@@ -784,12 +856,13 @@ class TestApplyActionsHandler:
         names = [t["function"]["name"] for t in ctx.current_tools]
         assert names == ["done"]
 
-    def test_force_when_target_absent_leaves_tools_alone(self):
-        """If the target tool isn't in the schema (e.g. agent doesn't
-        have reflect), don't crash with an empty tools list."""
-        ctx = _ctx(tools=["done", "diff_read_file"])  # no reflect
+    def test_force_done_when_target_absent_leaves_tools_alone(self):
+        """If `done` isn't in the schema (unusual configuration),
+        don't crash with an empty tools list — FORCE_DONE narrowing
+        no-ops in that case rather than wiping the surface."""
+        ctx = _ctx(tools=["reflect", "diff_read_file"])  # no done
         before = list(ctx.current_tools)
-        ctx.actions.append(PusherAction(type=PusherType.FORCE_REFLECT))
+        ctx.actions.append(PusherAction(type=PusherType.FORCE_DONE))
         ApplyActionsHandler().apply(ctx)
         assert ctx.current_tools == before
 
@@ -807,15 +880,15 @@ class TestApplyActionsHandler:
         assert called[0][1] is ctx.state
 
     def test_multiple_actions_applied_in_order(self):
-        ctx = _ctx(tools=["reflect", "done"])
+        ctx = _ctx(tools=["reflect", "done", "diff_read_file"])
         ctx.actions = [
             PusherAction(type=PusherType.NUDGE, message="one"),
             PusherAction(type=PusherType.NUDGE, message="two"),
-            PusherAction(type=PusherType.FORCE_REFLECT),
+            PusherAction(type=PusherType.FORCE_DONE),
         ]
         ApplyActionsHandler().apply(ctx)
         assert [m["content"] for m in ctx.messages] == ["one", "two"]
-        assert [t["function"]["name"] for t in ctx.current_tools] == ["reflect"]
+        assert [t["function"]["name"] for t in ctx.current_tools] == ["done"]
 
 
 # ── TracingHandler ───────────────────────────────────────────────────────────
@@ -926,15 +999,25 @@ class TestBudgetTrackerChain:
         assert seen[0]["kind"] == "reflect"
         assert seen[0]["action_type"] == "nudge"
 
-    def test_end_to_end_reflect_force_narrows_tools(self):
+    def test_default_reflect_cadence_does_not_narrow_tools(self):
+        """Default `configure_reflect_pushers` registers a
+        NUDGE-only cadence handler — FORCE_REFLECT is opt-in. After
+        6 non-reflect steps a NUDGE message is appended, but tools
+        are NOT narrowed. The narrow-on-FORCE_REFLECT path itself is
+        tested in `TestApplyActionsHandler.test_force_reflect_narrows_tools`
+        (synthetic action) so the mechanism is still verified."""
         t = self._tracker(reflect_interval=3)
-        # 6 non-reflect tool calls run → counter at 6 = 2× threshold →
-        # FORCE_REFLECT next step.
         ctx = _ctx(tools=["reflect", "done", "diff_read_file"])
         self._bump_counter(t, ctx, 6)
         t.apply_handlers(ctx)
         names = [td["function"]["name"] for td in ctx.current_tools]
-        assert names == ["reflect"]
+        # Tools left untouched — model still has everything available.
+        assert "diff_read_file" in names
+        assert "done" in names
+        # The cadence NUDGE was still produced (the message conveys
+        # the same urgency without removing tools).
+        assert any("without calling reflect" in m["content"]
+                    for m in ctx.messages)
 
     def test_end_to_end_ratio_and_reflect_compose(self):
         """Both a ratio-based pusher and the reflect cadence fire in

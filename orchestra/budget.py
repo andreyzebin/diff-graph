@@ -369,22 +369,34 @@ class RatioPusher:
 
 
 class RatioEscalationPusher:
-    """One-axis budget escalation: NUDGE → FORCE_REFLECT → FORCE_DONE
-    at configurable fractions of one BudgetState ratio attribute.
+    """One-axis budget escalation at configurable fractions of one
+    BudgetState ratio attribute. Default escalation has two levels:
+    NUDGE → FORCE_DONE. **FORCE_REFLECT is opt-in** — pass an explicit
+    `force_reflect_at=<0..1>` (or override `DEFAULT_FORCE_REFLECT_AT`
+    in a subclass) to insert the middle step.
 
     Reads `state.<ratio_attr>` (e.g. `token_ratio` or `wall_ratio`).
     The attribute must return a 0..1 float or None (None = the
     dimension isn't configured → handler is a no-op). Each threshold
     latches once per run; ratios only climb so we never re-arm.
 
-    Subclassed below as `TokenBudgetPusher` and `TimeBudgetPusher`
-    with axis-appropriate default messages.
+    Why FORCE_REFLECT defaults off: it narrows `current_tools` to a
+    single `reflect`, and if the model can't produce a valid reflect
+    (qwen3 stringification, schema mismatch, oversized `learned`) the
+    agent has no other tool to make progress and the run dead-ends
+    without ever calling `done()`. NUDGE conveys the same urgency via
+    a message without removing tools; FORCE_DONE remains the terminal
+    escape hatch. Callers that want the middle step can opt in
+    per-pusher.
+
+    Subclassed below as `TokenBudgetPusher`, `TimeBudgetPusher`,
+    `StepBudgetPusher` with axis-appropriate default messages.
     """
     kind: str = ""
     ratio_attr: str = ""
 
     DEFAULT_NUDGE_AT: float = 0.5
-    DEFAULT_FORCE_REFLECT_AT: float = 0.75
+    DEFAULT_FORCE_REFLECT_AT: Optional[float] = None  # opt-in; was 0.75
     DEFAULT_FORCE_DONE_AT: float = 1.0
 
     # Subclass overrides — what gets put in front of the model when
@@ -401,19 +413,26 @@ class RatioEscalationPusher:
         nudge_message: Optional[str] = None,
         force_done_message: Optional[str] = None,
     ) -> None:
-        # Sorted by ascending ratio so escalation always fires in order
-        # even if a misconfigured instance lists FORCE_DONE before
-        # NUDGE.
-        self._levels: list[tuple[float, PusherType, str]] = sorted([
+        levels: list[tuple[float, PusherType, str]] = [
             (nudge_at if nudge_at is not None else self.DEFAULT_NUDGE_AT,
              PusherType.NUDGE,
              nudge_message if nudge_message is not None else self.DEFAULT_NUDGE_MSG),
-            (force_reflect_at if force_reflect_at is not None else self.DEFAULT_FORCE_REFLECT_AT,
-             PusherType.FORCE_REFLECT, ""),
             (force_done_at if force_done_at is not None else self.DEFAULT_FORCE_DONE_AT,
              PusherType.FORCE_DONE,
              force_done_message if force_done_message is not None else self.DEFAULT_FORCE_DONE_MSG),
-        ], key=lambda x: x[0])
+        ]
+        # FORCE_REFLECT is opt-in (see class docstring). It enters the
+        # escalation only when the caller (or a subclass) supplies a
+        # threshold; otherwise the dimension goes straight NUDGE →
+        # FORCE_DONE.
+        fr_at = (force_reflect_at if force_reflect_at is not None
+                 else self.DEFAULT_FORCE_REFLECT_AT)
+        if fr_at is not None:
+            levels.append((fr_at, PusherType.FORCE_REFLECT, ""))
+        # Sorted by ascending ratio so escalation always fires in order
+        # even if a misconfigured instance lists FORCE_DONE before
+        # NUDGE.
+        self._levels = sorted(levels, key=lambda x: x[0])
         self._fired: list[bool] = [False] * len(self._levels)
 
     def apply(self, ctx: StepContext) -> None:
@@ -515,7 +534,8 @@ class StepBudgetPusher(RatioEscalationPusher):
 
 class ReflectCadencePusher:
     """Generic reflect-cadence producer: counter + threshold → NUDGE,
-    escalate to FORCE_REFLECT, re-armed every reflect cycle.
+    re-armed every reflect cycle. FORCE_REFLECT escalation is opt-in
+    via `force_reflect_multiplier` (None = disabled, the default).
 
     Cycle = monotonic stretch of the counter between two reflect calls.
     The agent loop resets the counter to 0 when reflect fires; this
@@ -523,6 +543,12 @@ class ReflectCadencePusher:
 
     Same class drives step-cadence (`counter_attr="steps_since_reflect"`)
     and time-cadence (`counter_attr="seconds_since_reflect"`).
+
+    Why FORCE_REFLECT defaults off: same reason as
+    `RatioEscalationPusher` — narrowing tools to reflect-only dead-ends
+    the agent when reflect itself fails validation. Callers that want
+    the harder step can opt in by passing a multiplier (e.g. `2.0` →
+    fire at 2× threshold, matching the pre-refactor behaviour).
     """
 
     def __init__(
@@ -532,11 +558,13 @@ class ReflectCadencePusher:
         threshold: float,
         counter_attr: str,
         nudge_template: str,
+        force_reflect_multiplier: Optional[float] = None,
     ) -> None:
         self.kind = kind
         self.threshold = threshold
         self._counter_attr = counter_attr
         self._nudge_template = nudge_template
+        self._force_reflect_multiplier = force_reflect_multiplier
 
         # Per-cycle latches: both reset on counter drop.
         self._nudged_in_cycle = False
@@ -553,7 +581,12 @@ class ReflectCadencePusher:
             self._forced_in_cycle = False
         self._last_counter = counter
 
-        if not self._forced_in_cycle and counter >= 2 * self.threshold:
+        # FORCE_REFLECT is opt-in (see class docstring). When the
+        # multiplier is None the handler skips this branch entirely
+        # and only emits NUDGE.
+        if (self._force_reflect_multiplier is not None
+                and not self._forced_in_cycle
+                and counter >= self._force_reflect_multiplier * self.threshold):
             self._forced_in_cycle = True
             ctx.actions.append(PusherAction(
                 type=PusherType.FORCE_REFLECT,
@@ -580,9 +613,20 @@ class ApplyActionsHandler:
 
     Action → mutation table:
       NUDGE          → append a user message to ctx.messages
-      FORCE_REFLECT  → narrow ctx.current_tools to just `reflect`
+      FORCE_REFLECT  → no-op (intentionally — see below)
       FORCE_DONE     → narrow ctx.current_tools to just `done`
       CUSTOM         → call the action's custom handler with (messages, state)
+
+    Why FORCE_REFLECT is a no-op: narrowing `current_tools` to a single
+    `reflect` left the agent unable to make progress whenever reflect
+    itself failed validation (qwen3 stringification, oversized
+    `learned`, schema mismatch) — the model had no other tool to fall
+    back to and the run dead-ended without ever calling `done()`. The
+    enum and the action are preserved for backward compatibility and
+    telemetry (BUDGET_THRESHOLD_HIT events still surface FORCE_REFLECT
+    as a kind), but the tool surface is never reduced to reflect-only
+    again. Pushers that previously triggered it are also gated off
+    (see `RatioEscalationPusher` / `ReflectCadencePusher`).
 
     Sole writer to `ctx.messages` and `ctx.current_tools`. If a future
     pusher needs a new mutation shape, extend this table — every
@@ -597,7 +641,7 @@ class ApplyActionsHandler:
                 if action.message:
                     ctx.messages.append({"role": "user", "content": action.message})
             elif t == PusherType.FORCE_REFLECT:
-                _narrow_to(ctx, "reflect")
+                pass  # intentional no-op — see class docstring
             elif t == PusherType.FORCE_DONE:
                 _narrow_to(ctx, "done")
             elif t == PusherType.CUSTOM and action.custom_handler:
@@ -668,9 +712,11 @@ class BudgetTracker:
         #                           default (per-dimension escalation
         #                           is handled by the dedicated
         #                           pushers below).
-        # - TokenBudgetPusher     — always-on, NUDGE 0.5 →
-        #                           FORCE_REFLECT 0.75 → FORCE_DONE
+        # - TokenBudgetPusher     — always-on, NUDGE 0.5 → FORCE_DONE
         #                           1.0 on `state.token_ratio`.
+        #                           FORCE_REFLECT is opt-in per axis
+        #                           (default off — see
+        #                           RatioEscalationPusher docstring).
         # - TimeBudgetPusher      — same shape on `state.wall_ratio`,
         #                           no-op without `max_wall_time`.
         # - StepBudgetPusher      — same shape on `state.step_ratio`,
