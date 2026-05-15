@@ -18,6 +18,7 @@ the bottom — which run the full chain against a single state.
 """
 from __future__ import annotations
 
+from typing import Optional
 from unittest.mock import Mock
 
 import pytest
@@ -26,6 +27,7 @@ from orchestra.budget import (
     ApplyActionsHandler,
     BudgetState,
     BudgetTracker,
+    ContextBudgetPusher,
     FailedReflectGuard,
     PusherAction,
     RatioPusher,
@@ -614,6 +616,144 @@ class TestStepBudgetPusher:
         assert "step"  in msgs["step"].lower()
         assert "token" in msgs["token"].lower()
         assert "wall-clock" in msgs["wall"].lower()
+
+
+# ── ContextBudgetPusher ──────────────────────────────────────────────────────
+
+
+class TestContextBudgetPusher:
+    """Context-window axis (architectural, NOT economic).
+
+    `state.context_ratio` reads `tokens_in` (= latest LLM call's
+    prompt_tokens) divided by `original_max_context`. Per-step
+    snapshot, NOT cumulative. Provider-agnostic — cache stats don't
+    enter the calculation because cached tokens still occupy the
+    window even when billed cheaply.
+
+    Two distinguishing properties pinned here:
+
+    - **NUDGE only — no FORCE_DONE.** Different agents have different
+      remedies for a full window (spawn, condense, wrap up), so the
+      pusher reports state without narrowing the tool surface. The
+      "report state, don't dictate" convention
+      (docs/orchestra-architecture.md).
+    - **Silent without `max_context`.** No project default ⇒ axis
+      is off entirely; nothing fires. Mirrors `wall_ratio` /
+      `TimeBudgetPusher` when `max_wall_time` is unset.
+    """
+
+    def _ctx_with_context(self, tokens_in: int,
+                          max_context: Optional[int] = 100_000) -> StepContext:
+        """A StepContext whose context_ratio = tokens_in / max_context."""
+        state = BudgetState(
+            original_tokens=1_000_000,       # huge → token_ratio ≈ 0
+            original_steps=1_000_000,
+            original_max_context=max_context,
+            tokens_in=tokens_in,
+            wall_start=0.0,
+        )
+        return _ctx(state=state)
+
+    def test_default_kind_and_ratio_attr(self):
+        assert ContextBudgetPusher.kind == "context-budget"
+        assert ContextBudgetPusher.ratio_attr == "context_ratio"
+
+    def test_no_max_context_is_no_op(self):
+        """Without `max_context`, `context_ratio` returns None →
+        handler skips, no actions emitted. Operator opt-in by setting
+        the field in `config.yaml` or per-provider in `.llm_creds.toml`."""
+        pusher = ContextBudgetPusher()
+        ctx = self._ctx_with_context(tokens_in=80_000, max_context=None)
+        pusher.apply(ctx)
+        assert ctx.actions == []
+
+    def test_under_threshold_no_action(self):
+        pusher = ContextBudgetPusher()
+        ctx = self._ctx_with_context(tokens_in=30_000, max_context=100_000)  # 0.30
+        pusher.apply(ctx)
+        assert ctx.actions == []
+
+    def test_nudge_fires_at_50pct(self):
+        pusher = ContextBudgetPusher()
+        ctx = self._ctx_with_context(tokens_in=55_000, max_context=100_000)
+        pusher.apply(ctx)
+        assert len(ctx.actions) == 1
+        a = ctx.actions[0]
+        assert a.type == PusherType.NUDGE
+        assert a.kind == "context-budget"
+        assert a.threshold == pytest.approx(0.5)
+        assert a.ratio == pytest.approx(0.55, abs=0.05)
+
+    def test_force_done_never_fires(self):
+        """Critical contract: this axis emits NUDGE only — never
+        FORCE_DONE. Walking the ratio from below threshold through
+        1.0+ must produce exactly one NUDGE and zero FORCE_DONE.
+        Different from token/step/time pushers, where FORCE_DONE is
+        the architectural floor; here narrowing the tool surface
+        would be 'telling the agent what to do', which the convention
+        forbids for non-universal remedies."""
+        pusher = ContextBudgetPusher()
+        seen: list[PusherType] = []
+        for tokens_in in [30_000, 60_000, 90_000, 110_000]:
+            ctx = self._ctx_with_context(tokens_in=tokens_in, max_context=100_000)
+            pusher.apply(ctx)
+            seen.extend(a.type for a in ctx.actions)
+        assert seen == [PusherType.NUDGE]
+        assert PusherType.FORCE_DONE not in seen
+
+    def test_nudge_message_is_pure_state(self):
+        """Message reports the state plainly — no instruction, no
+        tool name. Agents with different capabilities (some have
+        agent_spawn, some don't; some can condense, some are leaves)
+        all interpret the same neutral signal through their own
+        prompt."""
+        msg = ContextBudgetPusher.DEFAULT_NUDGE_MSG
+        assert "context" in msg.lower()
+        # Pure state — no prescriptive verbs / tool names.
+        msg_l = msg.lower()
+        for forbidden in ("spawn", "prefer", "should", "must",
+                          "plan", "wrap up", "finalize", "delegate"):
+            assert forbidden not in msg_l, (
+                f"message must not push the agent toward an action "
+                f"(found {forbidden!r}): {msg!r}"
+            )
+
+    def test_no_re_arm(self):
+        """Context length climbs over time within a session — the
+        latch stays fired."""
+        pusher = ContextBudgetPusher()
+        ctx = self._ctx_with_context(tokens_in=60_000, max_context=100_000)
+        pusher.apply(ctx)
+        ctx2 = self._ctx_with_context(tokens_in=70_000, max_context=100_000)
+        pusher.apply(ctx2)
+        assert ctx2.actions == []  # NUDGE already latched
+
+    def test_context_ratio_property_on_state(self):
+        """The state property handles None / zero / clamping cleanly."""
+        # Not configured ⇒ None.
+        s = BudgetState(original_max_context=None, tokens_in=50_000, wall_start=0.0)
+        assert s.context_ratio is None
+        # Configured but no LLM call yet ⇒ 0.0 (not None — known-quiet).
+        s = BudgetState(original_max_context=100_000, tokens_in=0, wall_start=0.0)
+        assert s.context_ratio == 0.0
+        # Normal.
+        s = BudgetState(original_max_context=100_000, tokens_in=30_000, wall_start=0.0)
+        assert s.context_ratio == pytest.approx(0.30)
+        # Over the cap clamps to 1.0 (mirrors token / step / wall).
+        s = BudgetState(original_max_context=100_000, tokens_in=120_000, wall_start=0.0)
+        assert s.context_ratio == 1.0
+
+    def test_present_in_default_tracker_chain(self):
+        """When the tracker is built from a BudgetConfig, the
+        ContextBudgetPusher slots into the default producer chain
+        between StepBudget and the apply consumer."""
+        from orchestra.budget import BudgetTracker
+        from orchestra.types import BudgetConfig
+        t = BudgetTracker(BudgetConfig())
+        kinds = [h.kind for h in t.handlers]
+        assert "context-budget" in kinds
+        # Producer placement: before apply / trace consumers.
+        assert kinds.index("context-budget") < kinds.index("apply")
 
 
 # ── Axis independence ────────────────────────────────────────────────────────

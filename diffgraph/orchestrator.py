@@ -104,6 +104,7 @@ def run_review(
     existing_comments: Optional[list[dict]] = None,
     max_steps: int = 50,
     max_tokens: int = 50000,
+    max_context: Optional[int] = None,
     on_event: OnEvent = None,
     trace_writer: Optional[Callable] = None,
     base_ref: str = "",
@@ -139,6 +140,7 @@ def run_review(
         trace_writer=trace_writer,
         prompt_resource=prompt_resource,
         tool_choice=tool_choice,
+        max_context=max_context,
     )
 
     raw_findings = result.get("findings", result.get("tasks", []))
@@ -169,6 +171,7 @@ def run_agent(
     extra_body: Optional[dict] = None,
     tool_mocks: Any = None,
     user_message_override: Optional[str] = None,
+    max_context: Optional[int] = None,
 ) -> dict:
     """
     Run any prompt-defined agent by name.
@@ -214,6 +217,15 @@ def run_agent(
                 ac.llm_params.stream = stream
             if extra_body is not None:
                 ac.llm_params.extra_body = extra_body
+
+    # Context budget — applied as a DEFAULT to every agent whose
+    # @budget frontmatter doesn't set its own. Frontmatter wins.
+    # `None` here = "the operator didn't supply a project default" →
+    # leave the axis silent.
+    if max_context is not None:
+        for ac in [config] + list(agent_registry.get_all_configs().values()):
+            if ac.budget.max_context is None:
+                ac.budget.max_context = max_context
 
     # Event bus
     event_bus = EventBus()

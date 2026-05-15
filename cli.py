@@ -774,6 +774,10 @@ def run(
     effective_model     = llm_cfg.get("model", "gpt-4o-mini")
     effective_steps     = max_steps  if max_steps  is not None else review_cfg.get("max_steps",  40)
     effective_tokens    = max_tokens if max_tokens is not None else review_cfg.get("max_tokens", 40000)
+    # Context budget — sourced provider profile > config.yaml.
+    # Provider knows the per-model effective window; config.yaml is
+    # the project default. None ⇒ ContextBudgetPusher stays silent.
+    effective_context   = llm_cfg.get("max_context") or review_cfg.get("max_context") or None
 
     cleanup_fn = None
     pr_title = pr_description = ""
@@ -944,6 +948,7 @@ def run(
         llm_model=effective_model,
         max_steps=effective_steps,
         max_tokens=effective_tokens,
+        max_context=effective_context,
         tool_choice=llm_cfg.get("tool_choice", ""),
         bot_user=review_cfg.get("bot_user", ""),
     )

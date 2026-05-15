@@ -108,6 +108,12 @@ def apply_provider(llm_cfg: dict, provider_name: str) -> dict:
         # into one escaped-JSON string" bug (qwen-code#379, vllm#21711).
         # See orchestra/tools/registry.py:_repair_stringified_args.
         "fix_qwen3_stringification_bug": "fix_qwen3_stringification_bug",
+        # int — effective LLM context window. Sourced per provider/
+        # model since this is a model-bound capability (e.g. 128_000
+        # for Qwen3.6 effective reasoning window even though the hard
+        # cap is 256K). Used by ContextBudgetPusher; if absent the
+        # context-budget axis stays silent.
+        "max_context": "max_context",
     }
     for src_key, dst_key in mapping.items():
         if src_key in profile and profile[src_key] not in ("", None):

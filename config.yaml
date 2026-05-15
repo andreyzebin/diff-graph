@@ -30,6 +30,13 @@ llm:
 review:
   max_steps: 40          # max ReAct tool calls per review
   max_tokens: 40000      # stop agent if cumulative token usage exceeds this
+  max_context: 128000    # effective LLM context window — drives the
+                         # ContextBudgetPusher (NUDGE @ 50%, FORCE_DONE
+                         # @ 85% of this value). Standard 128K is most
+                         # current models' reasoning-efficient ceiling;
+                         # set lower for smaller windows. Per-model
+                         # override goes in `.llm_creds.toml`
+                         # `[providers.<name>] max_context`.
   bot_user: ""           # Bitbucket username/slug of the bot account — own comments marked [SELF]
   comment_tag: "dg"      # prefix for the traceability footer appended to posted comments
                          # (`<prefix>:<gen>:<mutation>:<run>`). Empty string disables tagging.

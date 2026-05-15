@@ -28,6 +28,7 @@ class DiffGraph:
         llm_model: str = "gpt-4o-mini",
         max_steps: int = 40,
         max_tokens: int = 40000,
+        max_context: Optional[int] = None,
         tool_choice: str = "",
         bot_user: str = "",
         fix_qwen3_stringification_bug: bool = False,
@@ -37,6 +38,7 @@ class DiffGraph:
         self.model = llm_model
         self.max_steps = max_steps
         self.max_tokens = max_tokens
+        self.max_context = max_context
         self.tool_choice = tool_choice
         self.bot_user = bot_user
         self.fix_qwen3_stringification_bug = fix_qwen3_stringification_bug
@@ -66,6 +68,7 @@ class DiffGraph:
             existing_comments=existing_comments,
             max_steps=self.max_steps,
             max_tokens=self.max_tokens,
+            max_context=self.max_context,
             on_event=on_event,
             trace_writer=trace_writer,
             base_ref=base_ref,

@@ -158,6 +158,26 @@ not `"… — proceed with the diff alone."`. Same rule for the
 `tool_mocks.py` canned strings: state the mock's effect, leave the
 "what now" to the prompt.
 
+The convention extends to **budget pushers** (`orchestra/budget.py`).
+A pusher whose remedy isn't universal across agents — e.g. the
+`ContextBudgetPusher` whose "right answer" depends on whether the
+agent has `agent_spawn`, whether it can condense, whether it's a
+leaf — should:
+
+- **Report state plainly** in its NUDGE message ("Context at 50% of
+  the effective window." — not "prefer agent_spawn", not "plan to
+  wrap up").
+- **Skip FORCE_DONE** when narrowing tools would itself be a
+  prescriptive action. Set `DEFAULT_FORCE_DONE_AT = None` so the
+  axis stays NUDGE-only; the prompt picks the remedy.
+
+Token / step / time pushers DO keep FORCE_DONE — those dimensions
+have a universal endpoint (the run actually can't continue) where
+narrowing to `done` is the correct architectural floor, not a
+preference. Context-window pressure has multiple legitimate
+remedies (spawn, condense, wrap up) and no universal answer, so its
+pusher stays informational.
+
 ### `orchestra/tools/builtin.py` — framework-provided tools
 
 Registers `reflect`, `done`, `agent_spawn`, `agent_list` when the

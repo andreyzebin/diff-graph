@@ -49,6 +49,7 @@ from typing import Any, Callable, Optional, Protocol
 
 from .types import BudgetConfig, PusherConfig, PusherType
 from .events import EventBus, EventType
+from .messages import msg as _msg
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class BudgetState:
     original_tokens: int = 40_000
     original_steps: int = 40
     original_wall_time: Optional[float] = None
+    original_max_context: Optional[int] = None
     cache_discount: float = 0.1
 
     # Cumulative paid = sum of per-step deltas
@@ -105,12 +107,36 @@ class BudgetState:
         return min(elapsed / self.original_wall_time, 1.0)
 
     @property
+    def context_ratio(self) -> Optional[float]:
+        """Latest LLM call's prompt size / effective context window.
+
+        Architectural axis (NOT a billing measure) — tracks how full
+        the model's context window is right now. Reads `tokens_in`
+        (= last `response.usage.prompt_tokens`) divided by
+        `original_max_context` (per-agent config, sourced from
+        frontmatter / `.llm_creds.toml` / `config.yaml`). Provider-
+        agnostic: cache stats don't enter — cached tokens still occupy
+        the window even if they're billed cheap.
+
+        Returns None when `max_context` isn't configured — pusher
+        stays silent (mirrors `wall_ratio` when `max_wall_time` is
+        unset)."""
+        if self.original_max_context is None or self.original_max_context <= 0:
+            return None
+        if self.tokens_in <= 0:
+            return 0.0
+        return min(self.tokens_in / self.original_max_context, 1.0)
+
+    @property
     def max_ratio(self) -> float:
         """Highest of all budget dimensions."""
         ratios = [self.token_ratio, self.step_ratio]
         wr = self.wall_ratio
         if wr is not None:
             ratios.append(wr)
+        cr = self.context_ratio
+        if cr is not None:
+            ratios.append(cr)
         return max(ratios)
 
     @property
@@ -309,17 +335,21 @@ class FailedReflectGuard:
         # disappeared. Without this it would call reflect again,
         # get "unknown tool", and we'd be in a different loop.
         if not self._nudge_injected:
+            # Wording lives in orchestra/messages.yaml
+            # (`reflect.failed_guard.locked`); inline fallback preserved
+            # so the latch still works if the YAML is missing.
+            template = _msg(
+                "reflect.failed_guard.locked",
+                "reflect() has failed schema validation {threshold} times "
+                "in a row — your JSON output isn't matching the reflect "
+                "schema (only the `learned` field is making it through). "
+                "The tool is now hidden for the rest of this run. Use "
+                "the remaining tools to make progress: post findings, "
+                "reply in threads, or finish the run.",
+            )
             ctx.messages.append({
                 "role": "user",
-                "content": (
-                    f"reflect() has failed schema validation "
-                    f"{self._threshold} times in a row — your JSON "
-                    "output isn't matching the reflect schema (only "
-                    "the `learned` field is making it through). The "
-                    "tool is now hidden for the rest of this run. Use "
-                    "the remaining tools to make progress: post "
-                    "findings, reply in threads, or finish the run."
-                ),
+                "content": template.format(threshold=self._threshold),
             })
             self._nudge_injected = True
 
@@ -397,7 +427,7 @@ class RatioEscalationPusher:
 
     DEFAULT_NUDGE_AT: float = 0.5
     DEFAULT_FORCE_REFLECT_AT: Optional[float] = None  # opt-in; was 0.75
-    DEFAULT_FORCE_DONE_AT: float = 1.0
+    DEFAULT_FORCE_DONE_AT: Optional[float] = 1.0      # None ⇒ NUDGE-only
 
     # Subclass overrides — what gets put in front of the model when
     # this dimension's threshold trips.
@@ -417,10 +447,20 @@ class RatioEscalationPusher:
             (nudge_at if nudge_at is not None else self.DEFAULT_NUDGE_AT,
              PusherType.NUDGE,
              nudge_message if nudge_message is not None else self.DEFAULT_NUDGE_MSG),
-            (force_done_at if force_done_at is not None else self.DEFAULT_FORCE_DONE_AT,
-             PusherType.FORCE_DONE,
-             force_done_message if force_done_message is not None else self.DEFAULT_FORCE_DONE_MSG),
         ]
+        # FORCE_DONE — also opt-in via DEFAULT_FORCE_DONE_AT or kwarg.
+        # Most dimensions (token / time / step) keep it on by default
+        # (terminal cap), but pure-informational dimensions (e.g.
+        # `ContextBudgetPusher`) skip it: they report state without
+        # ever narrowing the tool surface.
+        fd_at = (force_done_at if force_done_at is not None
+                 else self.DEFAULT_FORCE_DONE_AT)
+        if fd_at is not None:
+            levels.append((
+                fd_at,
+                PusherType.FORCE_DONE,
+                force_done_message if force_done_message is not None else self.DEFAULT_FORCE_DONE_MSG,
+            ))
         # FORCE_REFLECT is opt-in (see class docstring). It enters the
         # escalation only when the caller (or a subclass) supplies a
         # threshold; otherwise the dimension goes straight NUDGE →
@@ -470,12 +510,16 @@ class TokenBudgetPusher(RatioEscalationPusher):
     kind = "token-budget"
     ratio_attr = "token_ratio"
 
-    DEFAULT_NUDGE_MSG = (
+    # Wording lives in orchestra/messages.yaml (`budget.token.*`); the
+    # inline string is the fallback when the YAML is missing.
+    DEFAULT_NUDGE_MSG = _msg(
+        "budget.token.nudge",
         "Half of your token budget is used. Plan what's left so you "
-        "finish before it runs out."
+        "finish before it runs out.",
     )
-    DEFAULT_FORCE_DONE_MSG = (
-        "Token budget exhausted. Submit your final output now."
+    DEFAULT_FORCE_DONE_MSG = _msg(
+        "budget.token.force_done",
+        "Token budget exhausted. Submit your final output now.",
     )
 
 
@@ -485,12 +529,62 @@ class TimeBudgetPusher(RatioEscalationPusher):
     kind = "time-budget"
     ratio_attr = "wall_ratio"
 
-    DEFAULT_NUDGE_MSG = (
+    # Wording lives in orchestra/messages.yaml (`budget.wall_time.*`).
+    DEFAULT_NUDGE_MSG = _msg(
+        "budget.wall_time.nudge",
         "Half of your wall-clock budget is used. Plan what's left "
-        "so you finish before it runs out."
+        "so you finish before it runs out.",
     )
-    DEFAULT_FORCE_DONE_MSG = (
-        "Wall-clock budget exhausted. Submit your final output now."
+    DEFAULT_FORCE_DONE_MSG = _msg(
+        "budget.wall_time.force_done",
+        "Wall-clock budget exhausted. Submit your final output now.",
+    )
+
+
+class ContextBudgetPusher(RatioEscalationPusher):
+    """Context-window escalation on `state.context_ratio`. No-op when
+    `max_context` isn't configured (`context_ratio` returns None).
+
+    Why this axis exists separately from `TokenBudgetPusher`: token
+    budget is an ECONOMIC measure (cumulative paid across the run,
+    cache-discounted); context budget is an ARCHITECTURAL measure
+    (how full the model's window is RIGHT NOW). Different math,
+    different units, different audiences for the eventual fix —
+    handled by each agent's own prompt, not by this pusher.
+
+    Default thresholds NUDGE 0.5 / FORCE_DONE 0.85 — FORCE_DONE fires
+    BEFORE the hard cap because most current models degrade in
+    reasoning quality well before the architectural ceiling
+    (e.g. Qwen3.6 256K cap, 128K recommended for reasoning
+    efficiency). Set `max_context` to that recommended ceiling, not
+    the hard cap.
+
+    Message style follows the "report state, don't dictate the next
+    move" convention (docs/orchestra-architecture.md §Tool-result
+    convention). The pusher names *its own* state (how full the
+    window is). What to do about it — spawn a sub-agent, condense,
+    wrap up — is the prompt's call, not the pusher's: not every
+    agent has spawn capability, not every workload can condense,
+    and a generic pusher shouldn't bake one caller's task shape
+    into the message every caller shares."""
+    kind = "context-budget"
+    ratio_attr = "context_ratio"
+
+    # No FORCE_DONE on this axis — narrowing tools to `done` is
+    # "telling the agent what to do" and breaks the
+    # report-state-don't-dictate convention
+    # (docs/orchestra-architecture.md §Tool-result convention,
+    # extended to budget messages). Different agents have different
+    # remedies for a full window (spawn, condense, wrap up) — the
+    # pusher just reports the state, the prompt picks the response.
+    DEFAULT_FORCE_DONE_AT: Optional[float] = None
+
+    # Pure state — no instruction. Wording lives in
+    # orchestra/messages.yaml (`budget.context.nudge`); the inline
+    # string is the fallback when the YAML is missing.
+    DEFAULT_NUDGE_MSG = _msg(
+        "budget.context.nudge",
+        "Context at 50% of the effective window.",
     )
 
 
@@ -523,12 +617,15 @@ class StepBudgetPusher(RatioEscalationPusher):
     # 0.90 instead of parent's 1.0 — see class docstring.
     DEFAULT_FORCE_DONE_AT: float = 0.90
 
-    DEFAULT_NUDGE_MSG = (
+    # Wording lives in orchestra/messages.yaml (`budget.steps.*`).
+    DEFAULT_NUDGE_MSG = _msg(
+        "budget.steps.nudge",
         "Half of your step budget is used. Plan what's left so you "
-        "finish before it runs out."
+        "finish before it runs out.",
     )
-    DEFAULT_FORCE_DONE_MSG = (
-        "Step budget running low. Submit your final output now."
+    DEFAULT_FORCE_DONE_MSG = _msg(
+        "budget.steps.force_done",
+        "Step budget running low. Submit your final output now.",
     )
 
 
@@ -723,6 +820,14 @@ class BudgetTracker:
         #                           FORCE_DONE at 0.90 (not 1.0) so
         #                           the model has headroom to emit
         #                           done() before the hard cap.
+        # - ContextBudgetPusher   — NUDGE only (no FORCE_DONE) on
+        #                           `state.context_ratio` (= last
+        #                           prompt_tokens / max_context).
+        #                           Reports the window-fill state;
+        #                           does NOT narrow tools — the
+        #                           agent's prompt decides the
+        #                           remedy (spawn / condense / wrap
+        #                           up). No-op without `max_context`.
         # Earlier versions of this comment claimed step budget is
         # "covered" by token budget — that assumption failed on
         # token-cheap tool-call-heavy patterns (qwen3-6 investigator,
@@ -741,6 +846,7 @@ class BudgetTracker:
             TokenBudgetPusher(),
             TimeBudgetPusher(),
             StepBudgetPusher(),
+            ContextBudgetPusher(),
         ]
         self._consumers: list[PusherHandler] = [
             ApplyActionsHandler(),
@@ -772,16 +878,21 @@ class BudgetTracker:
         proved redundant with that escalation.
         """
         if reflect_interval > 0:
+            # Wording lives in orchestra/messages.yaml
+            # (`reflect.cadence.nudge`).
+            template = _msg(
+                "reflect.cadence.nudge",
+                "You've taken {threshold:.0f} steps without calling "
+                "reflect(). Pause and call reflect(confidence=…, "
+                "learned=…, questions_remaining=[…]) — consolidate "
+                "what you've learned, what's still open, and what's "
+                "resolved. Then continue.",
+            )
             self.add_producer(ReflectCadencePusher(
                 kind="reflect",
                 threshold=float(reflect_interval),
                 counter_attr="steps_since_reflect",
-                nudge_template=(
-                    "You've taken {threshold:.0f} steps without calling reflect(). "
-                    "Pause and call reflect(confidence=…, learned=…, "
-                    "questions_remaining=[…]) — consolidate what you've learned, "
-                    "what's still open, and what's resolved. Then continue."
-                ),
+                nudge_template=template,
             ))
 
     def start(self) -> BudgetState:
@@ -791,6 +902,7 @@ class BudgetTracker:
             original_tokens=self.config.max_tokens,
             original_steps=self.config.max_steps,
             original_wall_time=self.config.max_wall_time,
+            original_max_context=self.config.max_context,
             cache_discount=self.config.cache_discount,
         )
 

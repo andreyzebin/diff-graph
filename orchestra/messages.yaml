@@ -1,0 +1,61 @@
+# Centralised messages for budget pushers and reflect guards.
+# Edit here to tune wording across the budget-pressure surface
+# without touching code. Loaded by `orchestra/messages.py` at import.
+#
+# Placeholders in `{name}` form are filled at apply time via
+# `str.format(**kwargs)`:
+#   - reflect.cadence.nudge: {threshold}  → the cadence interval
+#
+# Style guide (see docs/orchestra-architecture.md §Tool-result
+# convention): pusher messages REPORT STATE plainly. They MUST NOT
+# prescribe what the agent should do about it ("prefer agent_spawn",
+# "wrap up now", "consolidate") — that's the prompt's job. Token /
+# step / time pushers historically use slightly more prescriptive
+# wording because their FORCE_DONE handler narrows tools to `done()`
+# regardless; the messages are companions to a hard intervention.
+# Context-axis is NUDGE-only and stays purely informational.
+
+budget:
+  token:
+    nudge: >-
+      Half of your token budget is used. Plan what's left so you
+      finish before it runs out.
+    force_done: Token budget exhausted. Submit your final output now.
+
+  wall_time:
+    nudge: >-
+      Half of your wall-clock budget is used. Plan what's left so
+      you finish before it runs out.
+    force_done: Wall-clock budget exhausted. Submit your final output now.
+
+  steps:
+    nudge: >-
+      Half of your step budget is used. Plan what's left so you
+      finish before it runs out.
+    force_done: Step budget running low. Submit your final output now.
+
+  context:
+    # NUDGE-only axis. No `force_done` key — context-pressure remedy
+    # is agent-specific (spawn / condense / wrap up), so the pusher
+    # just reports state and leaves the response to each agent's
+    # prompt.
+    nudge: >-
+      Half of this agent's configured LLM context window is now used.
+      The window holds the prompt + every accumulated tool result and
+      reflect output — they're all submitted on each LLM call, and
+      the total only grows as the run proceeds.
+
+reflect:
+  cadence:
+    # Step-cadence reflect nudge. `{threshold}` = configured interval.
+    nudge: >-
+      You've taken {threshold:.0f} steps without calling reflect().
+      Pause and call reflect(confidence=…, learned=…,
+      questions_remaining=[…]) — consolidate what you've learned,
+      what's still open, and what's resolved. Then continue.
+
+# `FailedReflectGuard` keeps its wording inline in
+# orchestra/budget.py — the guard is NOT in the default tracker
+# chain (only its class + tests exist), so there's no production
+# call site to tune. If the guard gets wired in, lift its
+# `reflect.failed_guard.locked` template into this file then.
