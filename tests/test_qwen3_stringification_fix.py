@@ -358,3 +358,162 @@ class TestTailFragmentSubShape:
         assert repaired is not None
         assert repaired["confidence"] == "low"
         assert repaired["next_action"] == "stop"
+
+
+# ── String-value tail-fragment (third sub-shape) ────────────────────
+
+# The actual `learned` value from a reviewer trace where the model
+# emitted prose for `learned` and failed to escape the closing `"` —
+# the sibling fields got swallowed into the string. json.loads of the
+# outer args succeeded as a 1-key dict; that 1 string's PYTHON form
+# is what's pinned here. Faithful so the test fails loudly if the
+# repair stops recovering this real-world shape.
+#
+# Note the embedded `"`: these are literal quote characters inside
+# the Python string — the model intended them as JSON syntax for the
+# sibling keys but they ended up as content. The repair re-wraps the
+# whole thing with a leading `"`, turning the first internal `"`
+# (right after "matches.") into the real string terminator.
+REAL_STRING_TAIL_FRAGMENT = (
+    "- The PR fixes a hanging business process by adding a default "
+    "sequence flow from ExclusiveGateway3 to IntermediateCatchSignal2.\n"
+    "- The fix is correct and addresses the ticket's acceptance "
+    "criteria.\n"
+    "- No PR threads exist, so this is a fresh review.\n"
+    "- I've posted a COMMENT-level finding confirming the fix is "
+    'correct.", "confidence": "high", "next_action": "Set review '
+    'status to APPROVED and finish with findings"}'
+)
+
+REAL_STRING_TAIL_FRAGMENT_ARGS = {
+    "learned": REAL_STRING_TAIL_FRAGMENT,
+}
+
+
+class TestStringValueTailFragmentSubShape:
+    """Third sub-shape of `_repair_stringified_args`: tail-fragment
+    where the property's real value was a STRING (prose), not a JSON
+    token. Strategy 2 (re-attach key, parse value as token) yields
+    invalid JSON because prose isn't a valid token after `:`. Strategy
+    3 wraps the trapped content in a leading `"` — the first internal
+    `"` then becomes the legitimate close and the rest parses as
+    siblings."""
+
+    # The real reviewer reflect schema requires only learned /
+    # confidence / next_action — questions_remaining is optional. The
+    # trace payload mirrors that (`questions_remaining` absent), so
+    # this sub-class uses the same 3-required schema as
+    # `TestRepairStringifiedArgs` rather than `TAIL_FRAGMENT_SCHEMA`
+    # (which requires `questions_remaining` too).
+    SCHEMA = {
+        "type": "object",
+        "properties": {
+            "learned": {"type": "string"},
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "next_action": {"type": "string"},
+        },
+        "required": ["learned", "confidence", "next_action"],
+    }
+
+    def test_real_string_value_payload_gets_lifted(self):
+        """The exact reviewer trace: `learned` carries prose plus
+        trapped `confidence` and `next_action` as escaped sibling
+        keys. After repair both required siblings come out as
+        proper top-level keys."""
+        repaired = _repair_stringified_args(
+            REAL_STRING_TAIL_FRAGMENT_ARGS, self.SCHEMA)
+        assert repaired is not None, (
+            "string-value tail-fragment must be recognised"
+        )
+        assert repaired["confidence"] == "high"
+        assert repaired["next_action"].startswith("Set review status")
+
+    def test_real_string_value_payload_recovers_learned_as_string(self):
+        """Bonus over the OBJECT sub-shape: the property's own value
+        comes back as a clean string ending at the model's intended
+        terminator (right after "correct.")."""
+        repaired = _repair_stringified_args(
+            REAL_STRING_TAIL_FRAGMENT_ARGS, self.SCHEMA)
+        learned = repaired["learned"]
+        assert isinstance(learned, str)
+        assert learned.startswith("- The PR fixes")
+        assert learned.endswith("correct.")
+        # The sibling keys are NOT inside the recovered `learned` —
+        # they were lifted to the top level.
+        assert "confidence" not in learned
+        assert "next_action" not in learned
+
+    def test_synthetic_minimal_string_value(self):
+        """Minimal repro to cover the path without the verbose real
+        payload: trapped value = `<prose>", "<sib>": "<v>"}`."""
+        args = {
+            "learned": 'short prose.", "confidence": "medium", '
+                       '"next_action": "go"}',
+        }
+        repaired = _repair_stringified_args(args, TAIL_FRAGMENT_SCHEMA)
+        # questions_remaining is required by TAIL_FRAGMENT_SCHEMA but
+        # missing from both args and the lifted dict — repair MUST
+        # refuse (must cover ALL missing-required, see existing
+        # `test_partial_lift_is_rejected` contract).
+        assert repaired is None
+
+    def test_synthetic_minimal_string_value_covers_all_required(self):
+        """Same as above but the trapped fragment covers EVERY
+        missing-required key — repair commits."""
+        args = {
+            "learned": 'short prose.", "questions_remaining": [], '
+                       '"confidence": "medium", "next_action": "go"}',
+        }
+        repaired = _repair_stringified_args(args, TAIL_FRAGMENT_SCHEMA)
+        assert repaired is not None
+        assert repaired["learned"] == "short prose."
+        assert repaired["questions_remaining"] == []
+        assert repaired["confidence"] == "medium"
+        assert repaired["next_action"] == "go"
+
+    def test_string_value_partial_lift_rejected(self):
+        """Same ALL-or-nothing contract: string-value reconstruction
+        must not commit when the lifted dict doesn't cover every
+        missing-required."""
+        # Only confidence here; next_action missing.
+        args = {
+            "learned": 'prose.", "confidence": "high"}',
+        }
+        assert _repair_stringified_args(args, TAIL_FRAGMENT_SCHEMA) is None
+
+    def test_token_value_sub_shape_still_works(self):
+        """Cross-shape regression: adding the string-value candidate
+        didn't break Strategy 2 (token-value reconstruction)."""
+        args = {
+            "learned": "ok",
+            "questions_remaining": '[{"id": "Q1"}], "confidence": "high", '
+                                    '"next_action": "go"}',
+        }
+        repaired = _repair_stringified_args(args, TAIL_FRAGMENT_SCHEMA)
+        assert repaired is not None
+        assert repaired["confidence"] == "high"
+        assert isinstance(repaired["questions_remaining"], list)
+
+    def test_dispatch_end_to_end_recovers_string_value(self):
+        """End-to-end through the registry's default qwen3 chain.
+        The handler fires with the lifted args; result is a dict,
+        not a validation-error string."""
+        reg = ToolRegistry(fix_qwen3_stringification_bug=True)
+        from orchestra.tools.registry import ToolDef
+        reg.register_tool_def(ToolDef(
+            name="reflect_str",
+            description="reflect-shaped probe (string-value tail)",
+            parameters=TAIL_FRAGMENT_SCHEMA,
+            handler=lambda **kw: {"got": kw},
+        ))
+        # Need a payload covering every required key — real payload
+        # is missing `questions_remaining`, so augment it for the
+        # end-to-end dispatch test. Same shape, sibling set complete.
+        args = {
+            "learned": ('analysis done.", "questions_remaining": [], '
+                        '"confidence": "high", "next_action": "submit"}'),
+        }
+        result = reg.dispatch("reflect_str", args)
+        assert isinstance(result, dict), f"expected handler to fire; got {result!r}"
+        assert result["got"]["confidence"] == "high"
+        assert result["got"]["learned"] == "analysis done."

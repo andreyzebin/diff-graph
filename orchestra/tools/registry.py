@@ -646,7 +646,8 @@ def _repair_stringified_args(args: dict, schema: dict) -> Optional[dict]:
     trapped fields aren't visible to schema validation, which rejects
     with e.g. "'confidence' is a required property".
 
-    Two sub-shapes, depending on where the model started stringifying:
+    Sub-shapes the helper handles, by where the model started
+    stringifying:
 
       1. OBJECT — the string value is itself a complete escaped JSON
          object carrying the sibling fields:
@@ -655,10 +656,10 @@ def _repair_stringified_args(args: dict, schema: dict) -> Optional[dict]:
 
          (`confidence` etc. live inside the `learned` string.)
 
-      2. TAIL-FRAGMENT — the model started stringifying at a
-         property's VALUE, so the string is `<value>, "sib": ..., }`
-         — it ends with the object's closing brace but does NOT start
-         with `{`:
+      2. TAIL-FRAGMENT, token-value — the model started stringifying
+         at a property's VALUE and the real value is a JSON token
+         (array, object literal, number, …). The trapped string is
+         `<value>, "sib": ..., }`:
 
             {"learned": "...",
              "questions_remaining": "[{...}], \"confidence\": \"high\",
@@ -668,11 +669,29 @@ def _repair_stringified_args(args: dict, schema: dict) -> Optional[dict]:
          (`{"questions_remaining": <value>`) reconstructs the complete
          object the model meant to emit, siblings and all.
 
+      3. TAIL-FRAGMENT, string-value — same shape, but the real value
+         was a STRING (prose) and the model failed to terminate it,
+         so the trapped content starts with prose (not a JSON token)
+         and the over-escaped closing quote ended up as a literal `"`
+         inside the parsed string:
+
+            {"learned": "- bullet text. matches.\", \"confidence\":
+                         \"high\", \"next_action\": \"...\"}"}
+
+         After json.loads the value reads
+         `- bullet text. matches.", "confidence": "high", ...}`. Strategy
+         2's reconstruction (`{"learned": - bullet...`) is invalid JSON
+         because the value lacks an opening quote. The fix: wrap the
+         value in a leading quote (`{"learned": "<value>`) — the first
+         internal `"` (the one the model failed to terminate cleanly)
+         then becomes the legitimate close, and the trailing fragment
+         parses as sibling keys.
+
     For each string-typed property this helper tries whichever
     sub-shape applies; if the recovered object is a dict covering
     EVERY currently-missing required key, it returns a flat args dict
     with those keys lifted in and the stringified container dropped
-    (its content is fully hoisted — for the tail-fragment shape that
+    (its content is fully hoisted — for the tail-fragment shapes that
     includes the property's own real value).
 
     Returns None if no safe repair is possible. Conservative on
@@ -696,32 +715,64 @@ def _repair_stringified_args(args: dict, schema: dict) -> Optional[dict]:
         # `learned` body) can't be either shape — skip the parse.
         if not s.endswith("}"):
             continue
-        # Sub-shape 1 (object): the value is a complete JSON object.
-        # Sub-shape 2 (tail-fragment): the value is `<my-value>,
-        # "sib": ...}` — re-attach this property's own key to rebuild
-        # the object the model meant to emit. `json.dumps(key)` keeps
-        # the key correctly quoted/escaped.
+        # Build candidate JSON reconstructions. Each is re-parsed and
+        # re-validated against the schema; the first dict covering all
+        # missing-required wins.
+        #
+        # Sub-shape 1 (object): the value IS a complete JSON object —
+        # use it as-is.
+        # Sub-shape 2 (tail-fragment, token-value): re-attach the
+        # property's own key in front so `<value>, "sib": ...}` becomes
+        # a complete object.
+        # Sub-shape 3 (tail-fragment, string-value): same idea, but the
+        # value was a string whose closing quote got escaped through.
+        # Wrap the trapped content in a leading `"` so the first
+        # internal `"` (where the model intended to close `<key>`'s
+        # string value) becomes the legitimate terminator and the
+        # remainder parses as siblings.
+        #
+        # Strategies 2 and 3 are disjoint by value type — a token-value
+        # case fails strategy 3 (json.loads sees `"` then breaks on the
+        # next char), a string-value case fails strategy 2 (invalid
+        # JSON token after the colon). False-positive risk is bounded
+        # by the existing gates: result must be a dict AND must cover
+        # every missing-required key AND the framework re-validates
+        # against the full schema before committing.
         if s.startswith("{"):
-            candidate = s
+            candidates = [s]
         else:
-            candidate = "{" + json.dumps(key) + ": " + s
-        try:
-            lifted = json.loads(candidate)
-        except Exception:
-            continue
-        if not isinstance(lifted, dict):
-            continue
-        if not all(req in lifted for req in missing):
-            continue
-        # Build repaired payload: drop the stringified container, then
-        # overlay the lifted keys. Lifted wins on overlap — the model's
-        # "real" value for any duplicate key is the one it intended at
-        # the inner JSON level (the top-level string is just a wrapper).
-        # For the tail-fragment shape `lifted` re-includes `key` itself
-        # with its proper, non-stringified value.
-        repaired = {k: v for k, v in args.items() if k != key}
-        repaired.update(lifted)
-        return repaired
+            # For sub-shape 3 we need to put the trapped content
+            # inside a JSON string literal. That means re-escaping
+            # control chars (newlines etc.) and backslashes — but
+            # NOT internal `"` characters, since those carry the
+            # structural role (the first internal `"` is where the
+            # model's intended `<key>` value terminates). The trick:
+            # `json.dumps` escapes everything, then strip the outer
+            # quotes and un-escape the quotes only.
+            s_escaped = json.dumps(s)[1:-1].replace('\\"', '"')
+            candidates = [
+                "{" + json.dumps(key) + ": " + s,
+                "{" + json.dumps(key) + ": \"" + s_escaped,
+            ]
+        for candidate in candidates:
+            try:
+                lifted = json.loads(candidate)
+            except Exception:
+                continue
+            if not isinstance(lifted, dict):
+                continue
+            if not all(req in lifted for req in missing):
+                continue
+            # Build repaired payload: drop the stringified container,
+            # then overlay the lifted keys. Lifted wins on overlap —
+            # the model's "real" value for any duplicate key is the
+            # one it intended at the inner JSON level (the top-level
+            # string is just a wrapper). For the tail-fragment shapes
+            # `lifted` re-includes `key` itself with its proper,
+            # non-stringified value.
+            repaired = {k: v for k, v in args.items() if k != key}
+            repaired.update(lifted)
+            return repaired
     return None
 
 
