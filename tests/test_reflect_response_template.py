@@ -180,3 +180,63 @@ class TestAgentConfigToggle:
             reflect_response_template="with_state",
         )
         assert cfg.reflect_response_template == "with_state"
+
+
+# ── user-message override frontmatter wins ─────────────────────────
+
+
+class TestUserMessageOverridePlumbing:
+    """A per-run `user_message_from` override carries its own
+    frontmatter. When it sets `reflect_response_template`, that
+    value MUST win over the base-prompt's value — otherwise
+    bench/test prompts that opt into `with_state` get silently
+    ignored (this was the bug seen on REV-U-008 plans 265/266:
+    test prompt opted in, runtime kept rendering "Reflection
+    noted.")."""
+
+    def test_override_frontmatter_replaces_config_default(self, tmp_path):
+        from orchestra.agent import Agent
+        from orchestra.types import AgentConfig
+        from orchestra.tools.registry import ToolRegistry
+
+        cfg = AgentConfig(
+            name="probe", system_prompt="sys", user_prompt="base",
+            reflect_response_template="default",
+            tools=["reflect", "done"],
+        )
+        override = (
+            "---\n"
+            "reflect_response_template: with_state\n"
+            "---\n"
+            "user body here\n"
+        )
+        a = Agent(
+            config=cfg,
+            tool_registry=ToolRegistry(),
+            llm=None,
+            model="probe-model",
+            user_message_override=override,
+        )
+        assert a.config.reflect_response_template == "with_state"
+
+    def test_override_without_field_keeps_base(self, tmp_path):
+        from orchestra.agent import Agent
+        from orchestra.types import AgentConfig
+        from orchestra.tools.registry import ToolRegistry
+
+        cfg = AgentConfig(
+            name="probe", system_prompt="sys", user_prompt="base",
+            reflect_response_template="with_state",
+            tools=["reflect", "done"],
+        )
+        override = "---\ntools_add: [done]\n---\nbody\n"
+        a = Agent(
+            config=cfg,
+            tool_registry=ToolRegistry(),
+            llm=None,
+            model="probe-model",
+            user_message_override=override,
+        )
+        # Override didn't mention reflect_response_template — base
+        # config value is preserved (no spurious reset to "default").
+        assert a.config.reflect_response_template == "with_state"

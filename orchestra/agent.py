@@ -196,6 +196,16 @@ class Agent:
         self._fm_meta: dict = _fm.meta
         self._fm_body: str = _fm.body
 
+        # User-message frontmatter override — `reflect_response_template`
+        # lives in BOTH the base-prompt frontmatter (parsed by compiler
+        # into config) AND the per-run user_message_from override (parsed
+        # here at agent-init). The override wins so test prompts /
+        # benchmark fixtures can opt into `with_state` without touching
+        # the production reviewer.user.md.
+        _fm_reflect_tpl = self._fm_meta.get("reflect_response_template")
+        if isinstance(_fm_reflect_tpl, str) and _fm_reflect_tpl.strip():
+            self.config.reflect_response_template = _fm_reflect_tpl.strip()
+
         # Register extra_tools as capture-style tools in the agent's
         # registry. Idempotent — re-registering the same name on a
         # spawned child just overwrites.
