@@ -1187,6 +1187,25 @@ class Agent:
             threading.Thread(target=_run, daemon=True).start()
             return json.dumps({"status": "spawned", "agent_id": child.agent_id})
 
+    def _meta_budget_stats(self, args: dict) -> str:
+        """budget_stats: surface this agent's current consumption +
+        rough cost-of-spawn estimates so the prompt can plan
+        spawn-vs-direct trade-offs.
+
+        Returned as a plain text summary in two sections:
+          - "your own session" — context (per-agent LLM window)
+          - "shared with children" — tokens + steps (carved per spawn)
+        Plus a "typical investigator spawn" line with hardcoded
+        estimates (calibrated once §11/§12 measured stats land).
+
+        Pure state — no instruction to the agent. Reaction logic
+        lives in the prompt (see docs/orchestra-architecture.md
+        §Tool-result convention)."""
+        from .budget_stats import format_budget_stats
+        if self.budget_state is None:
+            return "(no budget state — agent has not started)"
+        return format_budget_stats(self.budget_state)
+
     def _meta_agent_list(self, args: dict) -> str:
         """agent_list: return the agent registry for discovery."""
         if self.agent_registry:

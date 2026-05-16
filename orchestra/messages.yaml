@@ -41,6 +41,17 @@ budget:
     # prompt.
     nudge: Conversation history fills 50% of this agent's LLM context window.
 
+budget_stats:
+  # Hardcoded rough estimates used by the `budget_stats` tool when
+  # surfacing what a typical investigator spawn costs. Phase 1 — these
+  # are guesses, not measurements. Tune from observed traces, or
+  # replace once §11 (repo memory) / §12 (per-bucket stats) lands and
+  # we have real measured medians per repo/agent/model bucket.
+  typical_spawn:
+    returned_to_you: ~3-5K (the done() summary)
+    carved_from_shared: ~20-30K tokens, ~10-20 steps
+    based_on: rough estimate; calibrated once measured stats land
+
 reflect:
   cadence:
     # Step-cadence reflect nudge. `{threshold}` = configured interval.

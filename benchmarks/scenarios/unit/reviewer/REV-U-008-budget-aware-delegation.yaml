@@ -1,0 +1,103 @@
+id: REV-U-008-budget-aware-delegation
+agent: reviewer
+tags: [tier:unit, agent:reviewer, isolation, budget-stats, delegation]
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmarks.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# Phase 1 of agent-side budget planning (§12). The reviewer is given
+# the `budget_stats` tool and a prompt that nudges it to delegate any
+# concern needing investigation to an investigator subagent (via
+# agent_spawn). agent_spawn is mocked so each delegation returns a
+# generic "investigator found it" payload — the test isn't about the
+# investigator's quality, it's about the reviewer's *delegation
+# behaviour*.
+#
+# The `intended_concerns` channel (judge.py:_load_intended_concerns)
+# pulls from BOTH reflect.questions_remaining AND agent_spawn.focus,
+# so concerns that get delegated count toward the keyword match
+# regardless of whether they also appear in a reflect call.
+#
+# Production reviewer.user.md is untouched — budget_stats lives only
+# in this scenario's test prompt for now (TODO §12 Phase 1).
+
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: feature/ORD-301-store-credit
+
+user_message_from: diffgraph:diffgraph/test_prompts/reviewer/budget-aware-delegation.md
+
+# Mock agent_spawn (sticky string, see ToolMocks). budget_stats is
+# NOT mocked — the reviewer reads its real per-run BudgetState.
+mocks: ../../../fixtures/mocks/reviewer-budget-aware-delegation.yaml
+
+# Same PR + ticket fixture as REV-U-007 — three known concerns the
+# reviewer should delegate (all need cross-source: ticket AC,
+# concurrency analysis, ownership flow tracing).
+jira_fixture: ../../../fixtures/jira/store-credit-ticket.json
+
+pr_state:
+  metadata:
+    title: "ORD-301: Add customer store credit redemption"
+    description: |
+      Adds a store-credit balance per customer plus an endpoint
+      to redeem credit at checkout. Touches StoreCreditService,
+      a new repository, and the customer controller.
+    pr_url: "fake://orderflow/UNIT/repos/orderflow/pull-requests/301"
+    bot_user: "diffgraph-bot"
+  comments: []
+
+trigger:
+  type: comment
+  text: "/review"
+  comment_id: 0
+
+agent_data:
+  jira_tickets: "default/ORD/ORD-301"
+
+# ── Judge ─────────────────────────────────────────────────────────────────
+# The reviewer's deliverable is the final text_answer payload, BUT
+# `intended_concerns` channel also captures every agent_spawn focus —
+# so a concern that lives only in a spawn (not restated in the final
+# text) still scores. That's the desired property for a delegation-
+# heavy run.
+#
+# Same three focuses as REV-U-007. Threshold conservative — Phase 1
+# is "does the tool work in a real flow", not strict scoring.
+expected_output:
+  assert_via: [intended_concerns]
+  required_comments: []
+  forbidden_comments:
+    - description: "Inline comments — reviewer is in text+delegate mode; no posting allowed."
+  concern_focuses:
+    - id: credit-pretax-vs-ac
+      description_keywords:
+        ["pre-tax", "subtotal", "post-tax", "total", "tax recalcul", "recompute tax", "AC", "acceptance criteria", "ticket"]
+      rationale: "ORD-301 AC: store credit is a pre-tax deduction off the subtotal with tax recomputed. The diff subtracts from the post-tax total. Cross-source concern (ticket AC vs code) — should be delegated."
+    - id: redeem-ownership
+      description_keywords:
+        ["ownership", "own credit", "own order", "IDOR", "belongs", "authorization", "currentUser"]
+      rationale: "ORD-301 AC: a customer may redeem only their own credit against their own order. redeemCredit verifies neither. Cross-source concern (AC + controller flow) — should be delegated."
+    - id: apply-once-concurrency
+      description_keywords:
+        ["concurrent", "race", "idempotent", "at most once", "lock", "pessimistic", "isRedeemed", "double-redeem", "read-then-write"]
+      rationale: "ORD-301 AC: credit applied at most once under concurrent requests. isRedeemed inside @Transactional is a plain read-then-write. Cross-source concern (AC + concurrency analysis) — should be delegated."
+  side_effects:
+    inline_comments: 0
+    review_status_change: false
+  thresholds:
+    min_score: 0.5
+    min_required_found: 0
+    max_false_positives: 1
+
+metadata:
+  difficulty: medium
+  language: java
+  pr_size: medium
+  scenario_type: agent_unit
+  capabilities: [reviewer, budget_stats, delegation, agent_spawn, concern_forming]

@@ -1,0 +1,57 @@
+# Scripted LLM responses for a single-agent budget test.
+# Each step describes one LLM response: which tools to call + the
+# token usage that should be reported on the response. The agent
+# loop dispatches the tool calls, the canned tool_mocks below decide
+# what each tool returns (except budget_stats and agent_spawn, which
+# the test wants to exercise for real).
+#
+# `prompt` and `completion` are token counts. `cached_fraction` on
+# the test side governs how much of `prompt` is reported as cached
+# (Qwen-style = 0; DeepSeek-style = e.g. 0.9). The agent's
+# update_tokens does cumulative_paid = sum of
+# `prompt + completion - cached + cached*cache_discount`.
+
+script:
+  # Step 0: discovery — list files.
+  - prompt: 4000
+    completion: 80
+    tool_calls:
+      - {name: diff_list_files, args: {}}
+
+  # Step 1: inspect a file. Prompt grew (history accumulates).
+  - prompt: 5500
+    completion: 120
+    tool_calls:
+      - {name: diff_read_file, args: {path: "src/A.java"}}
+
+  # Step 2: agent checks its budget. budget_stats is NOT mocked —
+  # it runs for real and returns the live state. The test asserts
+  # the formatted string matches the budget state at this moment.
+  - prompt: 8000
+    completion: 60
+    tool_calls:
+      - {name: budget_stats, args: {}}
+
+  # Step 3: reflect (consolidates so far).
+  - prompt: 9500
+    completion: 200
+    tool_calls:
+      - name: reflect
+        args:
+          learned: "Read A.java, looks fine"
+          questions_remaining: []
+          confidence: high
+          next_action: "Finish"
+
+  # Step 4: done.
+  - prompt: 11000
+    completion: 50
+    tool_calls:
+      - {name: done, args: {findings: []}}
+
+# Tool returns — short-circuit via ToolMocks. budget_stats and
+# agent_spawn are NOT mocked (the test wants real behavior).
+# Sticky strings (one entry, applies to all calls).
+tool_mocks:
+  diff_list_files: "src/A.java\nsrc/B.java"
+  diff_read_file: "L1: public class A {}\nL2: // ok"

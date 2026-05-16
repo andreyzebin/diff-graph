@@ -1,0 +1,68 @@
+# Scripted LLM responses for a parent+child spawn budget test.
+#
+# ONE script in dispatch order — parent runs steps 0-1, spawns child
+# synchronously (so child runs steps 2-3 INSIDE the spawn call,
+# inheriting the same LLM instance), parent resumes with steps 4-5.
+# Both parent and child use the same ScriptedLLM (Agent gives child
+# `llm=self.llm` on spawn), but each agent has its own BudgetState
+# and updates only its own counters from the response — that's the
+# whole property under test.
+#
+# What this exercises:
+#   - Parent's own LLM context (`tokens_in`) tracks only the parent's
+#     own LLM calls. The child's prompt_tokens (1500, 2200) flow
+#     into the CHILD's BudgetState, not the parent's.
+#   - Child's BudgetState is independent: own steps_used counter,
+#     own cumulative_paid.
+#   - The done() summary from the child returns into the parent's
+#     conversation history (one big tool_result), which grows the
+#     parent's prompt size on the next step — but only THAT step's
+#     prompt count, not the per-LLM-call costs the child paid.
+
+script:
+  # Parent step 0 — budget_stats. tokens_in=4000 after this.
+  - prompt: 4000
+    completion: 80
+    tool_calls:
+      - {name: budget_stats, args: {}}
+
+  # Parent step 1 — agent_spawn(child). The Agent code runs the
+  # child synchronously inside this dispatch.
+  - prompt: 5500
+    completion: 120
+    tool_calls:
+      - name: agent_spawn
+        args:
+          agent: child
+          focus: "look at A.java"
+
+  # CHILD step 0 — runs inside the spawn. The shared LLM serves
+  # this response next, but the child's React loop is the caller
+  # so update_tokens lands on the CHILD's BudgetState.
+  - prompt: 1500
+    completion: 60
+    tool_calls:
+      - {name: diff_read_file, args: {path: "src/A.java"}}
+
+  # CHILD step 1 — done. Spawn returns to parent.
+  - prompt: 2200
+    completion: 40
+    tool_calls:
+      - {name: done, args: {findings: []}}
+
+  # Parent step 2 — back in parent. Reads budget_stats again to
+  # see post-spawn state (child's done() summary added a chunk to
+  # parent history, so prompt has grown).
+  - prompt: 9000
+    completion: 100
+    tool_calls:
+      - {name: budget_stats, args: {}}
+
+  # Parent step 3 — done.
+  - prompt: 9500
+    completion: 50
+    tool_calls:
+      - {name: done, args: {findings: []}}
+
+tool_mocks:
+  diff_read_file: "L1: public class A {}"

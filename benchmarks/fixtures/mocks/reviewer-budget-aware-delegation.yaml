@@ -1,0 +1,18 @@
+# Mock fixture for REV-U-008-budget-aware-delegation.
+#
+# The scenario tests reviewer's *delegation behaviour* — does it
+# read budget_stats, decide which concerns deserve a spawn, and
+# actually call agent_spawn for those. To keep the test deterministic
+# we mock agent_spawn so every spawn returns a generic "investigator
+# found something useful" payload, no matter the focus. The reviewer
+# then synthesises the final concerns list from the spawned focuses
+# (the `intended_concerns` channel picks up agent_spawn.focus).
+#
+# budget_stats is NOT mocked — the reviewer sees its real per-run
+# state, which is the whole point of exercising the tool end-to-end.
+
+agent_spawn: >-
+  Investigation complete. The concern is real and reproducible from
+  the diff; the investigator inspected the changed files plus the
+  ticket context and confirmed the issue. (mocked output for unit
+  test — real investigators would return a structured summary.)

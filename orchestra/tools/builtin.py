@@ -180,3 +180,20 @@ def register_builtins(
             handler=_meta_handler("_meta_agent_list"),
             is_builtin=True,
         ))
+
+    if "budget_stats" in tool_names:
+        registry.register_tool_def(ToolDef(
+            name="budget_stats",
+            description=(
+                "Report your current budget consumption + a rough "
+                "cost-of-spawn estimate. Use when planning whether "
+                "to spawn an investigator (offload to a fresh window) "
+                "or dig directly (keeps shared-pool spend low). The "
+                "output splits into your own LLM session (context, "
+                "per-agent) and the pool shared with any children "
+                "you spawn (tokens + steps)."
+            ),
+            parameters={"type": "object", "properties": {}},
+            handler=_meta_handler("_meta_budget_stats"),
+            is_builtin=True,
+        ))
