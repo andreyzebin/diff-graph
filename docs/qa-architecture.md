@@ -794,5 +794,5 @@ pages).
 - **Tier:chaos** — TODO: resilience scenarios (rate limit, OOM, malformed input). Resilience axis.
 - **GOLD PR** — production PR with high deep-comment density and high acceptance, classified as bench-worthy by `pa select-golden judge` phase.
 - **Leak** — fixture input contains the keyword its expected_output grades on. Caught by `test_unit_fixture_leak_check.py` / `test_prompts_no_fixture_leak.py`.
-- **assert_via** — which channel the judge reads to score: `pr_comments` (real comments via fake-PR sink), `intended_findings` (done(findings) args), `intended_concerns` (reflect(questions_remaining) args).
+- **assert_via** — which channel the judge reads to score: `pr_comments` (real comments via fake-PR sink), `intended_findings` (done(findings) args), `intended_concerns` (reflect(questions_remaining) args), `intended_spawns` (agent_spawn focus arguments — pure spawn signal, no reflect noise; pair with `{mode: capture_only}` agent_spawn mock to isolate delegation behaviour), `intended_text` (the final `text_answer` payload — the agent's deliverable channel for prompts that submit text rather than structured findings).
 - **linked_run_id** — column on `runs` rows linking an agent run to its judge counterpart. Set by `LLMJudge._finish_trace()`. Required for `/qa/scoring` to surface a scored row.

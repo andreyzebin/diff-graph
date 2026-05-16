@@ -59,6 +59,12 @@ consumes these.
   tool_choice, stream, extra_body, `fix_qwen3_stringification_bug`).
 - `AgentConfig.mode`: `react` (tool-using loop) or `single`
   (one-shot text answer, used by judges).
+- `AgentConfig.reflect_response_template`: short template name
+  (default `"default"`) for the `reflect` tool's tool-result. See
+  `orchestra/reflect_response.py` below — opt-in `with_state`
+  carries a live budget+time+children snapshot so the agent
+  re-grounds planning on every reflect, without calling a separate
+  query tool.
 
 ### `orchestra/compiler.py` + `orchestra/prompts/` — prompt → config
 
@@ -180,15 +186,60 @@ pusher stays informational.
 
 ### `orchestra/tools/builtin.py` — framework-provided tools
 
-Registers `reflect`, `done`, `agent_spawn`, `agent_list` when the
-prompt asks for them in its `tools:` list. Each builtin gets a
-schema derived from the agent's config (e.g. `done`'s `findings`
-field type comes from `agent_config.output_schema`; `reflect`'s
-fields are augmented with `sgr_extensions`).
+Registers `reflect`, `done`, `agent_spawn`, `agent_list`,
+`budget_stats` when the prompt asks for them in its `tools:` list.
+Each builtin gets a schema derived from the agent's config (e.g.
+`done`'s `findings` field type comes from
+`agent_config.output_schema`; `reflect`'s fields are augmented
+with `sgr_extensions`).
 
 The reflect handler **only fires after** dispatch's
 `_validate_args` accepts the call. That's why malformed reflects
 (qwen3-spam pattern) don't silently reset the cadence counter.
+
+The reflect handler's **return string** is delegated to
+`orchestra/reflect_response.py::render(...)` — by default it
+returns the plain `"Reflection noted."` (current behavior,
+load-bearing backward compat). When the agent's prompt opts into a
+richer template via `reflect_response_template:` frontmatter, the
+handler snapshots `_children` under `_children_lock` and passes
+that plus `budget_state` through to the renderer. The default-name
+fast-path stays cheap (no children snapshot, no interpolation).
+
+### `orchestra/reflect_response.py` + `orchestra/budget_stats.py` — internal-API render layer
+
+Where `reflect` and `budget_stats` get the **content** they return
+to the agent. Both follow the same shape:
+
+- **Internal-API functions** (pure, mockable like `fake_bitbucket`
+  helpers): `format_budget_stats(state, children)`,
+  `format_time_info(state)`. Each takes the agent's `BudgetState`
+  and renders a single block of text.
+- **Template files** in `orchestra/templates/<surface>/<name>.md`
+  reference internal APIs by `{placeholder}` name. Renderer loads
+  the file and `format(...)`-substitutes each placeholder. Wording
+  / structure can be tuned without code changes.
+- **Per-prompt toggle**: `AgentConfig.reflect_response_template`
+  selects which template the reflect handler uses. Default name
+  `"default"` is `"Reflection noted."`; opt-in `"with_state"`
+  composes `{time_info}` + `{budget_stats}` for continuous
+  awareness without an explicit query call.
+
+The `budget_stats` *tool* is the on-demand version of the same
+data — kept callable for tests and for prompts that don't opt into
+`with_state` reflects. Both surfaces share the same
+`format_budget_stats` source of truth, so there's no risk of two
+divergent texts describing the same numbers.
+
+**Adding a new internal API**:
+1. Write `format_X(state, ...) -> str` in its own module.
+2. Add `{X}` placeholder support in `reflect_response.render()`.
+3. Reference `{X}` in a new template file under
+   `orchestra/templates/reflect_response/`.
+
+A missing template file falls back to `"Reflection noted."` so a
+typo in the toggle never crashes an agent (cached via
+`@lru_cache` on `_load_template`).
 
 ### `orchestra/tools/meta.py` — framework escape-hatches
 
@@ -371,6 +422,18 @@ budget:
     - { at: 1.0, type: force_done }
 ```
 
+**Effective `max_context` precedence** (lowest → highest):
+default 128000 → provider profile → prompt frontmatter →
+`DIFFGRAPH_MAX_CONTEXT` env var. The env var lets a bench fixture
+or operator force a tight context window without editing prompts
+(used by unit-tier scenarios like REV-U-008 to drive context
+pressure / delegation decisions — see `UnitFixture.max_context` in
+`benchmarks/runner/run_unit.py`, exported into the child run's
+env). Implementation lives in `cli.py` `run_review` /
+`replay_thread` and in `diffgraph/orchestrator.py::run_agent`
+(always-apply, not `if None`, so it correctly overrides the new
+128K default).
+
 The `BudgetTracker` (`orchestra/budget.py::BudgetTracker`)
 assembles the handler list from this config plus the framework's
 built-in chain (ReflectCadenceCounter / RatioPusher /
@@ -532,6 +595,24 @@ results without spinning up the real handler. Mismatched fixture
 args raise `MockArgsMismatchError`; exhausted slots raise
 `MockExhaustedError` — both surface as test failures, not silent
 drift.
+
+**`{mode: capture_only}` preset** (delegation-isolation pattern).
+For scenarios that assert on *whether* an agent spawned children
+(via the `intended_spawns` judge channel) but don't care what the
+child actually returns, the fixture can short-circuit
+`agent_spawn` without standing up child stubs:
+
+```yaml
+mocks:
+  - tool: agent_spawn
+    return: { mode: capture_only }
+```
+
+The mock returns `{"status":"spawned","child_id":"<test-stub>",
+"mode":"capture_only"}` for every call; the spawn event still hits
+the trace (so the judge sees it), but no child run is created.
+Used by REV-U-008 (budget-aware delegation) — see
+`benchmarks/runner/judge.py::_load_intended_spawns`.
 
 ### `orchestra/handoff.py` + `orchestra/feedback.py`
 
