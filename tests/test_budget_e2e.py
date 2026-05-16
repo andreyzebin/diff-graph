@@ -341,12 +341,16 @@ def test_budget_stats_tool_returns_live_state(single_agent_script):
     agent.run()
 
     # Step 3's LLM call is the first one to include the budget_stats
-    # tool result (the result of step 2's call).
+    # tool result (the result of step 2's call). The compact-form
+    # output starts each row with `own / shared / wall / spawn:`
+    # prefixes — grep on the row prefix instead of free-text
+    # because the table-with-bars layout dropped the old prose.
     step3_messages = llm.recorded_calls[3]["messages"]
     tool_results = [
         m for m in step3_messages
         if m.get("role") == "tool"
-        and "session" in str(m.get("content", ""))
+        and "spawn:" in str(m.get("content", ""))
+        and "own    " in str(m.get("content", ""))
     ]
     assert tool_results, "budget_stats should have produced a tool-result"
     body = tool_results[-1]["content"]
@@ -357,7 +361,9 @@ def test_budget_stats_tool_returns_live_state(single_agent_script):
     # tokens_in=8000, max_context=20000 → ratio 40%, steps=3.
     assert "8K" in body, body
     assert "40%" in body, body
-    assert "3 of 10 steps" in body, body
+    # Shared-pool steps live in the `(steps N/M)` parenthetical on
+    # the shared line of the compact table.
+    assert "(steps 3/10)" in body, body
 
 
 # ── Test 3: parent + child spawn ───────────────────────────────────

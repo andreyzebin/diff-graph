@@ -88,13 +88,17 @@ class TestWithStateTemplate:
     def test_renders_budget_stats_block(self):
         """The `with_state` template includes a `{budget_stats}`
         placeholder backed by format_budget_stats — agents see own
-        context, shared pool, wall-clock, typical spawn every
-        reflect (and subagents block if any children)."""
+        context, shared pool, wall-clock, spawn cost every reflect
+        (and a subagents block if any children). Layout is the
+        compact 3-axis table with bars (see test_budget_stats_tool
+        for the row-by-row contract)."""
         out = render("with_state", state=_state())
-        assert "Your own session:" in out
-        assert "Shared with children:" in out
-        assert "Wall-clock" in out
-        assert "Typical investigator spawn:" in out
+        assert "own    " in out
+        assert "shared " in out
+        assert "wall   " in out
+        assert "spawn:" in out
+        # Bars carry the at-a-glance signal.
+        assert "▰" in out or "▱" in out
 
     def test_reflection_noted_preserved_at_top(self):
         """The leading "Reflection noted." line is preserved — the

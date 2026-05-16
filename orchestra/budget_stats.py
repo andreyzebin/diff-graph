@@ -45,40 +45,35 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates" / "budget_stats"
 
 
 # Hardcoded rough estimates for Phase 1. Replace with measured medians
-# from traces.db once the aggregation layer (§12) lands.
-_TYPICAL_SPAWN_RETURN = msg(
-    "budget_stats.typical_spawn.returned_to_you",
-    "~3-5K (the done() summary)",
+# from traces.db once the aggregation layer (§12) lands. Bare numeric
+# ranges — wording lives in the template.
+_TYPICAL_SPAWN_CARVED = msg("budget_stats.typical_spawn.spawn_carved", "20-30K")
+_TYPICAL_SPAWN_CARVED_STEPS = msg(
+    "budget_stats.typical_spawn.spawn_carved_steps", "10-20",
 )
-_TYPICAL_SPAWN_CARVED = msg(
-    "budget_stats.typical_spawn.carved_from_shared",
-    "~20-30K tokens, ~10-20 steps",
-)
-_TYPICAL_SPAWN_SOURCE = msg(
-    "budget_stats.typical_spawn.based_on",
-    "rough estimate; calibrated once measured stats land",
-)
+_TYPICAL_SPAWN_RETURN = msg("budget_stats.typical_spawn.spawn_return", "3-5K")
 
 
 @lru_cache(maxsize=1)
 def _load_template() -> str:
     """Load the single budget_stats template. Cached so repeated
-    tool calls don't re-read the file. Falls back to a minimal
-    inline string if the template file is missing (preserves the
-    tool's contract without crashing if someone deletes the file)."""
+    tool calls don't re-read the file. Source-of-truth lives in
+    `orchestra/templates/budget_stats/budget_stats.md` — if it's
+    missing, we fall back to the same file under a `.fallback.md`
+    extension shipped alongside as a backstop. A genuinely missing
+    template surfaces as an empty placeholder render rather than a
+    crash, but no in-code duplicate exists: every wording lives in
+    the templates directory."""
     path = _TEMPLATES_DIR / "budget_stats.md"
     try:
         return path.read_text(encoding="utf-8").rstrip()
     except OSError:
-        return (
-            "Your own session: {tokens_in} of {max_context} context "
-            "tokens used ({pct}%).\n"
-            "Shared with children: {paid} of {max_tokens} tokens, "
-            "{steps_used} of {max_steps} steps used.\n"
-            "{wall_clock}\n"
-            "Typical spawn: returns {returned_to_you}; carves "
-            "{carved_from_shared} ({based_on}).{subagents}"
-        )
+        try:
+            return (_TEMPLATES_DIR / "budget_stats.fallback.md").read_text(
+                encoding="utf-8",
+            ).rstrip()
+        except OSError:
+            return "(budget_stats template missing)"
 
 
 def _fmt_k(n: int) -> str:
@@ -97,6 +92,22 @@ def _pct(part: float, whole: float) -> str:
     if not whole or whole <= 0:
         return "—"
     return f"{int(round(100 * part / whole))}%"
+
+
+_BAR_WIDTH = 10
+_BAR_FULL = "▰"   # ▰
+_BAR_EMPTY = "▱"  # ▱
+
+
+def _bar(part: float, whole: float, width: int = _BAR_WIDTH) -> str:
+    """Render a `width`-cell monospace progress bar. Clamps 0-100%;
+    a fully-empty cap (`whole=0` / None) renders as an empty bar
+    rather than crashing. Used by the with_state snapshot to give
+    the model a glance-level signal alongside the percent number."""
+    if not whole or whole <= 0:
+        return _BAR_EMPTY * width
+    filled = max(0, min(width, int(round(width * part / whole))))
+    return _BAR_FULL * filled + _BAR_EMPTY * (width - filled)
 
 
 _DEFAULT_MAX_CONTEXT = 128_000
@@ -120,24 +131,18 @@ def _fmt_seconds(s: int) -> str:
     return f"{h}h{m}m" if m else f"{h}h"
 
 
-def _format_wall_clock(state: BudgetState) -> str:
-    """Render the wall-clock line. Always present — agents reasoning
-    about `agent_await(timeout=…)` need to know the clock keeps
-    ticking even while they block on children. With `max_wall_time`
-    configured: shows ratio. Without: just elapsed (no cap)."""
+def _wall_parts(state: BudgetState) -> tuple[str, str, str, int]:
+    """Return `(elapsed_str, wall_max_str, wall_bar, wall_pct)` for
+    the compact-table wall line. Without `max_wall_time`: max
+    column renders `—`, bar renders empty, pct=0. With cap: shows
+    elapsed/cap and a filled bar."""
     elapsed = int(time.time() - state.wall_start) if state.wall_start else 0
     elapsed_str = _fmt_seconds(elapsed)
     if state.original_wall_time and state.original_wall_time > 0:
         max_s = int(state.original_wall_time)
         pct = min(100, int(round(100 * elapsed / max_s))) if max_s > 0 else 0
-        return (
-            f"Wall-clock (ticks even during await): {elapsed_str} of "
-            f"{_fmt_seconds(max_s)} used ({pct}%)."
-        )
-    return (
-        f"Wall-clock (ticks even during await): {elapsed_str} elapsed "
-        f"(no max_wall_time cap configured)."
-    )
+        return elapsed_str, _fmt_seconds(max_s), _bar(elapsed, max_s), pct
+    return elapsed_str, "—", _bar(0, 1), 0
 
 
 def _format_subagents(children: list[dict]) -> str:
@@ -192,24 +197,31 @@ def format_budget_stats(
     summary shows per-child name / focus / status / consumption.
     Empty / None → the subagents block is omitted entirely."""
     max_context = state.original_max_context or _DEFAULT_MAX_CONTEXT
+    elapsed_str, wall_max_str, wall_bar, wall_pct = _wall_parts(state)
     return _load_template().format(
-        # Own-session vars
+        # Own-session
         tokens_in=_fmt_k(state.tokens_in),
         max_context=_fmt_k(max_context),
+        own_bar=_bar(state.tokens_in, max_context),
         pct=int(round(100 * state.tokens_in / max_context)),
-        # Shared-pool vars
+        # Shared pool — tokens line with steps in parentheses
         paid=_fmt_k(state.cumulative_paid),
         max_tokens=_fmt_k(state.original_tokens),
+        shared_bar=_bar(state.cumulative_paid, state.original_tokens),
+        shared_pct=int(round(100 * state.cumulative_paid /
+                             max(1, state.original_tokens))),
         steps_used=state.steps_used,
         max_steps=state.original_steps,
-        # Wall-clock — own line, always rendered. Critical for
-        # agent_await(timeout=…) decisions: real-time keeps ticking
-        # while the agent blocks on a child.
-        wall_clock=_format_wall_clock(state),
-        # Typical-spawn vars (from messages.yaml)
-        returned_to_you=_TYPICAL_SPAWN_RETURN,
-        carved_from_shared=_TYPICAL_SPAWN_CARVED,
-        based_on=_TYPICAL_SPAWN_SOURCE,
+        # Wall-clock — critical for agent_await(timeout=…) decisions:
+        # real-time keeps ticking while the agent blocks on a child.
+        elapsed=elapsed_str,
+        wall_max=wall_max_str,
+        wall_bar=wall_bar,
+        wall_pct=wall_pct,
+        # Typical-spawn — bare numeric ranges; wording in the template.
+        spawn_carved=_TYPICAL_SPAWN_CARVED,
+        spawn_carved_steps=_TYPICAL_SPAWN_CARVED_STEPS,
+        spawn_return=_TYPICAL_SPAWN_RETURN,
         # Subagents block — empty string when no children.
         subagents=_format_subagents(children or []),
     )

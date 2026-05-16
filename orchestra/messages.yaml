@@ -64,10 +64,14 @@ budget_stats:
   # are guesses, not measurements. Tune from observed traces, or
   # replace once §11 (repo memory) / §12 (per-bucket stats) lands and
   # we have real measured medians per repo/agent/model bucket.
+  #
+  # Compact-form values feed the table-with-bars template — they're
+  # bare numeric ranges (no prose), inlined as "spawn: ~{carved}
+  # tokens + ~{carved_steps} steps → ~{return} back".
   typical_spawn:
-    returned_to_you: ~3-5K (the done() summary)
-    carved_from_shared: ~20-30K tokens, ~10-20 steps
-    based_on: rough estimate; calibrated once measured stats land
+    spawn_carved: 20-30K
+    spawn_carved_steps: 10-20
+    spawn_return: 3-5K
 
 reflect:
   cadence:

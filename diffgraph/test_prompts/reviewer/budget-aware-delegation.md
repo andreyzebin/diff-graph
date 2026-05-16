@@ -24,7 +24,7 @@
 # agent reads" — single source of truth.
 reflect_response_template: with_state
 budget:
-  max_context: 16000
+  max_context: 8000
 tools_add:
   - agent_spawn
   - agent_list

@@ -43,24 +43,26 @@ class TestFormatter:
         defaults.update(kw)
         return BudgetState(**defaults)
 
-    def test_four_sections_present(self):
-        """The summary has exactly four lines (in order): own session,
-        shared pool, wall-clock, typical spawn. The prompt depends on
-        this shape when it weaves the output into its planning
-        paragraph; wall-clock sits between the consumption summary
-        and the spawn-cost reference because it ticks INDEPENDENTLY
-        of work — agents reasoning about agent_await need it visible."""
+    def test_compact_table_lines_present(self):
+        """Output is a 4-row compact table: own / shared / wall +
+        blank + spawn-cost. Each axis line starts with a fixed
+        prefix so prompts / scripts can grep for it. Wording drift
+        on these prefixes breaks every prompt that opted into
+        `with_state` reflects."""
         out = format_budget_stats(self._state())
-        lines = [ln for ln in out.splitlines() if ln.strip()]
-        assert len(lines) == 4, f"expected 4 sections, got {len(lines)}"
-        assert lines[0].startswith("Your own session:")
-        assert lines[1].startswith("Shared with children:")
-        assert lines[2].startswith("Wall-clock")
-        assert lines[3].startswith("Typical investigator spawn:")
+        lines = out.splitlines()
+        # 3 axis lines, blank separator, 1 spawn line = 5 lines.
+        assert len(lines) == 5, f"expected 5 lines, got {len(lines)}: {lines}"
+        assert lines[0].startswith("own    ")
+        assert lines[1].startswith("shared ")
+        assert lines[2].startswith("wall   ")
+        assert lines[3] == ""
+        assert lines[4].startswith("spawn:")
 
-    def test_own_session_with_max_context(self):
-        """When max_context is configured the line shows ratio + a
-        plain-English note that spawning offloads to a child window."""
+    def test_own_line_shows_ratio_and_bar(self):
+        """own line carries `tokens_in / max_context  <bar> <pct>%`.
+        Bar must render at least one ▰ at non-zero usage so the
+        signal is visible at a glance."""
         out = format_budget_stats(self._state(
             tokens_in=64_000, original_max_context=128_000,
         ))
@@ -68,10 +70,9 @@ class TestFormatter:
         assert "64K" in line
         assert "128K" in line
         assert "50%" in line
-        # Spawn semantic — children spawn into fresh windows — is a
-        # load-bearing piece the prompt relies on when explaining
-        # the trade-off. If wording drifts, prompt-side hints break.
-        assert "fresh window" in line.lower() or "fresh windows" in line.lower()
+        # Bar has filled cells at 50%
+        assert "▰" in line
+        assert "▱" in line
 
     def test_none_max_context_falls_back_to_default(self):
         """Defensive: if a state is constructed with
@@ -87,10 +88,8 @@ class TestFormatter:
         assert "128K" in line
         # 12000 / 128000 = ~9%
         assert "9%" in line
-        # Spawn-semantic note still appears (single template).
-        assert "fresh window" in line.lower()
 
-    def test_shared_pool_line_shows_tokens_and_steps(self):
+    def test_shared_line_shows_tokens_and_steps(self):
         out = format_budget_stats(self._state(
             cumulative_paid=15_000, original_tokens=40_000,
             steps_used=8, original_steps=40,
@@ -98,62 +97,66 @@ class TestFormatter:
         line = out.splitlines()[1]
         assert "15K" in line
         assert "40K" in line
-        assert "8 of 40 steps" in line
-        # The "carves a slice" framing is what tells the model
-        # spawning costs from THIS pool — pin it.
-        assert "carve" in line.lower()
+        # Steps live in a parenthetical at the end of the shared line.
+        assert "(steps 8/40)" in line
 
-    def test_wall_clock_line_without_max_wall_time(self):
-        """No `max_wall_time` configured (the default) — wall line
-        still renders with elapsed seconds + an explicit "no cap"
-        note. Agents need elapsed time visible for agent_await
-        decisions even when there's no hard wall budget."""
+    def test_wall_line_without_max_wall_time(self):
+        """No `max_wall_time` configured — wall line still renders
+        elapsed, max column shows `—`, bar empty, pct=0."""
         import time as _t
-        # Backdate wall_start by 75 seconds so elapsed renders as
-        # something human-readable.
         out = format_budget_stats(self._state(
             wall_start=_t.time() - 75,
             original_wall_time=None,
         ))
-        line = next(ln for ln in out.splitlines() if ln.startswith("Wall-clock"))
-        # Phrasing names the load-bearing fact for await reasoning.
-        assert "ticks even during await" in line
+        line = out.splitlines()[2]
+        assert line.startswith("wall   ")
         # Elapsed is rendered as a human time string (75s → "1m15s").
         assert "1m15s" in line
-        assert "no max_wall_time cap configured" in line
+        # No-cap sentinel.
+        assert "—" in line
+        assert "0%" in line
 
-    def test_wall_clock_line_with_max_wall_time(self):
+    def test_wall_line_with_max_wall_time(self):
         """`max_wall_time` configured — wall line shows ratio."""
         import time as _t
         out = format_budget_stats(self._state(
             wall_start=_t.time() - 180,    # 3 minutes elapsed
             original_wall_time=600,        # 10 minute cap
         ))
-        line = next(ln for ln in out.splitlines() if ln.startswith("Wall-clock"))
-        assert "ticks even during await" in line
+        line = out.splitlines()[2]
         assert "3m" in line       # elapsed
         assert "10m" in line      # cap
         assert "30%" in line      # 3m/10m = 30%
+        assert "▰" in line        # bar shows fill
 
-    def test_typical_spawn_line_carries_estimate_disclaimer(self):
-        """Phase 1 hardcoded values explicitly tagged as rough. The
-        disclaimer is part of the contract — the model treats the
-        numbers as heuristics, not precise budgets."""
+    def test_spawn_line_carries_compact_estimates(self):
+        """Spawn-cost row is one line: `spawn: ~<carved> tokens +
+        ~<carved_steps> steps → ~<return> back`. Bare numeric
+        ranges only — no disclaimer prose ('rough estimate;
+        calibrated…') because the prompt would see it on every
+        reflect."""
         out = format_budget_stats(self._state())
-        # Typical-spawn is the 4th line (after own / shared / wall).
-        line = out.splitlines()[3]
-        assert "rough estimate" in line.lower()
+        line = out.splitlines()[4]
+        assert line.startswith("spawn:")
+        # Default messages.yaml values land verbatim.
+        assert "20-30K" in line
+        assert "10-20" in line
+        assert "3-5K" in line
+        # Arrow → in the "X back" half.
+        assert "→" in line
+        # No tutorial prose on every reflect.
+        assert "rough estimate" not in line.lower()
 
     def test_zero_usage_renders_cleanly(self):
         """Fresh start (step 0) — all counters at 0. No division-by-zero,
-        no blanks."""
+        no blanks. Bars are fully empty."""
         out = format_budget_stats(self._state())
-        assert "0 of 40 steps" in out
+        # Both shared-line steps 0/40 and pct 0% visible.
+        assert "(steps 0/40)" in out
         assert "0%" in out
 
     def test_number_formatting_compact(self):
-        """K-suffix on >=1000, plain int otherwise. Keeps the line
-        readable at a glance."""
+        """K-suffix on >=1000, plain int otherwise."""
         out = format_budget_stats(self._state(
             tokens_in=2_500, original_max_context=128_000,
             cumulative_paid=750, original_tokens=40_000,
@@ -170,10 +173,10 @@ class TestFormatter:
         out_empty = format_budget_stats(self._state(), children=[])
         for out in (out_none, out_empty):
             assert "Subagents" not in out
-            # Four sections (own / shared / wall / typical) — three
+            # 5 lines (own / shared / wall / blank / spawn) — four
             # newlines, no trailing blank from the `{subagents}`
             # placeholder when it's empty.
-            assert out.count("\n") == 3
+            assert out.count("\n") == 4
 
     def test_children_block_lists_each_subagent(self):
         """Per-child line carries name, status, steps, context,
