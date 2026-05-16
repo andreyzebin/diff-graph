@@ -4301,6 +4301,102 @@ for test isolation; (2-4) is the async production design.
 **Effort:** Each step ~half-day implementation + tests. Total
 sub-day if done as one batch.
 
+### 13.10 When delegation is actually rational — guidance
+
+Notes from a 2026-05-16 analysis of REV-U-008 where the reviewer
+correctly chose NOT to delegate (small PR, no real reason to spawn).
+Use this to design scenarios that exercise delegation rationally —
+or to know when "no delegation observed" is the right answer.
+
+**Capability-driven** (investigator has tools the reviewer doesn't):
+
+- **Cross-repo investigation** — concern requires reading code in a
+  sibling repo (DB migrations, k8s manifests, shared lib). Reviewer's
+  `diff_*` tools are scoped to the current PR's repo until §10 Phase
+  D lands `diff_*(repo=URI)` for cross-repo, which is investigator-
+  only by design.
+- **Jira / ticket history dive** — concern requires walking linked
+  tickets, parent epic, prior fix attempts. Investigator gets
+  `jira_dev_info` + `jira_search_tickets` (§5b Phase 2); reviewer
+  has only single-ticket `jira_read_ticket`.
+- **Cross-PR thread reading** — concern requires inspecting prior PR
+  discussions (review-culture calibration). Investigator gets
+  `pr_list_threads(repo, pr=...)` for arbitrary PRs (§10 Phase D);
+  reviewer's `pr_*_thread` are scoped to current PR.
+
+Today (2026-05-16) none of these are shipped to investigator — same
+toolset as reviewer. So *capability-driven delegation has zero real
+benefit until §10 Phase D arrives*. Honest disclosure when designing
+delegation tests.
+
+**Budget-driven** (resource pressure makes delegation cheaper):
+
+- **Context offload** — when reading the material needed to verify
+  concerns would push the parent's `context_ratio` past comfortable
+  bounds (say 60-70% by the time concerns are formed). Spawning
+  investigators offloads ~25K context each to fresh windows; the
+  ~5K done() summary returns to parent. **Caveat: this is about a
+  MEDIUM PR with thorough material to read — not a 50+ file refactor.
+  50+ files is a stress test, not a delegation test.** Sweet spot is
+  ~10-15 files where reading all of them is feasible-but-uncomfortable.
+- **Wall-clock parallelism** — N independent investigations needing
+  ~K steps each: sequential = N×K wall-time, parallel = max(K). Real
+  benefit only when N≥3 AND K≥5 AND the agent is wall-time-bound.
+  For a typical 4-file PR with 3 short concerns, savings are
+  marginal (~30s).
+
+**Cognitive separation** (rarely the deciding factor, but a benefit):
+
+- Multiple unrelated concerns benefit from isolated reasoning streams
+  in fresh contexts — cross-talk in the reviewer's head is real when
+  reading IDOR-flow + concurrency analysis + tax math interleaved.
+  In practice: nice-to-have, not load-bearing for rational choice.
+
+**The honest map of REV-U-008 (store-credit PR, 4 files, 3 concerns):**
+
+| Category | Applies here? |
+|---|---|
+| Cross-repo | ❌ all in current repo |
+| Jira history | ❌ one ticket, ticket read once, AC inline |
+| Cross-PR | ❌ no prior PRs to compare |
+| Context offload | ❌ 4 files, ~10K total reading, 8% of 128K window |
+| Wall-clock | ❌ 3 small concerns, sequential takes seconds |
+| Cognitive separation | ⚠ minor benefit, not decisive |
+
+→ Reviewer's choice to not delegate is rationally correct on this
+PR. A "did the reviewer delegate?" assertion would be wrong here.
+
+**Scenario design guidance for delegation tests:**
+
+1. **Mechanical delegation tests** (does spawning even work?) —
+   use force-delegation prompt + `capture_only` mock + small PR. The
+   test is about the *plumbing* (invocations recorded, focuses
+   captured), not about rational choice. Honest framing, easy to
+   keep deterministic.
+2. **Budget-pressure delegation tests** — force `max_context=16000`
+   (or `max_steps=8`) on a medium PR. Reviewer hits pressure and
+   *should* delegate to fit the budget. Tests rational choice under
+   constraint without needing §10 Phase D.
+3. **Capability-driven delegation tests** — wait for §10 Phase D
+   (investigator gets cross-source tools). Then a PR whose concerns
+   genuinely need reading sibling repo / linked tickets will
+   naturally force delegation.
+
+**Anti-patterns:**
+
+- ❌ Asserting delegation on a small self-contained PR with plenty
+  of budget → reviewer correctly chooses to do it itself → test
+  fails for the wrong reason.
+- ❌ Using a 50+ file refactor as "delegation test" → that's a
+  stress test on context capacity; mixes axes.
+- ❌ Asserting EXACTLY N delegations → brittle; rational reviewer
+  might choose N-1 or N+1 depending on its read.
+
+REV-U-008 in its current form is best understood as a **budget_stats
+integration test**, not a delegation rationality test. To exercise
+delegation, design a new scenario per (1) (mechanics) or (2) (budget
+pressure) above.
+
 ---
 
 ## NUDGE_HIGH 0.75 mandatory warning (shipped 2026-05-16)
