@@ -54,26 +54,30 @@ _TYPICAL_SPAWN_CARVED_STEPS = msg(
 _TYPICAL_SPAWN_RETURN = msg("budget_stats.typical_spawn.spawn_return", "3-5K")
 
 
-@lru_cache(maxsize=1)
-def _load_template() -> str:
-    """Load the single budget_stats template. Cached so repeated
-    tool calls don't re-read the file. Source-of-truth lives in
-    `orchestra/templates/budget_stats/budget_stats.md` — if it's
-    missing, we fall back to the same file under a `.fallback.md`
-    extension shipped alongside as a backstop. A genuinely missing
-    template surfaces as an empty placeholder render rather than a
-    crash, but no in-code duplicate exists: every wording lives in
-    the templates directory."""
-    path = _TEMPLATES_DIR / "budget_stats.md"
+@lru_cache(maxsize=8)
+def _load(name: str) -> str:
+    """Load a budget_stats template by short name (no extension).
+    Cached. Source-of-truth lives in
+    `orchestra/templates/budget_stats/<name>.md`. The main
+    `budget_stats` template additionally has a `.fallback.md`
+    backstop so a missing primary doesn't lose the contract — for
+    every other template a missing file yields `""` (the rendered
+    section just collapses to nothing). No template wording is
+    duplicated in-code."""
+    primary = _TEMPLATES_DIR / f"{name}.md"
     try:
-        return path.read_text(encoding="utf-8").rstrip()
+        return primary.read_text(encoding="utf-8").rstrip()
     except OSError:
+        fallback = _TEMPLATES_DIR / f"{name}.fallback.md"
         try:
-            return (_TEMPLATES_DIR / "budget_stats.fallback.md").read_text(
-                encoding="utf-8",
-            ).rstrip()
+            return fallback.read_text(encoding="utf-8").rstrip()
         except OSError:
-            return "(budget_stats template missing)"
+            return ""
+
+
+def _load_template() -> str:
+    """Back-compat name for the main budget_stats template loader."""
+    return _load("budget_stats") or "(budget_stats template missing)"
 
 
 def _fmt_k(n: int) -> str:
@@ -152,30 +156,37 @@ def _format_subagents(children: list[dict]) -> str:
 
     Each child dict carries: name, focus, status, steps_used,
     tokens_in, cumulative_paid (snapshotted by Agent._meta_budget_stats
-    under the children lock)."""
+    under the children lock).
+
+    Wording lives in three template files under
+    `orchestra/templates/budget_stats/`:
+      - `subagents_block.md` — outer wrapper, `{count}` + `{items}`.
+      - `subagents_item.md`  — per-child line, `{focus_clause}` is
+        appended only when the focus is non-empty.
+      - `subagents_focus.md` — the ` · focus="..."` clause.
+    """
     if not children:
         return ""
-    lines = ["", f"Subagents ({len(children)} spawned):"]
+    item_tpl = _load("subagents_item")
+    focus_tpl = _load("subagents_focus")
+    items: list[str] = []
     for c in children:
-        name = c.get("name", "?")
-        status = c.get("status", "?")
-        steps = c.get("steps_used", 0)
-        paid = _fmt_k(c.get("cumulative_paid", 0))
-        ctx_in = _fmt_k(c.get("tokens_in", 0))
         focus = (c.get("focus") or "").strip()
         if len(focus) > _FOCUS_TRUNCATE_AT:
             focus = focus[: _FOCUS_TRUNCATE_AT - 1] + "…"
-        # Plain-state per-child line: name [status] — steps · context
-        # · paid · focus.
-        bits = [f"  - {name} [{status}]",
-                f"{steps} steps",
-                f"~{ctx_in} context",
-                f"paid ~{paid}"]
-        line = " · ".join(bits)
-        if focus:
-            line += f' · focus="{focus}"'
-        lines.append(line)
-    return "\n".join(lines)
+        focus_clause = focus_tpl.format(focus=focus) if focus else ""
+        items.append(item_tpl.format(
+            name=c.get("name", "?"),
+            status=c.get("status", "?"),
+            steps=c.get("steps_used", 0),
+            ctx_in=_fmt_k(c.get("tokens_in", 0)),
+            paid=_fmt_k(c.get("cumulative_paid", 0)),
+            focus_clause=focus_clause,
+        ))
+    return _load("subagents_block").format(
+        count=len(children),
+        items="\n".join(items),
+    )
 
 
 def format_budget_stats(

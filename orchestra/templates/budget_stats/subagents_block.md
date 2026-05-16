@@ -1,0 +1,3 @@
+
+Subagents ({count} spawned):
+{items}

@@ -1,0 +1,1 @@
+  - {name} [{status}] · {steps} steps · ~{ctx_in} context · paid ~{paid}{focus_clause}
