@@ -247,6 +247,7 @@ class LLMJudge(Judge):
         # concerns-only, …).
         intended_findings = self._load_intended_findings()
         intended_concerns = self._load_intended_concerns()
+        intended_spawns = self._load_intended_spawns()
         intended_text = self._load_intended_text()
 
         # When the bench posts seed_comments + the trigger comment via the
@@ -308,6 +309,7 @@ class LLMJudge(Judge):
                                pr_diff=pr_diff, agents_md=agents_md,
                                intended_findings=intended_findings,
                                intended_concerns=intended_concerns,
+                               intended_spawns=intended_spawns,
                                intended_text=intended_text)
         self._trace_request(scenario.id, prompt)
         try:
@@ -424,6 +426,33 @@ class LLMJudge(Judge):
                         "title": focus[:80],
                         "description": focus,
                     })
+        return out
+
+    def _load_intended_spawns(self) -> list[dict]:
+        """Delegation-only channel — ONLY `agent_spawn(focus=...)`
+        calls, no reflect.questions_remaining. Used by
+        delegation-isolation scenarios (REV-U-008-style) where the
+        question is strictly "what did the reviewer delegate?",
+        independent of any reasoning the reviewer also wrote to
+        reflect. With this channel + `capture_only` mock on
+        agent_spawn, the test cleanly captures "what was delegated"
+        without the agent ever seeing a mocked investigator response.
+
+        Returns the same {title, description} shape as
+        `_load_intended_concerns` so the same `concern_focuses`
+        matching logic applies."""
+        out: list[dict] = []
+        for inv in self._load_invocations():
+            if (inv.get("tool") or "") != "agent_spawn":
+                continue
+            focus = str((inv.get("args") or {}).get("focus", ""))
+            if not focus:
+                continue
+            out.append({
+                "source": "agent_spawn",
+                "title": focus[:80],
+                "description": focus,
+            })
         return out
 
     def _load_intended_text(self) -> str:
@@ -577,6 +606,7 @@ def _build_prompt(
     agents_md: str = "",
     intended_findings: list[dict] | None = None,
     intended_concerns: list[dict] | None = None,
+    intended_spawns: list[dict] | None = None,
     intended_text: str = "",
 ) -> str:
     eo = scenario.expected_output
@@ -615,6 +645,7 @@ def _build_prompt(
         agent_comments=_format_comments(comments),
         intended_findings=_format_intended_findings(intended_findings or []),
         intended_concerns=_format_intended_concerns(intended_concerns or []),
+        intended_spawns=_format_intended_concerns(intended_spawns or []),
         intended_text=_format_intended_text(intended_text),
         required_comments=required_str,
         forbidden_comments=forbidden_str,

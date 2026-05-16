@@ -61,16 +61,28 @@ agent_data:
   jira_tickets: "default/ORD/ORD-301"
 
 # ── Judge ─────────────────────────────────────────────────────────────────
-# The reviewer's deliverable is the final text_answer payload, BUT
-# `intended_concerns` channel also captures every agent_spawn focus —
-# so a concern that lives only in a spawn (not restated in the final
-# text) still scores. That's the desired property for a delegation-
-# heavy run.
+# Isolated delegation test (TODO §13.6). The question being asked is
+# strictly: "what did the reviewer DELEGATE (via agent_spawn) vs
+# HANDLE HIMSELF (via text_answer)?" Synthesis quality is out of
+# scope — with `mode: capture_only` the mocked agent_spawn returns
+# only a neutral stub, so the reviewer can't synthesize from any
+# fake investigator content anyway.
 #
-# Same three focuses as REV-U-007. Threshold conservative — Phase 1
-# is "does the tool work in a real flow", not strict scoring.
+# Two-channel assert:
+#   - `intended_spawns` — pure agent_spawn(focus=...) list (no reflect
+#     noise). Captures what the reviewer DELEGATED.
+#   - `intended_text`   — text_answer payload. Captures what the
+#     reviewer HANDLED HIMSELF (described in plain text).
+#
+# Each concern is matched against the UNION — passes if the reviewer
+# either delegated it (focus matches keywords) OR mentioned it in the
+# text_answer plan. Both attribution paths are valid "the reviewer
+# surfaced this concern".
+#
+# Threshold conservative — Phase 1 is "does the wiring + isolation
+# work", not strict scoring.
 expected_output:
-  assert_via: [intended_concerns]
+  assert_via: [intended_spawns, intended_text]
   required_comments: []
   forbidden_comments:
     - description: "Inline comments — reviewer is in text+delegate mode; no posting allowed."

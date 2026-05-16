@@ -15,6 +15,11 @@ assert_via: {assert_via}
 - `intended_concerns` — `reflect(concerns=[...])` плюс
   `agent_spawn(focus=...)` из invocations.json. Используется когда
   тестируется только LOOK-фаза.
+- `intended_spawns` — ТОЛЬКО `agent_spawn(focus=...)` из
+  invocations.json (без reflect). Используется в isolated-delegation
+  тестах: "что reviewer делегировал" — чистый сигнал, не загрязнённый
+  внутренними рассуждениями. Часто комбинируется с `intended_text`
+  чтобы покрыть и "что делегировал", и "что сам написал".
 - `intended_text` — текстовая выдача агента, захваченная через
   capture-tool (`text_answer` / `text`) в последнем вызове. Используется
   когда дизайн задачи требует, чтобы итог был свободным текстом, а
@@ -37,6 +42,14 @@ assert_via: {assert_via}
 
 ## Концерны, которые агент сформулировал (канал: intended_concerns)
 {intended_concerns}
+
+## Делегации агента — что он сделегировал через agent_spawn (канал: intended_spawns)
+{intended_spawns}
+
+Это чистый список `agent_spawn(focus=...)` без reflect-вопросов.
+Используется в isolated-delegation тестах для проверки "что reviewer
+решил отдать инвестигаторам". Часто в паре с `intended_text` ниже —
+вместе они покрывают "что делегировал" + "что прокомментировал сам".
 
 ## Текстовая выдача агента (канал: intended_text)
 {intended_text}

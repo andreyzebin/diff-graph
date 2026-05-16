@@ -212,6 +212,12 @@ class ExpectedOutput:
     #                          invocations.json
     #   "intended_concerns"  — reflect(concerns=[...]) +
     #                          agent_spawn(focus=...) from invocations.json
+    #   "intended_spawns"    — ONLY agent_spawn(focus=...) — delegation-
+    #                          isolation channel. Use together with
+    #                          `intended_text` to separately verify
+    #                          "what was delegated" vs "what was handled
+    #                          directly" (TODO §13.6, REV-U-008).
+    #   "intended_text"      — text_answer / final text deliverable.
     # The judge takes the UNION of enabled channels. Lets a scenario
     # explicitly say "investigator standalone — match against done(),
     # not the PR" or "reviewer concerns-only — match against reflect()".
