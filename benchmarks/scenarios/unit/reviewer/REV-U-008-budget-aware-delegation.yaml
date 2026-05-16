@@ -60,6 +60,17 @@ trigger:
 agent_data:
   jira_tickets: "default/ORD/ORD-301"
 
+# Tight context window to force budget-pressure delegation
+# (TODO §13.10 — "budget-pressure delegation tests"). Default 128K
+# left the reviewer with 95%+ headroom on a small 4-file PR — no
+# rational reason to spawn. At 16K, after reading the ticket and a
+# couple of files the reviewer crosses NUDGE @0.5 and likely
+# NUDGE_HIGH @0.75, so it should rationally choose to spawn for
+# remaining concerns rather than read everything itself. Plumbed
+# to the agent via DIFFGRAPH_MAX_CONTEXT env var (see
+# run_unit.py).
+max_context: 16000
+
 # ── Judge ─────────────────────────────────────────────────────────────────
 # Isolated delegation test (TODO §13.6). The question being asked is
 # strictly: "what did the reviewer DELEGATE (via agent_spawn) vs

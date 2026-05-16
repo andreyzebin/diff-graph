@@ -218,14 +218,15 @@ def run_agent(
             if extra_body is not None:
                 ac.llm_params.extra_body = extra_body
 
-    # Context budget — applied as a DEFAULT to every agent whose
-    # @budget frontmatter doesn't set its own. Frontmatter wins.
-    # `None` here = "the operator didn't supply a project default" →
-    # leave the axis silent.
+    # Context budget — applied across all agent configs. Caller's
+    # `max_context` (sourced from env / provider / config.yaml — see
+    # cli.py's `effective_context`) is the absolute override here:
+    # @budget frontmatter doesn't currently set max_context so this
+    # always wins. `None` from the caller = "no project default
+    # supplied" → leave whatever BudgetConfig defaulted to (128_000).
     if max_context is not None:
         for ac in [config] + list(agent_registry.get_all_configs().values()):
-            if ac.budget.max_context is None:
-                ac.budget.max_context = max_context
+            ac.budget.max_context = max_context
 
     # Event bus
     event_bus = EventBus()

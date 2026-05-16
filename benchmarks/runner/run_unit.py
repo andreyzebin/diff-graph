@@ -54,6 +54,14 @@ class UnitFixture:
     # reads the fixture instead of hitting a live Jira (the
     # fake-bitbucket pattern: same class, env-switched source).
     jira_fixture: Optional[str] = None
+    # Optional per-scenario override of the agent's effective LLM
+    # context window (BudgetConfig.max_context). Plumbed to cli.py
+    # via DIFFGRAPH_MAX_CONTEXT env var. Use for delegation /
+    # context-pressure scenarios (TODO §13.10 — budget-pressure
+    # delegation tests) — set a small value to push the reviewer
+    # past NUDGE_HIGH while it's still investigating, so it has
+    # rational reason to spawn rather than read everything itself.
+    max_context: Optional[int] = None
     # Optional scenario-shape blocks — when present the runner can
     # invoke an LLM judge against the agent's invocations.json after
     # the subprocess finishes (TODO §5d.3 / §5e.14 Stage 4). Stored
@@ -184,6 +192,8 @@ def load_fixture(fixture_path: str | Path) -> UnitFixture:
         user_message_from=umf,
         mocks=mocks_resolved,
         jira_fixture=jira_fixture_resolved,
+        max_context=(int(raw["max_context"])
+                     if raw.get("max_context") is not None else None),
         expected_output=dict(raw.get("expected_output") or {}),
         tags=list(raw.get("tags") or []),
         raw=raw,
@@ -403,6 +413,11 @@ def run_unit_fixture(
             # fixture instead of hitting a live Jira (fake-bitbucket
             # pattern, same class, env-switched source).
             env["DIFFGRAPH_JIRA_FIXTURE"] = fixture.jira_fixture
+        # Per-scenario context-window override → cli.py reads this in
+        # effective_context resolution (TODO §13.10 budget-pressure
+        # delegation pattern).
+        if fixture.max_context is not None:
+            env["DIFFGRAPH_MAX_CONTEXT"] = str(fixture.max_context)
             env.pop("DIFFGRAPH_JIRA_DISABLED", None)
         else:
             env["DIFFGRAPH_JIRA_DISABLED"] = "1"
