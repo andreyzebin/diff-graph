@@ -2944,6 +2944,8 @@ Each phase testable independently. Rollback at any stage: set `diff_mode: plain`
 | 7.10 | Cross-run memory per repo | Medium | Medium | Later |
 | 10  | Cross-source investigation toolset (pr_get/pr_list/repo_list + URI standard + diff_*/pr_* repo=/pr=) | **High** | Large | Do second |
 | 11  | Multi-level agent memory (memo: KV + documents, PR/repo/team/company) | **High** | Medium-Large | Do second |
+| 12  | `budget_stats` Phase 1 (shipped) — Phase 2 = measured stats from traces.db | **Medium** | Small (Phase 2) | Do third |
+| 13  | Async spawn + `agent_await` + callback pusher (+ capture-only mock for tests) | **High** | Medium | **Do first** |
 
 ---
 
@@ -4017,3 +4019,302 @@ user to decide.
 `MEMORY.md` index, "what NOT to save", update-over-append.
 **Effort:** PR-level slice small-medium; curator + repo-level medium;
 team/company later.
+
+---
+
+## 12. Budget-aware planning — `budget_stats` tool (Phase 1 shipped)
+
+**Status:** Phase 1 shipped 2026-05-16. Hardcoded "typical spawn"
+estimates; real measurements arrive once §11 (repo memory) or a
+traces.db aggregation layer (§12-future-Phase-2) lands.
+
+### 12.1 What's shipped
+
+A hidden+builtin `budget_stats()` tool (opt-in per agent via
+`tools_add: [budget_stats]`). Production reviewer.user.md is
+**untouched** — only the test scenario
+`REV-U-008-budget-aware-delegation` exercises it for now.
+
+Output is a 4-line + optional subagents block, **pure state** per
+the report-state-don't-dictate convention:
+
+```
+Your own session: 5K of 128K LLM context window used (4%). Children spawn into fresh windows; only their done() summary returns to your session.
+Shared with children: 594 of 80K tokens, 1 of 127 steps used. Each agent_spawn carves a slice from your remaining budget.
+Wall-clock (ticks even during await): 12s elapsed (no max_wall_time cap configured).
+Typical investigator spawn: returns ~3-5K (the done() summary) to your own session; carves ~20-30K tokens, ~10-20 steps from the shared pool (rough estimate; calibrated once measured stats land).
+Subagents (1 spawned):
+  - investigator [completed] · 8 steps · ~4.5K context · paid ~6.2K · focus="check tax recompute"
+```
+
+**Conceptual model the wording teaches**:
+- `Your own session` (context) = per-agent LLM window. Each agent
+  has its own; children spawn into fresh windows.
+- `Shared with children` (tokens + steps) = pool that agent + its
+  spawns draw from. Each `agent_spawn` carves a slice.
+- `Wall-clock` = real time. Independent of work; ticks even during
+  `agent_await`. Visible so the agent can reason about timeouts.
+- The elegant invariant: **spawn trades shared-pool budget for
+  own-context budget** (child runs in fresh window, only its done()
+  summary returns to parent).
+
+### 12.2 Where wording lives
+
+- `orchestra/templates/budget_stats/budget_stats.md` — single
+  template with `{placeholder}`s. Edit to tune wording without code
+  changes.
+- `orchestra/messages.yaml` — `budget_stats.typical_spawn.*` slots
+  for hardcoded "typical spawn" estimates.
+
+### 12.3 Phase 2 (future) — measured stats from traces.db
+
+Replace hardcoded `~3-5K` / `~20-30K` with bucket-aggregated
+medians from `traces.db`. Bucket key:
+`(repo, agent_name, model, prompt_hash, diff_size_bucket)` with
+hierarchical fallback (drop the most specific dimension until
+N ≥ 5 samples). Exclude bench / failed runs. Recency filter
+(30d default).
+
+When §11 (repo memory) lands, those stats become repo-memory KV
+entries updated by a curator step after each successful run —
+`budget_stats` reads from KV, no SQL needed.
+
+---
+
+## 13. Async spawn + `agent_await` + callback pusher
+
+**Status:** design only (recorded 2026-05-16). No code yet.
+Builds on §12 (`budget_stats` already shows children block). The
+minimum useful addition for production async patterns AND for
+clean unit-test isolation of delegation.
+
+### 13.1 Why async + the testing motivation
+
+Two distinct problems this design solves:
+
+1. **Production**: parent spawns N investigators in parallel,
+   continues its own work, processes results as they arrive
+   (callback NUDGE) OR explicitly waits (`agent_await`).
+2. **Unit-test isolation**: when testing delegation, mocked child
+   responses currently leak back into the parent's reasoning chain
+   (parent reads canned reply, gets confused if it doesn't match
+   the focus). Async + `capture_only` mock = child never actually
+   runs, parent sees only a neutral "spawned" marker and continues
+   to its own done().
+
+### 13.2 `agent_spawn` extension
+
+Two new optional params; default behaviour identical to current
+sync path.
+
+```
+agent_spawn(agent, focus, sched="sync", callback=True)
+   sched="sync"               → blocks until child done, returns
+                                result dict (current behaviour)
+   sched="async", callback=T  → returns {"status":"spawned",
+                                "child_id":"X"} immediately;
+                                child runs in background thread;
+                                on completion result auto-injects
+                                into parent history via pusher
+   sched="async", callback=F  → same but caller must call
+                                agent_await to retrieve result
+```
+
+The wait=False branch already exists in `_meta_agent_spawn` —
+this just exposes it cleanly with documented semantics.
+
+### 13.3 `agent_await` — new tool
+
+```
+agent_await(child_id="", timeout=60)
+   child_id=""    → wait for ALL active children (join_all)
+   child_id="X"   → wait for that one
+   timeout        → max wait time in seconds
+```
+
+Returns a **discriminated dict** by `status`:
+
+| status | Meaning | Payload |
+|---|---|---|
+| `completed` | All target children done | `results: [{child_id, summary, steps, paid}, ...]` |
+| `partial` | Timeout reached, not all done | `results: [...completed], still_running: [...child_ids]` |
+| `interrupted` | A pusher will fire on next step (budget threshold crossed AND not yet latched, or async-callback queue non-empty) | `results: [...completed], still_running: [...child_ids]` |
+
+**Wake-up sources** (all through one mechanism — pusher-pending
+check, no new event system):
+
+1. Target child(ren) completed — `Event.set()` from child thread
+2. **Any pusher would fire** (`_any_pusher_pending()` returns True):
+   - Some ratio axis crossed a level whose latch isn't yet set
+   - Async-child-callback queue non-empty
+3. Timeout reached
+
+### 13.4 The pusher-pending criterion (load-bearing)
+
+The KEY design insight: await uses the same source of truth as
+pushers (per-level `_fired` latches). It bails ONLY when a pusher
+will fire a NEW action on the next step.
+
+```python
+def _any_pusher_pending(self) -> bool:
+    """True iff some pusher would fire a new action right now —
+    a level whose ratio is crossed AND latch not yet set,
+    OR an async-callback queue with pending children."""
+    for pusher in self.budget_tracker._producers:
+        if isinstance(pusher, RatioEscalationPusher):
+            ratio = getattr(self.budget_state, pusher.ratio_attr, None)
+            if ratio is None:
+                continue
+            for idx, (at, _, _) in enumerate(pusher._levels):
+                if not pusher._fired[idx] and ratio >= at:
+                    return True
+    with self._async_lock:
+        if self._async_results_queue:
+            return True
+    return False
+```
+
+This avoids the edge case where:
+- A level latched on a previous step (e.g. NUDGE_HIGH @ 0.75
+  fired at step 12, latched).
+- Agent calls `agent_await` later, ratio still 0.85.
+- Static check `ratio >= 0.75` would bail with `interrupted` but
+  no NEW NUDGE fires on next step (latch stops it) → agent sees
+  `interrupted` with no explanation.
+
+With `_any_pusher_pending`:
+- Between 0.75 and 1.0 — `await` patiently waits (no new level to
+  cross, latch already set, no surprise).
+- When ratio crosses 1.0 (FORCE_DONE threshold) — `await` bails →
+  next step's apply_handlers fires FORCE_DONE → message + tool
+  narrow visible to agent. Clean.
+
+### 13.5 Callback NUDGE — reuses the pusher pipeline
+
+```python
+class AsyncChildCallbackPusher:
+    kind = "async-child-callback"
+    def __init__(self, agent_ref): self._agent = agent_ref
+
+    def apply(self, ctx):
+        with self._agent._async_lock:
+            drained = self._agent._async_results_queue
+            self._agent._async_results_queue = []
+        for cid, result in drained:
+            ctx.actions.append(PusherAction(
+                type=PusherType.NUDGE,
+                message=_format_child_callback(cid, result),
+                kind=self.kind,
+            ))
+```
+
+Wording lives in `orchestra/templates/async_child_callback.md`
+(same pattern as `budget_stats.md`). Pure state — no instruction.
+Example: `[async-child] investigator [a1b2] completed · 8 steps ·
+paid ~6K · focus="check tax recompute"\noutput: <truncated>`.
+
+**Drain coordination**: when `agent_await` returns a child's
+result, it removes the entry from `_async_results_queue` to avoid
+the callback pusher re-injecting it on the next step.
+
+### 13.6 Capture-only mock mode for delegation-isolation tests
+
+```yaml
+# benchmarks/fixtures/mocks/*.yaml
+mocks:
+  agent_spawn:
+    mode: capture_only
+```
+
+Semantics:
+- Record args in `invocations.json` (already happens).
+- **Do not run any child handler** (no thread, no mock dispatch).
+- Return a fixed `{"status":"spawned","child_id":"<test-stub>"}`
+  to the agent, identical for every call.
+
+Test pattern:
+- Reviewer (in delegation-test prompt mode) issues
+  `agent_spawn(focus=A), agent_spawn(focus=B), text_answer(plan),
+  done()` in one step.
+- Mock captures the 3 spawns, returns the stub thrice — agent
+  treats as "delegated", continues to text_answer + done().
+- Run ends. Test asserts on `invocations.json`:
+  - spawn count
+  - focus per spawn matches expected concerns
+  - text_answer carries the consolidated plan
+
+Mocked child responses NEVER reach the agent — reasoning chain
+stays clean.
+
+### 13.7 Implementation surface
+
+- **`orchestra/agent.py`**:
+  - `_meta_agent_spawn` extended: parse `sched` + `callback`, async
+    branch spawns background thread, appends result to
+    `_async_results_queue` + `Event.set()` on completion.
+  - New `_meta_agent_await(args)` method.
+  - New `_any_pusher_pending()` helper.
+  - Async queue + lock + event added to Agent state.
+- **`orchestra/budget.py`**: new `AsyncChildCallbackPusher` class
+  added to default producer chain (drains queue, NUDGE per
+  completed child).
+- **`orchestra/tools/builtin.py`**: register `agent_await` builtin
+  if in `tool_names`. `agent_spawn` schema extended with `sched` +
+  `callback` properties.
+- **`orchestra/tool_mocks.py`**: support `mode: capture_only` YAML
+  form for `agent_spawn`.
+- **`orchestra/templates/async_child_callback.md`**: callback
+  message template.
+- **Tests**: e2e scripted test for async + await + callback; unit
+  tests for `_any_pusher_pending` + capture_only mock.
+
+### 13.8 Open / deferred
+
+- **`AsyncChildCallbackPusher` placement in chain** — first
+  position (before budget pushers) so callbacks land before
+  budget pressure NUDGEs on the same step. Tentative; revisit
+  after seeing real runs.
+- **Failure semantics** — child throws → AgentResult with
+  output=None / status="failed". Callback fires with failure
+  marker. `agent_await` returns it in `results` array with status.
+- **Recursive async** — children can themselves spawn async.
+  Each agent has own queue + pusher. No global lock needed.
+- **Test ergonomics** — for unit tests that need deterministic
+  callback timing, add an `agent._async_inject(child_id, result)`
+  helper that pushes into the queue directly. Works with
+  ScriptedLLM pattern (control when callback appears).
+
+### 13.9 Order of work
+
+1. **Capture-only mock** (smallest, unblocks delegation-isolation
+   unit tests). ~30 LOC in `tool_mocks.py`, one new mock fixture,
+   one new test scenario.
+2. **`agent_spawn` sched + async branch** + queue + Event +
+   `AsyncChildCallbackPusher`. ~100 LOC + tests.
+3. **`agent_await`** with `_any_pusher_pending` + drain. ~80 LOC
+   + tests.
+4. **Callback template** + messages.yaml entry.
+
+(1) and (2-4) are independent — can ship (1) first as a quick win
+for test isolation; (2-4) is the async production design.
+
+**Effort:** Each step ~half-day implementation + tests. Total
+sub-day if done as one batch.
+
+---
+
+## NUDGE_HIGH 0.75 mandatory warning (shipped 2026-05-16)
+
+Already shipped — see commit `5d9f2fc`. Every axis with a hard
+cap (token / wall_time / step / context) emits a second NUDGE at
+0.75 between the 0.5 NUDGE and the terminal cap (1.0 / 0.90 / —).
+Full gradation table documented in
+`docs/orchestra-architecture.md` §Budget pushers.
+
+The Context-axis "NUDGE-only by design but participates in
+max_ratio" gotcha is documented there too as an open design call:
+- (a) exclude context_ratio from max_ratio (context becomes pure
+  monitor)
+- (b) accept it as a physical hard cap (current behaviour)
+
+Decide if/when this hits a real workload.

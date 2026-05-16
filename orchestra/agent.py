@@ -1189,14 +1189,15 @@ class Agent:
 
     def _meta_budget_stats(self, args: dict) -> str:
         """budget_stats: surface this agent's current consumption +
-        rough cost-of-spawn estimates so the prompt can plan
-        spawn-vs-direct trade-offs.
+        rough cost-of-spawn estimates + per-child consumption so the
+        prompt can plan spawn-vs-direct trade-offs.
 
-        Returned as a plain text summary in two sections:
+        Returned as a plain text summary in:
           - "your own session" — context (per-agent LLM window)
           - "shared with children" — tokens + steps (carved per spawn)
-        Plus a "typical investigator spawn" line with hardcoded
-        estimates (calibrated once §11/§12 measured stats land).
+          - "typical investigator spawn" — hardcoded rough estimates
+          - "subagents" — per-child name / focus / status / consumption
+            (only when this agent has actually spawned children)
 
         Pure state — no instruction to the agent. Reaction logic
         lives in the prompt (see docs/orchestra-architecture.md
@@ -1204,7 +1205,22 @@ class Agent:
         from .budget_stats import format_budget_stats
         if self.budget_state is None:
             return "(no budget state — agent has not started)"
-        return format_budget_stats(self.budget_state)
+        # Snapshot child state under the lock — children may still be
+        # mutating their own budget_state if any were spawned async.
+        children_snapshot = []
+        with self._children_lock:
+            for cid, child in self._children.items():
+                completed = cid in self._children_results
+                bs = child.budget_state
+                children_snapshot.append({
+                    "name": child.config.name,
+                    "focus": (child.data_scope or {}).get("focus", ""),
+                    "status": "completed" if completed else "running",
+                    "steps_used": bs.steps_used if bs else 0,
+                    "tokens_in": bs.tokens_in if bs else 0,
+                    "cumulative_paid": bs.cumulative_paid if bs else 0,
+                })
+        return format_budget_stats(self.budget_state, children=children_snapshot)
 
     def _meta_agent_list(self, args: dict) -> str:
         """agent_list: return the agent registry for discovery."""

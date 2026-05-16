@@ -32,8 +32,10 @@ land and we have real measured medians.
 """
 from __future__ import annotations
 
+import time
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 from .budget import BudgetState
 from .messages import msg
@@ -73,8 +75,9 @@ def _load_template() -> str:
             "tokens used ({pct}%).\n"
             "Shared with children: {paid} of {max_tokens} tokens, "
             "{steps_used} of {max_steps} steps used.\n"
+            "{wall_clock}\n"
             "Typical spawn: returns {returned_to_you}; carves "
-            "{carved_from_shared} ({based_on})."
+            "{carved_from_shared} ({based_on}).{subagents}"
         )
 
 
@@ -98,8 +101,83 @@ def _pct(part: float, whole: float) -> str:
 
 _DEFAULT_MAX_CONTEXT = 128_000
 
+# Focus strings can be long — truncate with ellipsis to keep the
+# subagents block scannable. The agent has access to the full focus
+# via its own spawn history; this is just the rendered summary.
+_FOCUS_TRUNCATE_AT = 80
 
-def format_budget_stats(state: BudgetState) -> str:
+
+def _fmt_seconds(s: int) -> str:
+    """5 → '5s'; 90 → '1m30s'; 3700 → '1h1m'. Wall-clock is most
+    actionable as a human time scale, not as seconds-or-K-of-them."""
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        m, sec = divmod(s, 60)
+        return f"{m}m{sec}s" if sec else f"{m}m"
+    h, rem = divmod(s, 3600)
+    m, _ = divmod(rem, 60)
+    return f"{h}h{m}m" if m else f"{h}h"
+
+
+def _format_wall_clock(state: BudgetState) -> str:
+    """Render the wall-clock line. Always present — agents reasoning
+    about `agent_await(timeout=…)` need to know the clock keeps
+    ticking even while they block on children. With `max_wall_time`
+    configured: shows ratio. Without: just elapsed (no cap)."""
+    elapsed = int(time.time() - state.wall_start) if state.wall_start else 0
+    elapsed_str = _fmt_seconds(elapsed)
+    if state.original_wall_time and state.original_wall_time > 0:
+        max_s = int(state.original_wall_time)
+        pct = min(100, int(round(100 * elapsed / max_s))) if max_s > 0 else 0
+        return (
+            f"Wall-clock (ticks even during await): {elapsed_str} of "
+            f"{_fmt_seconds(max_s)} used ({pct}%)."
+        )
+    return (
+        f"Wall-clock (ticks even during await): {elapsed_str} elapsed "
+        f"(no max_wall_time cap configured)."
+    )
+
+
+def _format_subagents(children: list[dict]) -> str:
+    """Build the subagents block appended to the main summary. Empty
+    string when no children — the template's trailing placeholder
+    collapses to nothing.
+
+    Each child dict carries: name, focus, status, steps_used,
+    tokens_in, cumulative_paid (snapshotted by Agent._meta_budget_stats
+    under the children lock)."""
+    if not children:
+        return ""
+    lines = ["", f"Subagents ({len(children)} spawned):"]
+    for c in children:
+        name = c.get("name", "?")
+        status = c.get("status", "?")
+        steps = c.get("steps_used", 0)
+        paid = _fmt_k(c.get("cumulative_paid", 0))
+        ctx_in = _fmt_k(c.get("tokens_in", 0))
+        focus = (c.get("focus") or "").strip()
+        if len(focus) > _FOCUS_TRUNCATE_AT:
+            focus = focus[: _FOCUS_TRUNCATE_AT - 1] + "…"
+        # Plain-state per-child line: name [status] — steps · context
+        # · paid · focus.
+        bits = [f"  - {name} [{status}]",
+                f"{steps} steps",
+                f"~{ctx_in} context",
+                f"paid ~{paid}"]
+        line = " · ".join(bits)
+        if focus:
+            line += f' · focus="{focus}"'
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def format_budget_stats(
+    state: BudgetState,
+    *,
+    children: Optional[list[dict]] = None,
+) -> str:
     """Render the agent-facing budget summary string. Pure state — no
     instructions, no prescriptions. The agent's prompt is what tells
     the model how to react to the numbers.
@@ -107,7 +185,12 @@ def format_budget_stats(state: BudgetState) -> str:
     `max_context` always renders against a concrete value — production
     BudgetConfig defaults to 128_000 (see `types.py`). Defensive
     fallback to the same number here for the edge case where a
-    state was constructed with `original_max_context=None`."""
+    state was constructed with `original_max_context=None`.
+
+    `children` (optional) — when this agent has spawned subagents,
+    Agent._meta_budget_stats passes a snapshot list so the rendered
+    summary shows per-child name / focus / status / consumption.
+    Empty / None → the subagents block is omitted entirely."""
     max_context = state.original_max_context or _DEFAULT_MAX_CONTEXT
     return _load_template().format(
         # Own-session vars
@@ -119,8 +202,14 @@ def format_budget_stats(state: BudgetState) -> str:
         max_tokens=_fmt_k(state.original_tokens),
         steps_used=state.steps_used,
         max_steps=state.original_steps,
+        # Wall-clock — own line, always rendered. Critical for
+        # agent_await(timeout=…) decisions: real-time keeps ticking
+        # while the agent blocks on a child.
+        wall_clock=_format_wall_clock(state),
         # Typical-spawn vars (from messages.yaml)
         returned_to_you=_TYPICAL_SPAWN_RETURN,
         carved_from_shared=_TYPICAL_SPAWN_CARVED,
         based_on=_TYPICAL_SPAWN_SOURCE,
+        # Subagents block — empty string when no children.
+        subagents=_format_subagents(children or []),
     )

@@ -43,16 +43,20 @@ class TestFormatter:
         defaults.update(kw)
         return BudgetState(**defaults)
 
-    def test_three_sections_present(self):
-        """The summary has exactly three lines: own session, shared
-        pool, typical spawn. The prompt depends on this shape when it
-        weaves the output into its planning paragraph."""
+    def test_four_sections_present(self):
+        """The summary has exactly four lines (in order): own session,
+        shared pool, wall-clock, typical spawn. The prompt depends on
+        this shape when it weaves the output into its planning
+        paragraph; wall-clock sits between the consumption summary
+        and the spawn-cost reference because it ticks INDEPENDENTLY
+        of work — agents reasoning about agent_await need it visible."""
         out = format_budget_stats(self._state())
         lines = [ln for ln in out.splitlines() if ln.strip()]
-        assert len(lines) == 3, f"expected 3 sections, got {len(lines)}"
+        assert len(lines) == 4, f"expected 4 sections, got {len(lines)}"
         assert lines[0].startswith("Your own session:")
         assert lines[1].startswith("Shared with children:")
-        assert lines[2].startswith("Typical investigator spawn:")
+        assert lines[2].startswith("Wall-clock")
+        assert lines[3].startswith("Typical investigator spawn:")
 
     def test_own_session_with_max_context(self):
         """When max_context is configured the line shows ratio + a
@@ -99,12 +103,45 @@ class TestFormatter:
         # spawning costs from THIS pool — pin it.
         assert "carve" in line.lower()
 
+    def test_wall_clock_line_without_max_wall_time(self):
+        """No `max_wall_time` configured (the default) — wall line
+        still renders with elapsed seconds + an explicit "no cap"
+        note. Agents need elapsed time visible for agent_await
+        decisions even when there's no hard wall budget."""
+        import time as _t
+        # Backdate wall_start by 75 seconds so elapsed renders as
+        # something human-readable.
+        out = format_budget_stats(self._state(
+            wall_start=_t.time() - 75,
+            original_wall_time=None,
+        ))
+        line = next(ln for ln in out.splitlines() if ln.startswith("Wall-clock"))
+        # Phrasing names the load-bearing fact for await reasoning.
+        assert "ticks even during await" in line
+        # Elapsed is rendered as a human time string (75s → "1m15s").
+        assert "1m15s" in line
+        assert "no max_wall_time cap configured" in line
+
+    def test_wall_clock_line_with_max_wall_time(self):
+        """`max_wall_time` configured — wall line shows ratio."""
+        import time as _t
+        out = format_budget_stats(self._state(
+            wall_start=_t.time() - 180,    # 3 minutes elapsed
+            original_wall_time=600,        # 10 minute cap
+        ))
+        line = next(ln for ln in out.splitlines() if ln.startswith("Wall-clock"))
+        assert "ticks even during await" in line
+        assert "3m" in line       # elapsed
+        assert "10m" in line      # cap
+        assert "30%" in line      # 3m/10m = 30%
+
     def test_typical_spawn_line_carries_estimate_disclaimer(self):
         """Phase 1 hardcoded values explicitly tagged as rough. The
         disclaimer is part of the contract — the model treats the
         numbers as heuristics, not precise budgets."""
         out = format_budget_stats(self._state())
-        line = out.splitlines()[2]
+        # Typical-spawn is the 4th line (after own / shared / wall).
+        line = out.splitlines()[3]
         assert "rough estimate" in line.lower()
 
     def test_zero_usage_renders_cleanly(self):
@@ -124,6 +161,84 @@ class TestFormatter:
         # 2500 → "2.5K", 750 → "750" (plain), 128000 → "128K"
         assert "2.5K" in out
         assert "750" in out
+
+    def test_no_children_subagents_block_absent(self):
+        """`children=None` (the default) and `children=[]` both render
+        WITHOUT the Subagents header — agents that haven't spawned
+        anything shouldn't see noise about it."""
+        out_none = format_budget_stats(self._state())
+        out_empty = format_budget_stats(self._state(), children=[])
+        for out in (out_none, out_empty):
+            assert "Subagents" not in out
+            # Four sections (own / shared / wall / typical) — three
+            # newlines, no trailing blank from the `{subagents}`
+            # placeholder when it's empty.
+            assert out.count("\n") == 3
+
+    def test_children_block_lists_each_subagent(self):
+        """Per-child line carries name, status, steps, context,
+        paid, and (optionally) focus. Multi-child runs show one
+        line per spawn."""
+        out = format_budget_stats(self._state(), children=[
+            {
+                "name": "investigator",
+                "focus": "check tax recompute",
+                "status": "completed",
+                "steps_used": 8,
+                "tokens_in": 4_500,
+                "cumulative_paid": 6_200,
+            },
+            {
+                "name": "investigator",
+                "focus": "verify ownership flow",
+                "status": "running",
+                "steps_used": 3,
+                "tokens_in": 1_800,
+                "cumulative_paid": 2_100,
+            },
+        ])
+        # Header with the count.
+        assert "Subagents (2 spawned):" in out
+        # Each child's line carries the load-bearing facts. Per-line
+        # field order is fixed (name [status] · steps · context · paid
+        # · focus) so prompts can rely on consistent shape.
+        assert "investigator [completed]" in out
+        assert "investigator [running]" in out
+        assert "8 steps" in out
+        assert "3 steps" in out
+        assert "~4.5K context" in out
+        assert "~6.2K" in out      # paid for child 1
+        assert 'focus="check tax recompute"' in out
+        assert 'focus="verify ownership flow"' in out
+
+    def test_long_focus_truncated_with_ellipsis(self):
+        """Focus strings can be paragraph-long — truncate to keep
+        the block scannable. The full focus is preserved in spawn
+        events; this is just the rendered summary."""
+        long_focus = "a" * 200
+        out = format_budget_stats(self._state(), children=[{
+            "name": "investigator",
+            "focus": long_focus,
+            "status": "completed",
+            "steps_used": 1, "tokens_in": 100, "cumulative_paid": 200,
+        }])
+        # Truncated at 80 chars with an ellipsis (79 chars + …).
+        assert "…" in out
+        # The 200-char raw focus is NOT all in the output.
+        assert "a" * 200 not in out
+
+    def test_child_with_empty_focus_omits_focus_clause(self):
+        """A focus= clause only appears when focus is non-empty —
+        agents that spawn without a focus shouldn't get a noisy
+        empty quote in the rendering."""
+        out = format_budget_stats(self._state(), children=[{
+            "name": "investigator",
+            "focus": "",
+            "status": "completed",
+            "steps_used": 5, "tokens_in": 1_000, "cumulative_paid": 2_000,
+        }])
+        assert "investigator [completed]" in out
+        assert "focus=" not in out
 
 
 # ── Builtin registration is opt-in ──────────────────────────────────

@@ -443,6 +443,27 @@ def test_parent_child_spawn_budget_split(spawn_script):
     assert child_agent.budget_state.steps_used == 2
     assert child_agent.budget_state.tokens_in == 2_200
 
+    # Parent's second `budget_stats` call (script step 4 in parent
+    # space, LLM call #4 across the shared script) happens AFTER
+    # the spawn returned. Its rendered output must include the
+    # subagents block listing the completed child's stats.
+    # Inspect the LLM call AFTER that one (#5 = done step) — its
+    # messages array carries the budget_stats tool_result.
+    step5_messages = llm.recorded_calls[5]["messages"]
+    bs_results = [
+        m for m in step5_messages
+        if m.get("role") == "tool" and "Subagents" in str(m.get("content", ""))
+    ]
+    assert bs_results, (
+        "parent's post-spawn budget_stats should have surfaced a "
+        "Subagents block — none found in step-5 messages"
+    )
+    body = bs_results[-1]["content"]
+    assert "Subagents (1 spawned)" in body
+    assert "child [completed]" in body
+    assert "2 steps" in body
+    assert 'focus="look at A.java"' in body
+
 
 # ── Test 4: pushers fire end-to-end ────────────────────────────────
 
