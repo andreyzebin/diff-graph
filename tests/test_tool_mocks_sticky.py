@@ -186,10 +186,89 @@ class TestStringShortcut:
 class TestLoaderValidation:
 
     def test_invalid_value_type_raises(self):
-        """Neither list nor string — e.g. someone wrote a dict at the
-        top level by mistake. Loader rejects with a clear message."""
-        with pytest.raises(ValueError, match="must be a list or string"):
+        """Neither list, string, nor a `{mode: ...}` preset — e.g.
+        someone wrote a number at the top level by mistake. Loader
+        rejects with a clear message naming all accepted forms."""
+        with pytest.raises(ValueError, match="must be a list, string, or"):
             ToolMocks.from_dict({"pr_post_comment": 42})
+
+
+# ── capture_only mode (delegation-isolation preset) ────────────────
+
+
+class TestCaptureOnlyMode:
+    """`{mode: capture_only}` — synthesizes a sticky stub for
+    delegation-isolation tests (TODO §13.6). Used primarily for
+    agent_spawn in unit tests where we want to capture spawn focuses
+    via invocations.json WITHOUT a mocked investigator response
+    leaking back into the reviewer's reasoning chain."""
+
+    def test_capture_only_returns_neutral_stub_indefinitely(self):
+        """Every call to a capture_only-mocked tool returns the
+        SAME fixed stub, no matter what args. No exhaustion — the
+        synthesized entry is sticky. The exact JSON shape is part of
+        the contract: agents need to recognise it as 'spawn OK'."""
+        m = ToolMocks.from_dict({
+            "agent_spawn": {"mode": "capture_only"},
+        })
+        for i in range(5):
+            entry = m.consume("agent_spawn", {"agent": "investigator",
+                                               "focus": f"concern #{i}"})
+            assert entry.sticky
+            assert entry.return_data == (
+                '{"status":"spawned","child_id":"<test-stub>",'
+                '"mode":"capture_only"}'
+            )
+
+    def test_capture_only_is_args_agnostic(self):
+        """The whole point — different focuses get the SAME stub.
+        This is what prevents mocked content from leaking into the
+        agent's reasoning when each spawn would otherwise need a
+        focus-matched canned reply."""
+        m = ToolMocks.from_dict({"agent_spawn": {"mode": "capture_only"}})
+        a = m.consume("agent_spawn", {"focus": "check ownership"})
+        b = m.consume("agent_spawn", {"focus": "verify tax calc"})
+        c = m.consume("agent_spawn", {"focus": "lookup migrations"})
+        assert a.return_data == b.return_data == c.return_data
+
+    def test_capture_only_yaml_round_trip(self, tmp_path):
+        """End-to-end via the YAML loader — the bench fixtures use
+        this form, so a parse regression would silently break every
+        delegation-isolation scenario."""
+        fixture = tmp_path / "delegation.yaml"
+        fixture.write_text(
+            "agent_spawn:\n  mode: capture_only\n", encoding="utf-8")
+        m = ToolMocks.from_yaml(str(fixture))
+        assert m.has("agent_spawn")
+        entry = m.consume("agent_spawn", {"focus": "anything"})
+        assert entry.sticky
+        assert "<test-stub>" in entry.return_data
+
+    def test_capture_only_does_not_affect_other_tools(self):
+        """Coexistence with regular mocks — capture_only on one tool
+        doesn't interfere with strict-ordinal entries on another."""
+        m = ToolMocks.from_dict({
+            "agent_spawn": {"mode": "capture_only"},
+            "pr_post_comment": [
+                {"return": "first"},
+                {"return": "second"},
+            ],
+        })
+        # agent_spawn stays sticky
+        m.consume("agent_spawn", {})
+        m.consume("agent_spawn", {})
+        # pr_post_comment advances ordinally
+        assert m.consume("pr_post_comment", {}).return_data == "first"
+        assert m.consume("pr_post_comment", {}).return_data == "second"
+
+    def test_unknown_mode_falls_through_to_list_check(self):
+        """A dict that isn't `mode: capture_only` (e.g. typo or
+        unrecognised mode) is rejected as not-a-list — surfaces the
+        problem instead of silently doing nothing."""
+        with pytest.raises(ValueError, match="must be a list, string, or"):
+            ToolMocks.from_dict({
+                "agent_spawn": {"mode": "unknown_mode"},
+            })
 
     def test_entry_missing_return_field(self):
         """List form still requires `return:` on every entry — sticky

@@ -155,10 +155,27 @@ class ToolMocks:
                     when={}, return_data=raw_entries, sticky=True,
                 )]
                 continue
+            # `{mode: capture_only}` — delegation-isolation preset for
+            # agent_spawn (TODO §13.6). The tool returns a fixed
+            # neutral stub per call (identical regardless of focus) so
+            # the agent treats every spawn as "delegated, OK" without
+            # any mocked investigator content leaking back into its
+            # reasoning chain. Args are still captured in
+            # invocations.json (the agent layer records every dispatch
+            # before the mock intercepts), so the judge can verify
+            # which agents/focuses were delegated. Unlimited replays
+            # — sticky.
+            if isinstance(raw_entries, dict) and raw_entries.get("mode") == "capture_only":
+                by_tool[tool_name] = [MockEntry(
+                    when={},
+                    return_data='{"status":"spawned","child_id":"<test-stub>","mode":"capture_only"}',
+                    sticky=True,
+                )]
+                continue
             if not isinstance(raw_entries, list):
                 raise ValueError(
-                    f"mocks for tool '{tool_name}' must be a list or string, "
-                    f"got {type(raw_entries).__name__}"
+                    f"mocks for tool '{tool_name}' must be a list, string, "
+                    f"or {{mode: capture_only}}; got {type(raw_entries).__name__}"
                 )
             entries: list[MockEntry] = []
             for i, entry in enumerate(raw_entries):

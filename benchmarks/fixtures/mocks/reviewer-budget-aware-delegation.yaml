@@ -2,17 +2,28 @@
 #
 # The scenario tests reviewer's *delegation behaviour* — does it
 # read budget_stats, decide which concerns deserve a spawn, and
-# actually call agent_spawn for those. To keep the test deterministic
-# we mock agent_spawn so every spawn returns a generic "investigator
-# found something useful" payload, no matter the focus. The reviewer
-# then synthesises the final concerns list from the spawned focuses
-# (the `intended_concerns` channel picks up agent_spawn.focus).
+# actually call agent_spawn for those.
+#
+# `mode: capture_only` (TODO §13.6) — the delegation-isolation
+# preset. Every agent_spawn call:
+#   - Records args in invocations.json (the judge reads spawn
+#     focuses via the `intended_concerns` channel — that part
+#     works regardless of mock mode).
+#   - DOES NOT run any child handler (no thread, no mock
+#     investigator dispatch).
+#   - Returns a fixed neutral stub `{"status":"spawned",
+#     "child_id":"<test-stub>","mode":"capture_only"}` identical
+#     for every call.
+#
+# Why this matters: previously the mock returned a generic
+# "investigation complete" string, which leaked into the reviewer's
+# reasoning chain — it tried to synthesise findings from a fake
+# investigator summary that didn't match its own focus, breaking
+# the delegation-as-plan test. With capture_only the reviewer sees
+# only "spawn OK" and consolidates from its own diff/ticket reading.
 #
 # budget_stats is NOT mocked — the reviewer sees its real per-run
 # state, which is the whole point of exercising the tool end-to-end.
 
-agent_spawn: >-
-  Investigation complete. The concern is real and reproducible from
-  the diff; the investigator inspected the changed files plus the
-  ticket context and confirmed the issue. (mocked output for unit
-  test — real investigators would return a structured summary.)
+agent_spawn:
+  mode: capture_only
