@@ -426,21 +426,25 @@ class RatioEscalationPusher:
     ratio_attr: str = ""
 
     DEFAULT_NUDGE_AT: float = 0.5
+    DEFAULT_NUDGE_HIGH_AT: Optional[float] = 0.75  # mandatory warning before FORCE_DONE
     DEFAULT_FORCE_REFLECT_AT: Optional[float] = None  # opt-in; was 0.75
     DEFAULT_FORCE_DONE_AT: Optional[float] = 1.0      # None ⇒ NUDGE-only
 
     # Subclass overrides — what gets put in front of the model when
     # this dimension's threshold trips.
     DEFAULT_NUDGE_MSG: str = ""
+    DEFAULT_NUDGE_HIGH_MSG: str = ""
     DEFAULT_FORCE_DONE_MSG: str = ""
 
     def __init__(
         self,
         *,
         nudge_at: Optional[float] = None,
+        nudge_high_at: Optional[float] = None,
         force_reflect_at: Optional[float] = None,
         force_done_at: Optional[float] = None,
         nudge_message: Optional[str] = None,
+        nudge_high_message: Optional[str] = None,
         force_done_message: Optional[str] = None,
     ) -> None:
         levels: list[tuple[float, PusherType, str]] = [
@@ -448,6 +452,21 @@ class RatioEscalationPusher:
              PusherType.NUDGE,
              nudge_message if nudge_message is not None else self.DEFAULT_NUDGE_MSG),
         ]
+        # NUDGE_HIGH — second-level NUDGE before FORCE_DONE. Default
+        # 0.75 across all subclasses gives a uniform escalation
+        # 50% → 75% → end, closing the gap between "halfway" and
+        # the terminal cap. Implemented as a NUDGE action (not a new
+        # PusherType) so ApplyActionsHandler just appends another
+        # message — no tool narrowing.
+        nh_at = (nudge_high_at if nudge_high_at is not None
+                 else self.DEFAULT_NUDGE_HIGH_AT)
+        if nh_at is not None:
+            levels.append((
+                nh_at,
+                PusherType.NUDGE,
+                nudge_high_message if nudge_high_message is not None
+                else self.DEFAULT_NUDGE_HIGH_MSG,
+            ))
         # FORCE_DONE — also opt-in via DEFAULT_FORCE_DONE_AT or kwarg.
         # Most dimensions (token / time / step) keep it on by default
         # (terminal cap), but pure-informational dimensions (e.g.
@@ -517,6 +536,10 @@ class TokenBudgetPusher(RatioEscalationPusher):
         "Half of your token budget is used. Plan what's left so you "
         "finish before it runs out.",
     )
+    DEFAULT_NUDGE_HIGH_MSG = _msg(
+        "budget.token.nudge_high",
+        "Most of your token budget is used — wrap up soon.",
+    )
     DEFAULT_FORCE_DONE_MSG = _msg(
         "budget.token.force_done",
         "Token budget exhausted. Submit your final output now.",
@@ -534,6 +557,10 @@ class TimeBudgetPusher(RatioEscalationPusher):
         "budget.wall_time.nudge",
         "Half of your wall-clock budget is used. Plan what's left "
         "so you finish before it runs out.",
+    )
+    DEFAULT_NUDGE_HIGH_MSG = _msg(
+        "budget.wall_time.nudge_high",
+        "Most of your wall-clock budget is used — wrap up soon.",
     )
     DEFAULT_FORCE_DONE_MSG = _msg(
         "budget.wall_time.force_done",
@@ -580,11 +607,15 @@ class ContextBudgetPusher(RatioEscalationPusher):
     DEFAULT_FORCE_DONE_AT: Optional[float] = None
 
     # Pure state — no instruction. Wording lives in
-    # orchestra/messages.yaml (`budget.context.nudge`); the inline
-    # string is the fallback when the YAML is missing.
+    # orchestra/messages.yaml (`budget.context.*`); the inline
+    # strings are the fallback when the YAML is missing.
     DEFAULT_NUDGE_MSG = _msg(
         "budget.context.nudge",
-        "Context at 50% of the effective window.",
+        "Conversation history fills 50% of this agent's LLM context window.",
+    )
+    DEFAULT_NUDGE_HIGH_MSG = _msg(
+        "budget.context.nudge_high",
+        "Conversation history fills 75% of this agent's LLM context window.",
     )
 
 
@@ -622,6 +653,10 @@ class StepBudgetPusher(RatioEscalationPusher):
         "budget.steps.nudge",
         "Half of your step budget is used. Plan what's left so you "
         "finish before it runs out.",
+    )
+    DEFAULT_NUDGE_HIGH_MSG = _msg(
+        "budget.steps.nudge_high",
+        "Most of your step budget is used — wrap up soon.",
     )
     DEFAULT_FORCE_DONE_MSG = _msg(
         "budget.steps.force_done",

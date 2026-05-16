@@ -270,33 +270,93 @@ A single **consumer** stage at the end of phase 1 translates
 actions into:
 
 - `NUDGE` → append a `role=user` message with the configured text.
-- `FORCE_REFLECT` → narrow `current_tools` to just `[reflect]` and
-  add a nudge.
-- `FORCE_DONE` → narrow to `[done]`.
+- `FORCE_DONE` → narrow `current_tools` to just `[done]`.
+- `FORCE_REFLECT` → **no-op** (intentionally — see
+  `ApplyActionsHandler` docstring). The enum value and action are
+  preserved for backward compatibility and telemetry, but the tool
+  surface is never reduced to reflect-only — that pattern dead-ended
+  the agent whenever reflect itself failed validation.
 - `CUSTOM` → call the dotted-path handler.
 
 This keeps producers stateless about how their intent surfaces;
-they just describe "the agent should be nudged to reflect right
-now" without knowing whether that means a message append or a
-tool narrowing.
+they just describe "the agent's token budget is at 75%" without
+knowing whether that means a message append or a tool narrowing.
 
-#### Built-in pushers
+#### Built-in pushers — gradation table
 
-- **`ReflectCadenceCounter`** (producer + stateful) — owns the
-  "tool steps since last reflect" counter. Phase 1: writes current
-  value to `ctx.steps_since_reflect`. Phase 2: scans
-  `step_outcomes` for a successful reflect, resets counter.
-  Cadence pusher reads the snapshot and produces a NUDGE at
-  `reflect_interval`, FORCE_REFLECT at 2× the interval.
+Every dimension that has a hard cap follows a three-level
+escalation: **NUDGE @ 0.5 → NUDGE_HIGH @ 0.75 → FORCE_DONE @ end**.
+NUDGE_HIGH is the mandatory warning before tool surface narrows —
+closes the gap between "halfway" and the terminal cap so the
+model has explicit notice that FORCE_DONE is imminent.
 
-- **`RatioEscalationPusher`** (producer, abstract base) — three
-  thresholds with escalating messages: warn → strong-warn →
-  enforce. Subclassed for:
-  - `TokenBudgetPusher` — ratio = tokens_used / max_tokens.
-  - `TimeBudgetPusher` — ratio = wall_clock / max_wall_time.
+| Pusher | Axis (`state.<attr>`) | NUDGE | NUDGE_HIGH | FORCE_DONE | Hard cap → loop exit |
+|---|---|:-:|:-:|:-:|---|
+| **TokenBudgetPusher** | `token_ratio` = `cumulative_paid / max_tokens` | 0.5 | 0.75 | 1.0 | yes — `max_ratio ≥ 1.0` → `state.exhausted` → break |
+| **TimeBudgetPusher** | `wall_ratio` = `elapsed / max_wall_time` | 0.5 | 0.75 | 1.0 | yes, same path. No-op without `max_wall_time`. |
+| **StepBudgetPusher** | `step_ratio` = `steps_used / max_steps` | 0.5 | 0.75 | **0.90** ⚡ | yes via `step ≥ max_steps`. FORCE_DONE deliberately fires earlier (10% headroom) so done() actually has room to run. |
+| **ContextBudgetPusher** | `context_ratio` = `tokens_in / max_context` | 0.5 | 0.75 | (none) | yes — `context_ratio` participates in `max_ratio`, so 1.0 still triggers `state.exhausted` (see gotcha below) |
+| **ReflectCadencePusher** | counter `steps_since_reflect` | at `reflect_interval` | — | — | — |
+| **RatioPusher** | `max_ratio` (max across all axes) | YAML-config | YAML-config | YAML-config | — |
 
-- **`RatioPusher`** — single-threshold base class; rarely used
-  directly.
+**Action → tool / message effect:**
+
+| Action | What `ApplyActionsHandler` does | Visibility on next LLM call |
+|---|---|---|
+| `NUDGE` | append `{role: "user", content: msg}` to `ctx.messages` | shows up as a user-message |
+| `FORCE_DONE` | narrow `ctx.current_tools` to `[done]` if `done` is in the surface + append message | next call's tools schema has only `done` |
+| `FORCE_REFLECT` | **no-op** (action recorded for telemetry; nothing else) | — |
+| `CUSTOM` | invoke the action's `custom_handler(messages, state)` | depends on the handler |
+
+**Soft-opt / specialised pushers (NOT in default chain):**
+
+| Pusher | When | Effect |
+|---|---|---|
+| `FailedReflectGuard` | N consecutive failed reflects (default 3) | Latches → hides `reflect` from `current_tools` + injects an explanation. One-shot per run. |
+| `RatioEscalationPusher` `force_reflect_at` opt-in | YAML-configured | Adds a FORCE_REFLECT level — currently a no-op action, kept for telemetry only. |
+
+#### Two distinct termination mechanisms
+
+Often conflated:
+
+1. **FORCE_DONE action** (soft). `ApplyActionsHandler` narrows
+   `ctx.current_tools` to `[done]` for the **next** LLM call.
+   The agent still runs that call, emits `done()`, and exits
+   cleanly. Step axis sets FORCE_DONE @ 0.90 specifically so the
+   agent has headroom to do this before the loop's own hard cap.
+
+2. **Loop exhaustion** (hard). `state.exhausted` (max of all axis
+   ratios ≥ 1.0) or `step ≥ max_steps` → the for-loop in `Agent.run`
+   breaks. `_force_done` (`orchestra/agent.py:_force_done`) makes
+   one final LLM call narrowed to `done` to extract findings as a
+   recovery — but this can fail.
+
+Ideal: the FORCE_DONE action fires **before** loop exhaustion and
+done() runs in the normal flow. Step axis demonstrates this
+explicitly (0.90 < 1.0). Token / time FORCE_DONE @ 1.0 race with
+exhaustion and may not always succeed cleanly.
+
+#### Gotcha — context axis is "NUDGE-only by design" but participates in `max_ratio`
+
+`ContextBudgetPusher` deliberately has no FORCE_DONE level (per the
+"report state, don't dictate" convention above) — different agents
+have different remedies for a full context (spawn, condense, wrap
+up), so the pusher just reports state.
+
+But `context_ratio` is included in `BudgetState.max_ratio`, and
+`state.exhausted` is `max_ratio ≥ 1.0`. So if `tokens_in` actually
+hits `max_context`, the loop still breaks via exhaustion — bypassing
+the pusher's "NUDGE-only" intent. The two design options for
+resolving this are:
+
+- (a) Exclude `context_ratio` from `max_ratio` — context becomes a
+  pure monitor signal, never terminates the loop.
+- (b) Accept that 1.0 is a physical hard cap (the model literally
+  can't take more) and document it as such — current behaviour.
+
+Currently (b) by default, but the conflict between "no FORCE_DONE
+on context axis" and "context kills the loop at 1.0" is real and
+worth surfacing here.
 
 #### Configured via prompt frontmatter
 
@@ -305,16 +365,19 @@ budget:
   max_tokens: 50000
   max_steps: 40
   max_wall_time: 600
-  pushers:
-    - { at: 0.7, type: nudge,         message: "70% tokens used — start consolidating." }
-    - { at: 0.9, type: force_reflect }
+  max_context: 128000
+  pushers:                       # extras layered on top of defaults
+    - { at: 0.7, type: nudge,      message: "70% tokens used — start consolidating." }
     - { at: 1.0, type: force_done }
 ```
 
 The `BudgetTracker` (`orchestra/budget.py::BudgetTracker`)
 assembles the handler list from this config plus the framework's
-built-in `ReflectCadenceCounter`, and exposes
-`apply_handlers(ctx)` / `notify_step_done(ctx)` to the agent loop.
+built-in chain (ReflectCadenceCounter / RatioPusher /
+TokenBudgetPusher / TimeBudgetPusher / StepBudgetPusher /
+ContextBudgetPusher / ApplyActionsHandler / TracingHandler), and
+exposes `apply_handlers(ctx)` / `notify_step_done(ctx)` to the
+agent loop.
 
 ### Three kinds of "handler" in the framework
 

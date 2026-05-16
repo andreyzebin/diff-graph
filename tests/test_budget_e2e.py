@@ -489,6 +489,138 @@ def test_token_budget_nudge_fires_into_messages(single_agent_script):
     )
 
 
+def test_full_pusher_pipeline_through_force_done():
+    """Kitchen-sink: ONE 10-step scripted run drives every default
+    pusher across at least one threshold. Asserts each pusher's
+    expected action actually lands in the agent's runtime.
+
+    Pusher coverage in this single run:
+      - ReflectCadencePusher       → NUDGE at step 3 apply
+        (steps_since_reflect=3, threshold=3)
+      - TokenBudgetPusher          → NUDGE at step 5 apply
+        (token_ratio crosses 50%)
+      - ContextBudgetPusher        → NUDGE at step 5 apply
+        (context_ratio crosses 50%)
+      - StepBudgetPusher           → NUDGE at step 5 apply
+        (step_ratio crosses 50%)
+      - StepBudgetPusher           → FORCE_DONE at step 9 apply
+        (step_ratio = 90%) — narrows ctx.current_tools to [done]
+        BEFORE the step's LLM call, so the recorded tools schema
+        for call #9 contains only `done`.
+
+    Not covered here (separate concerns):
+      - TimeBudgetPusher           — needs max_wall_time + actual
+                                     elapsed time; unit-tested in
+                                     test_budget.py.
+      - TokenBudgetPusher FORCE_DONE — would terminate the run
+                                       earlier than step 9; this
+                                       script keeps token_ratio
+                                       under 100% so the cleaner
+                                       step-axis FORCE_DONE fires.
+      - ContextBudgetPusher        — NUDGE-only by design (see
+                                     docs/orchestra-architecture.md).
+      - FailedReflectGuard         — not in default chain.
+      - RatioPusher (yaml)         — empty by default.
+    """
+    with open(_FIXTURES / "all_pushers.yaml") as f:
+        script_yaml = yaml.safe_load(f)
+    llm = ScriptedLLM(script_yaml["script"], cached_fraction=0.0)
+    agent = _build_agent(
+        name="probe",
+        llm=llm,
+        script_yaml=script_yaml,
+        tools=["diff_list_files", "diff_read_file",
+               "reflect", "done"],
+        budget=BudgetConfig(
+            max_tokens=15_000,
+            max_steps=10,
+            max_context=15_000,
+            # No max_wall_time — TimeBudgetPusher stays silent.
+        ),
+    )
+    # Reflect cadence interval = 3. The default _build_agent path
+    # uses reflect_interval=0 (silent), so override here. We need
+    # `reflect` in tools for the cadence handler to register.
+    agent.config.reflect_interval = 3
+    agent.budget_tracker.configure_reflect_pushers(reflect_interval=3)
+
+    agent.run()
+
+    # All 10 script entries consumed → loop ran end-to-end and the
+    # final done() terminated it cleanly via the narrowed tool surface.
+    assert llm.call_count == 10, (
+        f"expected 10 LLM calls; got {llm.call_count}"
+    )
+
+    # ── NUDGE coverage ─────────────────────────────────────────
+    # Walk every LLM call's messages, collect lowercased user-role
+    # bodies, search for each pusher's signature phrase.
+    all_user_bodies: list[str] = []
+    for call in llm.recorded_calls:
+        for m in call.get("messages", []):
+            if m.get("role") == "user":
+                all_user_bodies.append(str(m.get("content", "")).lower())
+
+    # Pusher → substring that uniquely identifies its NUDGE wording
+    # (lives in orchestra/messages.yaml — these substrings must stay
+    # in sync if the YAML wording is retuned).
+    expected_nudges = {
+        "TokenBudgetPusher": "token budget",
+        "StepBudgetPusher":  "step budget",
+        "ContextBudgetPusher": "context window",
+        "ReflectCadencePusher": "without calling reflect",
+    }
+    for pusher_name, needle in expected_nudges.items():
+        assert any(needle in body for body in all_user_bodies), (
+            f"{pusher_name} NUDGE never landed in any LLM call's "
+            f"user messages — searched for {needle!r}. "
+            f"Collected {len(all_user_bodies)} user bodies."
+        )
+
+    # ── NUDGE_HIGH coverage ────────────────────────────────────
+    # Second-level NUDGE @ 0.75 (mandatory warning before FORCE_DONE)
+    # for token/step/context. Wording distinguishes by "most of" or
+    # "75%" (context). Token/step messages share "wrap up soon"
+    # phrasing; context keeps pure-state "75% of …".
+    # Step ratio at step 8 apply = 80%, token = 81%, context = 80% —
+    # all cross NUDGE_HIGH. So all three should appear by run end.
+    nudge_high_signatures = {
+        "TokenBudgetPusher NUDGE_HIGH":  ("most of your token", "wrap up soon"),
+        "StepBudgetPusher NUDGE_HIGH":   ("most of your step",  "wrap up soon"),
+        "ContextBudgetPusher NUDGE_HIGH": ("conversation history fills 75%",),
+    }
+    for pusher_name, needles in nudge_high_signatures.items():
+        assert any(
+            all(needle in body for needle in needles)
+            for body in all_user_bodies
+        ), (
+            f"{pusher_name} never landed in any LLM call's user "
+            f"messages — searched for all of {needles!r}."
+        )
+
+    # ── FORCE_DONE coverage ────────────────────────────────────
+    # StepBudgetPusher's FORCE_DONE fires at step 9 apply (ratio=90%).
+    # ApplyActionsHandler narrows ctx.current_tools to [done], and
+    # the LLM call's `tools` kwarg is built from ctx.current_tools.
+    # So recorded_calls[9]["tools"] must contain only one entry, named
+    # "done".
+    step9_tools = llm.recorded_calls[9].get("tools") or []
+    tool_names = [t.get("function", {}).get("name") for t in step9_tools]
+    assert tool_names == ["done"], (
+        f"step 9 LLM call should have been narrowed to [done] by "
+        f"StepBudgetPusher's FORCE_DONE; got tools={tool_names}"
+    )
+    # Earlier calls had a richer tool surface — sanity check.
+    step0_tools = llm.recorded_calls[0].get("tools") or []
+    step0_names = sorted(t.get("function", {}).get("name") for t in step0_tools)
+    assert "done" in step0_names
+    # At step 0, none of the budget axes have triggered yet, so the
+    # full domain surface is visible.
+    assert len(step0_names) > 1, (
+        f"step 0 should expose the full tool surface, got {step0_names}"
+    )
+
+
 def test_context_budget_nudge_fires_into_messages(single_agent_script):
     """Sibling test for the context axis. With `max_context` set
     low enough that step 0's tokens_in=4000 is already past the

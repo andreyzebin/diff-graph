@@ -1,0 +1,50 @@
+# Kitchen-sink scripted run for the full pusher pipeline.
+#
+# Each step ramps prompt_tokens linearly so context_ratio and
+# token_ratio climb together; step_ratio climbs at +10% per call;
+# reflect cadence triggers because no reflect calls in the script.
+#
+# The agent runs for 10 steps; at step 9 step_ratio = 9/10 = 90%
+# crosses StepBudgetPusher's FORCE_DONE threshold — tools_schema
+# narrows to just `done` and the script's step-9 done() consumes it.
+#
+# Walk of expected pusher firings (uncached, paid=prompt+completion,
+# delta-based cumulative — see budget.py docs):
+#
+#   step  prompt  cum_paid  token_r  ctx_r  step_r  ssr  pushers
+#   ----  ------  --------  -------  -----  ------  ---  -------
+#   0     1500    1600      11%      10%    0%      0    -
+#   1     3000    3100      21%      20%    10%     1    -
+#   2     4500    4600      31%      30%    20%     2    -
+#   3     6000    6100      41%      40%    30%     3    reflect.cadence NUDGE
+#   4     7500    7600      51%      50%    40%     4    -
+#   5     9000    9100      61%      60%    50%     5    token + context + step NUDGE
+#   6     10500   10600     71%      70%    60%     6    -
+#   7     12000   12100     81%      80%    70%     7    -
+#   8     13500   13600     91%      90%    80%     8    -
+#   9     14500   14600     97%      97%    90%     9    StepBudget FORCE_DONE
+#
+# Note step_r is computed at apply_handlers time, BEFORE the step's
+# own update_tokens. So step 5's apply reads steps_used=5 (from
+# step 4's update) → step_r=50% → step NUDGE.
+# Step 9's apply reads steps_used=9 → step_r=90% → FORCE_DONE → tools
+# narrow to [done] → LLM gets only done in its schema → script's
+# step-9 done() consumes it → AGENT_DONE.
+
+script:
+  - {prompt: 1500,  completion: 100, tool_calls: [{name: diff_list_files, args: {}}]}
+  - {prompt: 3000,  completion: 100, tool_calls: [{name: diff_read_file,  args: {path: A}}]}
+  - {prompt: 4500,  completion: 100, tool_calls: [{name: diff_read_file,  args: {path: B}}]}
+  - {prompt: 6000,  completion: 100, tool_calls: [{name: diff_read_file,  args: {path: C}}]}
+  - {prompt: 7500,  completion: 100, tool_calls: [{name: diff_read_file,  args: {path: D}}]}
+  - {prompt: 9000,  completion: 100, tool_calls: [{name: diff_read_file,  args: {path: E}}]}
+  - {prompt: 10500, completion: 100, tool_calls: [{name: diff_read_file,  args: {path: F}}]}
+  - {prompt: 12000, completion: 100, tool_calls: [{name: diff_read_file,  args: {path: G}}]}
+  - {prompt: 13500, completion: 100, tool_calls: [{name: diff_read_file,  args: {path: H}}]}
+  # Step 9: tools narrowed to [done] by StepBudget FORCE_DONE. Script
+  # cooperates by calling done().
+  - {prompt: 14500, completion: 100, tool_calls: [{name: done, args: {findings: []}}]}
+
+tool_mocks:
+  diff_list_files: "(mocked listing)"
+  diff_read_file: "(mocked content)"

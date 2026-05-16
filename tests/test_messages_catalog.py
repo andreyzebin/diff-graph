@@ -58,12 +58,16 @@ class TestEveryConsumedKeyResolves:
 
     @pytest.mark.parametrize("key", [
         "budget.token.nudge",
+        "budget.token.nudge_high",
         "budget.token.force_done",
         "budget.wall_time.nudge",
+        "budget.wall_time.nudge_high",
         "budget.wall_time.force_done",
         "budget.steps.nudge",
+        "budget.steps.nudge_high",
         "budget.steps.force_done",
         "budget.context.nudge",
+        "budget.context.nudge_high",
         "reflect.cadence.nudge",
     ])
     def test_key_resolves_to_non_empty(self, key):

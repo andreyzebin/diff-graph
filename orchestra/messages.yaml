@@ -16,22 +16,38 @@
 # Context-axis is NUDGE-only and stays purely informational.
 
 budget:
+  # Three-level escalation for every axis with a hard cap (token,
+  # wall_time, step): NUDGE @ 0.5 → NUDGE_HIGH @ 0.75 → FORCE_DONE
+  # @ 1.0 (or 0.90 for step). NUDGE_HIGH is the mandatory warning
+  # before tool surface narrows — closes the gap between "halfway"
+  # and the terminal cap so the agent has explicit notice that
+  # FORCE_DONE is imminent. Context axis is NUDGE-only with the
+  # same two NUDGE levels (no FORCE_DONE by design).
   token:
     nudge: >-
       Half of your token budget is used. Plan what's left so you
       finish before it runs out.
+    nudge_high: >-
+      Most of your token budget is used — wrap up soon, FORCE_DONE
+      is close.
     force_done: Token budget exhausted. Submit your final output now.
 
   wall_time:
     nudge: >-
       Half of your wall-clock budget is used. Plan what's left so
       you finish before it runs out.
+    nudge_high: >-
+      Most of your wall-clock budget is used — wrap up soon,
+      FORCE_DONE is close.
     force_done: Wall-clock budget exhausted. Submit your final output now.
 
   steps:
     nudge: >-
       Half of your step budget is used. Plan what's left so you
       finish before it runs out.
+    nudge_high: >-
+      Most of your step budget is used — wrap up soon, FORCE_DONE
+      is close.
     force_done: Step budget running low. Submit your final output now.
 
   context:
@@ -40,6 +56,7 @@ budget:
     # just reports state and leaves the response to each agent's
     # prompt.
     nudge: Conversation history fills 50% of this agent's LLM context window.
+    nudge_high: Conversation history fills 75% of this agent's LLM context window.
 
 budget_stats:
   # Hardcoded rough estimates used by the `budget_stats` tool when

@@ -283,36 +283,39 @@ class TestTimeBudgetPusher:
         assert a.threshold == pytest.approx(0.5)
         assert a.ratio == pytest.approx(0.55, abs=0.05)
 
-    def test_default_escalation_skips_force_reflect(self):
-        """Default escalation is 2-level: NUDGE → FORCE_DONE.
-        FORCE_REFLECT is opt-in (see
-        `test_escalates_through_three_levels_when_opted_in` below).
-        Why default-off: narrowing tools to reflect-only dead-ends
-        the agent when reflect itself fails validation."""
+    def test_default_three_level_escalation(self):
+        """Default escalation: NUDGE @ 0.5 → NUDGE_HIGH @ 0.75 →
+        FORCE_DONE @ 1.0. NUDGE_HIGH is the mandatory warning
+        before tool surface narrows so the model has explicit
+        notice that FORCE_DONE is imminent."""
         pusher = TimeBudgetPusher()
-        seen: list[PusherType] = []
+        seen: list[tuple[PusherType, float]] = []
         for wall_used in [30, 60, 80, 105]:
             ctx = self._ctx_with_wall(wall_used=wall_used, wall_max=100)
             pusher.apply(ctx)
-            seen.extend(a.type for a in ctx.actions)
+            seen.extend((a.type, a.threshold) for a in ctx.actions)
         assert seen == [
-            PusherType.NUDGE,         # crossed 0.5 at wall_used=60
-            PusherType.FORCE_DONE,    # crossed 1.0 at wall_used=105
+            (PusherType.NUDGE,      0.5),   # crossed 0.5 at wall_used=60
+            (PusherType.NUDGE,      0.75),  # NUDGE_HIGH crossed at 80
+            (PusherType.FORCE_DONE, 1.0),   # crossed 1.0 at wall_used=105
         ]
 
-    def test_escalates_through_three_levels_when_opted_in(self):
-        """Opt-in: passing `force_reflect_at=0.75` restores the
-        pre-refactor 3-level escalation."""
-        pusher = TimeBudgetPusher(force_reflect_at=0.75)
-        seen: list[PusherType] = []
-        for wall_used in [30, 60, 80, 105]:
+    def test_four_level_escalation_when_force_reflect_opted_in(self):
+        """Opt-in `force_reflect_at=0.85` (chosen != 0.75 to avoid
+        the NUDGE_HIGH threshold). Sequence becomes:
+          0.5 NUDGE → 0.75 NUDGE_HIGH → 0.85 FORCE_REFLECT → 1.0 FORCE_DONE.
+        """
+        pusher = TimeBudgetPusher(force_reflect_at=0.85)
+        seen: list[tuple[PusherType, float]] = []
+        for wall_used in [30, 60, 80, 90, 105]:
             ctx = self._ctx_with_wall(wall_used=wall_used, wall_max=100)
             pusher.apply(ctx)
-            seen.extend(a.type for a in ctx.actions)
+            seen.extend((a.type, a.threshold) for a in ctx.actions)
         assert seen == [
-            PusherType.NUDGE,         # crossed 0.5 at wall_used=60
-            PusherType.FORCE_REFLECT, # crossed 0.75 at wall_used=80
-            PusherType.FORCE_DONE,    # crossed 1.0 at wall_used=105
+            (PusherType.NUDGE,         0.5),
+            (PusherType.NUDGE,         0.75),
+            (PusherType.FORCE_REFLECT, 0.85),
+            (PusherType.FORCE_DONE,    1.0),
         ]
 
     def test_no_re_arm(self):
@@ -325,24 +328,30 @@ class TestTimeBudgetPusher:
         assert ctx2.actions == []
 
     def test_custom_thresholds(self):
+        """Explicit thresholds for NUDGE / FORCE_REFLECT / FORCE_DONE.
+        Default NUDGE_HIGH @0.75 also fires alongside FORCE_DONE @0.9
+        at wall=95 — both crossed by the same ratio."""
         pusher = TimeBudgetPusher(
             nudge_at=0.3, force_reflect_at=0.6, force_done_at=0.9,
         )
-        seen: list[PusherType] = []
+        seen: list[tuple[PusherType, float]] = []
         for wall_used in [25, 35, 65, 95]:
             ctx = self._ctx_with_wall(wall_used=wall_used, wall_max=100)
             pusher.apply(ctx)
-            seen.extend(a.type for a in ctx.actions)
+            seen.extend((a.type, a.threshold) for a in ctx.actions)
         assert seen == [
-            PusherType.NUDGE,         # crossed 0.3 at wall_used=35
-            PusherType.FORCE_REFLECT, # crossed 0.6 at wall_used=65
-            PusherType.FORCE_DONE,    # crossed 0.9 at wall_used=95
+            (PusherType.NUDGE,         0.3),  # @ wall=35
+            (PusherType.FORCE_REFLECT, 0.6),  # @ wall=65
+            (PusherType.NUDGE,         0.75), # NUDGE_HIGH @ wall=95
+            (PusherType.FORCE_DONE,    0.9),  # @ wall=95
         ]
 
     def test_levels_sorted_even_if_misconfigured(self):
         """Defensive: if author puts FORCE_DONE before NUDGE in the
         constructor, the handler reorders them so escalation still
-        fires in ascending threshold order."""
+        fires in ascending threshold order. Default NUDGE_HIGH
+        @ 0.75 enters the ladder between the misconfigured 0.7
+        FORCE_DONE and 0.9 NUDGE."""
         pusher = TimeBudgetPusher(
             nudge_at=0.9,            # ← intentionally swapped
             force_reflect_at=0.5,
@@ -353,14 +362,12 @@ class TestTimeBudgetPusher:
             ctx = self._ctx_with_wall(wall_used=wall_used, wall_max=100)
             pusher.apply(ctx)
             seen.extend((a.threshold, a.type) for a in ctx.actions)
-        # Sorted by threshold ascending: 0.5, 0.7, 0.9
-        # At wall_used=55 → ratio 0.55 → only 0.5 threshold fires.
-        # At wall_used=75 → ratio 0.75 → only 0.7 threshold fires (0.5 already latched).
-        # At wall_used=95 → ratio 0.95 → only 0.9 threshold fires.
+        # Sorted ascending: FR(0.5), FD(0.7), NUDGE_HIGH(0.75), NUDGE(0.9).
         assert seen == [
-            (0.5, PusherType.FORCE_REFLECT),
-            (0.7, PusherType.FORCE_DONE),
-            (0.9, PusherType.NUDGE),
+            (0.5,  PusherType.FORCE_REFLECT),  # @ wall=55
+            (0.7,  PusherType.FORCE_DONE),     # @ wall=75
+            (0.75, PusherType.NUDGE),          # NUDGE_HIGH @ wall=75
+            (0.9,  PusherType.NUDGE),          # @ wall=95
         ]
 
 
@@ -405,31 +412,34 @@ class TestTokenBudgetPusher:
         # "budget gone" line.
         assert "token" in a.message.lower()
 
-    def test_default_escalation_skips_force_reflect(self):
-        """Default: 2-level NUDGE → FORCE_DONE. FORCE_REFLECT opt-in
-        (see `..._when_opted_in` below)."""
+    def test_default_three_level_escalation(self):
+        """Default: NUDGE @ 0.5 → NUDGE_HIGH @ 0.75 → FORCE_DONE @ 1.0."""
         pusher = TokenBudgetPusher()
-        seen: list[PusherType] = []
+        seen: list[tuple[PusherType, float]] = []
         for used in [300, 600, 800, 1050]:
             ctx = self._ctx_with_tokens(tokens_used=used, tokens_max=1000)
             pusher.apply(ctx)
-            seen.extend(a.type for a in ctx.actions)
+            seen.extend((a.type, a.threshold) for a in ctx.actions)
         assert seen == [
-            PusherType.NUDGE,         # crossed 0.5 at used=600
-            PusherType.FORCE_DONE,    # crossed 1.0 at used=1050 (clamped to 1.0)
+            (PusherType.NUDGE,      0.5),
+            (PusherType.NUDGE,      0.75),
+            (PusherType.FORCE_DONE, 1.0),
         ]
 
-    def test_escalates_through_three_levels_when_opted_in(self):
-        pusher = TokenBudgetPusher(force_reflect_at=0.75)
-        seen: list[PusherType] = []
-        for used in [300, 600, 800, 1050]:
+    def test_four_level_escalation_when_force_reflect_opted_in(self):
+        """force_reflect_at=0.85 (away from the NUDGE_HIGH 0.75 slot)
+        gives a 4-step ladder."""
+        pusher = TokenBudgetPusher(force_reflect_at=0.85)
+        seen: list[tuple[PusherType, float]] = []
+        for used in [300, 600, 800, 900, 1050]:
             ctx = self._ctx_with_tokens(tokens_used=used, tokens_max=1000)
             pusher.apply(ctx)
-            seen.extend(a.type for a in ctx.actions)
+            seen.extend((a.type, a.threshold) for a in ctx.actions)
         assert seen == [
-            PusherType.NUDGE,         # crossed 0.5 at used=600
-            PusherType.FORCE_REFLECT, # crossed 0.75 at used=800
-            PusherType.FORCE_DONE,    # crossed 1.0 at used=1050 (clamped to 1.0)
+            (PusherType.NUDGE,         0.5),
+            (PusherType.NUDGE,         0.75),
+            (PusherType.FORCE_REFLECT, 0.85),
+            (PusherType.FORCE_DONE,    1.0),
         ]
 
     def test_no_re_arm(self):
@@ -536,34 +546,37 @@ class TestStepBudgetPusher:
         # gets actionable feedback on the right axis.
         assert "step" in a.message.lower()
 
-    def test_default_escalation_skips_force_reflect(self):
-        """Default: NUDGE → FORCE_DONE (FORCE_REFLECT opt-in). The
-        critical thing for the step axis is FORCE_DONE at 0.90 firing
-        BEFORE the hard cap (1.0) — that's covered here and in
-        `test_force_done_fires_before_hard_cap`."""
+    def test_default_three_level_escalation(self):
+        """Default: NUDGE @ 0.5 → NUDGE_HIGH @ 0.75 → FORCE_DONE @ 0.90.
+        The step axis keeps FORCE_DONE at 0.90 (not 1.0) so the
+        agent has headroom to actually emit done() before the hard
+        cap kicks in — see `test_force_done_fires_before_hard_cap`."""
         pusher = StepBudgetPusher()
-        seen: list[PusherType] = []
+        seen: list[tuple[PusherType, float]] = []
         for used in [40, 60, 80, 95]:
             ctx = self._ctx_with_steps(steps_used=used, steps_max=100)
             pusher.apply(ctx)
-            seen.extend(a.type for a in ctx.actions)
+            seen.extend((a.type, a.threshold) for a in ctx.actions)
         assert seen == [
-            PusherType.NUDGE,         # crossed 0.50 at used=60
-            PusherType.FORCE_DONE,    # crossed 0.90 at used=95 — BEFORE hard cap
+            (PusherType.NUDGE,      0.5),
+            (PusherType.NUDGE,      0.75),
+            (PusherType.FORCE_DONE, 0.90),
         ]
 
-    def test_escalates_through_three_levels_when_opted_in(self):
-        """Opt-in: 3-level escalation, FORCE_DONE still at 0.90."""
-        pusher = StepBudgetPusher(force_reflect_at=0.75)
-        seen: list[PusherType] = []
-        for used in [40, 60, 80, 95]:
+    def test_four_level_escalation_when_force_reflect_opted_in(self):
+        """force_reflect_at=0.82 (away from 0.75/0.90 slots) gives
+        a 4-step ladder."""
+        pusher = StepBudgetPusher(force_reflect_at=0.82)
+        seen: list[tuple[PusherType, float]] = []
+        for used in [40, 60, 80, 85, 95]:
             ctx = self._ctx_with_steps(steps_used=used, steps_max=100)
             pusher.apply(ctx)
-            seen.extend(a.type for a in ctx.actions)
+            seen.extend((a.type, a.threshold) for a in ctx.actions)
         assert seen == [
-            PusherType.NUDGE,         # crossed 0.50 at used=60
-            PusherType.FORCE_REFLECT, # crossed 0.75 at used=80
-            PusherType.FORCE_DONE,    # crossed 0.90 at used=95
+            (PusherType.NUDGE,         0.5),
+            (PusherType.NUDGE,         0.75),
+            (PusherType.FORCE_REFLECT, 0.82),
+            (PusherType.FORCE_DONE,    0.90),
         ]
 
     def test_force_done_fires_before_hard_cap(self):
@@ -687,19 +700,25 @@ class TestContextBudgetPusher:
     def test_force_done_never_fires(self):
         """Critical contract: this axis emits NUDGE only — never
         FORCE_DONE. Walking the ratio from below threshold through
-        1.0+ must produce exactly one NUDGE and zero FORCE_DONE.
-        Different from token/step/time pushers, where FORCE_DONE is
-        the architectural floor; here narrowing the tool surface
-        would be 'telling the agent what to do', which the convention
-        forbids for non-universal remedies."""
+        1.0+ produces NUDGE at 0.5 and NUDGE_HIGH at 0.75 (both
+        PusherType.NUDGE — different thresholds, same action type)
+        but no FORCE_DONE. Different from token/step/time pushers,
+        where FORCE_DONE is the architectural floor; here narrowing
+        the tool surface would be 'telling the agent what to do',
+        which the convention forbids for non-universal remedies."""
         pusher = ContextBudgetPusher()
-        seen: list[PusherType] = []
+        seen: list[tuple[PusherType, float]] = []
         for tokens_in in [30_000, 60_000, 90_000, 110_000]:
             ctx = self._ctx_with_context(tokens_in=tokens_in, max_context=100_000)
             pusher.apply(ctx)
-            seen.extend(a.type for a in ctx.actions)
-        assert seen == [PusherType.NUDGE]
-        assert PusherType.FORCE_DONE not in seen
+            seen.extend((a.type, a.threshold) for a in ctx.actions)
+        assert seen == [
+            (PusherType.NUDGE, 0.5),   # NUDGE @ 60K (60%)
+            (PusherType.NUDGE, 0.75),  # NUDGE_HIGH @ 90K (90%)
+        ]
+        # The load-bearing assertion: NO FORCE_DONE ever, regardless
+        # of how high context_ratio climbs.
+        assert all(t != PusherType.FORCE_DONE for t, _ in seen)
 
     def test_nudge_message_is_pure_state(self):
         """Message reports the state plainly — no instruction, no
