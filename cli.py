@@ -468,6 +468,15 @@ def _run_with_dispatcher(
                 _otel_session.set_attribute("diffgraph.scenario_id", _scenario_id_env)
             if _mutation_override:
                 _otel_session.set_attribute("diffgraph.mutation", _mutation_override)
+            # Context budget — provider profile (.llm_creds.toml
+            # [providers.<name>] max_context) > config.yaml
+            # review.max_context. None ⇒ ContextBudgetPusher silent.
+            # Same precedence as the `run` subcommand at line ~775.
+            effective_context = (
+                llm_cfg.get("max_context")
+                or review_cfg.get("max_context")
+                or None
+            )
             result = run_agent(
                 agent_name=agent_name,
                 data=data,
@@ -482,6 +491,7 @@ def _run_with_dispatcher(
                 extra_body=llm_cfg.get("extra_body"),
                 tool_mocks=tool_mocks,
                 user_message_override=user_message_override,
+                max_context=effective_context,
             )
 
         # ── Post-run: post replies, findings, cleanup ─────────────────────────
