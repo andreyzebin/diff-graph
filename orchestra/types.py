@@ -125,6 +125,16 @@ class AgentConfig:
     # Counter resets when reflect actually fires.
     reflect_interval: int = 3
     sgr_extensions: Optional[dict[str, Any]] = None  # extra reflect() fields
+    # Template name picked when the reflect builtin builds its
+    # tool-result string. Lives in `orchestra/templates/reflect_response/
+    # <name>.md`. Default `"default"` returns just "Reflection noted."
+    # `"with_state"` (opt-in, used by scenarios where the agent should
+    # see its run state on every reflect — budget, time, subagents)
+    # composes a state snapshot from the framework's internal
+    # render APIs (format_budget_stats, format_time_info, …) and
+    # interpolates into the template. Toggle per-prompt via the
+    # `reflect_response_template:` frontmatter field.
+    reflect_response_template: str = "default"
     # Every tool the agent can call — domain (pr_post_comment, read_file, …)
     # and framework (agent_spawn, reflect, agent_list). The presence of
     # `reflect` here is what we used to call SGR; consumers check for it

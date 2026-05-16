@@ -1,16 +1,21 @@
 ---
-# Budget-aware delegation variant. The reviewer is told to consult
-# `budget_stats` before deciding how to handle each concern, and to
-# delegate any concern that needs investigation (cross-source,
-# beyond-current-diff evidence) to an investigator via `agent_spawn`.
-# The text deliverable is the consolidated concern list.
+# Budget-aware delegation variant. The reviewer sees its run state
+# (budget + time + subagents) on EVERY reflect call — opted into via
+# `reflect_response_template: with_state`. No separate budget_stats
+# query needed; the snapshot arrives in the reflect tool-result, so
+# the reviewer plans on fresh data every reflection cycle.
 #
-# Phase 1 of agent-side budget planning (§12 design): exposes the
-# `budget_stats` tool to the reviewer in a CONTAINED test scenario.
-# Production reviewer.user.md stays untouched until this shape proves
-# itself across a few attempt batches.
+# Delegation criterion is BUDGET-PRESSURE rather than cross-source
+# (per TODO §13.10 — cross-source rationale gives zero real benefit
+# until §10 Phase D ships investigator-extended tools). The
+# reviewer should anticipate context pressure and offload reading
+# into child investigators (fresh windows) rather than waiting for
+# NUDGE_HIGH and reacting too late.
+#
+# Production reviewer.user.md stays untouched until this shape
+# proves itself.
+reflect_response_template: with_state
 tools_add:
-  - budget_stats
   - agent_spawn
   - agent_list
   - text_answer
@@ -52,28 +57,35 @@ Commits *(oldest → newest)*:
 
 This PR is associated with these Jira ticket(s): {jira_tickets}
 
-**Plan your work before digging.** Call `budget_stats()` once at the
-start of the run. The output splits into your own session (LLM
-context, per-agent) and the pool you share with any children you
-spawn (tokens + steps). Spawning offloads investigation to a child
-working in a fresh context, and only its `done()` summary returns to
-your session. Use this to plan: which concerns get investigated by a
-child agent vs noted directly from the diff.
+**Every reflect call returns your run state.** Each `reflect(...)`
+tool-result carries the current snapshot: time, your own context
+window usage, the shared pool with children, any spawned subagents,
+and a "typical investigator spawn" cost reference. Re-plan each
+time you reflect — your situation has changed.
 
-**Then look at the work.** Read the ticket(s) via
-`jira_read_ticket(ref)` (copy each ref verbatim from the list above),
-then read the diff with `diff_*`.
+**Read the ticket** via `jira_read_ticket(ref)` (copy each ref
+verbatim from the list above), then **orient on the diff** with
+`diff_list_files`.
 
-**Decide per concern.** For each concern this PR raises:
+**Decide per concern using budget-pressure rationale.** For each
+concern this PR raises:
 
-- If the concern's evidence needs cross-source investigation — the
-  Jira link history, sibling PRs, other repos, deeper code traversal
-  beyond this PR — call `agent_spawn(agent="investigator",
-  focus="<one-sentence concern phrased as the question to answer>")`.
-  Multiple spawns in one step run in parallel. Use `agent_list()` if
-  unsure which agent to use.
-- If the concern is fully grounded in what you can see in this PR's
-  diff + threads + ticket — note it directly; no spawn needed.
+- **Project your reading cost vs your context headroom.** Look at
+  the most recent reflect's state snapshot. Each `diff_read_file`
+  adds the file's full size to your own context; an
+  `agent_spawn(agent="investigator", focus="...")` instead returns
+  a brief ~3-5K summary while the child reads in its own fresh
+  window.
+- **If reading all material yourself would push you past ~75% of
+  your context window**, spawn investigators for at least some
+  concerns rather than read everything yourself. Tight windows
+  make direct investigation risky — you may run out of headroom
+  mid-synthesis.
+- **If your context is comfortable** AND the concern is small
+  (one file, one function), note it directly — no spawn needed.
+
+Multiple spawns in one step run in parallel. Use `agent_list()` if
+unsure which agent to spawn.
 
 **Synthesize.** When all spawns have returned, compile the final
 concerns list. Submit via `text_answer(text=...)`, one concern per
@@ -81,5 +93,6 @@ line as `- <short title>: <one-sentence question>`. Cite the ticket
 AC where relevant. No preface, no summary, no fix suggestions.
 Then call `done(findings=[])`.
 
-Use `reflect` as your private working memory between steps — facts
-learned, hypotheses still open, what's been delegated.
+Use `reflect` actively — both as private working memory AND as your
+state-refresh checkpoint (the snapshot in its tool-result is your
+authoritative view of where you are).

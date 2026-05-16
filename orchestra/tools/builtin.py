@@ -89,7 +89,40 @@ def register_builtins(
                         step=step,
                         **kw,
                     )
-            return "Reflection noted."
+            # Tool-result string. Default template = "Reflection
+            # noted." (current behavior). Opt-in via prompt
+            # frontmatter `reflect_response_template: with_state`
+            # composes a state snapshot (budget + time + subagents)
+            # so the agent re-grounds its planning on every reflect
+            # — no need for a separate budget_stats query.
+            template_name = "default"
+            children_snapshot = None
+            state = None
+            if _captured_agent is not None:
+                template_name = getattr(
+                    _captured_agent.config, "reflect_response_template",
+                    "default",
+                )
+                state = _captured_agent.budget_state
+                # Snapshot children under the lock so async-spawn
+                # races don't tear the rendering.
+                if template_name != "default" and state is not None:
+                    children_snapshot = []
+                    with _captured_agent._children_lock:
+                        for cid, child in _captured_agent._children.items():
+                            completed = cid in _captured_agent._children_results
+                            bs = child.budget_state
+                            children_snapshot.append({
+                                "name": child.config.name,
+                                "focus": (child.data_scope or {}).get("focus", ""),
+                                "status": "completed" if completed else "running",
+                                "steps_used": bs.steps_used if bs else 0,
+                                "tokens_in": bs.tokens_in if bs else 0,
+                                "cumulative_paid": bs.cumulative_paid if bs else 0,
+                            })
+            from ..reflect_response import render as _render_reflect
+            return _render_reflect(template_name, state=state,
+                                    children=children_snapshot)
 
         registry.register_tool_def(ToolDef(
             name="reflect",

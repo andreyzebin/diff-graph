@@ -50,6 +50,9 @@ class AgentRegistryEntry:
     guards: dict[str, str] = field(default_factory=dict)  # {trigger: message}
     source_file: str = ""
     source_hash: str = ""
+    # Template name for the reflect builtin's tool-result string.
+    # See AgentConfig.reflect_response_template for semantics.
+    reflect_response_template: str = "default"
 
     def to_agent_config(self) -> AgentConfig:
         """Convert to AgentConfig. tools is a single flat list — the
@@ -75,6 +78,7 @@ class AgentRegistryEntry:
             user_prompt=self.user_template,
             mode=self.mode,
             reflect_interval=self.reflect_interval,
+            reflect_response_template=self.reflect_response_template,
             tools=tools,
             budget=self.budget,
             llm_params=self.llm_params,
@@ -419,6 +423,7 @@ def _parse_prompt_file(
     llm_params = _parse_llm_header(headers.get("llm", ""))
     sgr = "sgr" in capabilities
     reflect_interval = int(headers.get("reflect_interval", "3"))
+    reflect_response_template = headers.get("reflect_response_template", "default").strip() or "default"
     summary = headers.get("summary", "").strip()
 
     return AgentRegistryEntry(
@@ -433,6 +438,7 @@ def _parse_prompt_file(
         llm_params=llm_params,
         sgr=sgr,
         reflect_interval=reflect_interval,
+        reflect_response_template=reflect_response_template,
         prompt_template=body.strip(),
         user_template=user_template.strip(),
         source_file=str(filepath) if filepath else "",
@@ -462,6 +468,8 @@ def _from_yaml_headers(y: dict) -> tuple[dict[str, str], dict[str, dict[str, str
     if "mode" in y:     h["mode"] = str(y["mode"])
     if "summary" in y:  h["summary"] = str(y["summary"]).strip()
     if "reflect_interval" in y: h["reflect_interval"] = str(y["reflect_interval"])
+    if "reflect_response_template" in y:
+        h["reflect_response_template"] = str(y["reflect_response_template"])
 
     raw_tools = y.get("tools") or []
     if isinstance(raw_tools, list):
