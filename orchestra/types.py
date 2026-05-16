@@ -48,14 +48,16 @@ class BudgetConfig:
     max_steps: int = 40
     max_wall_time: Optional[float] = None  # seconds
     # Effective LLM context window for this agent — the prompt+history
-    # ceiling, NOT a billing limit. None disables the axis
-    # (ContextBudgetPusher stays silent). Sourced (in precedence order):
-    # frontmatter `@budget: … N context` → CLI `--max-context` →
-    # `config.yaml` review.max_context → provider profile
-    # `.llm_creds.toml [providers.<name>] max_context`. Standard for
-    # most current models: 128_000 (effective reasoning window, lower
-    # than the hard 256K cap on e.g. Qwen3.6).
-    max_context: Optional[int] = None
+    # ceiling, NOT a billing limit. Default 128_000 — most current
+    # models' reasoning-efficient ceiling (Qwen3.6 hard cap is 256K
+    # but reasoning degrades above ~128K; same range for current
+    # frontier models). Sourced (in precedence order): frontmatter
+    # `@budget: … N context` → CLI `--max-context` → `config.yaml`
+    # review.max_context → provider profile `.llm_creds.toml
+    # [providers.<name>] max_context` → this default. Pass `None`
+    # explicitly to silence the ContextBudgetPusher (defensive
+    # test-only path; not expected in production).
+    max_context: Optional[int] = 128_000
     max_children_budget: float = 0.3
     max_feedback_budget_delta: int = 10  # max steps a supervisor can extend
     cache_discount: float = 0.1  # cached tokens cost this fraction (0.1 = 90% cheaper)

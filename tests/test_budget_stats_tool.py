@@ -69,17 +69,21 @@ class TestFormatter:
         # the trade-off. If wording drifts, prompt-side hints break.
         assert "fresh window" in line.lower() or "fresh windows" in line.lower()
 
-    def test_own_session_without_max_context(self):
-        """Cold-start path — operator hasn't configured max_context.
-        Line still renders without crashing on a None / 0 divide; the
-        percentage is omitted, the spawn-semantic note still appears."""
+    def test_none_max_context_falls_back_to_default(self):
+        """Defensive: if a state is constructed with
+        `original_max_context=None` (no production path does this —
+        BudgetConfig defaults to 128_000 — but tests / direct
+        construction can), the formatter falls back to 128K rather
+        than crashing on the divide-by-None."""
         out = format_budget_stats(self._state(
             tokens_in=12_000, original_max_context=None,
         ))
         line = out.splitlines()[0]
         assert "12K" in line
-        assert "no max_context configured" in line
-        # Still names the spawn invariant.
+        assert "128K" in line
+        # 12000 / 128000 = ~9%
+        assert "9%" in line
+        # Spawn-semantic note still appears (single template).
         assert "fresh window" in line.lower()
 
     def test_shared_pool_line_shows_tokens_and_steps(self):

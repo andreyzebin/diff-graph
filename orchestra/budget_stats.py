@@ -21,16 +21,25 @@ If the shared pool is tight, spawning costs more than direct work.
 If both are tight, consolidate. The prompt picks the response; this
 function just surfaces the numbers.
 
+Wording lives in `orchestra/templates/budget_stats/budget_stats.md`.
+Edit that file to tune what the agent reads; this module just resolves
+placeholders. `max_context` always has a value (BudgetConfig defaults
+to 128_000) — no "no_max_context" variant exists by design.
+
 Typical-spawn values are HARDCODED rough estimates for Phase 1 —
 calibrated once §11 (repo memory) or §12 (per-bucket aggregation)
-land and we have real measured medians. The output explicitly tags
-this as a rough estimate so the model treats it as a heuristic, not
-a precise budget.
+land and we have real measured medians.
 """
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
+
 from .budget import BudgetState
 from .messages import msg
+
+
+_TEMPLATES_DIR = Path(__file__).parent / "templates" / "budget_stats"
 
 
 # Hardcoded rough estimates for Phase 1. Replace with measured medians
@@ -47,6 +56,26 @@ _TYPICAL_SPAWN_SOURCE = msg(
     "budget_stats.typical_spawn.based_on",
     "rough estimate; calibrated once measured stats land",
 )
+
+
+@lru_cache(maxsize=1)
+def _load_template() -> str:
+    """Load the single budget_stats template. Cached so repeated
+    tool calls don't re-read the file. Falls back to a minimal
+    inline string if the template file is missing (preserves the
+    tool's contract without crashing if someone deletes the file)."""
+    path = _TEMPLATES_DIR / "budget_stats.md"
+    try:
+        return path.read_text(encoding="utf-8").rstrip()
+    except OSError:
+        return (
+            "Your own session: {tokens_in} of {max_context} context "
+            "tokens used ({pct}%).\n"
+            "Shared with children: {paid} of {max_tokens} tokens, "
+            "{steps_used} of {max_steps} steps used.\n"
+            "Typical spawn: returns {returned_to_you}; carves "
+            "{carved_from_shared} ({based_on})."
+        )
 
 
 def _fmt_k(n: int) -> str:
@@ -67,47 +96,31 @@ def _pct(part: float, whole: float) -> str:
     return f"{int(round(100 * part / whole))}%"
 
 
+_DEFAULT_MAX_CONTEXT = 128_000
+
+
 def format_budget_stats(state: BudgetState) -> str:
     """Render the agent-facing budget summary string. Pure state — no
     instructions, no prescriptions. The agent's prompt is what tells
-    the model how to react to the numbers."""
+    the model how to react to the numbers.
 
-    # ── Your own session ─────────────────────────────────────────
-    # Context = the agent's own LLM input window. tokens_in is the
-    # latest prompt_tokens reading (= current conversation size).
-    if state.original_max_context and state.original_max_context > 0:
-        own_session = (
-            f"Your own session: {_fmt_k(state.tokens_in)} of "
-            f"{_fmt_k(state.original_max_context)} LLM context window used "
-            f"({_pct(state.tokens_in, state.original_max_context)}). "
-            f"Children spawn into fresh windows; only their done() summary "
-            f"returns to your session."
-        )
-    else:
-        own_session = (
-            f"Your own session: {_fmt_k(state.tokens_in)} LLM context tokens "
-            f"used (no max_context configured). Children spawn into fresh "
-            f"windows; only their done() summary returns here."
-        )
-
-    # ── Shared with children ─────────────────────────────────────
-    # cumulative_paid currently tracks per-step paid (see budget.py
-    # update_tokens) — but for the agent the meaningful framing is
-    # "this is the pool you share with your spawns". Each spawn
-    # carves a slice via allocate_child.
-    shared = (
-        f"Shared with children: {_fmt_k(state.cumulative_paid)} of "
-        f"{_fmt_k(state.original_tokens)} tokens, "
-        f"{state.steps_used} of {state.original_steps} steps used. "
-        f"Each agent_spawn carves a slice from your remaining budget."
+    `max_context` always renders against a concrete value — production
+    BudgetConfig defaults to 128_000 (see `types.py`). Defensive
+    fallback to the same number here for the edge case where a
+    state was constructed with `original_max_context=None`."""
+    max_context = state.original_max_context or _DEFAULT_MAX_CONTEXT
+    return _load_template().format(
+        # Own-session vars
+        tokens_in=_fmt_k(state.tokens_in),
+        max_context=_fmt_k(max_context),
+        pct=int(round(100 * state.tokens_in / max_context)),
+        # Shared-pool vars
+        paid=_fmt_k(state.cumulative_paid),
+        max_tokens=_fmt_k(state.original_tokens),
+        steps_used=state.steps_used,
+        max_steps=state.original_steps,
+        # Typical-spawn vars (from messages.yaml)
+        returned_to_you=_TYPICAL_SPAWN_RETURN,
+        carved_from_shared=_TYPICAL_SPAWN_CARVED,
+        based_on=_TYPICAL_SPAWN_SOURCE,
     )
-
-    # ── Typical spawn cost (Phase 1: hardcoded estimates) ───────
-    typical = (
-        f"Typical investigator spawn: returns "
-        f"{_TYPICAL_SPAWN_RETURN} to your own session; carves "
-        f"{_TYPICAL_SPAWN_CARVED} from the shared pool "
-        f"({_TYPICAL_SPAWN_SOURCE})."
-    )
-
-    return "\n".join([own_session, shared, typical])
