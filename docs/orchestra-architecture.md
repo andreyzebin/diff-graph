@@ -423,16 +423,20 @@ budget:
 ```
 
 **Effective `max_context` precedence** (lowest → highest):
-default 128000 → provider profile → prompt frontmatter →
-`DIFFGRAPH_MAX_CONTEXT` env var. The env var lets a bench fixture
-or operator force a tight context window without editing prompts
-(used by unit-tier scenarios like REV-U-008 to drive context
-pressure / delegation decisions — see `UnitFixture.max_context` in
-`benchmarks/runner/run_unit.py`, exported into the child run's
-env). Implementation lives in `cli.py` `run_review` /
-`replay_thread` and in `diffgraph/orchestrator.py::run_agent`
-(always-apply, not `if None`, so it correctly overrides the new
-128K default).
+default 128000 → provider profile → `config.yaml review.max_context`
+→ base-prompt `budget.max_context` frontmatter (compiler) →
+per-run user-message override `budget.max_context` frontmatter
+(Agent.__init__). The override-frontmatter wins — that's what
+unit-tier scenarios like REV-U-008 use to force context pressure
+(`budget: { max_context: 16000 }` inside
+`diffgraph/test_prompts/reviewer/budget-aware-delegation.md`),
+keeping "everything that shapes the agent for this scenario lives
+in the prompt the agent reads" as the rule. Same channel covers
+`max_tokens` / `max_steps` / `max_wall_time` — only listed fields
+get overridden; unspecified ones inherit the base. Implementation
+lives in `orchestra/agent.py::__init__` (merge block) and
+`diffgraph/orchestrator.py::run_agent` (programmatic API path —
+still respects the `max_context=` kwarg for library callers).
 
 The `BudgetTracker` (`orchestra/budget.py::BudgetTracker`)
 assembles the handler list from this config plus the framework's

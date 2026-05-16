@@ -206,6 +206,20 @@ class Agent:
         if isinstance(_fm_reflect_tpl, str) and _fm_reflect_tpl.strip():
             self.config.reflect_response_template = _fm_reflect_tpl.strip()
 
+        # Same override channel for `budget:` — bench / test prompts can
+        # tighten the context window (or any budget axis) per scenario
+        # without touching the production prompt OR plumbing env vars
+        # through cli + run_unit. Dict form mirrors BudgetConfig field
+        # names so it's "just the YAML BudgetConfig". Only listed
+        # fields get overridden; unspecified ones keep the base value.
+        _fm_budget = self._fm_meta.get("budget")
+        if isinstance(_fm_budget, dict):
+            for _k in ("max_tokens", "max_steps", "max_context"):
+                if _k in _fm_budget and _fm_budget[_k] is not None:
+                    setattr(self.config.budget, _k, int(_fm_budget[_k]))
+            if "max_wall_time" in _fm_budget and _fm_budget["max_wall_time"] is not None:
+                self.config.budget.max_wall_time = float(_fm_budget["max_wall_time"])
+
         # Register extra_tools as capture-style tools in the agent's
         # registry. Idempotent — re-registering the same name on a
         # spawned child just overwrites.

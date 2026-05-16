@@ -468,17 +468,15 @@ def _run_with_dispatcher(
                 _otel_session.set_attribute("diffgraph.scenario_id", _scenario_id_env)
             if _mutation_override:
                 _otel_session.set_attribute("diffgraph.mutation", _mutation_override)
-            # Context budget — DIFFGRAPH_MAX_CONTEXT env var (per-
-            # run override, bench scenarios) > provider profile
-            # (.llm_creds.toml) > config.yaml review.max_context.
-            # None ⇒ ContextBudgetPusher silent. Same precedence as
-            # the `run` subcommand at line ~790.
-            _env_ctx = os.environ.get("DIFFGRAPH_MAX_CONTEXT", "").strip()
+            # Context budget — provider profile (.llm_creds.toml)
+            # > config.yaml review.max_context > AgentConfig default
+            # (128K) > frontmatter override on the per-run user
+            # message (handled in Agent.__init__). None at this
+            # layer ⇒ Agent falls back to its config default.
             effective_context = (
-                int(_env_ctx) if _env_ctx.isdigit()
-                else (llm_cfg.get("max_context")
-                      or review_cfg.get("max_context")
-                      or None)
+                llm_cfg.get("max_context")
+                or review_cfg.get("max_context")
+                or None
             )
             result = run_agent(
                 agent_name=agent_name,
@@ -787,16 +785,16 @@ def run(
     effective_model     = llm_cfg.get("model", "gpt-4o-mini")
     effective_steps     = max_steps  if max_steps  is not None else review_cfg.get("max_steps",  40)
     effective_tokens    = max_tokens if max_tokens is not None else review_cfg.get("max_tokens", 40000)
-    # Context budget — precedence: DIFFGRAPH_MAX_CONTEXT env var
-    # (per-run override, used by bench scenarios for
-    # context-pressure delegation tests, TODO §13.10) > provider
-    # profile > config.yaml. None ⇒ ContextBudgetPusher stays silent.
-    _env_ctx = os.environ.get("DIFFGRAPH_MAX_CONTEXT", "").strip()
+    # Context budget — precedence: provider profile > config.yaml
+    # review.max_context > AgentConfig default (128K) > frontmatter
+    # override on the per-run user message (handled by Agent.__init__,
+    # see `budget:` in user-layer frontmatter). None at this layer ⇒
+    # Agent falls back to its config default; per-run prompt may
+    # tighten further.
     effective_context = (
-        int(_env_ctx) if _env_ctx.isdigit()
-        else (llm_cfg.get("max_context")
-              or review_cfg.get("max_context")
-              or None)
+        llm_cfg.get("max_context")
+        or review_cfg.get("max_context")
+        or None
     )
 
     cleanup_fn = None

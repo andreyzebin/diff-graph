@@ -240,3 +240,87 @@ class TestUserMessageOverridePlumbing:
         # Override didn't mention reflect_response_template — base
         # config value is preserved (no spurious reset to "default").
         assert a.config.reflect_response_template == "with_state"
+
+
+# ── budget override via user-message frontmatter ───────────────────
+
+
+class TestBudgetOverridePlumbing:
+    """`budget:` block in per-run user-message frontmatter overrides
+    fields on AgentConfig.budget. Same channel as
+    reflect_response_template — bench/test prompts shape the
+    agent for THIS scenario without env vars or fixture yaml
+    fields. Unspecified axes inherit base values."""
+
+    def test_max_context_override_applies(self):
+        from orchestra.agent import Agent
+        from orchestra.types import AgentConfig, BudgetConfig
+        from orchestra.tools.registry import ToolRegistry
+
+        cfg = AgentConfig(
+            name="probe", system_prompt="sys", user_prompt="base",
+            tools=["reflect", "done"],
+            budget=BudgetConfig(max_context=128_000, max_tokens=40_000),
+        )
+        override = "---\nbudget:\n  max_context: 16000\n---\nbody\n"
+        a = Agent(
+            config=cfg,
+            tool_registry=ToolRegistry(),
+            llm=None,
+            model="probe-model",
+            user_message_override=override,
+        )
+        assert a.config.budget.max_context == 16_000
+        # Other axes untouched.
+        assert a.config.budget.max_tokens == 40_000
+
+    def test_override_supports_all_known_axes(self):
+        from orchestra.agent import Agent
+        from orchestra.types import AgentConfig, BudgetConfig
+        from orchestra.tools.registry import ToolRegistry
+
+        cfg = AgentConfig(
+            name="probe", system_prompt="sys", user_prompt="base",
+            tools=["reflect", "done"],
+            budget=BudgetConfig(),
+        )
+        override = (
+            "---\n"
+            "budget:\n"
+            "  max_tokens: 12345\n"
+            "  max_steps: 7\n"
+            "  max_context: 9000\n"
+            "  max_wall_time: 30.5\n"
+            "---\nbody\n"
+        )
+        a = Agent(
+            config=cfg,
+            tool_registry=ToolRegistry(),
+            llm=None,
+            model="probe-model",
+            user_message_override=override,
+        )
+        assert a.config.budget.max_tokens == 12345
+        assert a.config.budget.max_steps == 7
+        assert a.config.budget.max_context == 9_000
+        assert a.config.budget.max_wall_time == 30.5
+
+    def test_no_budget_block_keeps_base(self):
+        from orchestra.agent import Agent
+        from orchestra.types import AgentConfig, BudgetConfig
+        from orchestra.tools.registry import ToolRegistry
+
+        cfg = AgentConfig(
+            name="probe", system_prompt="sys", user_prompt="base",
+            tools=["reflect", "done"],
+            budget=BudgetConfig(max_context=42_000),
+        )
+        override = "---\ntools_add: [done]\n---\nbody\n"
+        a = Agent(
+            config=cfg,
+            tool_registry=ToolRegistry(),
+            llm=None,
+            model="probe-model",
+            user_message_override=override,
+        )
+        assert a.config.budget.max_context == 42_000

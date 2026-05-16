@@ -14,7 +14,17 @@
 #
 # Production reviewer.user.md stays untouched until this shape
 # proves itself.
+#
+# Tight `max_context` is the actual lever that creates the
+# pressure this scenario is testing — at the production default
+# (128K) even a 50-file diff fits comfortably and delegation never
+# becomes rational. Keeping the override here (not in the bench
+# fixture yaml, not in an env var) means "everything about how
+# this scenario shapes the agent lives in the prompt that the
+# agent reads" — single source of truth.
 reflect_response_template: with_state
+budget:
+  max_context: 16000
 tools_add:
   - agent_spawn
   - agent_list
