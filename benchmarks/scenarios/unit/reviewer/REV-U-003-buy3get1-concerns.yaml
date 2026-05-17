@@ -84,13 +84,10 @@ expected_output:
     - description: "Inline comments — reviewer was told concerns-text; no posting."
   concern_focuses:
     - id: cheapest-item
-      description_keywords: ["cheapest", "selectFreeItem", "free item", "get(0)", "first item"]
       rationale: "Reviewer should flag selectFreeItem returning the first item instead of the cheapest, per AGENTS.md."
     - id: transactional
-      description_keywords: ["@Transactional", "applyBulkDiscount", "atomic", "transaction"]
       rationale: "applyBulkDiscount writes to two repositories without a transaction — reviewer should call this out as a concern."
     - id: lombok-or-style
-      description_keywords: ["Lombok", "@Data", "manual", "consistency", "convention", "getter", "setter"]
       rationale: "Promotion entity uses manual getters/setters where the rest of the codebase uses Lombok — style/convention concern."
   side_effects:
     inline_comments: 0

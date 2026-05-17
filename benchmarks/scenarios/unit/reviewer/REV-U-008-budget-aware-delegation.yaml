@@ -95,16 +95,10 @@ expected_output:
     - description: "Inline comments — reviewer is in text+delegate mode; no posting allowed."
   concern_focuses:
     - id: credit-pretax-vs-ac
-      description_keywords:
-        ["pre-tax", "subtotal", "post-tax", "total", "tax recalcul", "recompute tax", "AC", "acceptance criteria", "ticket"]
       rationale: "ORD-301 AC: store credit is a pre-tax deduction off the subtotal with tax recomputed. The diff subtracts from the post-tax total. Cross-source concern (ticket AC vs code) — should be delegated."
     - id: redeem-ownership
-      description_keywords:
-        ["ownership", "own credit", "own order", "IDOR", "belongs", "authorization", "currentUser"]
       rationale: "ORD-301 AC: a customer may redeem only their own credit against their own order. redeemCredit verifies neither. Cross-source concern (AC + controller flow) — should be delegated."
     - id: apply-once-concurrency
-      description_keywords:
-        ["concurrent", "race", "idempotent", "at most once", "lock", "pessimistic", "isRedeemed", "double-redeem", "read-then-write"]
       rationale: "ORD-301 AC: credit applied at most once under concurrent requests. isRedeemed inside @Transactional is a plain read-then-write. Cross-source concern (AC + concurrency analysis) — should be delegated."
   side_effects:
     inline_comments: 0

@@ -58,7 +58,6 @@ expected_output:
     - id: null-guard-concern
       type: inline
       severity: major
-      description_keywords: ["null guard", "@OneToMany", "Hibernate", "root cause", "mapping", "upstream", "never null"]
       rationale: "The diff alone is enough to surface the core concern — the null guard on @OneToMany hides a mapping/construction problem. The investigator must reach this from the code even though its jira_read_ticket call came back not-viewable."
   forbidden_comments:
     - description: "A 'finding' that just reports the Jira ticket being unreachable / deleted / permission-denied — that's a tool state, not a code-review finding. The investigator should absorb the not-viewable reply silently and work from the diff."

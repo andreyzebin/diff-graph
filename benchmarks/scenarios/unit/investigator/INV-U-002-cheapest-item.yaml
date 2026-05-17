@@ -55,7 +55,6 @@ expected_output:
   required_comments:
     - id: cheapest-item
       severity: BLOCKER
-      description_keywords: ["cheapest", "selectFreeItem", "get(0)", "free item", "AGENTS.md"]
       rationale: "Investigator must produce a BLOCKER/MAJOR finding citing the AGENTS.md rule and the actual code line."
 
   forbidden_comments:

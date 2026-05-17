@@ -616,7 +616,6 @@ def _build_prompt(
             "type": rc.type,
             "severity": rc.severity,
             "location": rc.location,
-            "keywords": rc.description_keywords,
             "rationale": rc.rationale,
         }
         for rc in eo.required_comments
@@ -630,7 +629,6 @@ def _build_prompt(
     concern_focuses_str = json.dumps([
         {
             "id": cf.id,
-            "keywords": cf.description_keywords,
             "rationale": cf.rationale,
         }
         for cf in eo.concern_focuses

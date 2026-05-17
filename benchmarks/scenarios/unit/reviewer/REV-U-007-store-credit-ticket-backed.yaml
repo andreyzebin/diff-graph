@@ -103,16 +103,10 @@ expected_output:
     - description: "Inline comments — reviewer was told concerns-text; no posting allowed."
   concern_focuses:
     - id: credit-pretax-vs-ac
-      description_keywords:
-        ["pre-tax", "subtotal", "post-tax", "total", "tax recalcul", "recompute tax", "AC", "acceptance criteria", "ticket"]
       rationale: "ORD-301 AC: store credit is a pre-tax deduction off the subtotal with tax recomputed on the reduced subtotal — never subtracted from the post-tax total. The diff applies the credit to the post-tax total. This is the discriminator concern: hard to state confidently from the diff alone, clear once the ticket AC is read."
     - id: redeem-ownership
-      description_keywords:
-        ["ownership", "own credit", "own order", "IDOR", "belongs", "authorization", "currentUser"]
       rationale: "ORD-301 AC: a customer may redeem only their own credit against their own order. redeemCredit(creditId, orderId) verifies neither — any authenticated customer can redeem anyone's credit. The ticket turns a generic authz smell into a named AC breach."
     - id: apply-once-concurrency
-      description_keywords:
-        ["concurrent", "race", "idempotent", "at most once", "lock", "pessimistic", "isRedeemed", "double-redeem", "read-then-write"]
       rationale: "ORD-301 AC: a credit can be applied at most once (idempotent), and the tech-lead's ticket comment stresses the guard must hold under concurrent requests. isRedeemed() inside @Transactional is a plain read-then-write — two concurrent redeems both pass."
   side_effects:
     inline_comments: 0

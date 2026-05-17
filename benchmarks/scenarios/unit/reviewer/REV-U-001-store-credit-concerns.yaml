@@ -95,13 +95,10 @@ expected_output:
     - description: "Inline comments — reviewer was told concerns-text; no posting allowed."
   concern_focuses:
     - id: redeem-authorization
-      description_keywords: ["authorization", "ownership", "currentUser", "IDOR", "auth check", "belong", "verify"]
       rationale: "redeemCredit(creditId, orderId) does not verify that the credit or the order belong to the authenticated customer. AGENTS.md explicitly mandates ownership verification on every endpoint."
     - id: concurrent-redeem
-      description_keywords: ["concurrent", "race", "pessimistic", "lock", "isRedeemed", "double-redeem", "atomic"]
       rationale: "isRedeemed() check inside @Transactional is not pessimistic-locked. Two concurrent requests can both pass the check and redeem the same credit twice. AGENTS.md notes concurrency matters in this multi-instance service."
     - id: partial-redemption
-      description_keywords: ["partial", "leftover", "remainder", "min(", "setRedeemed(true)", "fully consumed", "amount"]
       rationale: "credit.setRedeemed(true) is unconditional even when credit.amount > order.total (`credit.amount.min(order.total)` applies only part). The remainder is silently lost."
   side_effects:
     inline_comments: 0

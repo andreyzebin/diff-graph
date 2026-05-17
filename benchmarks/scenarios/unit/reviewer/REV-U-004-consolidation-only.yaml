@@ -96,15 +96,12 @@ expected_output:
   required_comments:
     - id: cheapest-item
       severity: BLOCKER
-      description_keywords: ["cheapest", "selectFreeItem", "get(0)"]
       rationale: "Reviewer publishes the BLOCKER finding from the prefilled packet."
     - id: transactional
       severity: MAJOR
-      description_keywords: ["@Transactional", "applyBulkDiscount"]
       rationale: "Reviewer publishes the MAJOR transaction-safety finding."
     - id: lombok
       severity: MINOR
-      description_keywords: ["Lombok", "@Data", "manual"]
       rationale: "Reviewer publishes the MINOR Lombok finding."
 
   forbidden_comments:

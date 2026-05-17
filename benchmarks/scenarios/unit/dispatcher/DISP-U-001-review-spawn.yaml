@@ -66,20 +66,9 @@ expected_output:
 
   reply:
     must_mention:
-      - ["Starting review", "Запускаю обзор", "Beginning review", "Reviewing"]
-    # must_address removed: judge interprets it as "reply must
-    # SUBSTANTIVELY discuss the topic", which contradicts this
-    # scenario's design — the dispatcher's job is a BRIEF ack +
-    # delegate to agent_spawn(reviewer). Substantive analysis is
-    # the reviewer's responsibility, not the dispatcher's. The
-    # `acknowledgement_required: true` below already pins the ack
-    # contract; must_mention pins the ack copy. See plan 219 run
-    # 53b3ee6ee582 — dispatcher executed ideally (ack + spawn +
-    # done with empty findings) yet scored 0.0 because the judge
-    # demanded "substantive answer" the scenario explicitly forbids.
+      - "Brief acknowledgment that a code review is starting (any phrasing, any language — e.g. 'Starting review', 'Запускаю обзор', 'Reviewing now'). One short line is enough."
     forbidden_topics:
-      # Don't mirror the reviewer's findings into the ack reply.
-      - ["selectFreeItem", "applyBulkDiscount", "BLOCKER", "MAJOR", "@Transactional", "Lombok"]
+      - "Substantive review content from the reviewer's findings — specific method/symbol names, severity labels (BLOCKER/MAJOR/MINOR), framework decorators / annotation references, etc. The dispatcher must NOT mirror or summarise what the reviewer is going to post; otherwise every PR gets every comment twice."
     rationale: |
       The dispatcher must acknowledge the /review request in the
       thread but MUST NOT restate the reviewer's findings — those

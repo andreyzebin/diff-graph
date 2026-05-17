@@ -79,17 +79,14 @@ expected_output:
     - id: agents-md-jpa-violation
       type: inline
       severity: major
-      description_keywords: ["AGENTS.md", "@OneToMany", "Hibernate", "null guard", "convention", "never null"]
       rationale: "AGENTS.md explicitly bans null guards on @OneToMany — investigator must surface this as the diff's primary problem."
     - id: root-cause-upstream
       type: inline
       severity: major
-      description_keywords: ["root cause", "mapping", "upstream", "non-JPA", "raw JDBC", "import", "construct"]
       rationale: "The null indicates a broken mapping or a non-JPA constructor path. Investigator should point upstream, not at the loop site."
     - id: fix-at-entity
       type: inline
       severity: minor
-      description_keywords: ["entity", "boundary", "invariant", "consumer", "upstream"]
       rationale: "Investigator should recommend fixing at the entity / upstream construction site rather than wrapping every consumer in null guards. The @PostLoad/@PrePersist hint isn't on the agent's view of AGENTS.md (added on master after this branch); general reviewing principles (fix the cause, not the symptom) are the actual signal."
   forbidden_comments:
     # Incidental findings ON THE PATH are fine (e.g. while reading the

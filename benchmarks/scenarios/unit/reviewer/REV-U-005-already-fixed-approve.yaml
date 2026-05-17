@@ -136,15 +136,10 @@ expected_output:
   required_comments: []
 
   reply:
-    # Reviewer's reply in alice's thread (parent_id=5001) must
-    # signal that the fix landed. Synonym group (OR semantics):
-    # any one of these keywords passes. AND-of-OR across groups —
-    # this scenario uses a single group so a single match is
-    # sufficient.
     must_mention:
-      - ["addressed", "fixed", "resolved", "@PostLoad", "@PrePersist", "9ed4226"]
+      - "Confirmation that alice's prior concern about the null-guard / @OneToMany initialization has been addressed by the new commit (any phrasing — 'addressed', 'fixed', 'resolved', or pointing to the @PostLoad / @PrePersist mechanism / sha 9ed4226)."
     forbidden_topics:
-      - ["still stands", "remains an issue", "blocker still"]
+      - "Treating the prior concern as still unresolved or re-raising it as a blocker — the new commit demonstrably fixed it; saying 'still stands' / 'remains an issue' would be wrong."
 
   forbidden_comments:
     - description: "Fresh inline BLOCKER / MAJOR re-raising the null-guard concern — alice already raised it and step1 fixed it. Re-raising means the reviewer ignored existing threads."

@@ -65,6 +65,9 @@ _GENERIC_VOCABULARY = {
     # CURSOR_RULES.md, CONVENTIONS.md, CONTRIBUTING.md, etc. would
     # belong here too if any fixture started using them.
     "agents.md", "conventions.md", "contributing.md",
+    # Prose abbreviations — contain a dot so `_is_fixture_specific`
+    # would otherwise flag them as code-shaped tokens.
+    "e.g", "i.e",
 }
 
 
@@ -91,23 +94,74 @@ def _bench_root() -> Path | None:
     return None
 
 
+# Tokenise on whitespace and a small set of prose punctuation. We
+# DO keep '.', '(', ')', '@', '[', ']', '=', '{', '}' inside tokens
+# because those are the code-shape signals `_is_fixture_specific`
+# looks for ("order.getItems()", "@OneToMany", etc.). Strip trailing
+# prose punctuation (commas, colons, quotes) per-token.
+_TOKEN_SPLIT_RE = re.compile(r"[\s,;:!?\"'`/\\|<>]+")
+# We keep '(' ')' '[' ']' '{' '}' '@' '.' '=' INSIDE tokens because
+# those are the code-shape markers `_is_fixture_specific` looks for
+# (`getItems()`, `@OneToMany`, `order.items`). But we strip them at
+# the EDGES so prose like "(any phrasing …)" → "any", "phrasing"
+# instead of "(any", "phrasing)" — bare parens and trailing dots
+# aren't identifiers.
+_TOKEN_STRIP_CHARS = ".,;:!?\"'`-()[]{}"
+
+
+def _tokenise(text: str) -> list[str]:
+    """Split prose into candidate tokens. We don't try to be
+    grammatically perfect — `_is_fixture_specific` already filters
+    out anything that doesn't look like a code identifier, so over-
+    tokenisation is harmless (false candidates get dropped) but
+    under-tokenisation would silently miss leaks."""
+    out: list[str] = []
+    for raw in _TOKEN_SPLIT_RE.split(text or ""):
+        tok = raw.strip(_TOKEN_STRIP_CHARS)
+        if tok:
+            out.append(tok)
+    return out
+
+
+def _walk_prose(node, sink: list[str]) -> None:
+    """Recursively collect every string under `expected_output` —
+    rationale blocks, must_mention/forbidden_topics list items,
+    forbidden_comments[].description, etc. Anything text-shaped
+    becomes a leak-detection corpus."""
+    if isinstance(node, str):
+        sink.append(node)
+    elif isinstance(node, dict):
+        for v in node.values():
+            _walk_prose(v, sink)
+    elif isinstance(node, list):
+        for v in node:
+            _walk_prose(v, sink)
+
+
 def _collect_fixture_keywords(bench_root: Path) -> dict[str, list[Path]]:
-    """All expected_output.description_keywords across every unit
-    fixture, mapped to the fixture file(s) that introduced them.
-    The map keys are LOWERCASED so the substring check is case-
-    insensitive."""
+    """All fixture-side prose tokens across every unit fixture's
+    `expected_output` block (rationale, must_mention, forbidden_topics,
+    descriptions…), mapped to the fixture file(s) that introduced
+    them. The map keys are LOWERCASED so the substring check is
+    case-insensitive.
+
+    Previously this read `description_keywords` arrays, but the
+    semantic-asserts migration replaced those with prose. The leak
+    guard still applies: if the rationale grading text names a
+    specific symbol (`selectFreeItem`, `@OneToMany`, etc.), that
+    symbol must not appear in the agent's prompt — otherwise the
+    agent "knows" what to look for."""
     import yaml as yaml_lib
     out: dict[str, list[Path]] = {}
     unit_dir = bench_root / "scenarios" / "unit"
     for yp in unit_dir.rglob("*.yaml"):
         raw = yaml_lib.safe_load(yp.read_text(encoding="utf-8")) or {}
         eo = raw.get("expected_output") or {}
-        for cf in (eo.get("concern_focuses") or []):
-            for kw in (cf.get("description_keywords") or []):
-                out.setdefault(str(kw).lower(), []).append(yp)
-        for rc in (eo.get("required_comments") or []):
-            for kw in (rc.get("description_keywords") or []):
-                out.setdefault(str(kw).lower(), []).append(yp)
+        prose: list[str] = []
+        _walk_prose(eo, prose)
+        for chunk in prose:
+            for tok in _tokenise(chunk):
+                out.setdefault(tok.lower(), []).append(yp)
     return out
 
 

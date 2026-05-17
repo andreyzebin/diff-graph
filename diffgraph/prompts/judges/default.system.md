@@ -40,11 +40,13 @@ assert_via: {{ assert_via }}
 исследования и публикации) — там единственный сигнал это блок выше.
 
 `expected.concern_focuses` — список ожидаемых концернов, каждый с
-keyword-группами (AND-of-OR семантика как у `description_keywords`).
-Сматчи каждую группу против ОБЪЕДИНЕНИЯ всех title+description
-строк в этом блоке. Каждый concern_focus засчитывается как found
-если хотя бы один title/description содержит хотя бы одно слово из
-КАЖДОЙ группы внутри `keywords`.
+`id` и `rationale` (prose-описание чего ждём). Сматчи каждый
+концерн **семантически** против блока выше: достаточно ли
+заявленных агентом title+description строк чтобы покрыть смысл
+`rationale`. Не ищи литеральные ключевые слова — оценивай по
+интенту: говорит ли агент о ТОЙ ЖЕ проблеме что описана в
+rationale, даже если использует другие слова / синонимы /
+конкретные строки кода.
 
 
 ## Acknowledgement ожидается: {{ acknowledgement_required }}
@@ -113,9 +115,18 @@ keyword-группами (AND-of-OR семантика как у `description_ke
 
 Если `concern_focuses` непустой — это primary signal этого теста.
 Каждый concern_focus попадает в `concern_focuses_judgement` (см.
-JSON-схему ниже): match по keyword-группам против блока
-"Концерны, которые агент сформулировал". Если concern_focuses
+JSON-схему ниже): **семантический** match `rationale` против блока
+"Концерны, которые агент сформулировал" — те же ли проблемы
+агент описал (синонимы / разные формулировки / конкретные имена
+методов вместо общих категорий — всё OK). Если concern_focuses
 пустой — этот блок в JSON-ответе должен быть пустым массивом.
+
+`reply.must_mention` / `reply.forbidden_topics` (если есть в
+сценарии) — каждый item это **prose-описание** что искать в
+ответе агента семантически, не литеральный word list. Match
+по интенту: упомянул ли агент именно ту тему которую описывает
+строка (для must_mention) или не нарушил ли запрет (для
+forbidden_topics). Не fall back на наивный keyword search.
 
 Отвечай строго в JSON по следующей схеме. Без текста вне JSON.
 
@@ -138,7 +149,7 @@ JSON-схему ниже): match по keyword-группам против бло
       "found": true,
       "matched_concern_index": 0,
       "match_confidence": 0.95,
-      "reasoning": "Reviewer wrote concern about selectFreeItem returning get(0) — keywords cheapest/free item matched"
+      "reasoning": "Reviewer's concern about selectFreeItem returning get(0) matches the expected 'cheapest item' rationale — same problem, different wording"
     }
   ],
   "false_positives": [
