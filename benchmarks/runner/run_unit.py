@@ -362,7 +362,14 @@ def run_unit_fixture(
             cmd.extend(["--user-message-from", fixture.user_message_from])
         prompt_resource = fixture.raw.get("prompt_resource")
         if prompt_resource:
-            cmd.extend(["--prompts", str(prompt_resource)])
+            # Resolve `diffgraph:<path>` shorthand to absolute path
+            # (same rules as user_message_from / mocks). cli.py's
+            # --prompts accepts path / file:// / bitbucket:// — the
+            # diffgraph: prefix is a bench-only convenience.
+            resolved = _resolve_prompt_path(
+                str(prompt_resource), fixture.fixture_path.parent,
+            )
+            cmd.extend(["--prompts", str(resolved)])
         if fixture.mocks:
             # cli.py --mocks=<path> ⇒ orchestra.ToolMocks intercepts the
             # named tool calls (e.g. agent_spawn → canned reviewer
