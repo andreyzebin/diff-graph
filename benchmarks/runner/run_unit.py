@@ -88,6 +88,12 @@ class UnitRunResult:
     judge_summary: Optional[str] = None
     judge_run_id: Optional[str] = None
     attempt_dir: Optional[Path] = None
+    # Deterministic structural check against invocations.json — see
+    # benchmarks/runner/invocations_check.py. Each entry is one rule
+    # the agent broke (missing required tool call, or made a forbidden
+    # one). Empty when the fixture has no `assert_invocations` block
+    # or when every rule passed.
+    structural_violations: list[str] = field(default_factory=list)
 
 
 # ── Path resolution: relative-to-yaml or diffgraph:<path> ─────────────────
@@ -558,6 +564,37 @@ def run_unit_fixture(
                 result.stderr_tail = (
                     (result.stderr_tail or "")
                     + f"\n[judge error: {type(exc).__name__}: {exc}]"
+                )
+
+        # ── Stage 4b: structural invocation check ──────────────────────────
+        # Independent of the LLM judge — reads invocations.json directly
+        # and asserts the agent (or its sub-agents) called / didn't call
+        # specific tools. Used by SKILL fixtures where the whole point is
+        # the call pattern; complements the judge's semantic grading.
+        # Violations override the LLM verdict: structural failure is hard,
+        # not a confidence dimension.
+        spec = (fixture.expected_output or {}).get("assert_invocations") or {}
+        if spec and proc.returncode == 0 and invocations_path is not None:
+            from .invocations_check import (
+                load_invocations as _load_invs,
+                check as _check_invs,
+                format_violations as _fmt_invs,
+            )
+            invs = _load_invs(invocations_path)
+            violations = _check_invs(invs, spec)
+            result.structural_violations = [str(v) for v in violations]
+            if violations:
+                msg = _fmt_invs(violations)
+                # Override any LLM verdict — structural failure is hard.
+                result.judge_score = 0.0
+                result.judge_verdict = "fail"
+                existing_summary = (result.judge_summary or "").strip()
+                result.judge_summary = (
+                    (existing_summary + "\n\n" if existing_summary else "")
+                    + msg
+                )
+                result.stderr_tail = (
+                    (result.stderr_tail or "") + "\n" + msg
                 )
 
         if proc.returncode == 0 and not keep_tmp_on_success:

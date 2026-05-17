@@ -34,11 +34,16 @@ expected_output:
     - id: doubled-answer
       rationale: |
         The boss's text_answer (intended_text) must contain the
-        string "42" — the doubled value of the input "21". This is
-        the end-to-end correctness check: regardless of whether the
-        boss did the work itself or delegated, the final answer it
-        reports back to the user has to be 42. Any other number
-        (or no number at all) means the boss didn't successfully
-        synthesize the worker's output / its own do_task call.
+        string "42" — the doubled value of the input "21". The
+        baseline (no skill) variant expects the boss to do the work
+        itself; the answer still has to be 42 regardless of path.
+  # Structural assertion — the mirror image of SKILL-001-with.
+  # Without the prefer_delegation skill, the boss must call do_task
+  # itself and must NOT spawn a worker. If this fails, either the
+  # skill is leaking somehow or the boss is over-delegating.
+  assert_invocations:
+    boss:
+      must_call: [do_task]
+      must_not_call: [agent_spawn]
   thresholds:
     min_score: 0.7

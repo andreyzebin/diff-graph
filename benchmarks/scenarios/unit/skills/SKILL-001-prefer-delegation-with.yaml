@@ -48,7 +48,14 @@ expected_output:
         Whatever the path, the final answer reported has to be 42 —
         anything else means the boss/worker chain broke (no spawn,
         wrong answer, dropped synthesis).
+  # Structural assertion (deterministic, complements the LLM judge).
+  # Forces an A/B distinction the semantic answer-check can't see on
+  # its own: did the boss ACTUALLY delegate, or just answer "42" itself?
+  assert_invocations:
+    boss:
+      must_call: [agent_spawn]
+      must_not_call: [do_task]
+    worker:
+      must_call: [do_task]
   thresholds:
     min_score: 0.7
-  metadata:
-    note: "A/B partner — invocation-pattern assertion (did boss actually delegate?) lives in a follow-up judge channel (intended_tool_calls_by_agent)."
