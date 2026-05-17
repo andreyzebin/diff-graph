@@ -39,14 +39,14 @@ data:
     type: string
     description: "Jira ticket reference(s) this PR is associated with"
 ---
-PR: {pr_title}
-{pr_description}
+PR: {{ pr_title }}
+{{ pr_description }}
 
 Commits *(oldest → newest)*:
 
-{commits}
+{{ commits }}
 
-This PR is associated with these Jira ticket(s): {jira_tickets}
+This PR is associated with these Jira ticket(s): {{ jira_tickets }}
 
 **Read the ticket(s) first.** Call `jira_read_ticket(ref)` on each
 associated ticket before forming concerns — copy the ref verbatim

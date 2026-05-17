@@ -31,12 +31,12 @@ data:
     type: string
     from: pr_context.commits
 ---
-PR: {pr_title}
-{pr_description}
+PR: {{ pr_title }}
+{{ pr_description }}
 
 Commits *(oldest → newest)*:
 
-{commits}
+{{ commits }}
 
 Identify the concerns this diff raises and submit them via
 text_answer(text=...). Use reflect during your work as private

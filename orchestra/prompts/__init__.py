@@ -1,11 +1,12 @@
 """
-Prompt template loading and variable interpolation.
+Prompt template file loading.
+
+Variable interpolation lives in `orchestra.template_engine` (Jinja).
+This module is only about reading template text from the filesystem.
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
-from typing import Any
 
 
 def load_prompt(path_or_text: str, base_dir: Path | None = None) -> str:
@@ -27,27 +28,6 @@ def load_prompt(path_or_text: str, base_dir: Path | None = None) -> str:
     return path_or_text
 
 
-# Matches {word} but not {word:spec} or {"json"} or {<angle>} etc.
-# Only replaces simple {identifier} placeholders.
-_PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
-
-
-def interpolate(template: str, **variables: Any) -> str:
-    """
-    Replace {var_name} placeholders with values.
-
-    Only replaces simple {identifier} patterns — leaves JSON braces,
-    format specs, and other brace content untouched.
-    """
-    def _replace(match: re.Match) -> str:
-        key = match.group(1)
-        if key in variables:
-            return str(variables[key])
-        return match.group(0)  # leave as-is if not in variables
-
-    return _PLACEHOLDER_RE.sub(_replace, template)
-
-
 _INTERNAL_DIR = Path(__file__).parent / "internal"
 _INTERNAL_CACHE: dict[str, str] = {}
 
@@ -62,10 +42,9 @@ def load_internal(name: str) -> str:
     Centralised here so they're editable as plain Markdown alongside
     agent prompts and visible in audit (see docs/internal-prompts.md).
 
-    Cached after first read.
-
-    Returns the raw template; callers interpolate placeholders with
-    `interpolate(text, **vars)`.
+    Cached after first read. Returns the raw template; callers run it
+    through `orchestra.template_engine.render(text, ctx)` to
+    substitute placeholders against a RunContext.
     """
     if name in _INTERNAL_CACHE:
         return _INTERNAL_CACHE[name]

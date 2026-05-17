@@ -4830,43 +4830,46 @@ files + glue code (see deleted `subagents_block.md` /
   system_text and user_text through `render()`. The ad-hoc
   `framework_vars` dict construction is gone.
 
-Backward compatibility (explicit non-goal: a flag-day
-migration):
-- Every existing `.md` prompt with `{pr_title}` style placeholders
-  keeps working unchanged — `render()` auto-detects and routes
-  legacy syntax to `interpolate()`.
-- Authors can switch a prompt to Jinja syntax (`{{ x }}` +
-  `{% if/for %}`) by adding the markers — same engine, same
-  data, more expressive.
-- Public `diffgraph.api.DiffGraph(prompt_vars=...)` kwargs land
-  in `RunContext.data` via the same merge — no API change.
+Public `diffgraph.api.DiffGraph(prompt_vars=...)` kwargs land
+in `RunContext.data` via the same merge — no API change.
 
-Tests: `tests/test_template_engine.py` — 17 tests pinning
-auto-detect routing, RunContext properties (including the
-framework-wins-over-data collision rule), and the
+Tests: `tests/test_template_engine.py` — pins Jinja-only
+rendering, RunContext properties (including the
+framework-wins-over-data collision rule), the
 `render_named_kwargs` narrow-scope helper (regression for the
 `steps_used` shadow that broke `test_budget_e2e` during
-migration).
+migration), and the legacy-syntax boundary (`{x}` is now
+literal text — JSON / dict snippets in prompts survive a
+render unchanged).
 
-Suite 964 (947 + 17 new).
+### Phase 2 — full prompt migration to Jinja (shipped 2026-05-17)
 
-### Phase 2 — opt-in migration of user prompts (deferred)
+All 11 prompts that carried `{x}` placeholders migrated to
+`{{ x }}` syntax in one mechanical sed pass:
 
-The auto-detect path keeps both syntaxes alive, so this is
-gradual and per-prompt. When a prompt wants conditionals or
-loops, the author swaps `{x}` → `{{ x }}` and adds `{% %}` tags.
-No big-bang sweep planned.
+- 5 production: `diffgraph/prompts/*.md` (reviewer, dispatcher,
+  investigator user+system, judge default).
+- 6 test prompts: `diffgraph/test_prompts/reviewer/*.md`.
 
-### Phase 3 — drop `interpolate()` entirely (much later)
+Identifier extraction via `\{([a-zA-Z_][a-zA-Z_0-9]*)\}` regex,
+frontmatter (YAML) deliberately not touched. No conditionals or
+loops added — pure substitution-equivalence migration. The
+auto-detect path in `template_engine.render()` was REMOVED
+along with the migration; everything now goes through Jinja.
 
-After all checked-in prompts use Jinja syntax, the legacy
-regex path can go. Requires:
-- Grep audit: zero `{[a-zA-Z_]+}` patterns in any `.md` outside
-  of literal JSON / code fences.
-- Test prompts and bench scenarios migrated.
-- Likely 6+ months out, once the model providers' performance
-  on Jinja templates is observed (no expected difference but
-  the prompt-cache hash changes).
+### Phase 3 — drop `interpolate()` entirely (shipped 2026-05-17)
+
+`orchestra.prompts.interpolate()` deleted along with the
+auto-detect path. `agent.py::resolve_agent_data` switched from
+`interpolate()` to `render()` (Jinja). The `from .prompts
+import interpolate` import gone — `prompts/__init__.py` is now
+purely about file loading (`load_prompt` / `load_internal`).
+
+Cost paid once: prompt content-hashes changed → one LLM
+prompt-cache miss per provider on the first run after the
+migration. Zero behavioural change otherwise — output of
+existing prompts is identical because every placeholder is just
+a name lookup, same data, same substitution semantics.
 
 ### Anti-patterns
 

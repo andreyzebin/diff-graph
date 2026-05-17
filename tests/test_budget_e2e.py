@@ -398,7 +398,7 @@ def test_parent_child_spawn_budget_split(spawn_script):
     child_config = AgentConfig(
         name="child",
         system_prompt="You are a child agent.",
-        user_prompt="Investigate {focus}.",
+        user_prompt="Investigate {{ focus }}.",
         mode=AgentMode.REACT,
         reflect_interval=0,
         tools=["diff_read_file", "done"],

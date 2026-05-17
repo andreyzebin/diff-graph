@@ -1,25 +1,18 @@
-"""Template engine — auto-detect between legacy `{x}` and Jinja
-`{{ x }}`, plus the RunContext that both engines consume.
+"""Template engine — Jinja for every render surface, plus the
+RunContext that all renders consume.
 
 Pinned here:
-- `render(text, ctx)` auto-detects: text with `{{` or `{%`
-  goes through Jinja; everything else routes to the legacy
-  `interpolate()` regex substitution.
-- Both paths see the same flat variable namespace via
-  `ctx.to_kwargs()` — no duplicate definitions.
-- `render_named` loads a framework template (Jinja-only) against
-  a RunContext.
+- `render(text, ctx)` always Jinja. No legacy regex path.
+- `render_named` loads a framework template against a
+  RunContext (uses the framework helpers).
 - `render_named_kwargs` lets internal callers pass a plain
   kwargs dict — used by `format_budget_stats` so its narrow
   variable names (like `steps_used`) don't get shadowed by
   RunContext's framework-helper properties.
 - RunContext properties (`skills`, `budget_stats_legend`,
   `context_pct`, …) are lazy and None-safe.
-
-Backward-compat boundary: any prompt that doesn't contain
-`{{ ` or `{% ` keeps the legacy interpolate behaviour exactly.
-Pinning that here so future Jinja-feature additions don't
-accidentally break existing prompts.
+- Missing variables in Jinja templates render as empty
+  (ChainableUndefined) — safe for opt-in placeholders.
 """
 from __future__ import annotations
 
@@ -51,44 +44,39 @@ def _state(**kw) -> BudgetState:
     return BudgetState(**defaults)
 
 
-# ── render() auto-detect ───────────────────────────────────────────
+# ── render() Jinja-only ────────────────────────────────────────────
 
 
-class TestAutoDetect:
+class TestRender:
 
-    def test_legacy_braces_use_interpolate(self):
-        ctx = RunContext(data={"pr_title": "ORD-301: Add credit"})
-        out = render("PR: {pr_title}", ctx)
-        assert out == "PR: ORD-301: Add credit"
-
-    def test_jinja_double_braces_use_jinja(self):
+    def test_substitutes_simple_variable(self):
         ctx = RunContext(data={"pr_title": "ORD-301: Add credit"})
         out = render("PR: {{ pr_title }}", ctx)
         assert out == "PR: ORD-301: Add credit"
 
-    def test_jinja_block_tag_routes_to_jinja(self):
+    def test_block_tag_loops_over_iterable(self):
         ctx = RunContext(data={"items": ["a", "b", "c"]})
         out = render(
             "{% for it in items %}- {{ it }}\n{% endfor %}", ctx,
         )
         assert "- a" in out and "- b" in out and "- c" in out
 
-    def test_unknown_legacy_key_left_literal(self):
-        """Legacy interpolate leaves `{not_a_var}` as-is — same
-        behaviour as before the engine introduction. Pinning this
-        so JSON-in-prompts examples don't accidentally interpolate."""
-        ctx = RunContext(data={"a": 1})
-        out = render("config = {nonexistent}", ctx)
-        assert out == "config = {nonexistent}"
+    def test_legacy_single_brace_left_literal(self):
+        """Single-brace `{name}` is no longer a placeholder —
+        Jinja only recognises `{{ name }}` and `{% ... %}`. Pins
+        the migration boundary: any old `{x}` text now passes
+        through verbatim. JSON examples and `dict = {…}` snippets
+        survive a render unchanged."""
+        ctx = RunContext(data={"pr_title": "x"})
+        out = render("config = {pr_title}", ctx)
+        assert out == "config = {pr_title}"
 
-    def test_jinja_undefined_collapses_empty(self):
-        """RunContext uses ChainableUndefined — missing vars in
-        Jinja templates render as empty rather than raising. Safer
-        for opt-in placeholders like `{{ skills }}` that may or
-        may not be populated for a given run."""
+    def test_undefined_collapses_empty(self):
+        """ChainableUndefined — missing variables render as empty
+        rather than raising. Safe for opt-in placeholders like
+        `{{ skills }}` that may not be populated for a run."""
         ctx = RunContext()
         out = render("before {{ nothing }} after", ctx)
-        # ChainableUndefined renders as empty string.
         assert out == "before  after"
 
     def test_empty_text_returns_empty(self):

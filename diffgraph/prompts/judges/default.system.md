@@ -5,7 +5,7 @@
 Сценарий явно указывает какие источники сигнала использовать для
 матчинга `required_comments`:
 
-assert_via: {assert_via}
+assert_via: {{ assert_via }}
 
 Допустимые значения:
 - `pr_comments` — реальные комментарии опубликованные через
@@ -26,13 +26,13 @@ assert_via: {assert_via}
 опубликованные комментарии (pr_comments), независимо от assert_via.
 
 ## Что агент написал в PR (канал: pr_comments)
-{agent_comments}
+{{ agent_comments }}
 
 ## Findings, которые агент передал в done() (канал: intended_findings)
-{intended_findings}
+{{ intended_findings }}
 
 ## Концерны, которые агент сформулировал (канал: intended_concerns)
-{intended_concerns}
+{{ intended_concerns }}
 
 Это всё что reviewer выписал через `reflect(concerns=[...])` плюс
 все `focus` строки которые он передал в `agent_spawn`. Используется
@@ -47,7 +47,7 @@ keyword-группами (AND-of-OR семантика как у `description_ke
 КАЖДОЙ группы внутри `keywords`.
 
 
-## Acknowledgement ожидается: {acknowledgement_required}
+## Acknowledgement ожидается: {{ acknowledgement_required }}
 Если "yes" — агент был призван через PR-комментарий (например /review),
 и обычно открывает ответ быстрой репликой вида «Starting review of
 <PR title>…», чтобы коллеги видели что запрос принят и ревью идёт.
@@ -59,10 +59,10 @@ keyword-группами (AND-of-OR семантика как у `description_ke
 ожидается; ничего по этому поводу не пиши.
 
 ## Diff PR (изменённый код, относительно которого судим)
-{pr_diff}
+{{ pr_diff }}
 
 ## AGENTS.md (проектные соглашения)
-{agents_md}
+{{ agents_md }}
 
 ## Задание
 
@@ -100,16 +100,16 @@ keyword-группами (AND-of-OR семантика как у `description_ke
    Возвращай пустой список, если рассуждения выглядят здраво.
 
 Обязательные замечания:
-{required_comments}
+{{ required_comments }}
 
 Запрещённые темы:
-{forbidden_comments}
+{{ forbidden_comments }}
 
 Ожидаемые концерны (concern_focuses) — для тестов LOOK-фазы:
-{concern_focuses}
+{{ concern_focuses }}
 
-Ожидаемый статус PR: {expected_status_change}
-Фактический статус PR: {actual_status_change}
+Ожидаемый статус PR: {{ expected_status_change }}
+Фактический статус PR: {{ actual_status_change }}
 
 Если `concern_focuses` непустой — это primary signal этого теста.
 Каждый concern_focus попадает в `concern_focuses_judgement` (см.

@@ -28,8 +28,8 @@ data:
     type: string
     from: pr_context.commits
 ---
-PR: {pr_title}
-{pr_description}
+PR: {{ pr_title }}
+{{ pr_description }}
 
 This is an **introspection task** — do NOT review the PR.
 

@@ -10,11 +10,11 @@ data:
 ---
 # Your concern
 
-{focus}
+{{ focus }}
 
 # Commits *(oldest → newest)*
 
-{commits}
+{{ commits }}
 
 # Task: investigate the concern above
 

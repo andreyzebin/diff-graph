@@ -193,13 +193,13 @@ class TestAgentIntegration:
             "---\n"
             "skills: [delegation_depth_as_upgrade]\n"
             "---\n"
-            "Task body.\n\n{skills}\n\nSynthesis line.\n"
+            "Task body.\n\n{{ skills }}\n\nSynthesis line.\n"
         )
         a = self._agent(override)
         msgs = a._build_messages()
         user = next(m for m in msgs if m.get("role") == "user")
         # Placeholder literal gone, skill content + header inlined.
-        assert "{skills}" not in user["content"]
+        assert "{{ skills }}" not in user["content"]
         assert "## Skill: delegation_depth_as_upgrade" in user["content"]
         assert "Delegation" in user["content"]
 
@@ -210,7 +210,7 @@ class TestAgentIntegration:
         assert user["content"].strip() == "Plain body, no skills, no placeholder."
 
     def test_skill_with_placeholder_but_no_declaration_renders_empty(self):
-        """If a prompt references `{skills}` but declares no
+        """If a prompt references `{{ skills }}` but declares no
         `skills:` block, the placeholder collapses to empty —
         no crash, no literal leak. Defensive: prompts can carry
         the placeholder even when no skills are mounted for a
@@ -219,12 +219,12 @@ class TestAgentIntegration:
             "---\n"
             "tools_add: [done]\n"
             "---\n"
-            "Body with {skills} placeholder.\n"
+            "Body with {{ skills }} placeholder.\n"
         )
         a = self._agent(override)
         msgs = a._build_messages()
         user = next(m for m in msgs if m.get("role") == "user")
-        assert "{skills}" not in user["content"]
+        assert "{{ skills }}" not in user["content"]
         assert "Body with" in user["content"]
 
     def test_invalid_skills_type_raises(self):

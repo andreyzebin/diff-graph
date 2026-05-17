@@ -361,7 +361,7 @@ class TestBudgetStatsLegendPlaceholder:
         cfg = AgentConfig(
             name="probe", system_prompt="sys",
             user_prompt=(
-                "Task body.\n\n{budget_stats_legend}\n\nThen do X."
+                "Task body.\n\n{{ budget_stats_legend }}\n\nThen do X."
             ),
             tools=["reflect", "done"],
         )
@@ -373,8 +373,8 @@ class TestBudgetStatsLegendPlaceholder:
         )
         msgs = a._build_messages()
         user = next(m for m in msgs if m.get("role") == "user")
-        # Placeholder literal must NOT survive interpolation.
-        assert "{budget_stats_legend}" not in user["content"]
+        # Placeholder literal must NOT survive render.
+        assert "{{ budget_stats_legend }}" not in user["content"]
         # And the actual legend content must be inlined.
         assert "own ctx" in user["content"]
 

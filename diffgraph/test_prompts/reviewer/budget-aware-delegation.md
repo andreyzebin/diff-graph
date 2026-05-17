@@ -57,14 +57,14 @@ data:
     type: string
     description: "Jira ticket reference(s) this PR is associated with"
 ---
-PR: {pr_title}
-{pr_description}
+PR: {{ pr_title }}
+{{ pr_description }}
 
 Commits *(oldest → newest)*:
 
-{commits}
+{{ commits }}
 
-This PR is associated with these Jira ticket(s): {jira_tickets}
+This PR is associated with these Jira ticket(s): {{ jira_tickets }}
 
 **Every reflect call returns your run state.** Each `reflect(...)`
 tool-result carries the current snapshot: time, your own context
@@ -72,13 +72,13 @@ window usage, the shared pool with children, any spawned subagents,
 and a "typical investigator spawn" cost reference. Re-plan each
 time you reflect — your situation has changed.
 
-{budget_stats_legend}
+{{ budget_stats_legend }}
 
 **Read the ticket** via `jira_read_ticket(ref)` (copy each ref
 verbatim from the list above), then **orient on the diff** with
 `diff_list_files`.
 
-{skills}
+{{ skills }}
 
 **Synthesize.** When all spawns have returned, compile the final
 concerns list. Submit via `text_answer(text=...)`, one concern per

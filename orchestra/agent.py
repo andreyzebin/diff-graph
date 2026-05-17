@@ -25,7 +25,7 @@ from .events import EventBus, EventType
 from .sgr import SGRTracker, SGREntry
 from .condensation import get_condenser, should_condense
 from .streaming import stream_llm
-from .prompts import load_prompt, interpolate, load_internal
+from .prompts import load_prompt, load_internal
 from .tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -106,15 +106,20 @@ def resolve_agent_data(config: AgentConfig, data: dict, registry: ToolRegistry) 
             resolved[field_name] = "(not available)"
 
     if resolved:
-        # Interpolate BOTH system and user templates. After the
-        # system/user split most per-call placeholders ({diff_summary},
-        # {focus}, {message}, …) live in user_prompt now; system_prompt
-        # is largely placeholder-free but the same data can be quoted
-        # in either.
-        if "{" in config.system_prompt:
-            config.system_prompt = interpolate(config.system_prompt, **resolved)
-        if config.user_prompt and "{" in config.user_prompt:
-            config.user_prompt = interpolate(config.user_prompt, **resolved)
+        # Pre-render BOTH system and user templates with the
+        # data this from:-resolver layer produced. After this the
+        # Agent only re-renders against ADDITIONAL data scope at
+        # message-build time; the from:-derived fields are
+        # already baked in. Always Jinja (see template_engine).
+        from .runcontext import RunContext
+        from .template_engine import render as _render
+        _ctx = RunContext(data=resolved)
+        if "{{" in config.system_prompt or "{%" in config.system_prompt:
+            config.system_prompt = _render(config.system_prompt, _ctx)
+        if config.user_prompt and (
+            "{{" in config.user_prompt or "{%" in config.user_prompt
+        ):
+            config.user_prompt = _render(config.user_prompt, _ctx)
 
     return resolved
 

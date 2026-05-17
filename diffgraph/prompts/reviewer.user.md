@@ -24,14 +24,14 @@ data:
     type: string
     from: pr_context.jira_tickets
 ---
-PR: {pr_title}
-{pr_description}
+PR: {{ pr_title }}
+{{ pr_description }}
 
 Commits *(oldest → newest)*:
 
-{commits}
+{{ commits }}
 
-Linked Jira ticket(s): {jira_tickets}
+Linked Jira ticket(s): {{ jira_tickets }}
 
 Review this PR end-to-end.
 

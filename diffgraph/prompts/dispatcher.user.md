@@ -25,16 +25,16 @@ guards:
 ---
 # Trigger
 
-- `COMMENT_ID`: `{comment_id}`
-- `PR`: **{pr_title}** — {pr_description}
+- `COMMENT_ID`: `{{ comment_id }}`
+- `PR`: **{{ pr_title }}** — {{ pr_description }}
 
 ## Thread
 
-{comment_thread}
+{{ comment_thread }}
 
 ## Message
 
-{message}
+{{ message }}
 
 If you need to see what *other* threads exist on this PR — only when
 the trigger genuinely calls for cross-thread context, e.g. an /ask

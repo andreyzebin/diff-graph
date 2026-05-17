@@ -23,12 +23,12 @@ data:
     type: string
     from: pr_context.commits
 ---
-PR: {pr_title}
-{pr_description}
+PR: {{ pr_title }}
+{{ pr_description }}
 
 Commits *(oldest → newest)*:
 
-{commits}
+{{ commits }}
 
 Review this PR.
 
