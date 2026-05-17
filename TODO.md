@@ -4715,7 +4715,7 @@ listed and a usage rationale".
   reflect_response_template + budget overrides; `framework_vars`
   ships `{skills}` into the user-message interpolation scope
   alongside `{budget_stats_legend}`.
-- First skill: `delegation_depth_as_upgrade.md` —
+- First skill: `prefer_delegation.md` —
   agent_spawn + agent_list + the positive depth-as-upgrade
   framing (§13.10c). Abstract over delegate names — "the right
   delegate" rather than "investigator" — so the same skill is
@@ -4723,7 +4723,7 @@ listed and a usage rationale".
 
 REV-U-008 migrated: instead of inline rationale + tools_add of
 [agent_spawn, agent_list, text_answer], the prompt now declares
-`skills: [delegation_depth_as_upgrade]` + `tools_add:
+`skills: [prefer_delegation]` + `tools_add:
 [text_answer]` (the deliverable channel is scenario-specific,
 stays inline). Body has `{skills}` where the rationale used to
 be. Effective tools_add at runtime: [text_answer, agent_spawn,

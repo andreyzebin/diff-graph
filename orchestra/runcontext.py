@@ -84,6 +84,14 @@ class RunContext:
     def skills(self) -> str:
         return self.skills_body
 
+    # ── Per-area config blocks ────────────────────────────────
+    # The agent's effective AgentConfig.reflect map (and future
+    # per-area blocks) — merged from base prompt + skills +
+    # per-run override at Agent.__init__. Templates can read
+    # individual keys with `{{ reflect.with_state }}` or branch
+    # with `{% if reflect.with_state %}`.
+    reflect: dict = field(default_factory=dict)
+
     @property
     def context_pct(self) -> int:
         """0-100. Useful for `{% if context_pct > 75 %}` in
@@ -131,4 +139,5 @@ class RunContext:
             "skills": self.skills,
             "context_pct": self.context_pct,
             "steps_used": self.steps_used,
+            "reflect": dict(self.reflect),
         }

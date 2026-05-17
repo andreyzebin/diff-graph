@@ -6,7 +6,7 @@
 # finding. Thread reading is part of the reviewer's base surface
 # (reviewer.system.md); tools_add here is just publishing + verdict
 # — no spawn, so the test stays unit-isolated.
-tools_add:
+tools:
   - pr_post_comment
   - set_review_status
 

@@ -259,7 +259,7 @@ class TestBuiltinRegistration:
             system_prompt="probe",
             user_prompt="probe",
             mode=AgentMode.REACT,
-            reflect_interval=3,
+            reflect={'interval': 3},
             tools=tools,
             budget=BudgetConfig(),
             llm_params=LLMParamsConfig(),

@@ -4,7 +4,7 @@
 # capture-style tool — agent always emits A tool call, the framework
 # records the text as the run's output, judge reads it back via
 # `assert_via: [intended_text]`.
-tools_add:
+tools:
   - text_answer
 extra_tools:
   - name: text_answer

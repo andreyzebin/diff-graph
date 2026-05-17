@@ -123,18 +123,19 @@ class AgentConfig:
     # tool-using steps without reflect, the framework injects a NUDGE;
     # at 2× the interval it narrows tools_schema to reflect-only.
     # Counter resets when reflect actually fires.
-    reflect_interval: int = 3
     sgr_extensions: Optional[dict[str, Any]] = None  # extra reflect() fields
-    # Template name picked when the reflect builtin builds its
-    # tool-result string. Lives in `orchestra/templates/reflect_response/
-    # <name>.md`. Default `"default"` returns just "Reflection noted."
-    # `"with_state"` (opt-in, used by scenarios where the agent should
-    # see its run state on every reflect — budget, time, subagents)
-    # renders a state snapshot via the Jinja template engine using
-    # the framework's internal APIs (format_budget_stats,
-    # format_time_info, …). Toggle per-prompt via the
-    # `reflect_response_template:` frontmatter field.
-    reflect_response_template: str = "default"
+    # Reflect-area config (generic dict, not a typed dataclass).
+    # Frontmatter shape: `reflect: { interval: 5, with_state: true }`.
+    # Known keys today:
+    #   - `interval: int` — step-cadence for the reflect pusher
+    #     (default 3, lives in `orchestra.budget.ReflectCadenceCounter`).
+    #   - `with_state: bool` — reflect handler picks the `with_state`
+    #     template instead of the bare "Reflection noted." default.
+    # Per-area dict avoids the "feature = N plumbing changes" cost
+    # of typed fields: adding a new reflect-area setting is a
+    # one-line read in the consuming code path. Same shape as
+    # `budget:` / `llm:` for stylistic consistency.
+    reflect: dict[str, Any] = field(default_factory=dict)
     # Every tool the agent can call — domain (pr_post_comment, read_file, …)
     # and framework (agent_spawn, reflect, agent_list). The presence of
     # `reflect` here is what we used to call SGR; consumers check for it

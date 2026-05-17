@@ -3,7 +3,7 @@
 # findings + sets verdict. Diff reading + thread reading are the
 # reviewer's base surface (reviewer.system.md); tools_add here is
 # the publishing surface.
-tools_add:
+tools:
   - pr_post_comment
   - set_review_status
 

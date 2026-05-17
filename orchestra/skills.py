@@ -46,8 +46,19 @@ _SKILLS_DIR = Path(__file__).parent / "skills"
 class Skill:
     """In-memory representation of a loaded skill file."""
     name: str
+    # One-line summary of what this skill changes about the
+    # agent's strategy. Shown in skill catalogs (future
+    # `agent_list_skills()` tool) so an agent or prompt author
+    # can pick a skill without reading the full body. Empty
+    # when the skill file doesn't declare one.
+    description: str = ""
     tools: list[str] = field(default_factory=list)
     extra_tools: list[dict] = field(default_factory=list)
+    # Per-area config blocks the skill needs/recommends (mirrors
+    # AgentConfig per-area fields like `reflect`). Merged into
+    # the host prompt's matching block on mount; prompt-side
+    # keys win, skill-side keys fill in defaults.
+    reflect: dict = field(default_factory=dict)
     body: str = ""
 
 
@@ -80,10 +91,20 @@ def load_skill(name: str) -> Skill:
             f"got {type(raw_extra).__name__}"
         )
 
+    description = str(meta.get("description", "")).strip()
+    raw_reflect = meta.get("reflect") or {}
+    if not isinstance(raw_reflect, dict):
+        raise ValueError(
+            f"skill {name!r}: `reflect` must be a mapping, "
+            f"got {type(raw_reflect).__name__}"
+        )
+
     return Skill(
         name=name,
+        description=description,
         tools=tools,
         extra_tools=list(raw_extra),
+        reflect=dict(raw_reflect),
         body=fm.body.strip(),
     )
 
@@ -94,11 +115,17 @@ def mount_skills(skill_names: list[str], *, fm_meta: dict) -> str:
     string for the `{skills}` placeholder.
 
     Mutations on `fm_meta`:
-    - skill `tools` are appended to `fm_meta["tools_add"]`
-      (registry dedupes by name, so duplicates are harmless).
+    - skill `tools` are appended to `fm_meta["tools"]` (registry
+      dedupes by name; the host prompt's tools_field is always
+      additive — base + user + skills all union).
     - skill `extra_tools` are appended to
       `fm_meta["extra_tools"]` (the existing register loop in
       Agent.__init__ picks them up).
+    - skill per-area blocks (`reflect:`, ...) fill in
+      `fm_meta[<area>]` per-key — prompt always wins, first
+      skill in `skill_names` wins among skills (later skills
+      don't silently override earlier ones). See
+      AgentConfig.reflect for known keys.
 
     The returned body has a `## Skill: <name>` header per skill
     so the agent can mentally separate blocks when multiple
@@ -108,23 +135,46 @@ def mount_skills(skill_names: list[str], *, fm_meta: dict) -> str:
         return ""
 
     bodies: list[str] = []
-    tools_add = list(fm_meta.get("tools_add") or [])
+    tools = list(fm_meta.get("tools") or [])
     extra_tools = list(fm_meta.get("extra_tools") or [])
+    reflect = dict(fm_meta.get("reflect") or {})
 
     for name in skill_names:
         skill = load_skill(name)
-        tools_add.extend(skill.tools)
+        tools.extend(skill.tools)
         extra_tools.extend(skill.extra_tools)
+        for k, v in skill.reflect.items():
+            reflect.setdefault(k, v)
         if skill.body:
             bodies.append(f"## Skill: {name}\n\n{skill.body}")
 
-    fm_meta["tools_add"] = tools_add
+    fm_meta["tools"] = tools
     fm_meta["extra_tools"] = extra_tools
+    fm_meta["reflect"] = reflect
 
     return "\n\n".join(bodies)
 
 
 def list_skills() -> list[str]:
-    """Enumerate available skill names (alphabetical). Useful for
-    the future `agent_list_skills()` tool and for error messages."""
+    """Enumerate available skill names (alphabetical). Used in
+    load_skill error messages for typo-spotting."""
     return sorted(p.stem for p in _SKILLS_DIR.glob("*.md"))
+
+
+def list_skill_listings() -> list[dict]:
+    """Catalog of skills with their public metadata. Analog of
+    `AgentRegistry.to_listing` — each entry is `{name, description,
+    tools, extra_tools}`. Consumed by the future
+    `agent_list_skills()` discovery tool (TODO §17 Phase 4) and
+    by anyone composing a `skills:` decision who needs more than
+    just names to choose from."""
+    return [
+        {
+            "name": skill.name,
+            "description": skill.description,
+            "tools": list(skill.tools),
+            "extra_tools": [t.get("name", "?") for t in skill.extra_tools],
+            "reflect": dict(skill.reflect),
+        }
+        for skill in (load_skill(n) for n in list_skills())
+    ]

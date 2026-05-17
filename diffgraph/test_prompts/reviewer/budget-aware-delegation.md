@@ -5,8 +5,8 @@
 # query needed; the snapshot arrives in the reflect tool-result, so
 # the reviewer plans on fresh data every reflection cycle.
 #
-# Delegation rationale is now a SKILL — `delegation_depth_as_upgrade`
-# (orchestra/skills/delegation_depth_as_upgrade.md). The skill
+# Delegation rationale is now a SKILL — `prefer_delegation`
+# (orchestra/skills/prefer_delegation.md). The skill
 # bundles agent_spawn + agent_list with the positive depth-as-
 # upgrade rationale. Abstract over delegate names — the skill text
 # talks about "the right delegate" rather than naming `investigator`,
@@ -21,12 +21,17 @@
 # Tight `max_context` (16K) stays as a backstop while we calibrate.
 # Production reviewer.user.md stays untouched until this shape
 # proves itself on the bench across providers.
-reflect_response_template: with_state
+#
+# `reflect_response_template: with_state` is supplied by the
+# prefer_delegation skill itself — no need to redeclare here.
+# The skill says "I need every reflect to carry a live budget
+# snapshot" so the agent can price spawn-vs-direct on each
+# planning moment.
 budget:
   max_context: 16000
 skills:
-  - delegation_depth_as_upgrade
-tools_add:
+  - prefer_delegation
+tools:
   - text_answer        # scenario-specific deliverable channel
 extra_tools:
   - name: text_answer

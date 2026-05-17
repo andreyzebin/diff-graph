@@ -201,15 +201,39 @@ class Agent:
         self._fm_meta: dict = _fm.meta
         self._fm_body: str = _fm.body
 
-        # User-message frontmatter override — `reflect_response_template`
-        # lives in BOTH the base-prompt frontmatter (parsed by compiler
-        # into config) AND the per-run user_message_from override (parsed
-        # here at agent-init). The override wins so test prompts /
-        # benchmark fixtures can opt into `with_state` without touching
-        # the production reviewer.user.md.
-        _fm_reflect_tpl = self._fm_meta.get("reflect_response_template")
-        if isinstance(_fm_reflect_tpl, str) and _fm_reflect_tpl.strip():
-            self.config.reflect_response_template = _fm_reflect_tpl.strip()
+        # Mount skills FIRST. mount_skills mutates _fm_meta to
+        # extend tools_add / extra_tools / flags. Running before
+        # the flags-merge block below means the override block
+        # sees the merged view (user prompt wins, but absent
+        # keys fall back to the skill's defaults).
+        _skill_names = self._fm_meta.get("skills") or []
+        if _skill_names and not isinstance(_skill_names, list):
+            raise ValueError(
+                f"frontmatter.skills must be a list of strings, "
+                f"got {type(_skill_names).__name__}"
+            )
+        from .skills import mount_skills as _mount_skills
+        self._mounted_skills_body: str = _mount_skills(
+            [str(s) for s in _skill_names],
+            fm_meta=self._fm_meta,
+        )
+
+        # Merge per-area frontmatter blocks (`reflect:`, ...) into
+        # config dicts. Per-key override: anything declared in the
+        # user-message frontmatter (or supplied by a mounted skill)
+        # wins over the base-prompt config. Adding a new per-area
+        # namespace = append its name here.
+        for _area in ("reflect",):
+            _fm_block = self._fm_meta.get(_area)
+            if isinstance(_fm_block, dict):
+                merged = dict(getattr(self.config, _area, None) or {})
+                merged.update(_fm_block)
+                setattr(self.config, _area, merged)
+            elif _fm_block is not None:
+                raise ValueError(
+                    f"frontmatter.{_area} must be a mapping, "
+                    f"got {type(_fm_block).__name__}"
+                )
 
         # Same override channel for `budget:` — bench / test prompts can
         # tighten the context window (or any budget axis) per scenario
@@ -224,24 +248,6 @@ class Agent:
                     setattr(self.config.budget, _k, int(_fm_budget[_k]))
             if "max_wall_time" in _fm_budget and _fm_budget["max_wall_time"] is not None:
                 self.config.budget.max_wall_time = float(_fm_budget["max_wall_time"])
-
-        # Mount skills declared in user-message frontmatter — bundles
-        # of (tools + extra_tools + rationale). See orchestra/skills.py.
-        # mount_skills mutates _fm_meta to extend tools_add / extra_tools
-        # (so the existing register loop below and _build_tool_names
-        # pick them up) and returns the aggregated rationale string for
-        # the `{skills}` interpolation placeholder.
-        _skill_names = self._fm_meta.get("skills") or []
-        if _skill_names and not isinstance(_skill_names, list):
-            raise ValueError(
-                f"frontmatter.skills must be a list of strings, "
-                f"got {type(_skill_names).__name__}"
-            )
-        from .skills import mount_skills as _mount_skills
-        self._mounted_skills_body: str = _mount_skills(
-            [str(s) for s in _skill_names],
-            fm_meta=self._fm_meta,
-        )
 
         # Register extra_tools as capture-style tools in the agent's
         # registry. Idempotent — re-registering the same name on a
@@ -265,7 +271,9 @@ class Agent:
         # at fractions of max_wall_time), not a fixed-interval cadence
         # on wall clock.
         self.budget_tracker.configure_reflect_pushers(
-            reflect_interval=config.reflect_interval if self.sgr else 0,
+            reflect_interval=(
+                int(config.reflect.get("interval", 3)) if self.sgr else 0
+            ),
         )
         self.budget_state: Optional[BudgetState] = None
 
@@ -1301,6 +1309,7 @@ class Agent:
             depth=self.depth,
             budget_state=self.budget_state,
             skills_body=getattr(self, "_mounted_skills_body", "") or "",
+            reflect=dict(self.config.reflect or {}),
         )
         if system_text:
             system_text = _render_template(system_text, _ctx)
@@ -1341,36 +1350,25 @@ class Agent:
         candidate_pool = set(default_names) | set(extra_names)
 
         fm_tools = self._fm_meta.get("tools")
-        fm_tools_add = self._fm_meta.get("tools_add")
         if isinstance(fm_tools, list):
-            # Full replace: agent's runtime tool set is exactly the
-            # list. Strict — every name must resolve, fixture typos
-            # fail loud.
-            unknown = [n for n in fm_tools if n not in candidate_pool]
-            if unknown:
-                raise ValueError(
-                    f"frontmatter.tools references names not in agent's "
-                    f"@tools or extra_tools: {unknown}. Candidate pool: "
-                    f"{sorted(candidate_pool)}"
-                )
-            names = list(fm_tools)
-        elif isinstance(fm_tools_add, list):
-            # Extension: default + extras. The defaults stay intact,
-            # which is exactly what "extending the agent's normal
-            # surface" should mean.
+            # Additive: defaults + user-prompt tools + skill tools
+            # (mount_skills already merged skills' tools into
+            # _fm_meta["tools"]). Always union, never replace —
+            # the user layer can only EXTEND the agent's base
+            # toolset.
             unknown = [
-                n for n in fm_tools_add
+                n for n in fm_tools
                 if n not in candidate_pool and not self.registry.has(n)
             ]
             if unknown:
                 raise ValueError(
-                    f"frontmatter.tools_add references names not in agent's "
+                    f"frontmatter.tools references names not in agent's "
                     f"@tools or extra_tools and not in the registry: "
                     f"{unknown}. Either declare them in extra_tools or "
                     f"verify the name."
                 )
             names = list(default_names)
-            for n in fm_tools_add:
+            for n in fm_tools:
                 if n not in names:
                     names.append(n)
         else:

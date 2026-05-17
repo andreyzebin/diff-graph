@@ -6,7 +6,7 @@
 # tells the reviewer the PR's associated Jira ticket(s) and nudges
 # it to ground concerns in the ticket's acceptance criteria rather
 # than guessing intent from the diff alone.
-tools_add:
+tools:
   - text_answer
 extra_tools:
   - name: text_answer

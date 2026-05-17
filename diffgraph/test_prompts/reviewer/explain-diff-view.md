@@ -3,7 +3,7 @@
 # its own mental model of the diff-view tools. Used to confirm whether
 # §3.4 in TODO.md (markers-as-content confusion) is a real failure
 # mode for a given provider.
-tools_add:
+tools:
   - text_answer
 extra_tools:
   - name: text_answer

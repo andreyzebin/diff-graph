@@ -11,7 +11,9 @@ Pinned here:
 - with_state template renders all the snapshot blocks (time +
   budget + subagents).
 - Missing template file falls back gracefully (no crash).
-- AgentConfig.reflect_response_template flag toggles the variant.
+- AgentConfig.flags["with_state"] toggles the variant
+  (see TODO §19 — generic flags map replaced the dedicated
+  reflect_response_template field).
 - format_time_info: UTC + elapsed time formatting.
 """
 from __future__ import annotations
@@ -162,27 +164,31 @@ class TestFormatTimeInfo:
         assert "0s since agent start" in out
 
 
-# ── AgentConfig toggle ─────────────────────────────────────────────
+# ── AgentConfig.reflect toggle ─────────────────────────────────────
 
 
 class TestAgentConfigToggle:
+    """Reflect template + cadence both live under the generic
+    `reflect:` namespace on AgentConfig (mirrors `budget:` /
+    `llm:` shape). Reflect handler reads
+    `config.reflect.get("with_state")`."""
 
-    def test_default_field_value(self):
+    def test_default_reflect_empty(self):
         from orchestra.types import AgentConfig
         cfg = AgentConfig(
             name="probe", system_prompt="x", user_prompt="y",
         )
-        # Backward compat: existing prompts that don't set this get
-        # the legacy plain "Reflection noted." behavior.
-        assert cfg.reflect_response_template == "default"
+        # No key set → reflect handler falls through to the
+        # "Reflection noted." default template.
+        assert cfg.reflect == {}
 
-    def test_explicit_field_value(self):
+    def test_reflect_set_via_constructor(self):
         from orchestra.types import AgentConfig
         cfg = AgentConfig(
             name="probe", system_prompt="x", user_prompt="y",
-            reflect_response_template="with_state",
+            reflect={"with_state": True},
         )
-        assert cfg.reflect_response_template == "with_state"
+        assert cfg.reflect["with_state"] is True
 
 
 # ── user-message override frontmatter wins ─────────────────────────
@@ -190,26 +196,23 @@ class TestAgentConfigToggle:
 
 class TestUserMessageOverridePlumbing:
     """A per-run `user_message_from` override carries its own
-    frontmatter. When it sets `reflect_response_template`, that
-    value MUST win over the base-prompt's value — otherwise
-    bench/test prompts that opt into `with_state` get silently
-    ignored (this was the bug seen on REV-U-008 plans 265/266:
-    test prompt opted in, runtime kept rendering "Reflection
-    noted.")."""
+    frontmatter. When it sets `reflect:`, those keys win per-key
+    over base config — otherwise bench/test prompts that opt
+    into a feature would be silently ignored."""
 
-    def test_override_frontmatter_replaces_config_default(self, tmp_path):
+    def test_override_reflect_replaces_config_default(self, tmp_path):
         from orchestra.agent import Agent
         from orchestra.types import AgentConfig
         from orchestra.tools.registry import ToolRegistry
 
         cfg = AgentConfig(
             name="probe", system_prompt="sys", user_prompt="base",
-            reflect_response_template="default",
             tools=["reflect", "done"],
         )
         override = (
             "---\n"
-            "reflect_response_template: with_state\n"
+            "reflect:\n"
+            "  with_state: true\n"
             "---\n"
             "user body here\n"
         )
@@ -220,19 +223,19 @@ class TestUserMessageOverridePlumbing:
             model="probe-model",
             user_message_override=override,
         )
-        assert a.config.reflect_response_template == "with_state"
+        assert a.config.reflect.get("with_state") is True
 
-    def test_override_without_field_keeps_base(self, tmp_path):
+    def test_override_without_reflect_keeps_base(self, tmp_path):
         from orchestra.agent import Agent
         from orchestra.types import AgentConfig
         from orchestra.tools.registry import ToolRegistry
 
         cfg = AgentConfig(
             name="probe", system_prompt="sys", user_prompt="base",
-            reflect_response_template="with_state",
             tools=["reflect", "done"],
+            reflect={"with_state": True},
         )
-        override = "---\ntools_add: [done]\n---\nbody\n"
+        override = "---\ntools: [done]\n---\nbody\n"
         a = Agent(
             config=cfg,
             tool_registry=ToolRegistry(),
@@ -240,9 +243,39 @@ class TestUserMessageOverridePlumbing:
             model="probe-model",
             user_message_override=override,
         )
-        # Override didn't mention reflect_response_template — base
-        # config value is preserved (no spurious reset to "default").
-        assert a.config.reflect_response_template == "with_state"
+        # Override didn't mention reflect — base config value
+        # preserved (no spurious reset).
+        assert a.config.reflect.get("with_state") is True
+
+    def test_override_reflect_merges_per_key(self):
+        """Per-key merge: override's reflect keys update base's,
+        leaving unmentioned keys alone. Mirrors how dict.update()
+        works — the simplest semantics for "the override wins"."""
+        from orchestra.agent import Agent
+        from orchestra.types import AgentConfig
+        from orchestra.tools.registry import ToolRegistry
+
+        cfg = AgentConfig(
+            name="probe", system_prompt="sys", user_prompt="base",
+            tools=["reflect", "done"],
+            reflect={"with_state": True, "other": "kept"},
+        )
+        override = (
+            "---\n"
+            "reflect:\n"
+            "  with_state: false\n"
+            "---\n"
+            "body\n"
+        )
+        a = Agent(
+            config=cfg,
+            tool_registry=ToolRegistry(),
+            llm=None,
+            model="probe-model",
+            user_message_override=override,
+        )
+        assert a.config.reflect["with_state"] is False
+        assert a.config.reflect["other"] == "kept"
 
 
 # ── budget override via user-message frontmatter ───────────────────
@@ -318,7 +351,7 @@ class TestBudgetOverridePlumbing:
             tools=["reflect", "done"],
             budget=BudgetConfig(max_context=42_000),
         )
-        override = "---\ntools_add: [done]\n---\nbody\n"
+        override = "---\ntools: [done]\n---\nbody\n"
         a = Agent(
             config=cfg,
             tool_registry=ToolRegistry(),

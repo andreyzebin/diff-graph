@@ -187,7 +187,7 @@ def _build_agent(
         system_prompt="You are a test agent.",
         user_prompt="Do the thing.",
         mode=AgentMode.REACT,
-        reflect_interval=0,  # disable cadence pusher noise in this test
+        reflect={"interval": 0},  # disable cadence pusher noise in this test
         tools=tools,
         budget=budget,
         # stream=False so stream_llm hits the non-streaming branch
@@ -400,7 +400,7 @@ def test_parent_child_spawn_budget_split(spawn_script):
         system_prompt="You are a child agent.",
         user_prompt="Investigate {{ focus }}.",
         mode=AgentMode.REACT,
-        reflect_interval=0,
+        reflect={"interval": 0},
         tools=["diff_read_file", "done"],
         budget=BudgetConfig(max_tokens=50_000, max_steps=10),
         llm_params=LLMParamsConfig(stream=False, tool_choice="auto"),
@@ -566,9 +566,9 @@ def test_full_pusher_pipeline_through_force_done():
         ),
     )
     # Reflect cadence interval = 3. The default _build_agent path
-    # uses reflect_interval=0 (silent), so override here. We need
+    # uses reflect.interval=0 (silent), so override here. We need
     # `reflect` in tools for the cadence handler to register.
-    agent.config.reflect_interval = 3
+    agent.config.reflect = {"interval": 3}
     agent.budget_tracker.configure_reflect_pushers(reflect_interval=3)
 
     agent.run()

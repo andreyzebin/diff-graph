@@ -1,11 +1,13 @@
 ---
-# Skill: delegation_depth_as_upgrade
+# Skill: prefer_delegation
 #
 # Bundles the tools an orchestrator-role agent needs to delegate
-# (agent_spawn + agent_list) with the rationale that frames
-# delegation as a DEPTH upgrade rather than a budget-pressure
-# fallback. Positive framing — model sees spawning as "get the
-# best answer" rather than "obey a prohibition on direct reads".
+# (agent_spawn + agent_list) with rationale that makes delegation
+# the DEFAULT action for any concern that warrants real
+# investigation. Direct handling stays as the exception for
+# trivially-visible concerns. Framed as a DEPTH upgrade (positive
+# framing) — model sees spawning as "get the best answer" rather
+# than "obey a prohibition on direct reads".
 #
 # Abstract over agent names: text refers to "the delegate" /
 # "the right delegate" rather than naming `investigator`
@@ -16,6 +18,23 @@
 # History: TODO §13.10c — positive framing landed after B+C
 # (can-I-answer-now + breadth) and pure budget-pressure both
 # failed to push deepseek-chat off direct reads.
+description: >-
+  Shifts the agent's execution strategy: each concern that needs
+  real investigation is routed to the best-suited executor agent
+  via agent_spawn, with the parent acting as router + synthesiser.
+  Direct handling stays as the exception for trivially-visible
+  concerns. Goal — maximise result quality within the run's
+  shared budget by letting specialised delegates work in fresh
+  context windows.
+# This skill needs every reflect to carry a live budget + time +
+# subagents snapshot — without it the agent can't price the
+# spawn-vs-direct trade-off honestly on each planning moment.
+# Prompts that mount this skill get `reflect.with_state: true`
+# automatically; they can still override with `reflect: {
+# with_state: false }` if they want the bare "Reflection noted."
+# instead.
+reflect:
+  with_state: true
 tools:
   - agent_spawn
   - agent_list

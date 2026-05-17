@@ -4,14 +4,14 @@ prompts opt into via the `skills:` frontmatter field.
 Pinned here:
 - Skill files in `orchestra/skills/*.md` load via the same
   frontmatter parser as agent prompts (consistent UX).
-- mount_skills mutates _fm_meta in place (extends tools_add and
+- mount_skills mutates _fm_meta in place (extends tools and
   extra_tools) so existing register loops + _build_tool_names
   pick up the contributions without new dispatch paths.
 - Aggregated body is the {skills} placeholder content with per-
   skill headers so multi-skill prompts have visual separation.
 - Missing skill / wrong shape → ValueError at agent-init time
   with the catalog of available skills surfaced for typos.
-- The shipped `delegation_depth_as_upgrade` skill loads and
+- The shipped `prefer_delegation` skill loads and
   resolves end-to-end through Agent.__init__.
 """
 from __future__ import annotations
@@ -22,6 +22,7 @@ import pytest
 
 from orchestra.skills import (
     Skill,
+    list_skill_listings,
     list_skills,
     load_skill,
     mount_skills,
@@ -35,7 +36,33 @@ class TestCatalog:
 
     def test_list_includes_shipped_skill(self):
         names = list_skills()
-        assert "delegation_depth_as_upgrade" in names
+        assert "prefer_delegation" in names
+
+    def test_listings_carry_description_and_tools(self):
+        """`list_skill_listings()` is the agent-facing catalog
+        (analog of agent_list's to_listing). One entry per skill,
+        each with name/description/tools/extra_tools — enough for
+        an agent (or prompt author) to pick a skill without
+        opening the file."""
+        listings = list_skill_listings()
+        # Index by name for a stable lookup regardless of order.
+        by_name = {e["name"]: e for e in listings}
+        assert "prefer_delegation" in by_name
+        entry = by_name["prefer_delegation"]
+        # Description present and non-empty — strategy summary.
+        # Loose keyword check: the prefer_delegation skill's
+        # description should mention the action verb (route /
+        # delegate / spawn) so a catalog reader can infer what
+        # it does.
+        assert entry["description"]
+        desc = entry["description"].lower()
+        assert any(kw in desc for kw in ("delegate", "spawn", "route"))
+        # Tools listed verbatim from the skill file.
+        assert "agent_spawn" in entry["tools"]
+        assert "agent_list" in entry["tools"]
+        # No extra_tools on this skill (capture-style schemas
+        # would land here if the skill declared any).
+        assert entry["extra_tools"] == []
 
 
 # ── load_skill ─────────────────────────────────────────────────────
@@ -44,9 +71,9 @@ class TestCatalog:
 class TestLoadSkill:
 
     def test_loads_shipped_skill(self):
-        skill = load_skill("delegation_depth_as_upgrade")
+        skill = load_skill("prefer_delegation")
         assert isinstance(skill, Skill)
-        assert skill.name == "delegation_depth_as_upgrade"
+        assert skill.name == "prefer_delegation"
         # The shipped skill bundles agent_spawn + agent_list.
         assert "agent_spawn" in skill.tools
         assert "agent_list" in skill.tools
@@ -54,6 +81,12 @@ class TestLoadSkill:
         # placeholder content.
         assert "Delegation" in skill.body
         assert "delegate" in skill.body.lower()
+        # Description is the short strategy summary visible in
+        # `list_skill_listings()` — required for the catalog UX
+        # to make sense.
+        assert skill.description
+        desc = skill.description.lower()
+        assert any(kw in desc for kw in ("delegate", "spawn", "route"))
 
     def test_missing_skill_lists_available(self):
         with pytest.raises(ValueError) as exc:
@@ -61,7 +94,7 @@ class TestLoadSkill:
         msg = str(exc.value)
         assert "does_not_exist_yet" in msg
         # Catalog leaks into the error so the author can spot a typo.
-        assert "delegation_depth_as_upgrade" in msg
+        assert "prefer_delegation" in msg
 
     def test_wrong_tools_shape_raises(self, tmp_path, monkeypatch):
         # Build a fake skill file with `tools` as a string (wrong).
@@ -85,22 +118,22 @@ class TestMountSkills:
         fm = {}
         out = mount_skills([], fm_meta=fm)
         assert out == ""
-        # _fm_meta is untouched — tools_add stays as the agent
+        # _fm_meta is untouched — tools stays as the agent
         # itself declared (or absent).
-        assert "tools_add" not in fm
+        assert "tools" not in fm
 
-    def test_mounts_tools_into_tools_add(self):
-        fm = {"tools_add": ["text_answer"]}
-        mount_skills(["delegation_depth_as_upgrade"], fm_meta=fm)
+    def test_mounts_tools_into_tools(self):
+        fm = {"tools": ["text_answer"]}
+        mount_skills(["prefer_delegation"], fm_meta=fm)
         # Skill's tools landed alongside the prompt's existing
-        # tools_add — both visible to _build_tool_names.
-        assert "text_answer" in fm["tools_add"]
-        assert "agent_spawn" in fm["tools_add"]
-        assert "agent_list" in fm["tools_add"]
+        # tools — both visible to _build_tool_names.
+        assert "text_answer" in fm["tools"]
+        assert "agent_spawn" in fm["tools"]
+        assert "agent_list" in fm["tools"]
 
     def test_body_has_per_skill_header(self):
-        body = mount_skills(["delegation_depth_as_upgrade"], fm_meta={})
-        assert body.startswith("## Skill: delegation_depth_as_upgrade")
+        body = mount_skills(["prefer_delegation"], fm_meta={})
+        assert body.startswith("## Skill: prefer_delegation")
 
     def test_multiple_skills_concatenate(self, tmp_path, monkeypatch):
         fake_dir = tmp_path / "skills"
@@ -121,7 +154,74 @@ class TestMountSkills:
         assert body.index("## Skill: skill_a") < body.index("## Skill: skill_b")
         assert "A body." in body and "B body." in body
         # Tools from both merged.
-        assert fm["tools_add"] == ["tool_a", "tool_b"]
+        assert fm["tools"] == ["tool_a", "tool_b"]
+
+    def test_reflect_supplied_when_prompt_unset(
+        self, tmp_path, monkeypatch,
+    ):
+        """A skill can declare `reflect:` to say "I need this
+        feature on". mount_skills writes each skill reflect key
+        into fm_meta only if the prompt hasn't already set the
+        same key — prompt's explicit choice always wins."""
+        fake_dir = tmp_path / "skills"
+        fake_dir.mkdir()
+        (fake_dir / "needs_state.md").write_text(
+            "---\ntools: []\nreflect:\n  with_state: true\n---\nbody\n",
+            encoding="utf-8",
+        )
+        from orchestra import skills as skills_mod
+        monkeypatch.setattr(skills_mod, "_SKILLS_DIR", fake_dir)
+        # Empty fm_meta → skill's value lands.
+        fm: dict = {}
+        skills_mod.mount_skills(["needs_state"], fm_meta=fm)
+        assert fm["reflect"] == {"with_state": True}
+
+    def test_prompt_overrides_skill_reflect(self, tmp_path, monkeypatch):
+        fake_dir = tmp_path / "skills"
+        fake_dir.mkdir()
+        (fake_dir / "needs_state.md").write_text(
+            "---\ntools: []\nreflect:\n  with_state: true\n---\nbody\n",
+            encoding="utf-8",
+        )
+        from orchestra import skills as skills_mod
+        monkeypatch.setattr(skills_mod, "_SKILLS_DIR", fake_dir)
+        # Prompt already set the same key → skill respects it.
+        fm: dict = {"reflect": {"with_state": False}}
+        skills_mod.mount_skills(["needs_state"], fm_meta=fm)
+        assert fm["reflect"]["with_state"] is False
+
+    def test_first_skill_wins_over_later_skill_for_same_key(
+        self, tmp_path, monkeypatch,
+    ):
+        """Multiple skills in the `skills: [a, b]` list: first
+        skill's reflect key wins per-key over later skills'.
+        Mirrors the prompt-wins rule one level down."""
+        fake_dir = tmp_path / "skills"
+        fake_dir.mkdir()
+        (fake_dir / "first.md").write_text(
+            "---\ntools: []\nreflect: { with_state: true }\n---\nbody\n",
+            encoding="utf-8",
+        )
+        (fake_dir / "second.md").write_text(
+            "---\ntools: []\nreflect: { with_state: false }\n---\nbody\n",
+            encoding="utf-8",
+        )
+        from orchestra import skills as skills_mod
+        monkeypatch.setattr(skills_mod, "_SKILLS_DIR", fake_dir)
+        fm: dict = {}
+        skills_mod.mount_skills(["first", "second"], fm_meta=fm)
+        # First wins on key `with_state`.
+        assert fm["reflect"]["with_state"] is True
+
+    def test_shipped_prefer_delegation_supplies_reflect(self):
+        """prefer_delegation declares `reflect: { with_state:
+        true }` — the live snapshot is part of the skill's
+        contract. Verified end-to-end: a prompt mounting the
+        skill ends up with the key set in fm_meta without
+        having to redeclare it itself."""
+        fm: dict = {}
+        mount_skills(["prefer_delegation"], fm_meta=fm)
+        assert fm["reflect"]["with_state"] is True
 
     def test_extra_tools_merge(self, tmp_path, monkeypatch):
         fake_dir = tmp_path / "skills"
@@ -156,7 +256,7 @@ class TestMountSkills:
 class TestAgentIntegration:
     """Agent.__init__ mounts skills from user_message_override's
     frontmatter. tools surface ends up as the union of prompt's
-    own tools_add and skill's tools; {skills} placeholder
+    own tools and skill's tools; {skills} placeholder
     resolves in the user message."""
 
     def _agent(self, override: str):
@@ -178,20 +278,20 @@ class TestAgentIntegration:
     def test_skill_tools_merge_into_effective_surface(self):
         override = (
             "---\n"
-            "skills: [delegation_depth_as_upgrade]\n"
+            "skills: [prefer_delegation]\n"
             "---\n"
             "body\n"
         )
         a = self._agent(override)
-        # The skill's tools landed in tools_add via mount_skills.
-        tools_add = a._fm_meta.get("tools_add", [])
-        assert "agent_spawn" in tools_add
-        assert "agent_list" in tools_add
+        # The skill's tools landed in tools via mount_skills.
+        tools = a._fm_meta.get("tools", [])
+        assert "agent_spawn" in tools
+        assert "agent_list" in tools
 
     def test_placeholder_resolves_to_skill_body(self):
         override = (
             "---\n"
-            "skills: [delegation_depth_as_upgrade]\n"
+            "skills: [prefer_delegation]\n"
             "---\n"
             "Task body.\n\n{{ skills }}\n\nSynthesis line.\n"
         )
@@ -200,7 +300,7 @@ class TestAgentIntegration:
         user = next(m for m in msgs if m.get("role") == "user")
         # Placeholder literal gone, skill content + header inlined.
         assert "{{ skills }}" not in user["content"]
-        assert "## Skill: delegation_depth_as_upgrade" in user["content"]
+        assert "## Skill: prefer_delegation" in user["content"]
         assert "Delegation" in user["content"]
 
     def test_no_skills_no_placeholder_unchanged(self):
@@ -217,7 +317,7 @@ class TestAgentIntegration:
         particular scenario."""
         override = (
             "---\n"
-            "tools_add: [done]\n"
+            "tools: [done]\n"
             "---\n"
             "Body with {{ skills }} placeholder.\n"
         )
@@ -226,6 +326,21 @@ class TestAgentIntegration:
         user = next(m for m in msgs if m.get("role") == "user")
         assert "{{ skills }}" not in user["content"]
         assert "Body with" in user["content"]
+
+    def test_skill_reflect_lands_on_config(self):
+        """End-to-end: a prompt mounting `prefer_delegation`
+        without its own reflect block ends up with
+        `config.reflect["with_state"] == True`, because the
+        skill supplies it during mount_skills (which runs
+        before the per-area merge block in Agent.__init__)."""
+        override = (
+            "---\n"
+            "skills: [prefer_delegation]\n"
+            "---\n"
+            "body\n"
+        )
+        a = self._agent(override)
+        assert a.config.reflect.get("with_state") is True
 
     def test_invalid_skills_type_raises(self):
         override = (

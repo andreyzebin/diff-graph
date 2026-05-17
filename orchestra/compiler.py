@@ -44,15 +44,16 @@ class AgentRegistryEntry:
     budget: BudgetConfig
     llm_params: LLMParamsConfig
     sgr: bool
-    reflect_interval: int
     prompt_template: str  # SYSTEM body with {placeholders} — stable across calls
     user_template: str = ""  # USER message template; empty → caller fills it
     guards: dict[str, str] = field(default_factory=dict)  # {trigger: message}
     source_file: str = ""
     source_hash: str = ""
-    # Template name for the reflect builtin's tool-result string.
-    # See AgentConfig.reflect_response_template for semantics.
-    reflect_response_template: str = "default"
+    # Per-area config dicts (mirrors `budget:` / `llm:` shape).
+    # `reflect:` carries `{interval, with_state, ...}`. Merged with
+    # skill blocks + user-message override at Agent.__init__. See
+    # AgentConfig.reflect for known keys.
+    reflect: dict = field(default_factory=dict)
 
     def to_agent_config(self) -> AgentConfig:
         """Convert to AgentConfig. tools is a single flat list — the
@@ -77,8 +78,7 @@ class AgentRegistryEntry:
             system_prompt=self.prompt_template,
             user_prompt=self.user_template,
             mode=self.mode,
-            reflect_interval=self.reflect_interval,
-            reflect_response_template=self.reflect_response_template,
+            reflect=dict(self.reflect),
             tools=tools,
             budget=self.budget,
             llm_params=self.llm_params,
@@ -422,8 +422,8 @@ def _parse_prompt_file(
     budget = _parse_budget_header(headers.get("budget", ""))
     llm_params = _parse_llm_header(headers.get("llm", ""))
     sgr = "sgr" in capabilities
-    reflect_interval = int(headers.get("reflect_interval", "3"))
-    reflect_response_template = headers.get("reflect_response_template", "default").strip() or "default"
+    raw_reflect = headers.get("reflect")
+    reflect = dict(raw_reflect) if isinstance(raw_reflect, dict) else {}
     summary = headers.get("summary", "").strip()
 
     return AgentRegistryEntry(
@@ -437,8 +437,7 @@ def _parse_prompt_file(
         budget=budget,
         llm_params=llm_params,
         sgr=sgr,
-        reflect_interval=reflect_interval,
-        reflect_response_template=reflect_response_template,
+        reflect=reflect,
         prompt_template=body.strip(),
         user_template=user_template.strip(),
         source_file=str(filepath) if filepath else "",
@@ -467,9 +466,11 @@ def _from_yaml_headers(y: dict) -> tuple[dict[str, str], dict[str, dict[str, str
     if "agent" in y:    h["agent"] = str(y["agent"])
     if "mode" in y:     h["mode"] = str(y["mode"])
     if "summary" in y:  h["summary"] = str(y["summary"]).strip()
-    if "reflect_interval" in y: h["reflect_interval"] = str(y["reflect_interval"])
-    if "reflect_response_template" in y:
-        h["reflect_response_template"] = str(y["reflect_response_template"])
+    if "reflect" in y and isinstance(y["reflect"], dict):
+        # Carry the dict through unchanged — `_parse_legacy_headers`
+        # reads it via headers.get("reflect") and copies into the
+        # AgentRegistryEntry.
+        h["reflect"] = y["reflect"]  # type: ignore[assignment]
 
     raw_tools = y.get("tools") or []
     if isinstance(raw_tools, list):

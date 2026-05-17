@@ -166,7 +166,7 @@ def _parse_agent(name: str, d: dict) -> AgentConfig:
         name=name,
         system_prompt=d.get("system_prompt", ""),
         mode=AgentMode(d.get("mode", "react")),
-        reflect_interval=d.get("reflect_interval", 3),
+        reflect=dict(d.get("reflect") or {}),
         sgr_extensions=d.get("sgr_extensions"),
         # Single tool list. Legacy YAML configs that set meta_tools or
         # sgr separately get merged into tools so behaviour stays the

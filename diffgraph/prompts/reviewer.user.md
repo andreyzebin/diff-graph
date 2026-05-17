@@ -2,7 +2,7 @@
 # End-to-end production review — the base surface (diff reading +
 # thread reading) is in reviewer.system.md; tools_add here is the
 # acting-on-outputs surface: delegation, publishing, and verdict.
-tools_add:
+tools:
   - agent_list
   - agent_spawn
   - pr_post_comment

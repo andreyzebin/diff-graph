@@ -31,23 +31,24 @@ def register_builtins(
     and get schema validation. Otherwise, placeholder handlers are used.
 
     The effective tool set is the UNION of `agent_config.tools` and any
-    `tools_add` extension declared in the agent's parsed user-message
+    `tools` extension declared in the agent's parsed user-message
     frontmatter (`agent._fm_meta`). Without this union we'd silently
     skip registering tools that the user prompt asks for as extensions
     — e.g. reviewer's @tools is now [diff_*, reflect, done] and
-    agent_spawn / agent_list live only in reviewer.user.md tools_add.
-    Without the union the spawned reviewer's child registry would
-    never get those builtins and _build_tool_names would raise.
+    agent_spawn / agent_list live only in reviewer.user.md `tools:`
+    block. Without the union the spawned reviewer's child registry
+    would never get those builtins and _build_tool_names would raise.
     """
 
     # Effective tool set = base @tools UNION user-prompt frontmatter
-    # `tools_add`. Computed once and shared by every builtin below;
-    # see register_builtins docstring for the why.
+    # `tools:` (always additive in the user layer). Computed once
+    # and shared by every builtin below; see register_builtins
+    # docstring for the why.
     tool_names = set(agent_config.tools or [])
     fm_meta = getattr(agent, "_fm_meta", None) or {}
-    fm_tools_add = fm_meta.get("tools_add")
-    if isinstance(fm_tools_add, list):
-        tool_names |= {n for n in fm_tools_add if isinstance(n, str)}
+    fm_tools = fm_meta.get("tools")
+    if isinstance(fm_tools, list):
+        tool_names |= {n for n in fm_tools if isinstance(n, str)}
 
     # ── reflect ───────────────────────────────────────────────────────────
     if "reflect" in tool_names and sgr_tracker:
@@ -89,20 +90,19 @@ def register_builtins(
                         step=step,
                         **kw,
                     )
-            # Tool-result string. Default template = "Reflection
-            # noted." (current behavior). Opt-in via prompt
-            # frontmatter `reflect_response_template: with_state`
-            # composes a state snapshot (budget + time + subagents)
-            # so the agent re-grounds its planning on every reflect
-            # — no need for a separate budget_stats query.
+            # Tool-result string. Default = "Reflection noted."
+            # Opt-in via prompt frontmatter (or a mounted skill)
+            # `reflect: { with_state: true }` composes a state
+            # snapshot (budget + time + subagents) so the agent
+            # re-grounds its planning on every reflect — no
+            # separate budget_stats query needed.
             template_name = "default"
             children_snapshot = None
             state = None
             if _captured_agent is not None:
-                template_name = getattr(
-                    _captured_agent.config, "reflect_response_template",
-                    "default",
-                )
+                reflect_cfg = getattr(_captured_agent.config, "reflect", None) or {}
+                if reflect_cfg.get("with_state"):
+                    template_name = "with_state"
                 state = _captured_agent.budget_state
                 # Snapshot children under the lock so async-spawn
                 # races don't tear the rendering.

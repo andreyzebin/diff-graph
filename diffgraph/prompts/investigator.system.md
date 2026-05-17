@@ -42,8 +42,8 @@ budget:
   tokens: 80000
   steps: 127
   wall: 15m
-reflect_interval: 5
-
+reflect:
+  interval: 5
 llm:
   temperature: 0
 ---

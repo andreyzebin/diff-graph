@@ -133,38 +133,23 @@ class TestValidate:
             }],
         }))
 
-    def test_tools_add_validated_like_tools(self):
-        validate(Frontmatter(meta={"tools_add": ["submit_answer", "echo"]}))
-        with pytest.raises(ValueError, match=r"tools_add: "):
-            validate(Frontmatter(meta={"tools_add": "not-a-list"}))
-        with pytest.raises(ValueError, match=r"tools_add\[0\]"):
-            validate(Frontmatter(meta={"tools_add": [""]}))
-
-    def test_tools_and_tools_add_are_mutex(self):
-        with pytest.raises(ValueError, match="mutually exclusive"):
-            validate(Frontmatter(meta={
-                "tools": ["a"], "tools_add": ["b"]
-            }))
-
     def test_unknown_fields_pass(self):
         # Forward-compat: future fields can land without us updating
         # this validator; the contract is only "known fields have
         # well-formed shapes".
         validate(Frontmatter(meta={"future_field": "anything"}))
 
-    def test_user_role_rejects_full_replace_tools(self):
-        # `tools:` in the user (per-run) layer would silently replace
-        # the agent's base @tools — exactly the configuration-drift
-        # risk the validator is here to surface. Author meant `tools_add`.
-        with pytest.raises(ValueError, match="user layer.*tools_add"):
-            validate(Frontmatter(meta={"tools": ["diff_read_file"]}), role="user")
-
-    def test_user_role_allows_tools_add(self):
-        validate(Frontmatter(meta={"tools_add": ["text_answer"]}), role="user")
+    def test_user_role_allows_tools(self):
+        """`tools:` in the user (per-run) layer is now additive —
+        merged into the agent's base tools at _build_tool_names.
+        No silent-replace risk because there's no replace mode
+        anymore. Pinned: validator accepts it at any layer."""
+        validate(Frontmatter(meta={"tools": ["text_answer"]}), role="user")
 
     def test_system_role_still_allows_tools(self):
-        # System layer = agent's own prompt; full @tools list is the
-        # canonical place. No restriction there.
+        # System layer = agent's own prompt; same `tools:` field
+        # (additive starting from empty for system, additive on
+        # top of system for user). No layer-specific restriction.
         validate(Frontmatter(meta={"tools": ["diff_read_file"]}), role="system")
         validate(Frontmatter(meta={"tools": ["diff_read_file"]}))  # role=None
 

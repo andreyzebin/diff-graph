@@ -5,18 +5,13 @@ Standard frontmatter format::
 
     ---
     dispatch_mode: native | meta            # how tools are exposed to the LLM
-    tools: [name1, name2, ...]              # full replace: agent's runtime
-                                             # tool set is exactly this list.
-                                             # Use when the prompt fully
-                                             # specifies its needed surface.
-    tools_add: [name1, name2, ...]          # EXTENSION over default @tools.
-                                             # Use when the prompt wants
-                                             # everything the agent normally
-                                             # has plus a few extras (e.g.
-                                             # bring in submit_answer for a
-                                             # test without restating the
-                                             # full default toolkit).
-                                             # Mutually exclusive with tools.
+    tools: [name1, name2, ...]              # tool names to ADD to the
+                                             # agent's effective surface.
+                                             # System layer: starts from
+                                             # empty and lists the agent's
+                                             # base toolset. User layer
+                                             # and skills: union onto the
+                                             # base (no replace mode).
     extra_tools:                            # additional capture-style tools
       - name: submit_answer                  # registered into the registry
         description: "Submit your final text. Call once."
@@ -26,7 +21,7 @@ Standard frontmatter format::
             text: {type: string}
           required: [text]
     ---
-    PR: {pr_title}
+    PR: {{ pr_title }}
     ...
     <task wording>
 
@@ -153,15 +148,6 @@ def validate(fm: Frontmatter, *, role: str | None = None) -> None:
     if not meta:
         return
 
-    if role == "user" and "tools" in meta:
-        raise ValueError(
-            "frontmatter (user layer): `tools` is not allowed — the "
-            "user prompt may only extend the agent's base tool surface "
-            "via `tools_add`. Move the full tool list to the agent's "
-            "system prompt frontmatter, or replace `tools:` with "
-            "`tools_add:` if you really meant to extend."
-        )
-
     if "dispatch_mode" in meta:
         dm = meta["dispatch_mode"]
         if not isinstance(dm, str) or dm not in _VALID_DISPATCH_MODES:
@@ -170,27 +156,19 @@ def validate(fm: Frontmatter, *, role: str | None = None) -> None:
                 f"{sorted(_VALID_DISPATCH_MODES)}, got {dm!r}"
             )
 
-    for field_name in ("tools", "tools_add"):
-        if field_name not in meta:
-            continue
-        t = meta[field_name]
+    if "tools" in meta:
+        t = meta["tools"]
         if not isinstance(t, list):
             raise ValueError(
-                f"frontmatter.{field_name}: expected list of strings, "
+                f"frontmatter.tools: expected list of strings, "
                 f"got {type(t).__name__}"
             )
         for i, n in enumerate(t):
             if not isinstance(n, str) or not n.strip():
                 raise ValueError(
-                    f"frontmatter.{field_name}[{i}]: expected non-empty "
+                    f"frontmatter.tools[{i}]: expected non-empty "
                     f"string, got {n!r}"
                 )
-
-    if "tools" in meta and "tools_add" in meta:
-        raise ValueError(
-            "frontmatter: `tools` (full replace) and `tools_add` "
-            "(additive) are mutually exclusive — pick one."
-        )
 
     if "extra_tools" in meta:
         et = meta["extra_tools"]
