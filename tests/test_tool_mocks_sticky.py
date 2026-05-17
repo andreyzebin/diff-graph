@@ -189,7 +189,7 @@ class TestLoaderValidation:
         """Neither list, string, nor a `{mode: ...}` preset — e.g.
         someone wrote a number at the top level by mistake. Loader
         rejects with a clear message naming all accepted forms."""
-        with pytest.raises(ValueError, match="must be a list, string, or"):
+        with pytest.raises(ValueError, match="must be a list, string,"):
             ToolMocks.from_dict({"pr_post_comment": 42})
 
 
@@ -265,7 +265,7 @@ class TestCaptureOnlyMode:
         """A dict that isn't `mode: capture_only` (e.g. typo or
         unrecognised mode) is rejected as not-a-list — surfaces the
         problem instead of silently doing nothing."""
-        with pytest.raises(ValueError, match="must be a list, string, or"):
+        with pytest.raises(ValueError, match="must be a list, string,"):
             ToolMocks.from_dict({
                 "agent_spawn": {"mode": "unknown_mode"},
             })

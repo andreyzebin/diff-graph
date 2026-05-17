@@ -1,29 +1,133 @@
 # Mock fixture for REV-U-008-budget-aware-delegation.
 #
-# The scenario tests reviewer's *delegation behaviour* — does it
-# read budget_stats, decide which concerns deserve a spawn, and
-# actually call agent_spawn for those.
+# The scenario tests reviewer's *delegation + synthesis* behaviour:
+# does it (a) actually spawn investigators per the per-concern rule,
+# and (b) compose their findings into a coherent text_answer.
 #
-# `mode: capture_only` (TODO §13.6) — the delegation-isolation
-# preset. Every agent_spawn call:
-#   - Records args in invocations.json (the judge reads spawn
-#     focuses via the `intended_concerns` channel — that part
-#     works regardless of mock mode).
-#   - DOES NOT run any child handler (no thread, no mock
-#     investigator dispatch).
-#   - Returns a fixed neutral stub `{"status":"spawned",
-#     "child_id":"<test-stub>","mode":"capture_only"}` identical
-#     for every call.
+# `mode: semantic` (TODO §13.10b → §15) — Mockito with AI taste.
+# Each fixture pairs example focus phrasings (intent) with a
+# pre-authored investigation summary (real-looking response). At
+# dispatch time the strategy picks the fixture whose examples best
+# match the actual focus, and the reviewer sees the matched
+# summary as if a real investigator had returned it.
 #
-# Why this matters: previously the mock returned a generic
-# "investigation complete" string, which leaked into the reviewer's
-# reasoning chain — it tried to synthesise findings from a fake
-# investigator summary that didn't match its own focus, breaking
-# the delegation-as-plan test. With capture_only the reviewer sees
-# only "spawn OK" and consolidates from its own diff/ticket reading.
+# Strategy: llm_judge — single LLM call enumerating all candidates,
+# returns 1-N pick + confidence. Below threshold → neutral stub
+# (same shape capture_only used) so the reviewer just sees "spawn
+# acknowledged" with no leaked synthetic content.
 #
-# budget_stats is NOT mocked — the reviewer sees its real per-run
-# state, which is the whole point of exercising the tool end-to-end.
+# Why this over capture_only:
+# - capture_only's fixed stub leaks "this is not real" — reviewer
+#   recognises the test scaffolding and falls back to direct file
+#   reading, defeating the delegation test.
+# - Pre-authored real-looking summaries close the loop: reviewer's
+#   synthesis logic gets exercised on plausible content matching
+#   its focus.
+#
+# Authoring guide:
+# - List 2-4 example focus phrasings per fixture so the strategy
+#   tolerates different model phrasings (deepseek vs qwen vs gpt).
+# - Investigation return text should READ as if a real investigator
+#   wrote it (cite line numbers, name files, name the verdict).
+# - Threshold 0.6 is loose enough that paraphrased focuses still
+#   match; tighten if you see wrong fixtures winning.
 
 agent_spawn:
-  mode: capture_only
+  mode: semantic
+  match:
+    strategy: llm_judge
+    threshold: 0.6
+    on_no_match: stub      # spawn captured for judge, no leaked content
+  fixtures:
+
+    - examples:
+        - "verify the credit belongs to the same customer as the order"
+        - "check ownership validation in StoreCreditService.redeemCredit"
+        - "does redeemCredit enforce credit.customer == order.customer"
+        - "is the redeem endpoint protected against IDOR"
+      return: |
+        INVESTIGATION (ownership):
+        StoreCreditService.redeemCredit(creditId, orderId) does NOT
+        verify that credit.customer.id matches order.customer.id.
+        The method fetches both by ID, checks isRedeemed() (L31)
+        and expiresAt (L34), then proceeds straight to
+        setDiscountAmount/setTotal/save (L42-47). The controller
+        CustomerController.redeemCredit (L40-47) also doesn't
+        cross-check — passes creditId and orderId through verbatim
+        from path/query params. Pattern violation: OrderController
+        in the same package does enforce ownership via
+        order.getCustomer().getEmail().equals(currentUser.getUsername())
+        + AccessDeniedException. Verdict: AC #1 violated. Severity:
+        BLOCKER — authorization bypass / IDOR.
+
+    - examples:
+        - "is partial consumption handled when credit > order subtotal"
+        - "does the service consume only the needed part of a larger credit"
+        - "credit remainder stays on customer balance"
+      return: |
+        INVESTIGATION (partial consumption):
+        The min() expression on L41 caps `credited` to
+        order.getTotal() — but then credit.setRedeemed(true) on L45
+        fires unconditionally regardless of whether the full credit
+        amount was consumed. So a 100$ credit applied to a 60$
+        order: 60$ comes off the order (already wrong: should be
+        the subtotal not the total — see pre-tax investigation),
+        but the entire 100$ credit is marked redeemed=true. The
+        remaining 40$ is lost. Verdict: AC #5 violated. Severity:
+        MAJOR.
+
+    - examples:
+        - "is credit applied pre-tax via PricingService"
+        - "credit subtracted from subtotal not total"
+        - "is tax recalculated after credit deduction"
+        - "does StoreCreditService use PricingService"
+      return: |
+        INVESTIGATION (pre-tax + PricingService usage):
+        Credit is subtracted from order.getTotal() (L43) — the
+        post-tax total — not from order.getSubtotal(). Tax is NOT
+        recalculated. PricingService is NEVER called from
+        StoreCreditService despite the ticket explicitly naming
+        PricingService as the single source of truth. The correct
+        path would be pricingService.applyFlatDiscount(order,
+        credited), which subtracts from subtotal and recomputes
+        tax on the reduced subtotal. Also: TAX_RATE 0.20 is
+        DUPLICATED as a private constant in StoreCreditService
+        (L24), independent of PricingService's TAX_RATE — drift
+        risk. Verdict: AC #2 violated; spec deviation from ticket
+        directive. Severity: BLOCKER (changes the amount the
+        customer is taxed).
+
+    - examples:
+        - "is redemption idempotent under concurrent requests"
+        - "concurrent safety on isRedeemed read-then-write"
+        - "is the credit protected from double-spend by parallel calls"
+        - "does StoreCredit use @Version or pessimistic lock"
+      return: |
+        INVESTIGATION (concurrency):
+        The redeemCredit flow is a plain `if (credit.isRedeemed())
+        throw ...; credit.setRedeemed(true); save();` — classic
+        read-then-write with no protection. No @Version on
+        StoreCredit (verified: L15-35 of StoreCredit.java has no
+        version field), no @Lock(LockModeType.PESSIMISTIC_WRITE)
+        on findById in StoreCreditRepository, no manual
+        synchronization. Two concurrent redeem requests with the
+        same creditId both pass the isRedeemed check, both proceed
+        to discount the order(s), both mark the credit as
+        redeemed. Net effect: same credit applied twice. Timur's
+        comment on the ticket explicitly flagged this. Verdict:
+        AC #3 violated. Severity: BLOCKER under any non-trivial
+        traffic; even at low traffic this is a data-integrity
+        issue.
+
+    - examples:
+        - "are expired credits rejected"
+        - "expiration check at redemption time"
+      return: |
+        INVESTIGATION (expiration):
+        Expiration is checked at L34:
+        `if (credit.getExpiresAt().isBefore(LocalDate.now())) throw
+        new IllegalStateException("Store credit has expired");`
+        Functionally correct. Minor note: `isBefore` excludes
+        today, so a credit expiring today is still redeemable —
+        spec-aligned per "expires AT date" reading. No issue.
+        Verdict: AC #4 satisfied. Severity: NONE.

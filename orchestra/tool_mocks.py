@@ -77,7 +77,14 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
+
+from .tool_mocks_semantic import (
+    SemanticConfig,
+    SemanticFixture,
+    NO_MATCH_STUB,
+    match as semantic_match,
+)
 
 log = logging.getLogger(__name__)
 
@@ -97,14 +104,28 @@ class MockEntry:
 @dataclass
 class ToolMocks:
     by_tool: dict[str, list[MockEntry]] = field(default_factory=dict)
+    # Per-tool semantic config (separate from `by_tool` ordinal
+    # entries). A given tool sits in exactly one of the two maps.
+    semantic_by_tool: dict[str, SemanticConfig] = field(default_factory=dict)
     source_path: str = ""
     # Per-tool set of consumed entry indices. Each entry is consumed
     # at most once over the whole run.
     _consumed: dict[str, set] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    # Optional LLM caller for semantic strategies that need a model
+    # round-trip (set after construction by cli.py / run_unit).
+    # Signature: (messages: list[dict], *, model: Optional[str]) -> str.
+    _llm_caller: Optional[Callable[..., str]] = field(default=None, repr=False)
 
     def has(self, tool_name: str) -> bool:
-        return tool_name in self.by_tool
+        return tool_name in self.by_tool or tool_name in self.semantic_by_tool
+
+    def set_llm_caller(self, caller: Callable[..., str]) -> None:
+        """Inject the LLM round-trip the semantic strategies use.
+        Always safe to call — strategies that don't need an LLM
+        ignore it. The caller takes `messages` and a `model=`
+        keyword (None ⇒ fall back to its own default)."""
+        self._llm_caller = caller
 
     def consume(self, tool_name: str, args: dict) -> MockEntry:
         """Take the next ordinal entry for this tool — i-th call to
@@ -117,9 +138,16 @@ class ToolMocks:
         - The judge handles focus verification separately by reading
           the invocations.json file (Mockito-style verify).
 
+        Semantic-mode tools take a different path here — the actual
+        arg (default `focus`) is routed through a strategy
+        (LLM-judge / embeddings / regex) which picks the best
+        fixture. See orchestra/tool_mocks_semantic.py.
+
         Raises MockExhaustedError when the agent makes more calls than
         the fixture lists.
         """
+        if tool_name in self.semantic_by_tool:
+            return self._consume_semantic(tool_name, args)
         entries = self.by_tool.get(tool_name)
         if not entries:
             raise MockExhaustedError(
@@ -141,9 +169,43 @@ class ToolMocks:
                 consumed_set.add(idx)
         return entry
 
+    def _consume_semantic(self, tool_name: str, args: dict) -> MockEntry:
+        """Semantic-mock dispatch — run the configured strategy
+        against the actual call args, return the matched fixture
+        as a synthetic MockEntry so the rest of the dispatch path
+        (render_mock_result, event emit) stays unchanged.
+
+        Threshold + no-match policies live on the SemanticConfig.
+        On no-match → return a neutral stub (default) or raise
+        MockExhaustedError (`on_no_match: error`)."""
+        cfg = self.semantic_by_tool[tool_name]
+        actual = str(args.get(cfg.on_arg, ""))
+        result = semantic_match(actual, cfg, llm_caller=self._llm_caller)
+        log.info(
+            "semantic_match: tool=%s arg=%s match=%d conf=%.2f reason=%s",
+            tool_name, cfg.on_arg, result.index, result.confidence,
+            result.reason,
+        )
+        if result.index >= 0 and result.confidence >= cfg.threshold:
+            fixture = cfg.fixtures[result.index]
+            return MockEntry(
+                when={}, return_data=fixture.return_data, sticky=True,
+            )
+        # No-match policy
+        if cfg.on_no_match == "error":
+            raise MockExhaustedError(
+                f"semantic match failed for {tool_name!r} (actual={actual!r}, "
+                f"best={result.index} conf={result.confidence:.2f} "
+                f"<threshold {cfg.threshold}); reason={result.reason!r}. "
+                f"Either lower threshold, add a fixture, or change "
+                f"on_no_match to 'stub'."
+            )
+        return MockEntry(when={}, return_data=NO_MATCH_STUB, sticky=True)
+
     @classmethod
     def from_dict(cls, data: dict, source_path: str = "") -> "ToolMocks":
         by_tool: dict[str, list[MockEntry]] = {}
+        _semantic_by_tool: dict[str, SemanticConfig] = {}
         for tool_name, raw_entries in (data or {}).items():
             # One-line shortcut: when the value is a bare string, the
             # tool is mocked with a single sticky entry returning that
@@ -172,10 +234,24 @@ class ToolMocks:
                     sticky=True,
                 )]
                 continue
+            # `{mode: semantic, match: {...}, fixtures: [...]}` —
+            # intent-routed mock: each fixture lists example focus
+            # phrasings; the chosen strategy (LLM-judge by default)
+            # picks the closest fixture at dispatch time. See
+            # orchestra/tool_mocks_semantic.py for the strategy
+            # interface + LLM-judge prompt. Lives on the SEPARATE
+            # semantic_by_tool map so it doesn't shadow / share state
+            # with ordinal fixtures for the same tool.
+            if isinstance(raw_entries, dict) and raw_entries.get("mode") == "semantic":
+                _semantic_by_tool[tool_name] = _parse_semantic_block(
+                    tool_name, raw_entries,
+                )
+                continue
             if not isinstance(raw_entries, list):
                 raise ValueError(
                     f"mocks for tool '{tool_name}' must be a list, string, "
-                    f"or {{mode: capture_only}}; got {type(raw_entries).__name__}"
+                    f"{{mode: capture_only}}, or {{mode: semantic, ...}}; "
+                    f"got {type(raw_entries).__name__}"
                 )
             entries: list[MockEntry] = []
             for i, entry in enumerate(raw_entries):
@@ -197,7 +273,11 @@ class ToolMocks:
                     sticky=bool(entry.get("sticky", False)),
                 ))
             by_tool[tool_name] = entries
-        return cls(by_tool=by_tool, source_path=source_path)
+        return cls(
+            by_tool=by_tool,
+            semantic_by_tool=_semantic_by_tool,
+            source_path=source_path,
+        )
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ToolMocks":
@@ -211,6 +291,59 @@ class ToolMocks:
                 f"mocks file root must be a mapping, got {type(data).__name__}"
             )
         return cls.from_dict(data, source_path=str(p))
+
+
+def _parse_semantic_block(tool_name: str, raw: dict) -> SemanticConfig:
+    """Parse a `{mode: semantic, match: {...}, fixtures: [...]}`
+    block into a SemanticConfig. Validation here surfaces YAML
+    typos at fixture-load time rather than at first mock dispatch
+    (which is mid-bench-run and harder to debug)."""
+    match_spec = raw.get("match") or {}
+    if not isinstance(match_spec, dict):
+        raise ValueError(
+            f"mocks/{tool_name}: `match` must be a mapping, "
+            f"got {type(match_spec).__name__}"
+        )
+    raw_fixtures = raw.get("fixtures") or []
+    if not isinstance(raw_fixtures, list) or not raw_fixtures:
+        raise ValueError(
+            f"mocks/{tool_name}: `fixtures` must be a non-empty list"
+        )
+    fixtures: list[SemanticFixture] = []
+    for i, fx in enumerate(raw_fixtures):
+        if not isinstance(fx, dict):
+            raise ValueError(
+                f"mocks/{tool_name}.fixtures[{i}] must be a mapping"
+            )
+        examples = fx.get("examples") or []
+        if not isinstance(examples, list) or not examples:
+            raise ValueError(
+                f"mocks/{tool_name}.fixtures[{i}].examples must be a "
+                f"non-empty list of strings"
+            )
+        if "return" not in fx:
+            raise ValueError(
+                f"mocks/{tool_name}.fixtures[{i}] missing 'return'"
+            )
+        fixtures.append(SemanticFixture(
+            examples=[str(e) for e in examples],
+            return_data=fx["return"],
+        ))
+    strategy = str(match_spec.get("strategy", "llm_judge"))
+    on_no_match = str(match_spec.get("on_no_match", "stub"))
+    if on_no_match not in ("stub", "error"):
+        raise ValueError(
+            f"mocks/{tool_name}.match.on_no_match must be 'stub' or "
+            f"'error', got {on_no_match!r}"
+        )
+    return SemanticConfig(
+        strategy=strategy,
+        fixtures=fixtures,
+        model=match_spec.get("model"),
+        on_arg=str(match_spec.get("on_arg", "focus")),
+        threshold=float(match_spec.get("threshold", 0.6)),
+        on_no_match=on_no_match,
+    )
 
 
 def _arg_matches(matcher: Any, actual: Any) -> bool:

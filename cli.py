@@ -70,6 +70,23 @@ def _expand_config(obj):
     return obj
 
 
+def _make_mock_llm_caller(client, default_model: str):
+    """Adapter for orchestra.tool_mocks_semantic strategies that need
+    an LLM round-trip (currently `llm_judge`). Returns a callable
+    that takes `(messages, *, model=None) -> str`; model=None means
+    use the agent's own default. Temperature pinned at 0 for
+    determinism — the judge is making a routing decision, not
+    generating prose."""
+    def _call(messages: list[dict], *, model: str | None = None) -> str:
+        resp = client.chat.completions.create(
+            model=model or default_model,
+            messages=messages,
+            temperature=0,
+        )
+        return resp.choices[0].message.content or ""
+    return _call
+
+
 def _make_llm_client(llm_cfg: dict):
     from openai import OpenAI
     kwargs: dict = {"api_key": llm_cfg.get("api_key") or "no-key"}
@@ -252,6 +269,11 @@ def _run_with_dispatcher(
         data.update(extra_data)
 
     llm_client = _make_llm_client(llm_cfg)
+    # Semantic-mode mocks (LLM-judge etc.) need a client to call
+    # the routing model. Caller is idempotent — strategies that
+    # don't need an LLM just ignore it.
+    if tool_mocks is not None and getattr(tool_mocks, "semantic_by_tool", None):
+        tool_mocks.set_llm_caller(_make_mock_llm_caller(llm_client, effective_model))
     preview = message[:60] + "…" if message and len(message) > 62 else (message or agent_name)
     console.print(f"[dim]  {agent_name}: {preview}[/dim]")
 
@@ -820,15 +842,30 @@ def run(
         user_message_override = user_message
 
     # ── Load mocks fixture if --mocks given ──────────────────────────────
+    # llm_client is needed earlier than its main use-site (line ~971,
+    # passed to DiffGraph) because semantic-mode mocks (LLM-judge
+    # strategy) need it at fixture-load time. Cheap to construct here;
+    # reused below at the DiffGraph site.
     tool_mocks_obj = None
     if mocks:
         from orchestra.tool_mocks import ToolMocks
         try:
             tool_mocks_obj = ToolMocks.from_yaml(mocks)
+            ordinal_n = len(tool_mocks_obj.by_tool)
+            semantic_n = len(tool_mocks_obj.semantic_by_tool)
             console.print(
-                f"[dim]  tool_mocks: {len(tool_mocks_obj.by_tool)} tool(s) "
-                f"[{', '.join(tool_mocks_obj.by_tool)}] from {tool_mocks_obj.source_path}[/dim]"
+                f"[dim]  tool_mocks: {ordinal_n} ordinal + {semantic_n} "
+                f"semantic tool(s) from {tool_mocks_obj.source_path}[/dim]"
             )
+            # Semantic strategies (LLM-judge, etc.) need an LLM
+            # round-trip — share the same client/model the agent is
+            # using so the mock's matching budget stays predictable.
+            # Strategies that don't need it ignore the caller.
+            if semantic_n > 0:
+                _mock_llm_client = _make_llm_client(llm_cfg)
+                tool_mocks_obj.set_llm_caller(
+                    _make_mock_llm_caller(_mock_llm_client, effective_model)
+                )
         except Exception as exc:
             console.print(f"[red]failed to load --mocks {mocks}: {exc}[/red]")
             raise typer.Exit(2)

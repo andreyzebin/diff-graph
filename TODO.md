@@ -4462,6 +4462,124 @@ tolerate small PRs natively.
 
 ---
 
+## 15. Semantic mock matching — "Mockito with AI taste" (Phase 1 shipped)
+
+### Why this exists
+
+capture_only stubs leak: agent recognises the fixed
+`{"status":"spawned","child_id":"<test-stub>"}` as "not a real
+investigation result" and falls back to direct file reading,
+defeating the delegation test. Async spawn (TODO §13.2-§13.7)
+would help — splitting `spawn` from `await` gives the test
+infrastructure a separate interception point — but doesn't fix
+the synthesis-loop test: even with async, a deferred "completed"
+result still has to be SOME text the agent then synthesizes from.
+That text is what the test should control.
+
+Solution: pre-author plausible investigation summaries keyed by
+the *intent* of the focus, then route at run time by asking a
+model "which of these N candidates best matches this actual
+focus?" Reviewer sees believable child output, synthesis logic
+gets exercised.
+
+### Phase 1 (shipped 2026-05-17, commit pending)
+
+Strategy interface in `orchestra/tool_mocks_semantic.py`:
+
+```python
+@dataclass
+class SemanticFixture:
+    examples: list[str]      # 2-4 phrasings of the same concern
+    return_data: Any         # the canned investigator output
+
+@dataclass
+class SemanticConfig:
+    strategy: str            # "llm_judge" (v1); embedding / regex plug in here
+    fixtures: list[SemanticFixture]
+    model: Optional[str]
+    on_arg: str = "focus"    # which arg field carries the intent
+    threshold: float = 0.6   # min confidence to accept
+    on_no_match: str = "stub"  # | "error"
+```
+
+Strategy `llm_judge`: single LLM round-trip with all candidates
+listed; returns `{"match": 1-N|0, "confidence": 0-1, "reason":
+"..."}`. Temperature pinned at 0 for determinism.
+
+YAML shape (alongside ordinal / capture_only — coexists):
+
+```yaml
+agent_spawn:
+  mode: semantic
+  match:
+    strategy: llm_judge
+    threshold: 0.6
+    on_no_match: stub
+  fixtures:
+    - examples:
+        - "verify the credit belongs to the same customer as the order"
+        - "check ownership validation in StoreCreditService"
+      return: |
+        INVESTIGATION (ownership): ...
+    - examples: [...]
+      return: |
+        INVESTIGATION (partial consumption): ...
+```
+
+LLM caller is INJECTED on the ToolMocks instance — cli.py +
+`_run_with_dispatcher` build it with `_make_mock_llm_caller(llm_client,
+effective_model)` and call `tool_mocks_obj.set_llm_caller(...)` after
+loading the fixture. The mock layer stays provider-agnostic.
+
+REV-U-008 fixture migrated to semantic with 5 investigation
+summaries covering the store-credit ticket's ACs:
+ownership, partial consumption, pre-tax via PricingService,
+concurrency, expiration. Each summary is written as if a real
+investigator returned it (file/line citations, verdict, severity).
+
+Tests: `tests/test_tool_mocks_semantic.py` — 20 tests covering
+YAML parse + validation, LLM judge JSON parsing (bare + fenced),
+threshold cutoffs, on_no_match policies, coexistence with
+ordinal/capture_only modes.
+
+### Phase 2 — embedding strategy (deferred)
+
+Add `strategy: embedding` plug-in using `sentence-transformers`
+(local, ~80MB model, 50ms/match, no network). Pre-embed all
+fixture examples once at load time; route at dispatch with cosine
+sim against the actual focus. Trade-off vs llm_judge:
+- ✅ Deterministic across runs (no LLM variability).
+- ✅ ~10x faster per match (no network round-trip).
+- ✅ No LLM client dependency.
+- ❌ ~300MB extra `pip install` (optional extra `[bench-semantic]`).
+- ❌ Threshold tuning more fiddly (cosine sim ≠ confidence).
+
+Should ship when the LLM-judge becomes a bottleneck on bench
+throughput, OR for users that don't have an LLM endpoint
+configured.
+
+### Phase 3 — semantic-mock for arbitrary tools
+
+Currently `on_arg` defaults to `focus`. For other tools the field
+name is configurable (`on_arg: query` for `diff_search`,
+`on_arg: ref` for `jira_read_ticket`, etc.) — already supported,
+just needs scenarios that use it.
+
+### Anti-patterns
+
+- ❌ Writing fixture `return` text that names the test
+  scaffolding ("this is a mocked investigator") — defeats the
+  whole point. Treat fixture text like real production output.
+- ❌ Lowering threshold to 0.3 to "make all focuses match
+  something" — silent miscategorisation. Better: add more
+  fixtures, or accept that `on_no_match: stub` is the right
+  behaviour for novel focuses.
+- ❌ Overlapping fixtures (two fixtures whose examples describe
+  the same concern). LLM judge picks one and ignores the other;
+  the result is non-deterministic. Treat fixtures as a partition.
+
+---
+
 ## NUDGE_HIGH 0.75 mandatory warning (shipped 2026-05-16)
 
 Already shipped — see commit `5d9f2fc`. Every axis with a hard
