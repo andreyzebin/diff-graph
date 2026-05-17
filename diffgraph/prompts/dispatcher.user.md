@@ -24,7 +24,7 @@ guards:
 
 ## Thread
 
-{% if comment_id|int > 0 %}{{ pr_read_thread(comment_id=comment_id|int) }}{% else %}(no thread){% endif %}
+{{ pr_read_thread(comment_id=comment_id|int) if comment_id|int > 0 else "(no thread)" }}
 
 ## Message
 
