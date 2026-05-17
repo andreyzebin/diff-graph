@@ -548,8 +548,10 @@ def run_unit_fixture(
                 )
 
         if proc.returncode == 0 and not keep_tmp_on_success:
-            shutil.rmtree(tmp_repo.parent, ignore_errors=True)
-            result.cleaned_up = True
+            # PR-free scenarios never cloned — nothing to remove.
+            if tmp_repo is not None:
+                shutil.rmtree(tmp_repo.parent, ignore_errors=True)
+                result.cleaned_up = True
         return result
     finally:
         for p in (out_path, fake_pr_path, sink_path):

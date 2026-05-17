@@ -517,11 +517,13 @@ def _from_yaml_headers(y: dict) -> tuple[dict[str, str], dict[str, dict[str, str
 
 def _parse_data_schema(data: dict) -> dict[str, dict[str, str]]:
     """Normalize a YAML `data:` block into the canonical input_schema
-    shape: `{field: {type, description?, from_tool?, from_field?}}`.
+    shape: `{field: {type, description?}}`.
 
-    `from: tool.field` is split into `from_tool` / `from_field` for the
-    data-provider resolver in `orchestra/agent.py`.
-    """
+    Used by agent_list to surface "what fields does this agent
+    expect when spawned" — pure documentation now. Lazy
+    `from:tool.field` resolution is gone; PR-side data flows
+    through the template-tool proxies on `RunContext.registry`
+    (see orchestra/runcontext.py)."""
     schema: dict[str, dict[str, str]] = {}
     for field_name, spec in data.items():
         if isinstance(spec, dict):
@@ -529,11 +531,6 @@ def _parse_data_schema(data: dict) -> dict[str, dict[str, str]]:
             for k in ("type", "description"):
                 if k in spec:
                     entry[k] = str(spec[k])
-            from_v = spec.get("from")
-            if from_v and isinstance(from_v, str) and "." in from_v:
-                tool, _, field_id = from_v.partition(".")
-                entry["from_tool"] = tool
-                entry["from_field"] = field_id
             schema[str(field_name)] = entry
         elif isinstance(spec, str):
             schema[str(field_name)] = {"type": spec}

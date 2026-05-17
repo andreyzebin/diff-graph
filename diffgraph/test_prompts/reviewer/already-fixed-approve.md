@@ -21,7 +21,6 @@ data:
     description: "PR description"
   commits:
     type: string
-    from: pr.commits
 ---
 PR: {{ pr.title }}
 {{ pr.description }}

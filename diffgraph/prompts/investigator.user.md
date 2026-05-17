@@ -3,7 +3,6 @@
 data:
   commits:
     type: string
-    from: pr.commits
   focus:
     type: string
     description: "high-level concern to investigate (from lead)"

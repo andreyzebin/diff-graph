@@ -74,17 +74,6 @@ class AgentResult:
     trace: AgentTrace = field(default_factory=AgentTrace)
 
 
-def resolve_agent_data(config: AgentConfig, data: dict, registry: ToolRegistry) -> dict:
-    """No-op back-compat shim. The legacy `from:tool.field` resolver
-    + pre-render path has been removed — templates now access
-    hidden data-provider tools directly via the lazy proxies
-    exposed by `RunContext.to_kwargs()` (`{{ pr.title }}` etc.).
-
-    Returns the data dict unchanged so existing callsites keep
-    working during the cleanup window."""
-    return dict(data)
-
-
 class Agent:
     """
     Core agent. Manages its own children, mutable LLM params, SGR,

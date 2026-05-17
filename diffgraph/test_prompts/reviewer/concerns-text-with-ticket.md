@@ -34,7 +34,6 @@ data:
     description: "PR description"
   commits:
     type: string
-    from: pr.commits
   jira_tickets:
     type: string
     description: "Jira ticket reference(s) this PR is associated with"

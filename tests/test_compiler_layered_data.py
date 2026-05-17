@@ -41,16 +41,17 @@ class TestDataMerge:
                 "---\n"
                 "data:\n"
                 "  pr_title: {type: string}\n"
-                "  commits: {type: string, from: pr_context.commits}\n"
+                "  commits: {type: string}\n"
                 "---\n"
                 "task body\n"
             ),
         )
         e = _registry(tmp_path).get("reviewer")
+        # input_schema is pure documentation now — `from:tool.field`
+        # lazy resolution is gone (template-tool proxies on
+        # RunContext.registry handle that, see orchestra/runcontext.py).
         assert set(e.input_schema.keys()) == {"pr_title", "commits"}
-        # `from:` parses into from_tool + from_field
-        assert e.input_schema["commits"]["from_tool"] == "pr_context"
-        assert e.input_schema["commits"]["from_field"] == "commits"
+        assert e.input_schema["commits"] == {"type": "string"}
 
     def test_split_across_layers(self, tmp_path):
         """Framework-infra in system, interface in user — merged into one schema."""

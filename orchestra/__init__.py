@@ -18,7 +18,7 @@ from .types import (
 )
 from .config import load_config, merge_configs, validate_config, resolve_prompt
 from .events import EventBus, EventType, OnEvent
-from .agent import Agent, AgentResult, AgentTrace, resolve_agent_data
+from .agent import Agent, AgentResult, AgentTrace
 from .budget import BudgetTracker, BudgetState
 from .compiler import compile_prompts, compile_prompt_text, AgentRegistry, AgentRegistryEntry
 from .tools.registry import ToolRegistry
@@ -33,7 +33,7 @@ __all__ = [
     # Events
     "EventBus", "EventType", "OnEvent",
     # Core
-    "Agent", "AgentResult", "AgentTrace", "resolve_agent_data",
+    "Agent", "AgentResult", "AgentTrace",
     "BudgetTracker", "BudgetState",
     "ToolRegistry",
     # Compiler
