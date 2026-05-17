@@ -4783,6 +4783,107 @@ toolset at run time.
 
 ---
 
+## 18. Unified template engine — Jinja + auto-detect (Phase 1 shipped)
+
+### Why this exists
+
+Three independent template-handling code paths had accumulated:
+
+1. `orchestra/prompts/__init__.py::interpolate` — regex
+   substitution for `{x}` placeholders in agent prompts (user
+   data fields).
+2. `str.format()` calls in `budget_stats.py` /
+   `reflect_response.py` — same `{x}` syntax but no loops or
+   conditionals, hence three separate `subagents_*.md` fragment
+   files glued together by a Python helper.
+3. Ad-hoc `framework_vars` dict assembled in
+   `agent.py::_build_messages` to inject `{budget_stats_legend}`
+   and `{skills}` on top of `data_scope`/`prompt_vars`.
+
+Pain: adding a new framework helper meant touching the dict
+construction site; loops/conditionals required new fragment
+files + glue code (see deleted `subagents_block.md` /
+`_item.md` / `_focus.md`).
+
+### Phase 1 shipped (2026-05-17)
+
+- `orchestra/template_engine.py` — one `jinja2.Environment` with
+  FileSystemLoader on the framework template directories.
+  `render(text, ctx)` auto-detects: text containing `{{` or
+  `{%` routes to Jinja, else to legacy `interpolate()`. Both
+  paths consume the same `ctx.to_kwargs()` flat dict.
+  `render_named(name, ctx)` + `render_named_kwargs(name, **kw)`
+  for framework templates that need a narrow kwargs scope
+  (e.g. `budget_stats` table cells).
+- `orchestra/runcontext.py` — `RunContext` dataclass. Data
+  fields live in `.data`; framework helpers as lazy `@property`
+  (skills, budget_stats, budget_stats_legend, time_info,
+  context_pct, steps_used). One context built per agent run,
+  reused for system + user message renders.
+- Framework templates migrated:
+  - `budget_stats.md` now an inline `{% if children %}{% for c
+    in children %}...{% endfor %}{% endif %}` loop — three
+    fragment files deleted.
+  - `reflect_response/with_state.md` uses `{{ time_info }}` +
+    `{{ budget_stats }}`.
+- `agent.py::_build_messages` builds one RunContext, feeds both
+  system_text and user_text through `render()`. The ad-hoc
+  `framework_vars` dict construction is gone.
+
+Backward compatibility (explicit non-goal: a flag-day
+migration):
+- Every existing `.md` prompt with `{pr_title}` style placeholders
+  keeps working unchanged — `render()` auto-detects and routes
+  legacy syntax to `interpolate()`.
+- Authors can switch a prompt to Jinja syntax (`{{ x }}` +
+  `{% if/for %}`) by adding the markers — same engine, same
+  data, more expressive.
+- Public `diffgraph.api.DiffGraph(prompt_vars=...)` kwargs land
+  in `RunContext.data` via the same merge — no API change.
+
+Tests: `tests/test_template_engine.py` — 17 tests pinning
+auto-detect routing, RunContext properties (including the
+framework-wins-over-data collision rule), and the
+`render_named_kwargs` narrow-scope helper (regression for the
+`steps_used` shadow that broke `test_budget_e2e` during
+migration).
+
+Suite 964 (947 + 17 new).
+
+### Phase 2 — opt-in migration of user prompts (deferred)
+
+The auto-detect path keeps both syntaxes alive, so this is
+gradual and per-prompt. When a prompt wants conditionals or
+loops, the author swaps `{x}` → `{{ x }}` and adds `{% %}` tags.
+No big-bang sweep planned.
+
+### Phase 3 — drop `interpolate()` entirely (much later)
+
+After all checked-in prompts use Jinja syntax, the legacy
+regex path can go. Requires:
+- Grep audit: zero `{[a-zA-Z_]+}` patterns in any `.md` outside
+  of literal JSON / code fences.
+- Test prompts and bench scenarios migrated.
+- Likely 6+ months out, once the model providers' performance
+  on Jinja templates is observed (no expected difference but
+  the prompt-cache hash changes).
+
+### Anti-patterns
+
+- ❌ Adding new keys to `RunContext.to_kwargs()` for one-off
+  needs of an inner template. Use `render_named_kwargs` with
+  a plain dict instead — keeps the RunContext namespace from
+  bloating.
+- ❌ Mixing `{x}` and `{{ x }}` in the same file. Pick one
+  syntax per template; auto-detect routes the whole file
+  through one engine.
+- ❌ Using `trim_blocks=True` + inline `{% if %}` in body text
+  (e.g. for conditional clauses on a single line). trim_blocks
+  strips the body's trailing newline; use a Jinja expression
+  (`{{ x if cond else '' }}`) instead.
+
+---
+
 ## NUDGE_HIGH 0.75 mandatory warning (shipped 2026-05-16)
 
 Already shipped — see commit `5d9f2fc`. Every axis with a hard

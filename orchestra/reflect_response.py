@@ -1,56 +1,37 @@
-"""Reflect tool's tool-result string — composed from internal render
-APIs and a template file.
+"""Reflect tool's tool-result string — rendered via the unified
+template engine.
 
-Architecture:
-- Internal APIs (callable, mockable like fake_bitbucket) live as
-  pure functions in their own modules: `format_budget_stats`,
-  `format_time_info`, … Each takes the agent's state and returns a
-  rendered string block.
-- Templates live in `orchestra/templates/reflect_response/<name>.md`.
-  They reference internal APIs by placeholder name; `render(...)`
-  resolves each.
-- Agents opt into a non-default template via the
-  `reflect_response_template:` frontmatter field
-  (AgentConfig.reflect_response_template). Default `"default"`
-  returns just "Reflection noted." — unchanged from the original
-  reflect handler.
+Each reflect call returns a string the model sees as the tool
+result. Layout lives in `orchestra/templates/reflect_response/
+<name>.md` (Jinja). Agents opt in to a non-default template via
+`reflect_response_template:` in user-message frontmatter.
 
-Why this shape:
-- `reflect` is the agent's natural planning moment. Carrying a
-  state snapshot in its response gives continuous awareness without
-  the agent having to remember to call a query tool (TODO §12 →
-  §13 design follow-up, 2026-05-16).
-- Templates as files mean wording / structure can be tuned without
-  code changes — same pattern as `budget_stats.md`.
-- Templates as toggle (per-prompt) keep backward-compat — existing
-  prompts get the old plain "Reflection noted." default.
+Two templates ship today:
+- `default.md` — just "Reflection noted." (the legacy
+  acknowledgment, kept for backward compat).
+- `with_state.md` — renders `{{ time_info }}` + `{{ budget_stats
+  }}` so the agent re-grounds on every reflect.
 
-Adding a new internal API:
-  1. Write `format_X(state, ...) -> str` in its own module.
-  2. Add `{X}` placeholder support in `render()` below.
-  3. Reference `{X}` in your template file.
+Adding a new template:
+  1. Create `orchestra/templates/reflect_response/<name>.md`.
+  2. Reference whatever RunContext properties you need
+     (`{{ budget_stats }}`, `{{ skills }}`, `{{ context_pct }}`,
+     custom data fields, …) — all available via the same
+     RunContext used for the agent's user prompt.
+  3. Opt in per-prompt: `reflect_response_template: <name>`.
+
+The default template path stays fast (no template file open,
+no Jinja parse) so prompts that don't opt in pay nothing.
 """
 from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+
 _TEMPLATES_DIR = Path(__file__).parent / "templates" / "reflect_response"
-
-
-@lru_cache(maxsize=8)
-def _load_template(name: str) -> str:
-    """Load a reflect-response template by short name. Cached. Falls
-    back to the plain default acknowledgment if the file is missing
-    (preserves the tool's contract without crashing)."""
-    path = _TEMPLATES_DIR / f"{name}.md"
-    try:
-        return path.read_text(encoding="utf-8").rstrip()
-    except OSError:
-        return "Reflection noted."
 
 
 def format_time_info(state: Any) -> str:
@@ -71,25 +52,32 @@ def format_time_info(state: Any) -> str:
     return f"Now: {now_utc} · {elapsed_str} since agent start."
 
 
+# Default template is the literal "Reflection noted." — fast-path
+# so prompts that don't opt in pay nothing (no template open, no
+# Jinja parse).
+_DEFAULT_BODY = "Reflection noted."
+
+
 def render(template_name: str, *, state: Any, children: Any = None) -> str:
-    """Render the reflect tool-result string for a given template.
+    """Render the reflect tool-result string.
 
-    `state` is the agent's BudgetState; `children` is the snapshot
-    list of subagent dicts (same shape Agent._meta_budget_stats
-    builds — see budget_stats.format_budget_stats).
-
-    For the `default` template, no placeholders are referenced and
-    both kwargs are ignored — the template is just "Reflection
-    noted." (current behavior). For richer templates the loader
-    resolves each `{X}` placeholder by calling the matching
-    internal-API function below."""
-    template = _load_template(template_name)
-    if "{" not in template:
-        # Fast path — no placeholders. Default template hits this.
-        return template
-    from .budget_stats import format_budget_stats
-    return template.format(
-        time_info=format_time_info(state) if state is not None else "",
-        budget_stats=(format_budget_stats(state, children=children)
-                      if state is not None else ""),
+    `state` is the agent's BudgetState; `children` is the
+    snapshot list of subagent dicts (same shape
+    `format_budget_stats` consumes). Passed onto the
+    RunContext so the template can reference `{{ time_info }}`,
+    `{{ budget_stats }}`, etc."""
+    if template_name == "default":
+        return _DEFAULT_BODY
+    # Defensive: missing file → fall back to default acknowledgment
+    # so a typo in `reflect_response_template:` doesn't crash the
+    # reflect contract.
+    path = _TEMPLATES_DIR / f"{template_name}.md"
+    if not path.exists():
+        return _DEFAULT_BODY
+    from .runcontext import RunContext
+    from .template_engine import render_named
+    ctx = RunContext(
+        budget_state=state,
+        children_snapshot=children,
     )
+    return render_named(template_name, ctx).rstrip()

@@ -1,5 +1,12 @@
-own ctx     {tokens_in} / {max_context}    {own_bar} {pct}%
-shared pool {paid} / {max_tokens}    {shared_bar} {shared_pct}%  (steps {steps_used}/{max_steps})
-wall clock  {elapsed} / {wall_max}    {wall_bar} {wall_pct}%
+own ctx     {{ tokens_in }} / {{ max_context }}    {{ own_bar }} {{ pct }}%
+shared pool {{ paid }} / {{ max_tokens }}    {{ shared_bar }} {{ shared_pct }}%  (steps {{ steps_used }}/{{ max_steps }})
+wall clock  {{ elapsed }} / {{ wall_max }}    {{ wall_bar }} {{ wall_pct }}%
 
-spawn: ~{spawn_carved} tokens + ~{spawn_carved_steps} steps → ~{spawn_return} back{subagents}
+spawn: ~{{ spawn_carved }} tokens + ~{{ spawn_carved_steps }} steps → ~{{ spawn_return }} back
+{% if children %}
+
+Subagents ({{ children|length }} spawned):
+{% for c in children %}
+  - {{ c.name }} [{{ c.status }}] · {{ c.steps_used }} steps · ~{{ c.ctx_in }} context · paid ~{{ c.paid }}{{ (' · focus="' ~ c.focus ~ '"') if c.focus else '' }}
+{% endfor %}
+{% endif %}

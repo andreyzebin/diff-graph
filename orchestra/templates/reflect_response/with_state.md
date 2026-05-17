@@ -1,5 +1,5 @@
 Reflection noted.
 
-{time_info}
+{{ time_info }}
 
-{budget_stats}
+{{ budget_stats }}

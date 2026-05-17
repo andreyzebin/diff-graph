@@ -22,7 +22,6 @@ import pytest
 
 from orchestra.budget import BudgetState
 from orchestra.reflect_response import (
-    _load_template,
     format_time_info,
     render,
 )

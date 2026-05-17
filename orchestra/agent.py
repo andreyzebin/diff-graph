@@ -1287,8 +1287,22 @@ class Agent:
         # migration prompt files may still carry placeholders here —
         # interpolation runs but should resolve to a stable string.
         system_text = load_prompt(self.config.system_prompt)
-        if self.prompt_vars:
-            system_text = interpolate(system_text, **self.prompt_vars)
+        # System prompts go through the same auto-detect template
+        # engine as user prompts — legacy `{x}` stays working,
+        # opting into Jinja `{{ x }}` per file is a per-author
+        # choice. RunContext built below also feeds user_text.
+        from .runcontext import RunContext
+        from .template_engine import render as _render_template
+        _ctx = RunContext(
+            data={**(self.data_scope or {}), **(self.prompt_vars or {})},
+            agent_name=self.config.name,
+            agent_id=self.agent_id,
+            depth=self.depth,
+            budget_state=self.budget_state,
+            skills_body=getattr(self, "_mounted_skills_body", "") or "",
+        )
+        if system_text:
+            system_text = _render_template(system_text, _ctx)
         messages = [{"role": "system", "content": system_text}]
         messages.extend(self.context_messages)
 
@@ -1306,28 +1320,11 @@ class Agent:
         # by resolve_agent_data doesn't apply — the override skips that
         # path, so we have to interpolate here against data_scope.
         user_text = self._fm_body
-        # Framework-provided placeholders the user-message body can
-        # reference (e.g. `{budget_stats_legend}` — see
-        # orchestra/budget_stats.py::load_legend). Resolved once per
-        # run so the legend lives in the first user message rather
-        # than in every reflect tool-result. Cheap (cached file read)
-        # so we resolve unconditionally; prompts that don't
-        # reference the placeholder pay nothing — interpolate leaves
-        # unknown keys as-is, but the legend is always loaded into
-        # vars so the user prompt can reference it without any
-        # opt-in plumbing.
-        from .budget_stats import load_legend as _load_legend
-        framework_vars = {
-            "budget_stats_legend": _load_legend(),
-            "skills": getattr(self, "_mounted_skills_body", "") or "",
-        }
-        merged_vars = {
-            **framework_vars,
-            **(self.data_scope or {}),
-            **(self.prompt_vars or {}),
-        }
-        if user_text and merged_vars:
-            user_text = interpolate(user_text, **merged_vars)
+        if user_text:
+            # Reuse the RunContext built above for the system_text
+            # render — same data + framework helpers for both
+            # messages.
+            user_text = _render_template(user_text, _ctx)
 
         # Some endpoints reject requests without a user-role message;
         # this is a defensive fallback that never fires for our agents

@@ -21,10 +21,11 @@ If the shared pool is tight, spawning costs more than direct work.
 If both are tight, consolidate. The prompt picks the response; this
 function just surfaces the numbers.
 
-Wording lives in `orchestra/templates/budget_stats/budget_stats.md`.
-Edit that file to tune what the agent reads; this module just resolves
-placeholders. `max_context` always has a value (BudgetConfig defaults
-to 128_000) — no "no_max_context" variant exists by design.
+Wording lives in `orchestra/templates/budget_stats/budget_stats.md`
+(Jinja). The subagents block is an inline `{% for %}` loop in the
+same template — no separate fragment files. `_bar()` is exposed as
+a Jinja global so the template can call `{{ bar(part, whole) }}`
+directly if it wants ad-hoc bars beyond the precomputed ones.
 
 Typical-spawn values are HARDCODED rough estimates for Phase 1 —
 calibrated once §11 (repo memory) or §12 (per-bucket aggregation)
@@ -54,49 +55,11 @@ _TYPICAL_SPAWN_CARVED_STEPS = msg(
 _TYPICAL_SPAWN_RETURN = msg("budget_stats.typical_spawn.spawn_return", "3-5K")
 
 
-@lru_cache(maxsize=8)
-def _load(name: str) -> str:
-    """Load a budget_stats template by short name (no extension).
-    Cached. Source-of-truth lives in
-    `orchestra/templates/budget_stats/<name>.md`. A missing file
-    yields `""` — collapses the rendered section cleanly without
-    crashing. The main `budget_stats` template's sentinel string
-    is supplied by `_load_template()` below for visibility."""
-    primary = _TEMPLATES_DIR / f"{name}.md"
-    try:
-        return primary.read_text(encoding="utf-8").rstrip()
-    except OSError:
-        return ""
-
-
-def _load_template() -> str:
-    """Back-compat name for the main budget_stats template loader.
-    Returns a visible sentinel if the file is missing so the agent
-    sees `(budget_stats template missing)` rather than a silently
-    empty result."""
-    return _load("budget_stats") or "(budget_stats template missing)"
-
-
-def load_legend() -> str:
-    """Return the one-line legend that explains the snapshot's row
-    labels (`own ctx`, `shared pool`, `wall clock`, `spawn:`).
-    Wording lives in `orchestra/templates/budget_stats/legend.md`.
-
-    Prompts that opt into the `with_state` reflect template embed
-    this via the `{budget_stats_legend}` placeholder in their user
-    message — Agent._build_messages injects the rendered legend
-    into the interpolation scope once per run, so the agent sees
-    the legend once (in its first user message) and not on every
-    reflect.
-    """
-    return _load("legend")
+# ── small helpers (some exposed to Jinja as globals; see template_engine) ─
 
 
 def _fmt_k(n: int) -> str:
-    """3500 → '3.5K'; 12000 → '12K'; 250 → '250'. Keeps numbers
-    human-scannable. The rstrip dance trims `.0` for whole-thousand
-    values BEFORE appending K — otherwise the trailing letter blocks
-    the strip."""
+    """3500 → '3.5K'; 12000 → '12K'; 250 → '250'."""
     if n is None:
         return "—"
     if n >= 1_000:
@@ -104,22 +67,16 @@ def _fmt_k(n: int) -> str:
     return str(n)
 
 
-def _pct(part: float, whole: float) -> str:
-    if not whole or whole <= 0:
-        return "—"
-    return f"{int(round(100 * part / whole))}%"
-
-
 _BAR_WIDTH = 10
-_BAR_FULL = "▰"   # ▰
-_BAR_EMPTY = "▱"  # ▱
+_BAR_FULL = "▰"
+_BAR_EMPTY = "▱"
 
 
 def _bar(part: float, whole: float, width: int = _BAR_WIDTH) -> str:
     """Render a `width`-cell monospace progress bar. Clamps 0-100%;
     a fully-empty cap (`whole=0` / None) renders as an empty bar
-    rather than crashing. Used by the with_state snapshot to give
-    the model a glance-level signal alongside the percent number."""
+    rather than crashing. Exposed as a Jinja global by
+    `orchestra.template_engine`."""
     if not whole or whole <= 0:
         return _BAR_EMPTY * width
     filled = max(0, min(width, int(round(width * part / whole))))
@@ -127,16 +84,11 @@ def _bar(part: float, whole: float, width: int = _BAR_WIDTH) -> str:
 
 
 _DEFAULT_MAX_CONTEXT = 128_000
-
-# Focus strings can be long — truncate with ellipsis to keep the
-# subagents block scannable. The agent has access to the full focus
-# via its own spawn history; this is just the rendered summary.
 _FOCUS_TRUNCATE_AT = 80
 
 
 def _fmt_seconds(s: int) -> str:
-    """5 → '5s'; 90 → '1m30s'; 3700 → '1h1m'. Wall-clock is most
-    actionable as a human time scale, not as seconds-or-K-of-them."""
+    """5 → '5s'; 90 → '1m30s'; 3700 → '1h1m'."""
     if s < 60:
         return f"{s}s"
     if s < 3600:
@@ -148,10 +100,7 @@ def _fmt_seconds(s: int) -> str:
 
 
 def _wall_parts(state: BudgetState) -> tuple[str, str, str, int]:
-    """Return `(elapsed_str, wall_max_str, wall_bar, wall_pct)` for
-    the compact-table wall line. Without `max_wall_time`: max
-    column renders `—`, bar renders empty, pct=0. With cap: shows
-    elapsed/cap and a filled bar."""
+    """Return `(elapsed_str, wall_max_str, wall_bar, wall_pct)`."""
     elapsed = int(time.time() - state.wall_start) if state.wall_start else 0
     elapsed_str = _fmt_seconds(elapsed)
     if state.original_wall_time and state.original_wall_time > 0:
@@ -161,44 +110,40 @@ def _wall_parts(state: BudgetState) -> tuple[str, str, str, int]:
     return elapsed_str, "—", _bar(0, 1), 0
 
 
-def _format_subagents(children: list[dict]) -> str:
-    """Build the subagents block appended to the main summary. Empty
-    string when no children — the template's trailing placeholder
-    collapses to nothing.
-
-    Each child dict carries: name, focus, status, steps_used,
-    tokens_in, cumulative_paid (snapshotted by Agent._meta_budget_stats
-    under the children lock).
-
-    Wording lives in three template files under
-    `orchestra/templates/budget_stats/`:
-      - `subagents_block.md` — outer wrapper, `{count}` + `{items}`.
-      - `subagents_item.md`  — per-child line, `{focus_clause}` is
-        appended only when the focus is non-empty.
-      - `subagents_focus.md` — the ` · focus="..."` clause.
-    """
+def _prep_children(children: Optional[list[dict]]) -> list[dict]:
+    """Pre-shape children dicts for the template:
+    {name, status, steps_used, ctx_in, paid, focus}. Focus is
+    truncated with ellipsis to keep the rendered block scannable.
+    Empty / None → []."""
     if not children:
-        return ""
-    item_tpl = _load("subagents_item")
-    focus_tpl = _load("subagents_focus")
-    items: list[str] = []
+        return []
+    out: list[dict] = []
     for c in children:
         focus = (c.get("focus") or "").strip()
         if len(focus) > _FOCUS_TRUNCATE_AT:
             focus = focus[: _FOCUS_TRUNCATE_AT - 1] + "…"
-        focus_clause = focus_tpl.format(focus=focus) if focus else ""
-        items.append(item_tpl.format(
-            name=c.get("name", "?"),
-            status=c.get("status", "?"),
-            steps=c.get("steps_used", 0),
-            ctx_in=_fmt_k(c.get("tokens_in", 0)),
-            paid=_fmt_k(c.get("cumulative_paid", 0)),
-            focus_clause=focus_clause,
-        ))
-    return _load("subagents_block").format(
-        count=len(children),
-        items="\n".join(items),
-    )
+        out.append({
+            "name": c.get("name", "?"),
+            "status": c.get("status", "?"),
+            "steps_used": c.get("steps_used", 0),
+            "ctx_in": _fmt_k(c.get("tokens_in", 0)),
+            "paid": _fmt_k(c.get("cumulative_paid", 0)),
+            "focus": focus,
+        })
+    return out
+
+
+@lru_cache(maxsize=1)
+def load_legend() -> str:
+    """One-line legend that explains the snapshot's row labels.
+    Wording in `orchestra/templates/budget_stats/legend.md`.
+    Embed via `{budget_stats_legend}` (legacy) or
+    `{{ budget_stats_legend }}` (Jinja) in user prompts."""
+    path = _TEMPLATES_DIR / "legend.md"
+    try:
+        return path.read_text(encoding="utf-8").rstrip()
+    except OSError:
+        return ""
 
 
 def format_budget_stats(
@@ -206,28 +151,31 @@ def format_budget_stats(
     *,
     children: Optional[list[dict]] = None,
 ) -> str:
-    """Render the agent-facing budget summary string. Pure state — no
-    instructions, no prescriptions. The agent's prompt is what tells
-    the model how to react to the numbers.
+    """Render the agent-facing budget summary string via Jinja.
+    Pure state — no instructions, no prescriptions; prompts pick
+    the response.
 
-    `max_context` always renders against a concrete value — production
-    BudgetConfig defaults to 128_000 (see `types.py`). Defensive
-    fallback to the same number here for the edge case where a
-    state was constructed with `original_max_context=None`.
+    Compact-table layout with progress bars. Subagents block is
+    an inline `{% for %}` loop in the template — empty children
+    collapses the block cleanly via `{% if children %}`.
 
-    `children` (optional) — when this agent has spawned subagents,
-    Agent._meta_budget_stats passes a snapshot list so the rendered
-    summary shows per-child name / focus / status / consumption.
-    Empty / None → the subagents block is omitted entirely."""
+    `max_context` defensive fallback to the framework default
+    (128_000) for the edge case where `original_max_context=None`
+    (production BudgetConfig always has a value)."""
     max_context = state.original_max_context or _DEFAULT_MAX_CONTEXT
     elapsed_str, wall_max_str, wall_bar, wall_pct = _wall_parts(state)
-    return _load_template().format(
-        # Own-session
+
+    # Narrow kwargs specifically for the budget_stats template —
+    # uses render_named_kwargs so framework-level RunContext
+    # helpers (skills / context_pct / etc.) don't pollute or
+    # shadow names like `steps_used`.
+    from .template_engine import render_named_kwargs
+    return render_named_kwargs(
+        "budget_stats",
         tokens_in=_fmt_k(state.tokens_in),
         max_context=_fmt_k(max_context),
         own_bar=_bar(state.tokens_in, max_context),
         pct=int(round(100 * state.tokens_in / max_context)),
-        # Shared pool — tokens line with steps in parentheses
         paid=_fmt_k(state.cumulative_paid),
         max_tokens=_fmt_k(state.original_tokens),
         shared_bar=_bar(state.cumulative_paid, state.original_tokens),
@@ -235,16 +183,12 @@ def format_budget_stats(
                              max(1, state.original_tokens))),
         steps_used=state.steps_used,
         max_steps=state.original_steps,
-        # Wall-clock — critical for agent_await(timeout=…) decisions:
-        # real-time keeps ticking while the agent blocks on a child.
         elapsed=elapsed_str,
         wall_max=wall_max_str,
         wall_bar=wall_bar,
         wall_pct=wall_pct,
-        # Typical-spawn — bare numeric ranges; wording in the template.
         spawn_carved=_TYPICAL_SPAWN_CARVED,
         spawn_carved_steps=_TYPICAL_SPAWN_CARVED_STEPS,
         spawn_return=_TYPICAL_SPAWN_RETURN,
-        # Subagents block — empty string when no children.
-        subagents=_format_subagents(children or []),
-    )
+        children=_prep_children(children),
+    ).rstrip()
