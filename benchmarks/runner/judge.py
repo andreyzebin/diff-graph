@@ -179,7 +179,22 @@ class Judge(ABC):
 
 # ── Concrete judge ─────────────────────────────────────────────────
 
-PROMPT_TEMPLATE_PATH = Path(__file__).parent.parent / "prompts" / "judge.txt"
+# Source of truth for the judge user prompt is the orchestra agent's
+# own template (`diffgraph/prompts/judges/raw.user.md`). The bench
+# renders the same file in-process and passes the rendered text via
+# `--user-message`, so standalone `cli.py run --agent=judge.raw` and
+# bench-driven scoring share one template file with no drift.
+PROMPT_TEMPLATE_PATH = (
+    Path(__file__).parent.parent.parent
+    / "diffgraph" / "prompts" / "judges" / "raw.user.md"
+)
+
+
+def _load_template() -> str:
+    """Read raw.user.md and strip its YAML frontmatter — what remains
+    is the Jinja body the bench feeds the judge."""
+    from orchestra.prompts.frontmatter import parse as _fm_parse
+    return _fm_parse(PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8")).body
 
 
 class LLMJudge(Judge):
@@ -202,7 +217,7 @@ class LLMJudge(Judge):
                  linked_run_id: str = ""):
         self._llm_client = llm_client
         self._view = view
-        self._template = PROMPT_TEMPLATE_PATH.read_text()
+        self._template = _load_template()
         # When set, dump request/response of every judge LLM call under
         # this directory using the unified trace layout (TODO §5e.10a):
         # judge_dir/run.json, events.jsonl, agents/judge-0/step-NN-{request,response}.json
@@ -639,7 +654,11 @@ def _build_prompt(
 
     trigger_type = getattr(scenario.trigger, "type", "") or ""
     ack_required = bool(eo.acknowledgement_required) and trigger_type == "comment"
-    return template.format(
+    # Render via the orchestra Jinja env — same one the judge.raw
+    # agent uses when invoked standalone (cli.py run --agent=judge.raw),
+    # so the file is the single source of truth across both paths.
+    from orchestra.template_engine import _env as _jinja_env
+    return _jinja_env.from_string(template).render(
         agent_comments=_format_comments(comments),
         intended_findings=_format_intended_findings(intended_findings or []),
         intended_concerns=_format_intended_concerns(intended_concerns or []),
