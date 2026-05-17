@@ -4675,6 +4675,114 @@ just needs scenarios that use it.
 
 ---
 
+## 17. Skills — composable bundles of tools + rationale (Phase 1 shipped)
+
+### Why this exists
+
+Delegation rationale was repeated inline across prompts that
+opted into spawn-style work. Three drawbacks:
+
+1. Drift — the wording in `budget-aware-delegation.md` couldn't
+   be tweaked without also touching every other prompt that
+   independently described the same approach.
+2. Tool/rationale coupling — `agent_spawn` + `agent_list` always
+   travel with the same explanation, but the prompt had to list
+   both separately every time.
+3. Hardcoded delegate names — the inline rationale named
+   `investigator` even though the concept (delegate for depth)
+   is agent-agnostic.
+
+Skills bundle (tools + extra_tools + rationale body) into a
+single .md, opt-in via user-prompt frontmatter `skills: [name]`.
+Same opt-in pattern as `reflect_response_template` /
+`budget_stats_legend` placeholder — the model sees one place
+for "here's a skill the framework gave you, with its tools
+listed and a usage rationale".
+
+### Phase 1 shipped (2026-05-17)
+
+- `orchestra/skills/<name>.md` — skill files (frontmatter +
+  body) loaded via the same `orchestra.prompts.frontmatter`
+  parser used for agent prompts. Consistent UX.
+- `orchestra/skills.py` — `Skill` dataclass, `load_skill(name)`,
+  `mount_skills(names, fm_meta=...) -> str`, `list_skills()`.
+- `mount_skills` mutates `fm_meta` in place to extend `tools_add`
+  and `extra_tools` (existing register loop in Agent.__init__
+  + `_build_tool_names` pick the additions up — no new dispatch
+  paths). Returns the aggregated rationale body for the
+  `{skills}` placeholder.
+- Agent.__init__ calls mount_skills right after parsing
+  reflect_response_template + budget overrides; `framework_vars`
+  ships `{skills}` into the user-message interpolation scope
+  alongside `{budget_stats_legend}`.
+- First skill: `delegation_depth_as_upgrade.md` —
+  agent_spawn + agent_list + the positive depth-as-upgrade
+  framing (§13.10c). Abstract over delegate names — "the right
+  delegate" rather than "investigator" — so the same skill is
+  reusable for any orchestrator-role agent.
+
+REV-U-008 migrated: instead of inline rationale + tools_add of
+[agent_spawn, agent_list, text_answer], the prompt now declares
+`skills: [delegation_depth_as_upgrade]` + `tools_add:
+[text_answer]` (the deliverable channel is scenario-specific,
+stays inline). Body has `{skills}` where the rationale used to
+be. Effective tools_add at runtime: [text_answer, agent_spawn,
+agent_list].
+
+Tests: `tests/test_skills.py` — 14 tests covering catalog
+discovery, load_skill (shipped skill + missing skill error +
+shape validation), mount_skills (empty, single, multiple,
+extra_tools merge, per-skill body header), end-to-end through
+Agent.__init__ (effective tool surface, placeholder resolution,
+no-declaration safe-empty, type validation).
+
+### Phase 2 — dynamic skill attachment (deferred)
+
+Add an `attach_skill(name)` tool that calls `mount_skills` from
+a tool handler mid-run. Framework emits a NUDGE to the parent
+agent: "you activated skill X — here's its rationale and the
+new tools you now have." The agent's effective tool surface
+updates for subsequent steps; `{skills}` content for following
+turns includes the new skill's body.
+
+Use case: an agent receives a task whose shape it can't fully
+predict upfront, discovers it needs a capability (e.g. "I need
+to delegate to a sub-investigator on this part"), and attaches
+the right skill at the right moment without the parent agent's
+prompt having to enumerate all possible skills it might ever
+need.
+
+### Phase 3 — domain skill catalogs
+
+Today: `orchestra/skills/` is the only catalog (framework-shared).
+Phase 3: also support `<domain>/skills/` (e.g.
+`diffgraph/skills/diff_navigation.md` for skills that bundle
+diff-domain tools + their usage). Same pattern that prompts
+follow with `prompt_resource=`.
+
+### Phase 4 — `agent_list_skills()` tool
+
+Discoverability for agents: a tool that returns the catalog of
+available skills with their summaries. Combined with Phase 2's
+`attach_skill`, gives agents the ability to self-augment their
+toolset at run time.
+
+### Anti-patterns
+
+- ❌ Skill that hardcodes domain-specific identifiers (file
+  paths, repo names, tool names from a specific provider). Skills
+  are meant to be reusable abstractions. Domain bits stay in the
+  prompt that mounts the skill.
+- ❌ Skill that duplicates what a prompt's own setup already
+  says. The skill's rationale should answer "how to use these
+  tools" — not retell what the prompt's task description
+  already covered.
+- ❌ Mounting a skill purely for the tools (treating it as a
+  fancy `tools_add`). If you don't want the rationale either,
+  use `tools_add` directly.
+
+---
+
 ## NUDGE_HIGH 0.75 mandatory warning (shipped 2026-05-16)
 
 Already shipped — see commit `5d9f2fc`. Every axis with a hard

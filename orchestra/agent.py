@@ -220,6 +220,24 @@ class Agent:
             if "max_wall_time" in _fm_budget and _fm_budget["max_wall_time"] is not None:
                 self.config.budget.max_wall_time = float(_fm_budget["max_wall_time"])
 
+        # Mount skills declared in user-message frontmatter — bundles
+        # of (tools + extra_tools + rationale). See orchestra/skills.py.
+        # mount_skills mutates _fm_meta to extend tools_add / extra_tools
+        # (so the existing register loop below and _build_tool_names
+        # pick them up) and returns the aggregated rationale string for
+        # the `{skills}` interpolation placeholder.
+        _skill_names = self._fm_meta.get("skills") or []
+        if _skill_names and not isinstance(_skill_names, list):
+            raise ValueError(
+                f"frontmatter.skills must be a list of strings, "
+                f"got {type(_skill_names).__name__}"
+            )
+        from .skills import mount_skills as _mount_skills
+        self._mounted_skills_body: str = _mount_skills(
+            [str(s) for s in _skill_names],
+            fm_meta=self._fm_meta,
+        )
+
         # Register extra_tools as capture-style tools in the agent's
         # registry. Idempotent — re-registering the same name on a
         # spawned child just overwrites.
@@ -1299,7 +1317,10 @@ class Agent:
         # vars so the user prompt can reference it without any
         # opt-in plumbing.
         from .budget_stats import load_legend as _load_legend
-        framework_vars = {"budget_stats_legend": _load_legend()}
+        framework_vars = {
+            "budget_stats_legend": _load_legend(),
+            "skills": getattr(self, "_mounted_skills_body", "") or "",
+        }
         merged_vars = {
             **framework_vars,
             **(self.data_scope or {}),
