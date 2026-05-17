@@ -4397,6 +4397,69 @@ integration test**, not a delegation rationality test. To exercise
 delegation, design a new scenario per (1) (mechanics) or (2) (budget
 pressure) above.
 
+### 13.10b Why "budget-pressure" rationale failed in practice — switching to coverage + can-I-answer-now
+
+**Observation (2026-05-17 on REV-U-008):** even with `max_context=16000`
+and an explicit "if reading would push past 75%, spawn" rule in the
+prompt, deepseek-chat reviewer kept choosing direct reads to 0
+spawns. Trace inspection showed why.
+
+**Why budget-pressure framing is a weak forcing function:**
+
+1. **Pressure is a mid-flight state, not a planning rule.** By the
+   time the snapshot shows 75% the agent has already committed to
+   direct reads; switching strategy now is high-cost (would re-do
+   work). The "if pushed past 75%" condition fires AFTER the
+   decision window closed.
+2. **Local math is honest and kills delegation.** Reviewer reads
+   "own ctx 35%, files are ~2KB each, +4 files = +20% → 55%
+   total, comfortable" and that's mathematically correct. The
+   *local* optimum (direct read on a small PR) beats the *global*
+   optimum (parallel coverage) and the rule doesn't tilt the
+   scales.
+3. **Wrong framing of the trade-off.** "Budget pressure" sounds
+   like a survival concern. Reviewer's real concern is *coverage*
+   — surfacing the most concerns, not staying alive on tokens.
+
+**The reframe that works (B + C, shipped 2026-05-17 on REV-U-008):**
+
+- **C (goal reframe):** "Your deliverable is BREADTH of concerns,
+  not depth on any single one. Each investigator's done() returns
+  ~3-5K to your synthesis window — you can hold 10+ in parallel.
+  Direct reading is depth-first on one concern; spawning is
+  breadth-first across all of them. Reviewer = router;
+  investigator = digger."
+- **B (per-concern triage rule, applied at plan time):**
+  > Can I answer this from what I already have — ticket AC + diff
+  > lines + existing PR comments — without reading any unread file?
+  - Yes → note directly.
+  - No → spawn one investigator with a focused question.
+- `diff_read_file` allowed ONLY to verify a SPECIFIC line the diff
+  already highlighted — never for exploration of an unread file.
+  Same for `diff_search` / `diff_outline` against unread files.
+
+This is a **plan-time decision** (fires the moment a concern is
+formulated, before any read), not a mid-flight reaction. On
+REV-U-008's high-AC-density store-credit ticket, the reviewer
+should fan out ~4-5 parallel spawns: "verify ownership check?",
+"verify partial-consumption flow?", "verify PricingService is
+called?", "verify pre-tax math?" — each needs file reading and
+none answers from the diff alone.
+
+Tight `max_context=16000` stays as a backstop, but it's not the
+primary lever anymore — the per-concern rule should drive
+spawning even at 128K. If the rule works at 128K we have
+production-grade delegation; if not, we know the rule itself is
+weak and need to iterate again.
+
+**Scope note:** B + C lives ONLY in the test prompt
+`diffgraph/test_prompts/reviewer/budget-aware-delegation.md`.
+Production `diffgraph/prompts/reviewer/reviewer.user.md` stays
+budget-pressure-free (and triage-free) until B+C proves itself on
+the bench across multiple model providers. For small PRs B+C may
+over-fragment into one-spawn-per-concern; production needs to
+tolerate small PRs natively.
+
 ---
 
 ## NUDGE_HIGH 0.75 mandatory warning (shipped 2026-05-16)

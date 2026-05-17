@@ -5,23 +5,38 @@
 # query needed; the snapshot arrives in the reflect tool-result, so
 # the reviewer plans on fresh data every reflection cycle.
 #
-# Delegation criterion is BUDGET-PRESSURE rather than cross-source
-# (per TODO §13.10 — cross-source rationale gives zero real benefit
-# until §10 Phase D ships investigator-extended tools). The
-# reviewer should anticipate context pressure and offload reading
-# into child investigators (fresh windows) rather than waiting for
-# NUDGE_HIGH and reacting too late.
+# Delegation rationale is COVERAGE-MAXIMIZATION + per-concern
+# "can-I-answer-now?" triage (see §13.10 update).
+#
+#   Goal reframe (C): reviewer's deliverable is BREADTH of concerns
+#   surfaced, not depth on any single one. Each investigator's
+#   done() summary returns ~3-5K to the parent's synthesis window,
+#   so the parent can hold 10+ in parallel. Direct file reading is
+#   a depth-first scan of one concern; spawning is breadth-first
+#   across all of them. The reviewer is a router; the investigator
+#   is a digger.
+#
+#   Per-concern rule (B): for each concern this PR might raise,
+#   apply this plan-time test: "can I answer from what I already
+#   have — ticket AC + diff lines + existing PR comments — without
+#   reading any unread file?" Yes → note directly. No → spawn.
+#   `diff_read_file` is allowed only to verify a SPECIFIC line the
+#   diff already highlighted — never for exploration.
+#
+# Why this beats the budget-pressure rationale we tried first:
+# budget pressure is a state observed mid-flight, not a rule the
+# agent can apply at planning time. By the time the snapshot
+# shows 75%, the reviewer has already committed to direct reads.
+# The new rule fires the moment a concern is formulated, before
+# any read happens.
+#
+# Tight `max_context` (16K) stays as a backstop — even with the
+# coverage framing, a small context discourages "I'll just peek
+# at one more file" drift. With production 128K the rule still
+# applies but the safety net is gone.
 #
 # Production reviewer.user.md stays untouched until this shape
 # proves itself.
-#
-# Tight `max_context` is the actual lever that creates the
-# pressure this scenario is testing — at the production default
-# (128K) even a 50-file diff fits comfortably and delegation never
-# becomes rational. Keeping the override here (not in the bench
-# fixture yaml, not in an env var) means "everything about how
-# this scenario shapes the agent lives in the prompt that the
-# agent reads" — single source of truth.
 reflect_response_template: with_state
 budget:
   max_context: 16000
@@ -79,22 +94,31 @@ time you reflect — your situation has changed.
 verbatim from the list above), then **orient on the diff** with
 `diff_list_files`.
 
-**Decide per concern using budget-pressure rationale.** For each
-concern this PR raises:
+**Your deliverable is BREADTH of concerns, not depth on any
+single one.** Each investigator's `done()` returns ~3-5K to your
+synthesis window — you can hold 10+ in parallel. Direct file
+reading is a depth-first scan of one concern; spawning
+investigators is a breadth-first scan across all of them.
+Reviewer = router; investigator = digger.
 
-- **Project your reading cost vs your context headroom.** Look at
-  the most recent reflect's state snapshot. Each `diff_read_file`
-  adds the file's full size to your own context; an
-  `agent_spawn(agent="investigator", focus="...")` instead returns
-  a brief ~3-5K summary while the child reads in its own fresh
+**Per-concern triage.** For each concern this PR might raise,
+apply this test BEFORE any file read:
+
+> *Can I answer this from what I already have — the ticket AC,
+> the diff lines themselves, and any existing PR comments —
+> without reading any unread file?*
+
+- **Yes** → note the concern directly. No spawn.
+- **No** → `agent_spawn(agent="investigator", focus="<the
+  specific question>")` and let the child read in its own fresh
   window.
-- **If reading all material yourself would push you past ~75% of
-  your context window**, spawn investigators for at least some
-  concerns rather than read everything yourself. Tight windows
-  make direct investigation risky — you may run out of headroom
-  mid-synthesis.
-- **If your context is comfortable** AND the concern is small
-  (one file, one function), note it directly — no spawn needed.
+
+`diff_read_file` is allowed ONLY to verify a SPECIFIC line the
+diff already highlighted — never for exploration of an unread
+file. If you find yourself reaching for it to "go check
+something" or "see how it's used elsewhere", that's a spawn
+instead. Same for `diff_search` and `diff_outline` against files
+outside the diff — spawn instead of looking yourself.
 
 Multiple spawns in one step run in parallel. Use `agent_list()` if
 unsure which agent to spawn.
