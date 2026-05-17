@@ -4414,3 +4414,90 @@ max_ratio" gotcha is documented there too as an open design call:
 - (b) accept it as a physical hard cap (current behaviour)
 
 Decide if/when this hits a real workload.
+
+---
+
+## 14. `diff_read_file` size guard — protect agent process memory, surface a real signal to the model
+
+### Problem
+
+The tool today is **double-layered** for size handling, and only
+one layer is honest:
+
+1. **Reader (`diffsearch/tools.py::read_file_vfs` and
+   `diffgraph/tools.py::read_file`)** — no size protection. Both
+   call `f.readlines()` unconditionally, loading the whole file
+   into the Python heap. A 50MB single-line file (minified bundle,
+   generated SQL dump, vendored payload) becomes a 50MB string in
+   `all_lines[0]` synchronously. The `end_line = start_line + 99`
+   default clamps **line count**, not bytes — 100 fat lines is
+   still 50MB if each is 500KB.
+
+2. **Registry truncation (`orchestra/tools/registry.py::format_result`)
+   at `result_limit=6000` chars** — does protect the LLM context
+   (the model never sees more than ~2K tokens of the file), but
+   the cut happens AFTER the giant string has already been
+   built in the agent process.
+
+### Why it matters
+
+- ✅ **LLM context** — safe, hard cap at 6000 chars by default.
+- ❌ **Agent-process memory** — unbounded. 50MB file ⇒ ~150MB
+  process peak (Python overhead). 1GB file ⇒ OOM.
+- ❌ **Wall-clock latency on the tool call** — open + readlines on
+  multi-MB files is slow; the agent just sees a long tool turn
+  with no indication why.
+- ❌ **The model has no idea** the file was huge — the truncated
+  output looks like a normal small file. So the agent can't
+  switch strategy ("ah, it's a generated file, use `diff_outline`
+  or sample a range") because it has no signal.
+
+### Proposed fix (one-touch in the reader)
+
+In `read_file_vfs` (and the simpler `read_file`) check
+`Path(file_path).stat().st_size` BEFORE opening. If above a
+threshold (say 5MB — typical hand-authored source rarely exceeds
+this), short-circuit with a meaningful signal:
+
+```
+# <path>
+(file too large: <N>MB — use start_line/end_line to sample a
+range, or diff_outline for structure)
+```
+
+This is the same kind of "honest report-state" the diff tools
+already do for `(binary file)` and `(file not found)`. Cost is
+one `stat()` call per read; saves the heap blow-up and gives the
+model a routing signal it can actually act on.
+
+### Optional Phase B — line-stream guard for pathological single-line files
+
+For files JUST under the byte threshold but with a single
+gigantic line, also stream-read line by line and abort once the
+accumulated byte count crosses `~result_limit * 4` (rough headroom
+for monospace formatting). Most production diff cases don't need
+this — the byte cap above catches the 99% case.
+
+### Acceptance criteria
+
+- Reading a >5MB file returns the "(file too large)" signal
+  string, not a 5MB+ buffer.
+- Output is recognisable: the model can tell it's a guard, not a
+  real read. Wording mentions the alternatives (`diff_outline`,
+  `start_line/end_line`).
+- The threshold value lives as a named module-level constant
+  (`_MAX_FILE_BYTES = 5 * 1024 * 1024`), not magic-numbered.
+- Test: build a >5MB temp file, call `read_file_vfs`, assert the
+  guard string + assert peak Python process memory didn't pick
+  up the file contents.
+- Backwards-compat: files under the threshold render exactly as
+  today, including the existing `(binary file)` / `(file not
+  found)` sentinels (the size check is the FIRST sentinel before
+  those).
+
+### Why not just raise the registry `result_limit` for `diff_read_file`?
+
+That fixes the LLM signal direction (model would see "result was
+6000 chars truncated") but doesn't solve heap usage and still
+leaves wall-clock latency on the tool call. Size guard at the
+reader is the only spot that addresses all three.
