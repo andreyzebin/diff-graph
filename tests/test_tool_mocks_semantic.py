@@ -330,3 +330,59 @@ class TestModeCoexistence:
         # Ordinal consume still works the old way.
         assert m.consume("pr_post_comment", {}).return_data == "first"
         assert m.consume("pr_post_comment", {}).return_data == "second"
+
+
+# ── render_mock_result: bare-string envelope ───────────────────────
+
+
+class TestRenderEnvelope:
+    """The semantic-fixture return is a bare string (the investigator
+    summary text). render_mock_result must propagate it into the
+    spawn envelope's `output` field — anything else hides the
+    response from the agent. Regression test for the
+    "empty {} output" bug on REV-U-008 plan 284 where the legacy
+    envelope-builder treated string returns as `ret={}` and emitted
+    `"output": "{}"`."""
+
+    def test_string_return_lands_in_output(self):
+        from orchestra.tool_mocks import MockEntry, render_mock_result
+        entry = MockEntry(
+            when={}, return_data="INVESTIGATION (ownership): missing check.",
+            sticky=True,
+        )
+        raw = render_mock_result("agent_spawn", entry,
+                                  {"agent": "investigator", "focus": "x"})
+        envelope = json.loads(raw)
+        assert envelope["output"] == "INVESTIGATION (ownership): missing check."
+        assert envelope["status"] == "completed"
+        assert envelope["agent_name"] == "investigator"
+        assert envelope["mocked"] is True
+
+    def test_capture_only_stub_string_propagates(self):
+        """The capture_only stub is a JSON string by design — it
+        should ALSO land in `output` verbatim instead of being
+        re-wrapped into `{}`. Same fast-path as semantic."""
+        from orchestra.tool_mocks import MockEntry, render_mock_result
+        stub = '{"status":"spawned","child_id":"<test-stub>","mode":"capture_only"}'
+        raw = render_mock_result(
+            "agent_spawn", MockEntry(when={}, return_data=stub, sticky=True),
+            {"agent": "investigator"},
+        )
+        envelope = json.loads(raw)
+        assert envelope["output"] == stub
+
+    def test_dict_return_legacy_path_preserved(self):
+        """Existing structured fixtures with `{findings: [...]}` keep
+        working — bare-string path is additive, not replacing."""
+        from orchestra.tool_mocks import MockEntry, render_mock_result
+        entry = MockEntry(when={}, return_data={
+            "findings": [{"severity": "BLOCKER", "title": "x"}],
+            "confidence": "high",
+            "learned": "found a thing",
+        }, sticky=True)
+        raw = render_mock_result("agent_spawn", entry,
+                                  {"agent": "investigator"})
+        envelope = json.loads(raw)
+        parsed_output = json.loads(envelope["output"])
+        assert parsed_output["findings"][0]["severity"] == "BLOCKER"
+        assert "confidence=high" in envelope["sgr_summary"]

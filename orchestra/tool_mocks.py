@@ -373,9 +373,36 @@ def render_mock_result(tool_name: str, entry: MockEntry, args: dict) -> Any:
     For `agent_spawn` the parent agent expects a JSON envelope with
     status / output / sgr_summary / steps / tokens. For any other
     tool the canned return is passed through verbatim.
+
+    Accepted shapes for an agent_spawn mock's `return_data`:
+      - dict with `output:` / `findings:` / `confidence:` / etc.
+        (legacy structured form — ordinal-mode fixtures).
+      - bare string (semantic-mode fixtures + capture_only stub
+        + any "the investigator wrote this back" form). Used
+        verbatim as the envelope's `output` field — the agent
+        sees it the same way it would see a real investigator's
+        done() summary text.
     """
     if tool_name != "agent_spawn":
         return entry.return_data
+
+    # Bare-string fast path — covers semantic fixtures and
+    # capture_only's stub (which is a JSON string). Without this
+    # the envelope-builder's "else: json.dumps({})" branch
+    # silently swallows the canned text into `"output": "{}"`,
+    # which is exactly the regression that hid semantic-match
+    # responses from the reviewer on REV-U-008 plan 284.
+    if isinstance(entry.return_data, str):
+        return json.dumps({
+            "status": "completed",
+            "agent_id": "mock",
+            "agent_name": str(args.get("agent", "")),
+            "output": entry.return_data,
+            "sgr_summary": "",
+            "steps": 0,
+            "tokens": 0,
+            "mocked": True,
+        }, ensure_ascii=False, indent=2, default=str)
 
     ret = dict(entry.return_data) if isinstance(entry.return_data, dict) else {}
     if "output" in ret:
