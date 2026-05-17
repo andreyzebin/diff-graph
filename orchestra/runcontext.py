@@ -160,11 +160,22 @@ class RunContext:
 
 
 class _HiddenToolProxy:
-    """Lazy proxy around a hidden tool. First attribute / item
-    access dispatches the tool (with no args), caches the result,
-    and forwards all subsequent access to that result. Lets
-    templates write `{{ pr.title }}` and pay the fetch cost only
-    if the template references it."""
+    """Lazy proxy around a hidden tool. Two access modes, both
+    deferring the actual dispatch:
+
+    1. Zero-arg field access — `{{ pr.title }}`. First attribute
+       / item access calls the tool with no args, caches the
+       result, forwards subsequent access. For tools that take
+       no parameters and return a dict.
+
+    2. Call-with-args — `{{ pr_thread(comment_id=42) }}`. Each
+       call dispatches the tool with the supplied kwargs;
+       results NOT cached across different arg sets (the
+       registry's own cache layer covers same-args repeats).
+
+    Both modes use the same `ToolRegistry.call_data_provider`
+    entrypoint — uniform with the LLM tool dispatch path.
+    """
 
     __slots__ = ("_registry", "_tool_name", "_data", "_fetched")
 
@@ -183,6 +194,15 @@ class _HiddenToolProxy:
             self._data = {}
         self._fetched = True
         return self._data
+
+    def __call__(self, **kwargs: Any) -> Any:
+        """Dispatch the tool with explicit kwargs — used for
+        template-callable fetchers that take arguments (e.g.
+        `{{ pr_thread(comment_id=42) }}`)."""
+        try:
+            return self._registry.call_data_provider(self._tool_name, **kwargs)
+        except Exception:
+            return ""
 
     def __getattr__(self, key: str) -> Any:
         # Underscore-prefixed names bypass the proxy (dunders, _slots).
@@ -209,21 +229,25 @@ class _HiddenToolProxy:
 
 
 def _hidden_tool_proxies(registry: Any) -> dict[str, Any]:
-    """Build {name: _HiddenToolProxy} for every hidden tool in the
-    registry. Empty when no registry or no hidden tools — keeps
-    callers' templates that don't use any of them paying nothing.
+    """Expose EVERY tool in the registry as a lazy `_HiddenToolProxy`
+    callable from prompt templates. Tools are homogeneous — no
+    per-tool template-vs-agent flag.
 
-    Hidden = `ToolDef.hidden == True`. These tools are NOT in the
-    agent's tool surface (LLM can't call them); they exist exactly
-    to serve as template-callable data providers."""
+    The agent's LLM surface is constrained by name (config.tools +
+    frontmatter `tools:`); tools NOT listed there are invisible to
+    the model regardless of presence in the registry. Templates
+    have no such constraint — they can call any registered tool
+    via `{{ name.field }}` or `{{ name(args) }}`. Side-effect
+    tools (agent_spawn, done, …) would no-op or fail meaningfully
+    if a template tried to call them at render-time — template
+    authors wouldn't do that anyway."""
     if registry is None:
         return {}
     out: dict[str, Any] = {}
     try:
         tool_defs = getattr(registry, "_tools", None) or {}
-        for name, td in tool_defs.items():
-            if getattr(td, "hidden", False):
-                out[name] = _HiddenToolProxy(registry, name)
+        for name in tool_defs:
+            out[name] = _HiddenToolProxy(registry, name)
     except Exception:
         pass
     return out

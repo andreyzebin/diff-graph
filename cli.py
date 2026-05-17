@@ -136,39 +136,14 @@ def _run_with_dispatcher(
     short-circuit on empty pr_url.
     """
     from diffgraph.bitbucket import (
-        get_comment_thread, reply_to_pr_comment, get_pr_info,
-        get_pr_comments, fetch_pr,
+        reply_to_pr_comment, get_pr_comments, fetch_pr,
     )
     from diffgraph.orchestrator import run_agent, _Ctx, ReviewContext
     from diffgraph.orchestra_tools import register_diffgraph_tools
     from diffgraph.diff_parser import parse_diff, DiffResult
     from orchestra import ToolRegistry
 
-    # ── Lightweight context (no clone) ────────────────────────────────────
-    thread = "(no thread)"
-    bot_user_for_thread = review_cfg.get("bot_user", "")
-    # `comment_id > 0` = real comment trigger. `-1` (sentinel) or `0`
-    # (legacy fallback) = no comment context; skip the fetch and
-    # leave thread as "(no thread)".
-    if comment_id and comment_id > 0:
-        try:
-            thread = get_comment_thread(
-                pr_url, comment_id,
-                bot_user=bot_user_for_thread,
-                subject_pattern=subject_pattern or "",
-            )
-        except Exception as exc:
-            thread = f"(failed to fetch thread: {exc})"
-
-    pr_title = pr_description = ""
-    try:
-        info = get_pr_info(pr_url)
-        pr_title = info.get("title", "")
-        pr_description = info.get("description", "")
-    except Exception:
-        pass
-
-    # Prompt generation/mutation
+    # Prompt generation/mutation — DB telemetry tags.
     from orchestra import compile_prompts
     from pathlib import Path as _Path
     prompt_source = prompts or str(_Path(__file__).parent / "diffgraph" / "prompts")
@@ -180,7 +155,11 @@ def _run_with_dispatcher(
         generation = "default"
         mutation = "unknown"
 
-    # Existing comments (cheap API call)
+    # Existing comments — fetched once at run start. The `pr` /
+    # `pr_thread` hidden template tools read them from ctx as
+    # needed; the agent's prompt template accesses
+    # `{{ pr.existing_comments }}` / `{{ pr_thread(comment_id=N) }}`
+    # without further plumbing.
     existing_comments: list = []
     try:
         existing_comments = get_pr_comments(pr_url)
@@ -188,7 +167,6 @@ def _run_with_dispatcher(
         pass
 
     bot_user = review_cfg.get("bot_user", "")
-    from diffgraph.orchestrator import _format_existing_comments
     import re as _re
     pat = None
     if subject_pattern:
@@ -196,26 +174,6 @@ def _run_with_dispatcher(
             pat = _re.compile(subject_pattern)
         except _re.error as exc:
             console.print(f"[yellow]invalid --subject-pattern, ignored: {exc}[/yellow]")
-    # Find which thread root the trigger comment belongs to so the
-    # "other threads" rendering can omit it (it's already shown in
-    # full under THREAD).
-    active_root_id: int | None = None
-    if comment_id and comment_id > 0:
-        by_id = {c["id"]: c for c in existing_comments if c.get("id") is not None}
-        cur = by_id.get(comment_id)
-        seen: set[int] = set()
-        while cur and cur.get("parent_id") and cur["parent_id"] in by_id:
-            cid = cur["id"]
-            if cid in seen:
-                break
-            seen.add(cid)
-            cur = by_id[cur["parent_id"]]
-        if cur:
-            active_root_id = cur.get("id")
-    existing_comments_str = _format_existing_comments(
-        existing_comments, bot_user=bot_user, subject_pattern=pat,
-        active_thread_root_id=active_root_id,
-    )
 
     # ── Lazy ctx: clone happens on first domain tool call ─────────────────
     _cleanup_fn = {"fn": None}
@@ -259,17 +217,16 @@ def _run_with_dispatcher(
     )
     register_diffgraph_tools(tool_registry, ctx)
 
-    # ── Data: common context + extra CLI data ────────────────────────────
-    # Fields with from:pr_context.* resolve lazily at spawn time
+    # ── Data: explicit-only fields (CLI args + run metadata) ─────────────
+    # PR-derived fields (`pr.title`, `pr.commits`, `pr.thread(id)`,
+    # `pr.existing_comments`, …) are NOT stuffed here — templates pull
+    # them lazily via hidden tool proxies on RunContext.registry. The
+    # data dict carries only what the CLI / caller explicitly passed.
     data: dict[str, str] = {
         "message": message,
         "comment_id": str(comment_id),
-        "comment_thread": thread,
-        "pr_title": pr_title,
-        "pr_description": pr_description or "(no description)",
         "generation": generation,
         "mutation": mutation,
-        "existing_comments": existing_comments_str,
     }
     if extra_data:
         data.update(extra_data)

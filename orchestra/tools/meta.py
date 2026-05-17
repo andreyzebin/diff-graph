@@ -142,8 +142,6 @@ def build_meta_tools(registry: Any, allowed: Iterable[str]) -> tuple[ToolDef, To
                 # doesn't crash the list call. Caller will hit a
                 # clean error on call_tool if they try to invoke it.
                 continue
-            if td.hidden:
-                continue
             if not _matches_query(td, query):
                 continue
             items.append({

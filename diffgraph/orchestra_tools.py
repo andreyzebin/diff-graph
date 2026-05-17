@@ -220,7 +220,6 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     @registry.register(
         name="pr",
         description="PR context data provider — lazy-fetched bundle of PR metadata.",
-        hidden=True,
         cache=True,
     )
     def pr() -> dict:

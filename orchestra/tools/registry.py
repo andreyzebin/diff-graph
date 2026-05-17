@@ -26,14 +26,18 @@ _TYPE_MAP: dict[type, str] = {
 
 @dataclass
 class ToolDef:
-    """Internal representation of a registered tool."""
+    """Internal representation of a registered tool. Homogeneous —
+    no agent-vs-template flag on the tool itself. The agent sees
+    only the tools its `config.tools` lists; the prompt template
+    sees every tool in the global registry via the
+    `_HiddenToolProxy` proxy layer (callable as
+    `{{ name.field }}` or `{{ name(args) }}`)."""
     name: str
     description: str
     parameters: dict  # JSON Schema
     handler: Callable[..., Any]
     result_limit: int = 6000
     is_builtin: bool = False  # reflect, done, agent_spawn, etc.
-    hidden: bool = False      # hidden from agent tool list (data providers)
     cache: bool = False       # cache result after first call
     _cached_result: Any = field(default=None, repr=False)
     _cache_hit: bool = field(default=False, repr=False)
@@ -77,7 +81,6 @@ class ToolRegistry:
         parameters: Optional[dict] = None,
         result_limit: int = 6000,
         is_builtin: bool = False,
-        hidden: bool = False,
         cache: bool = False,
     ) -> Callable:
         """
@@ -90,8 +93,10 @@ class ToolRegistry:
             @registry.register(name="custom_name", description="...")
             def my_tool(x: str) -> str: ...
 
-            @registry.register(hidden=True, cache=True)
-            def pr_context() -> dict: ...  # data provider, not shown to agent
+            @registry.register(cache=True)
+            def pr() -> dict: ...  # data provider; only in template surface
+                                    # (agents that don't list it in
+                                    # config.tools won't see it via LLM).
 
             registry.register(fn=my_fn, name="alias")
         """
@@ -106,7 +111,6 @@ class ToolRegistry:
                 handler=func,
                 result_limit=result_limit,
                 is_builtin=is_builtin,
-                hidden=hidden,
                 cache=cache,
             )
             return func
@@ -200,11 +204,15 @@ class ToolRegistry:
         return list(self._tools.keys())
 
     def to_openai_schema(self, names: list[str]) -> list[dict]:
-        """Convert named tools to OpenAI function-calling tool dicts. Excludes hidden tools."""
+        """Convert named tools to OpenAI function-calling tool dicts.
+        Filters by name only — what's NOT in `names` is invisible
+        to the LLM, regardless of whether it exists in the registry.
+        Templates see the full registry via the proxy layer
+        (RunContext._hidden_tool_proxies)."""
         result = []
         for name in names:
             td = self._tools.get(name)
-            if td is None or td.hidden:
+            if td is None:
                 continue
             result.append({
                 "type": "function",
@@ -307,9 +315,12 @@ class ToolRegistry:
             td._cache_hit = True
         return result
 
-    def call_data_provider(self, tool_name: str) -> Any:
-        """Call a cached data-provider tool (no args). For from: resolution."""
-        return self.dispatch(tool_name, {})
+    def call_data_provider(self, tool_name: str, **kwargs: Any) -> Any:
+        """Dispatch a hidden / data-provider tool. Used by both
+        the legacy `from:` resolver (zero-arg) and the
+        `_HiddenToolProxy` template-render path (which may pass
+        keyword args, e.g. `pr_thread(comment_id=42)`)."""
+        return self.dispatch(tool_name, dict(kwargs))
 
     def format_result(self, tool_name: str, result: Any) -> str:
         """Format and truncate a tool result for message history."""

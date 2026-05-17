@@ -1,6 +1,9 @@
 ---
-# Interface contract — the Bitbucket-PR-comment invocation surface.
-# A different interface (CLI, Slack, …) would redeclare this block.
+# Interface contract — what the CALLER explicitly passes in. PR-side
+# data (title, description, thread, existing_comments) is NOT
+# declared here — the template fetches it lazily via the hidden
+# `pr` / `pr_thread` tools on the registry (see
+# orchestra/runcontext.py _HiddenToolProxy).
 data:
   message:
     type: string
@@ -8,15 +11,6 @@ data:
   comment_id:
     type: integer
     description: "invoking comment ID. `-1` (sentinel) = no comment context (CLI / webhook auto-trigger / benchmark); `0` accepted as a legacy fallback. Positive values are real Bitbucket comment ids."
-  comment_thread:
-    type: string
-    description: "thread from root to invoking comment, or '(no thread)' when comment_id <= 0."
-  pr_title:
-    type: string
-    description: "PR title"
-  pr_description:
-    type: string
-    description: "PR description"
 
 guards:
   # pr_post_comment is interface-specific — guard message lives with the
@@ -30,7 +24,7 @@ guards:
 
 ## Thread
 
-{{ comment_thread }}
+{{ pr_read_thread(comment_id=comment_id) }}
 
 ## Message
 

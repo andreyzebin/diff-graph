@@ -8,21 +8,10 @@ tools:
   - pr_post_comment
   - set_review_status
 
-# Interface contract — Bitbucket-PR data the reviewer receives
-# from its parent (dispatcher) at spawn time.
-data:
-  pr_title:
-    type: string
-    description: "PR title"
-  pr_description:
-    type: string
-    description: "PR description"
-  commits:
-    type: string
-    from: pr.commits
-  jira_tickets:
-    type: string
-    from: pr.jira_tickets
+# Interface — no explicit data: block. PR-derived fields (title,
+# description, commits, jira_tickets, existing_comments) come
+# from the hidden `pr` template tool (see RunContext proxies);
+# the agent's prompt body just references `{{ pr.* }}` directly.
 ---
 PR: {{ pr.title }}
 {{ pr.description }}
