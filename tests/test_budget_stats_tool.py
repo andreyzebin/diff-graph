@@ -53,9 +53,9 @@ class TestFormatter:
         lines = out.splitlines()
         # 3 axis lines, blank separator, 1 spawn line = 5 lines.
         assert len(lines) == 5, f"expected 5 lines, got {len(lines)}: {lines}"
-        assert lines[0].startswith("own    ")
-        assert lines[1].startswith("shared ")
-        assert lines[2].startswith("wall   ")
+        assert lines[0].startswith("own ctx     ")
+        assert lines[1].startswith("shared pool ")
+        assert lines[2].startswith("wall clock  ")
         assert lines[3] == ""
         assert lines[4].startswith("spawn:")
 
@@ -109,7 +109,7 @@ class TestFormatter:
             original_wall_time=None,
         ))
         line = out.splitlines()[2]
-        assert line.startswith("wall   ")
+        assert line.startswith("wall clock  ")
         # Elapsed is rendered as a human time string (75s → "1m15s").
         assert "1m15s" in line
         # No-cap sentinel.

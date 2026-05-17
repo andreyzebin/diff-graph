@@ -1,0 +1,1 @@
+Snapshot layout: `own ctx` = this agent's LLM context window; `shared pool` = tokens + steps shared with any spawned children; `wall clock` = real-time clock (ticks even during await); `spawn:` = rough cost of one investigator spawn. Bars fill toward the hard cap.

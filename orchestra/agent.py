@@ -1288,7 +1288,23 @@ class Agent:
         # by resolve_agent_data doesn't apply — the override skips that
         # path, so we have to interpolate here against data_scope.
         user_text = self._fm_body
-        merged_vars = {**(self.data_scope or {}), **(self.prompt_vars or {})}
+        # Framework-provided placeholders the user-message body can
+        # reference (e.g. `{budget_stats_legend}` — see
+        # orchestra/budget_stats.py::load_legend). Resolved once per
+        # run so the legend lives in the first user message rather
+        # than in every reflect tool-result. Cheap (cached file read)
+        # so we resolve unconditionally; prompts that don't
+        # reference the placeholder pay nothing — interpolate leaves
+        # unknown keys as-is, but the legend is always loaded into
+        # vars so the user prompt can reference it without any
+        # opt-in plumbing.
+        from .budget_stats import load_legend as _load_legend
+        framework_vars = {"budget_stats_legend": _load_legend()}
+        merged_vars = {
+            **framework_vars,
+            **(self.data_scope or {}),
+            **(self.prompt_vars or {}),
+        }
         if user_text and merged_vars:
             user_text = interpolate(user_text, **merged_vars)
 

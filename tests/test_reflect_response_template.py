@@ -93,9 +93,9 @@ class TestWithStateTemplate:
         compact 3-axis table with bars (see test_budget_stats_tool
         for the row-by-row contract)."""
         out = render("with_state", state=_state())
-        assert "own    " in out
-        assert "shared " in out
-        assert "wall   " in out
+        assert "own ctx     " in out
+        assert "shared pool " in out
+        assert "wall clock  " in out
         assert "spawn:" in out
         # Bars carry the at-a-glance signal.
         assert "▰" in out or "▱" in out
@@ -328,3 +328,77 @@ class TestBudgetOverridePlumbing:
             user_message_override=override,
         )
         assert a.config.budget.max_context == 42_000
+
+
+# ── {budget_stats_legend} placeholder ──────────────────────────────
+
+
+class TestBudgetStatsLegendPlaceholder:
+    """`{budget_stats_legend}` is a framework-provided placeholder
+    that prompts opting into `with_state` reflects can embed to
+    teach the agent how to read the compact snapshot layout once
+    (in its first user message) instead of repeating the legend in
+    every reflect tool-result."""
+
+    def test_load_legend_returns_nonempty(self):
+        from orchestra.budget_stats import load_legend
+        out = load_legend()
+        # Legend names every row label the snapshot uses — drift
+        # here means the agent's first user message stops matching
+        # the table it'll see in later reflects.
+        assert "own ctx" in out
+        assert "shared pool" in out
+        assert "wall clock" in out
+        assert "spawn:" in out
+
+    def test_placeholder_resolves_in_user_message(self):
+        """When a user-message body references `{budget_stats_legend}`,
+        Agent._build_messages substitutes the loaded legend in place
+        of the literal placeholder before the LLM sees it."""
+        from orchestra.agent import Agent
+        from orchestra.types import AgentConfig
+        from orchestra.tools.registry import ToolRegistry
+
+        cfg = AgentConfig(
+            name="probe", system_prompt="sys",
+            user_prompt=(
+                "Task body.\n\n{budget_stats_legend}\n\nThen do X."
+            ),
+            tools=["reflect", "done"],
+        )
+        a = Agent(
+            config=cfg,
+            tool_registry=ToolRegistry(),
+            llm=None,
+            model="probe-model",
+        )
+        msgs = a._build_messages()
+        user = next(m for m in msgs if m.get("role") == "user")
+        # Placeholder literal must NOT survive interpolation.
+        assert "{budget_stats_legend}" not in user["content"]
+        # And the actual legend content must be inlined.
+        assert "own ctx" in user["content"]
+
+    def test_prompts_without_placeholder_unchanged(self):
+        """The legend is always loaded into the interpolation scope
+        (cheap, cached), but prompts that don't reference the
+        placeholder are unaffected — interpolation only substitutes
+        when `{budget_stats_legend}` literally appears."""
+        from orchestra.agent import Agent
+        from orchestra.types import AgentConfig
+        from orchestra.tools.registry import ToolRegistry
+
+        cfg = AgentConfig(
+            name="probe", system_prompt="sys",
+            user_prompt="Plain body with no placeholder.",
+            tools=["reflect", "done"],
+        )
+        a = Agent(
+            config=cfg,
+            tool_registry=ToolRegistry(),
+            llm=None,
+            model="probe-model",
+        )
+        msgs = a._build_messages()
+        user = next(m for m in msgs if m.get("role") == "user")
+        assert user["content"].strip() == "Plain body with no placeholder."

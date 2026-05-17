@@ -80,6 +80,21 @@ def _load_template() -> str:
     return _load("budget_stats") or "(budget_stats template missing)"
 
 
+def load_legend() -> str:
+    """Return the one-line legend that explains the snapshot's row
+    labels (`own ctx`, `shared pool`, `wall clock`, `spawn:`).
+    Wording lives in `orchestra/templates/budget_stats/legend.md`.
+
+    Prompts that opt into the `with_state` reflect template embed
+    this via the `{budget_stats_legend}` placeholder in their user
+    message — Agent._build_messages injects the rendered legend
+    into the interpolation scope once per run, so the agent sees
+    the legend once (in its first user message) and not on every
+    reflect.
+    """
+    return _load("legend")
+
+
 def _fmt_k(n: int) -> str:
     """3500 → '3.5K'; 12000 → '12K'; 250 → '250'. Keeps numbers
     human-scannable. The rstrip dance trims `.0` for whole-thousand

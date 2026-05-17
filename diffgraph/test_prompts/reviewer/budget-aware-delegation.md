@@ -73,6 +73,8 @@ window usage, the shared pool with children, any spawned subagents,
 and a "typical investigator spawn" cost reference. Re-plan each
 time you reflect — your situation has changed.
 
+{budget_stats_legend}
+
 **Read the ticket** via `jira_read_ticket(ref)` (copy each ref
 verbatim from the list above), then **orient on the diff** with
 `diff_list_files`.

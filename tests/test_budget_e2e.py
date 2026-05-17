@@ -350,7 +350,7 @@ def test_budget_stats_tool_returns_live_state(single_agent_script):
         m for m in step3_messages
         if m.get("role") == "tool"
         and "spawn:" in str(m.get("content", ""))
-        and "own    " in str(m.get("content", ""))
+        and "own ctx     " in str(m.get("content", ""))
     ]
     assert tool_results, "budget_stats should have produced a tool-result"
     body = tool_results[-1]["content"]
