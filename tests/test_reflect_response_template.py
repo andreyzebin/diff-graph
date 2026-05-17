@@ -2,9 +2,9 @@
 
 The `reflect` builtin returns a string the agent sees as its
 tool_result. Default template is the legacy `Reflection noted.`;
-opt-in `with_state` composes a state snapshot from internal APIs
-(format_budget_stats, format_time_info) and interpolates into a
-template file.
+opt-in `with_state` renders a state snapshot from internal APIs
+(format_budget_stats, format_time_info) via the Jinja template
+engine.
 
 Pinned here:
 - Default template = current behavior (backward compat).

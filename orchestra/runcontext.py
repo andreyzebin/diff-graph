@@ -7,15 +7,14 @@ the Agent for the duration of one run; lazy properties compute
 on demand so prompts that don't reference (say)
 `{{ budget_stats }}` don't pay for rendering it.
 
-Both render paths (Jinja for `{{ x }}` / `{% %}` templates and
-legacy `interpolate()` for `{x}`) consume `.to_kwargs()` — same
-variable names work in either syntax. Migrating a prompt from
-legacy to Jinja is a per-file choice with no name plumbing.
+Consumed by `orchestra.template_engine.render(text, ctx)` via
+`ctx.to_kwargs()` — flat dict of {var_name: value} the Jinja
+Environment binds at render time.
 
 Adding a new framework variable:
 1. New `@property` here (or new field if it's plain data).
-2. Reference it in `to_kwargs()` so both engines see it.
-3. Templates use `{{ name }}` (Jinja) or `{name}` (legacy).
+2. Reference it in `to_kwargs()`.
+3. Templates use `{{ name }}`.
 """
 from __future__ import annotations
 

@@ -42,7 +42,10 @@ output. Call pr_post_comment(text=..., parent_id={comment_id}) once,
 then finish with done().
 ```
 
-`{comment_id}` is interpolated from the agent's data scope.
+`{comment_id}` is rendered from the agent's data scope via
+Python `.format()` (guard messages live in YAML strings and
+go through `str.format(**data_scope)`, not the Jinja prompt
+engine — they're short interpolations, not full templates).
 
 ## Inline defensive fallback
 
@@ -92,4 +95,5 @@ text = load_internal("pushers/step_limit")
 ```
 
 Cached after first read. Trailing newline stripped. Use
-`interpolate(text, **vars)` to fill `{placeholders}`.
+`orchestra.template_engine.render(text, ctx)` against a
+RunContext to fill `{{ placeholders }}`.

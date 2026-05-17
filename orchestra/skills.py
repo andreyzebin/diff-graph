@@ -12,8 +12,8 @@ A skill bundles:
 When a user prompt declares `skills: [name1, name2]`, the
 framework mounts each at Agent.__init__: tools merge into the
 effective surface, extra_tools register, and the bodies are
-concatenated under a `{skills}` placeholder for the user prompt
-to interpolate.
+concatenated under a `{{ skills }}` placeholder for the user
+prompt to render (via the Jinja template engine).
 
 Skills live in `orchestra/skills/<name>.md` (the same plain-md
 + frontmatter shape used by agent prompts; we reuse

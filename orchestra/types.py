@@ -130,9 +130,9 @@ class AgentConfig:
     # <name>.md`. Default `"default"` returns just "Reflection noted."
     # `"with_state"` (opt-in, used by scenarios where the agent should
     # see its run state on every reflect — budget, time, subagents)
-    # composes a state snapshot from the framework's internal
-    # render APIs (format_budget_stats, format_time_info, …) and
-    # interpolates into the template. Toggle per-prompt via the
+    # renders a state snapshot via the Jinja template engine using
+    # the framework's internal APIs (format_budget_stats,
+    # format_time_info, …). Toggle per-prompt via the
     # `reflect_response_template:` frontmatter field.
     reflect_response_template: str = "default"
     # Every tool the agent can call — domain (pr_post_comment, read_file, …)

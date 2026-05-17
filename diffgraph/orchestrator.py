@@ -177,7 +177,8 @@ def run_agent(
     Run any prompt-defined agent by name.
 
     Generic entry point — no domain-specific logic. The agent's prompt
-    determines what it does. Data dict is interpolated into {placeholders}.
+    determines what it does. Data dict is rendered into the prompt's
+    `{{ placeholders }}` (Jinja, see orchestra/template_engine.py).
 
     Returns the agent's done() output (dict), or {} if agent produced nothing.
     """
@@ -194,7 +195,8 @@ def run_agent(
     # Tool registry — use provided or empty
     registry = tool_registry or ToolRegistry()
 
-    # Single path: resolve from:tool.field + interpolate prompt
+    # Resolve from:tool.field providers and render the prompt
+    # against the resulting data (Jinja, see resolve_agent_data).
     from orchestra.agent import resolve_agent_data
     data = resolve_agent_data(config, data, registry)
 

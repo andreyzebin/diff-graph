@@ -1160,7 +1160,8 @@ class Agent:
         if focus_arg and "focus" not in resolved_data:
             resolved_data["focus"] = focus_arg
 
-        # Single path: resolve from: providers + interpolate prompt
+        # Resolve from: providers and render prompt with the data
+        # they produced — see resolve_agent_data().
         resolved_data = resolve_agent_data(agent_config, resolved_data, self.registry)
 
         # Pass handoff context if explicitly requested by LLM
@@ -1287,15 +1288,10 @@ class Agent:
     # ── Message building ──────────────────────────────────────────────────────
 
     def _build_messages(self) -> list[dict]:
-        # System: stable methodology, ideally NO per-call placeholders
-        # (so the LLM's prompt cache is reusable across runs). During
-        # migration prompt files may still carry placeholders here —
-        # interpolation runs but should resolve to a stable string.
+        # Build one RunContext per message-build pass, reused for
+        # both system and user message renders. Both go through
+        # the Jinja engine (orchestra/template_engine.py).
         system_text = load_prompt(self.config.system_prompt)
-        # System prompts go through the same auto-detect template
-        # engine as user prompts — legacy `{x}` stays working,
-        # opting into Jinja `{{ x }}` per file is a per-author
-        # choice. RunContext built below also feeds user_text.
         from .runcontext import RunContext
         from .template_engine import render as _render_template
         _ctx = RunContext(
@@ -1313,22 +1309,10 @@ class Agent:
 
         # User message — the body of whichever source we parsed in
         # __init__ (override > config.user_prompt). Frontmatter is
-        # already stripped; what reaches the LLM is the prose +
-        # interpolated placeholders.
-        #
-        # Two sources of placeholder values:
-        #   data_scope  — resolved @data fields (pr_title, commits,
-        #                 focus, message, etc.) populated by
-        #                 resolve_agent_data + cli.py.
-        #   prompt_vars — caller-supplied extras (rare; legacy path).
-        # For the override branch, config.user_prompt's pre-interpolation
-        # by resolve_agent_data doesn't apply — the override skips that
-        # path, so we have to interpolate here against data_scope.
+        # already stripped; what reaches the LLM is the body
+        # rendered against the same RunContext used for system_text.
         user_text = self._fm_body
         if user_text:
-            # Reuse the RunContext built above for the system_text
-            # render — same data + framework helpers for both
-            # messages.
             user_text = _render_template(user_text, _ctx)
 
         # Some endpoints reject requests without a user-role message;

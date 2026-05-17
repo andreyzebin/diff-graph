@@ -233,13 +233,13 @@ divergent texts describing the same numbers.
 
 **Adding a new internal API**:
 1. Write `format_X(state, ...) -> str` in its own module.
-2. Add `{X}` placeholder support in `reflect_response.render()`.
-3. Reference `{X}` in a new template file under
+2. Add `X` as a property on `orchestra/runcontext.py::RunContext`
+   so the Jinja engine sees it in `ctx.to_kwargs()`.
+3. Reference `{{ X }}` in a new template file under
    `orchestra/templates/reflect_response/`.
 
 A missing template file falls back to `"Reflection noted."` so a
-typo in the toggle never crashes an agent (cached via
-`@lru_cache` on `_load_template`).
+typo in the toggle never crashes an agent.
 
 ### `orchestra/tools/meta.py` — framework escape-hatches
 
