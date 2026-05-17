@@ -58,25 +58,22 @@ _TYPICAL_SPAWN_RETURN = msg("budget_stats.typical_spawn.spawn_return", "3-5K")
 def _load(name: str) -> str:
     """Load a budget_stats template by short name (no extension).
     Cached. Source-of-truth lives in
-    `orchestra/templates/budget_stats/<name>.md`. The main
-    `budget_stats` template additionally has a `.fallback.md`
-    backstop so a missing primary doesn't lose the contract — for
-    every other template a missing file yields `""` (the rendered
-    section just collapses to nothing). No template wording is
-    duplicated in-code."""
+    `orchestra/templates/budget_stats/<name>.md`. A missing file
+    yields `""` — collapses the rendered section cleanly without
+    crashing. The main `budget_stats` template's sentinel string
+    is supplied by `_load_template()` below for visibility."""
     primary = _TEMPLATES_DIR / f"{name}.md"
     try:
         return primary.read_text(encoding="utf-8").rstrip()
     except OSError:
-        fallback = _TEMPLATES_DIR / f"{name}.fallback.md"
-        try:
-            return fallback.read_text(encoding="utf-8").rstrip()
-        except OSError:
-            return ""
+        return ""
 
 
 def _load_template() -> str:
-    """Back-compat name for the main budget_stats template loader."""
+    """Back-compat name for the main budget_stats template loader.
+    Returns a visible sentinel if the file is missing so the agent
+    sees `(budget_stats template missing)` rather than a silently
+    empty result."""
     return _load("budget_stats") or "(budget_stats template missing)"
 
 
