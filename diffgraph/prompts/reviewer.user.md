@@ -1,10 +1,12 @@
 ---
-# End-to-end production review — the base surface (diff reading +
-# thread reading) is in reviewer.system.md; tools_add here is the
-# acting-on-outputs surface: delegation, publishing, and verdict.
+# End-to-end production review — base surface (diff + thread reading)
+# is in reviewer.system.md. The acting-on-outputs surface here is:
+# publish + verdict (delegation comes from the `prefer_delegation`
+# skill — it bundles agent_spawn + agent_list with the
+# depth-as-upgrade rationale + reflect-with-state snapshot).
+skills:
+  - prefer_delegation
 tools:
-  - agent_list
-  - agent_spawn
   - pr_post_comment
   - set_review_status
 
@@ -45,10 +47,9 @@ degrades gracefully — if it comes back "disabled" / "not
 configured" / "could not be read", that's fine, just proceed with
 the diff + PR description; don't retry it in a loop.
 
-Then read the diff and identify concerns. Spawn investigators
-(agent_spawn) for any concern that needs depth. If you're unsure
-which agent name to spawn, call agent_list() once to see the
-registry.
+Then read the diff and identify concerns.
+
+{{ skills }}
 
 **Continuation review — scope to only the unseen commits.** If
 `pr_list_threads(repo="default", pr="default")` shows at least one `[SELF in subtree]` thread,
