@@ -4460,6 +4460,78 @@ the bench across multiple model providers. For small PRs B+C may
 over-fragment into one-spawn-per-concern; production needs to
 tolerate small PRs natively.
 
+### 13.10c B+C didn't push deepseek either — switching to positive "depth as upgrade" framing
+
+**Observation (2026-05-17 on REV-U-008 plan 286):** even with B+C
+(`can-I-answer-now?` rule + breadth coverage framing) and the
+prohibition "diff_read_file is allowed ONLY to verify a SPECIFIC
+line the diff already highlighted", deepseek-chat **didn't spawn
+a single investigator**. Direct-read every concern: AGENTS.md
+lookup, PricingService search + read, all 4 new files in parallel,
+Order.java from source ref. The whole investigation was a sequence
+of diff_* calls; agent_spawn never fired; semantic mocks sat idle.
+
+**Why B+C failed:**
+
+1. **Negative-framed rules ("must NOT", "never for exploration")
+   are weak signals to instruction-following models.** Deepseek
+   in particular treats prohibitions as soft suggestions and
+   prioritizes its local cost-benefit ("this file is small, I'll
+   just read it"). Positive framing ("use X to get Y") is what it
+   actually follows.
+2. **Tools surface physically permits direct reads.** The model
+   sees `diff_read_file` available and concludes it's a valid
+   tool to call. Without physical removal (a separate work item
+   — see TODO §13.10d if we go that route), only the prompt's
+   social signal can dissuade it.
+3. **The "can I answer now?" test is technically applicable but
+   easy to rationalize past.** "Yes I need to check this file,
+   but it's a small file from the diff, so it's verification of
+   a highlighted line." The carve-out for "specific line the
+   diff already highlighted" got abused into "any new file from
+   the diff".
+
+**The reframe (shipped 2026-05-17 on REV-U-008):** depth-as-upgrade.
+
+> Investigators are your DEPTH tool — that's literally their job.
+> A direct read gives you a surface scan: you see what the diff
+> highlights and nothing around it. An agent_spawn returns a
+> deeper analysis — the child reads in a fresh context window
+> (no pressure on yours), examines surrounding code (callers,
+> related fields, conventions used elsewhere in the repo), and
+> returns the verdict plus the reasoning chain. Use investigators
+> when you want the BEST answer to a concern, not just AN answer.
+
+Plus role separation: "Your role is route + synthesize.
+Investigators dig." Plus the EXCEPTION clause for trivially-visible
+concerns (one-line typos, missing imports, thread replies that
+already answered) so the agent has an honest out for small things.
+
+**Why this should work better:**
+- Positive framing = model WANTS to spawn (depth = quality upgrade).
+- The "why" is concrete (fresh window, surrounding context,
+  reasoning chain) — model's own chain-of-thought endorses the
+  choice rather than fighting it.
+- No prohibitions to ignore.
+- Role labels ("route + synthesize" vs "dig") give the model a
+  clear identity to play, which prompt-following models tend to
+  honor.
+
+**If this STILL fails (deepseek or another model insists on
+direct reads):** escalate to tool-level enforcement —
+- TODO §13.10d candidate: new frontmatter field `tools_remove:
+  [diff_read_file, diff_search, diff_outline]` for user-layer
+  overrides. Validator allows tools_add today; tools_remove is
+  symmetric and small.
+- Combined "prompt + physical removal" guarantees the test
+  measures what we think it measures, regardless of model
+  agreeableness.
+
+Scope still: ONLY the test prompt
+`diffgraph/test_prompts/reviewer/budget-aware-delegation.md`.
+Production reviewer stays minimal until the test shape proves
+itself.
+
 ---
 
 ## 15. Semantic mock matching — "Mockito with AI taste" (Phase 1 shipped)

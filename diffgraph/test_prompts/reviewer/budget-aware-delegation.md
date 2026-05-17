@@ -5,38 +5,39 @@
 # query needed; the snapshot arrives in the reflect tool-result, so
 # the reviewer plans on fresh data every reflection cycle.
 #
-# Delegation rationale is COVERAGE-MAXIMIZATION + per-concern
-# "can-I-answer-now?" triage (see §13.10 update).
+# Delegation rationale is DEPTH-AS-UPGRADE positive framing
+# (see §13.10c iteration).
 #
-#   Goal reframe (C): reviewer's deliverable is BREADTH of concerns
-#   surfaced, not depth on any single one. Each investigator's
-#   done() summary returns ~3-5K to the parent's synthesis window,
-#   so the parent can hold 10+ in parallel. Direct file reading is
-#   a depth-first scan of one concern; spawning is breadth-first
-#   across all of them. The reviewer is a router; the investigator
-#   is a digger.
+#   Positive frame: "investigators are your DEPTH tool — that's
+#   literally their job. A direct read gives you a surface scan.
+#   A spawn returns a deeper analysis: the child reads in a fresh
+#   window, examines surrounding code, returns verdict +
+#   reasoning. Use investigators when you want the BEST answer."
 #
-#   Per-concern rule (B): for each concern this PR might raise,
-#   apply this plan-time test: "can I answer from what I already
-#   have — ticket AC + diff lines + existing PR comments — without
-#   reading any unread file?" Yes → note directly. No → spawn.
-#   `diff_read_file` is allowed only to verify a SPECIFIC line the
-#   diff already highlighted — never for exploration.
+#   Reviewer's role: route + synthesize. Investigators dig.
+#   Direct handling is the EXCEPTION (trivial concerns visible
+#   in the diff itself), spawn is the default for anything
+#   requiring "let me check..." reasoning.
 #
-# Why this beats the budget-pressure rationale we tried first:
-# budget pressure is a state observed mid-flight, not a rule the
-# agent can apply at planning time. By the time the snapshot
-# shows 75%, the reviewer has already committed to direct reads.
-# The new rule fires the moment a concern is formulated, before
-# any read happens.
+# Why positive framing beats the previous "do NOT use
+# diff_read_file for exploration" rule:
+# - Models (especially deepseek-chat) ignore prohibitions more
+#   readily than they ignore quality upgrades. "Spawn for deeper
+#   analysis" is something the model WANTS to do; "don't read
+#   yourself" is something it sandbags against.
+# - The positive frame includes the WHY (fresh window, surrounding
+#   context, parallel deep dives) so the model's own reasoning
+#   chain endorses the choice rather than fighting it.
+# - Coverage/breadth angle from the previous iteration is still
+#   true but moved to a supporting role — depth is the lead pitch.
 #
-# Tight `max_context` (16K) stays as a backstop — even with the
-# coverage framing, a small context discourages "I'll just peek
-# at one more file" drift. With production 128K the rule still
-# applies but the safety net is gone.
+# Tight `max_context` (16K) stays as a backstop — the positive
+# framing should drive spawning at any context size, but the
+# tight window discourages "I'll just peek at one more file"
+# drift while we calibrate.
 #
 # Production reviewer.user.md stays untouched until this shape
-# proves itself.
+# proves itself on the bench.
 reflect_response_template: with_state
 budget:
   max_context: 16000
@@ -94,34 +95,33 @@ time you reflect — your situation has changed.
 verbatim from the list above), then **orient on the diff** with
 `diff_list_files`.
 
-**Your deliverable is BREADTH of concerns, not depth on any
-single one.** Each investigator's `done()` returns ~3-5K to your
-synthesis window — you can hold 10+ in parallel. Direct file
-reading is a depth-first scan of one concern; spawning
-investigators is a breadth-first scan across all of them.
-Reviewer = router; investigator = digger.
+**Investigators are your DEPTH tool — that's literally their
+job.** A direct read gives you a surface scan: you see what the
+diff highlights and nothing around it. An
+`agent_spawn(agent="investigator", focus="<the concern as a
+question>")` returns a deeper analysis — the child reads in a
+fresh context window (no pressure on yours), examines surrounding
+code (callers, related fields, conventions used elsewhere in the
+repo), and returns the verdict plus the reasoning chain that
+produced it. Use investigators when you want the **best** answer
+to a concern, not just **an** answer.
 
-**Per-concern triage.** For each concern this PR might raise,
-apply this test BEFORE any file read:
+**Your role is route + synthesize. Investigators dig.** Each
+concern that warrants real investigation gets its own
+investigator. Multiple `agent_spawn` calls in one step fan out in
+parallel — issue several at once so they run concurrently. When
+they return, synthesize their `done()` summaries into your final
+concerns list. Each summary returns ~3-5K to your synthesis
+window, so you can comfortably hold 10+ in parallel.
 
-> *Can I answer this from what I already have — the ticket AC,
-> the diff lines themselves, and any existing PR comments —
-> without reading any unread file?*
+**Direct handling is the exception**, reserved for concerns that
+are trivially visible: a one-line typo in the diff itself, an
+import obviously missing from a listed file, a thread reply that
+already answered the question. Anything that triggers
+*"let me check..."* or *"let me see how this is used elsewhere"*
+— that's exactly the work investigators are for. Spawn.
 
-- **Yes** → note the concern directly. No spawn.
-- **No** → `agent_spawn(agent="investigator", focus="<the
-  specific question>")` and let the child read in its own fresh
-  window.
-
-`diff_read_file` is allowed ONLY to verify a SPECIFIC line the
-diff already highlighted — never for exploration of an unread
-file. If you find yourself reaching for it to "go check
-something" or "see how it's used elsewhere", that's a spawn
-instead. Same for `diff_search` and `diff_outline` against files
-outside the diff — spawn instead of looking yourself.
-
-Multiple spawns in one step run in parallel. Use `agent_list()` if
-unsure which agent to spawn.
+Use `agent_list()` if you're unsure which agent name to pass.
 
 **Synthesize.** When all spawns have returned, compile the final
 concerns list. Submit via `text_answer(text=...)`, one concern per
