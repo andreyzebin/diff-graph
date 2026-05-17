@@ -1046,6 +1046,15 @@ def run_unit(
             console.print(f"  [dim]{head}[/dim]")
     if result.attempt_dir is not None:
         console.print(f"  attempt_dir: [dim]{result.attempt_dir}[/dim]")
+    # Judge failures are stuffed into stderr_tail by the runner even
+    # when the agent itself exits 0. Surface them so silent failures
+    # (e.g. PR-free fixtures hitting an `UnboundLocalError` before the
+    # judge ever produces a trace) don't masquerade as PASS.
+    if result.exit_code == 0 and result.judge_score is None and result.stderr_tail:
+        console.print(
+            f"\n[yellow]judge did not produce a verdict — "
+            f"stderr (tail):[/yellow]\n{result.stderr_tail}"
+        )
     if result.exit_code != 0:
         console.print(f"\n[dim]stdout (tail):[/dim]\n{result.stdout_tail}")
         console.print(f"\n[dim]stderr (tail):[/dim]\n{result.stderr_tail}")

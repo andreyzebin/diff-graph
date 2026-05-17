@@ -30,4 +30,15 @@ agent_data:
 
 expected_output:
   assert_via: [intended_text]
-  expected_answer: "42"
+  concern_focuses:
+    - id: doubled-answer
+      rationale: |
+        The boss's text_answer (intended_text) must contain the
+        string "42" — the doubled value of the input "21". This is
+        the end-to-end correctness check: regardless of whether the
+        boss did the work itself or delegated, the final answer it
+        reports back to the user has to be 42. Any other number
+        (or no number at all) means the boss didn't successfully
+        synthesize the worker's output / its own do_task call.
+  thresholds:
+    min_score: 0.7

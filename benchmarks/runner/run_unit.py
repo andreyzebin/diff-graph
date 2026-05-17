@@ -341,6 +341,12 @@ def run_unit_fixture(
     os.close(out_fd)
     fake_pr_path: Optional[str] = None
     sink_path: Optional[str] = None
+    # Minimal payload for PR-free fixtures (no `repo:` block) — the
+    # judge still needs SOMETHING to construct FakeBenchPRView. Real
+    # fixtures with a repo overwrite this inside the `if tmp_repo` branch
+    # below. Without this default, accessing `payload` on the PR-free
+    # path raises UnboundLocalError and the judge silently never fires.
+    payload: dict = {"comments": [], "metadata": {}, "self_user": "diffgraph-bot"}
 
     try:
         diff_repo = Path(diffgraph_repo).expanduser().resolve()

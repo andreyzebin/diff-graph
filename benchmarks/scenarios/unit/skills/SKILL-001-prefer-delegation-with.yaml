@@ -37,6 +37,18 @@ agent_data:
 
 expected_output:
   assert_via: [intended_text]
-  expected_answer: "42"
+  concern_focuses:
+    - id: doubled-answer
+      rationale: |
+        The boss's text_answer (intended_text) must contain the
+        string "42" — the doubled value of the input "21". With the
+        prefer_delegation skill mounted, the boss is expected to
+        delegate the doubling to a worker (via agent_spawn) and then
+        synthesize the worker's response back into a final answer.
+        Whatever the path, the final answer reported has to be 42 —
+        anything else means the boss/worker chain broke (no spawn,
+        wrong answer, dropped synthesis).
+  thresholds:
+    min_score: 0.7
   metadata:
-    note: "A/B partner — invocation-pattern assertion lives in a follow-up judge channel (intended_tool_calls_by_agent)."
+    note: "A/B partner — invocation-pattern assertion (did boss actually delegate?) lives in a follow-up judge channel (intended_tool_calls_by_agent)."

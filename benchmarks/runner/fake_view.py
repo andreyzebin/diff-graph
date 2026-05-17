@@ -102,7 +102,7 @@ class FakeBenchPRView(AgentPRView):
         *,
         payload: dict,
         sink_records: list[dict],
-        repo_path: Path,
+        repo_path: Path | None,
         base_sha: str,
         source_sha: str,
         source_branch: str = "",
@@ -110,7 +110,11 @@ class FakeBenchPRView(AgentPRView):
     ) -> None:
         self.payload = payload
         self.sink_records = list(sink_records)
-        self.repo_path = Path(repo_path)
+        # PR-free fixtures (no `repo:` block) pass repo_path=None.
+        # Use a sentinel `.` so existing `.exists()` guards in
+        # `get_diff` / `get_raw_file` return False naturally — those
+        # methods then yield empty strings, which the judge tolerates.
+        self.repo_path = Path(repo_path) if repo_path is not None else Path("/nonexistent-pr-free")
         self.base_sha = base_sha
         self.source_sha = source_sha
         self.source_branch = source_branch
