@@ -92,6 +92,15 @@ class RunContext:
     # with `{% if reflect.with_state %}`.
     reflect: dict = field(default_factory=dict)
 
+    # ── Tool registry (single source for both agent + template) ──
+    # The same `ToolRegistry` the LLM uses. The template engine
+    # auto-exposes HIDDEN tools as lazy proxies — `{{ pr.title }}`
+    # in a template dispatches the `pr` tool on first access,
+    # caches the result. Tools that are NOT hidden are agent-only
+    # (the LLM calls them by name) — template can't see them.
+    # No duplication: one registry, two consumer surfaces.
+    registry: Any = None  # ToolRegistry; circular-import-safe
+
     @property
     def context_pct(self) -> int:
         """0-100. Useful for `{% if context_pct > 75 %}` in
@@ -140,4 +149,81 @@ class RunContext:
             "context_pct": self.context_pct,
             "steps_used": self.steps_used,
             "reflect": dict(self.reflect),
+            # Hidden tools auto-exposed as lazy proxies. Template
+            # writes `{{ pr.title }}` → proxy dispatches `pr` tool
+            # on first access, caches result.
+            **_hidden_tool_proxies(self.registry),
         }
+
+
+# ── Hidden-tool lazy proxy ─────────────────────────────────────────
+
+
+class _HiddenToolProxy:
+    """Lazy proxy around a hidden tool. First attribute / item
+    access dispatches the tool (with no args), caches the result,
+    and forwards all subsequent access to that result. Lets
+    templates write `{{ pr.title }}` and pay the fetch cost only
+    if the template references it."""
+
+    __slots__ = ("_registry", "_tool_name", "_data", "_fetched")
+
+    def __init__(self, registry: Any, tool_name: str) -> None:
+        self._registry = registry
+        self._tool_name = tool_name
+        self._data: Any = None
+        self._fetched = False
+
+    def _fetch(self) -> Any:
+        if self._fetched:
+            return self._data
+        try:
+            self._data = self._registry.call_data_provider(self._tool_name)
+        except Exception:
+            self._data = {}
+        self._fetched = True
+        return self._data
+
+    def __getattr__(self, key: str) -> Any:
+        # Underscore-prefixed names bypass the proxy (dunders, _slots).
+        if key.startswith("_"):
+            raise AttributeError(key)
+        result = self._fetch()
+        if isinstance(result, dict):
+            return result.get(key, "")
+        return getattr(result, key, "")
+
+    def __getitem__(self, key: str) -> Any:
+        result = self._fetch()
+        if isinstance(result, dict):
+            return result.get(key, "")
+        return getattr(result, key, "")
+
+    def __bool__(self) -> bool:
+        result = self._fetch()
+        return bool(result)
+
+    def __str__(self) -> str:
+        result = self._fetch()
+        return str(result) if result is not None else ""
+
+
+def _hidden_tool_proxies(registry: Any) -> dict[str, Any]:
+    """Build {name: _HiddenToolProxy} for every hidden tool in the
+    registry. Empty when no registry or no hidden tools — keeps
+    callers' templates that don't use any of them paying nothing.
+
+    Hidden = `ToolDef.hidden == True`. These tools are NOT in the
+    agent's tool surface (LLM can't call them); they exist exactly
+    to serve as template-callable data providers."""
+    if registry is None:
+        return {}
+    out: dict[str, Any] = {}
+    try:
+        tool_defs = getattr(registry, "_tools", None) or {}
+        for name, td in tool_defs.items():
+            if getattr(td, "hidden", False):
+                out[name] = _HiddenToolProxy(registry, name)
+    except Exception:
+        pass
+    return out

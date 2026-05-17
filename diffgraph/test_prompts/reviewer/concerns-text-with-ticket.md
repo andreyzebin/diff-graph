@@ -22,7 +22,7 @@ extra_tools:
 
 # Interface contract — same Bitbucket-PR shape as production
 # reviewer.user.md, plus jira_tickets (the PR's associated ticket
-# refs; in production pr_context resolves these from Bitbucket's
+# refs; in production pr resolves these from Bitbucket's
 # Jira-integration endpoint, here the scenario's agent_data
 # supplies them).
 data:
@@ -34,19 +34,19 @@ data:
     description: "PR description"
   commits:
     type: string
-    from: pr_context.commits
+    from: pr.commits
   jira_tickets:
     type: string
     description: "Jira ticket reference(s) this PR is associated with"
 ---
-PR: {{ pr_title }}
-{{ pr_description }}
+PR: {{ pr.title }}
+{{ pr.description }}
 
 Commits *(oldest → newest)*:
 
-{{ commits }}
+{{ pr.commits }}
 
-This PR is associated with these Jira ticket(s): {{ jira_tickets }}
+This PR is associated with these Jira ticket(s): {{ pr.jira_tickets }}
 
 **Read the ticket(s) first.** Call `jira_read_ticket(ref)` on each
 associated ticket before forming concerns — copy the ref verbatim

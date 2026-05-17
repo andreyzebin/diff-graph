@@ -1310,6 +1310,7 @@ class Agent:
             budget_state=self.budget_state,
             skills_body=getattr(self, "_mounted_skills_body", "") or "",
             reflect=dict(self.config.reflect or {}),
+            registry=self.registry,
         )
         if system_text:
             system_text = _render_template(system_text, _ctx)

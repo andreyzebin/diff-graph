@@ -218,15 +218,26 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         return ", ".join(refs) if refs else "(none)"
 
     @registry.register(
-        name="pr_context",
-        description="PR context data provider (comments, commits, jira_tickets).",
+        name="pr",
+        description="PR context data provider — lazy-fetched bundle of PR metadata.",
         hidden=True,
         cache=True,
     )
-    def pr_context() -> dict:
+    def pr() -> dict:
+        """Hidden data-provider exposed to prompt templates as
+        `{{ pr.title }}` / `{{ pr.commits }}` / etc. via the
+        `_HiddenToolProxy` in RunContext.to_kwargs. Not in the
+        agent's tool surface — the LLM cannot call this.
+
+        Lazy init: `_ensure()` triggers clone + fetch_pr on first
+        access; subsequent template accesses hit the proxy's
+        cached result. Templates that don't reference `{{ pr.* }}`
+        pay zero cost (abstract / non-PR scenarios)."""
         _ensure()
         from .orchestrator import _get_commit_list, _format_existing_comments
         return {
+            "title": getattr(ctx, "_pr_title", "") or "",
+            "description": getattr(ctx, "_pr_description", "") or "",
             "existing_comments": _format_existing_comments(
                 ctx.existing_comments,
                 bot_user=getattr(ctx, '_bot_user', ''),

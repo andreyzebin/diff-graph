@@ -26,7 +26,7 @@ guards:
 # Trigger
 
 - `COMMENT_ID`: `{{ comment_id }}`
-- `PR`: **{{ pr_title }}** — {{ pr_description }}
+- `PR`: **{{ pr.title }}** — {{ pr.description }}
 
 ## Thread
 

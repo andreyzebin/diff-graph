@@ -228,7 +228,11 @@ def _run_with_dispatcher(
     )
 
     def _lazy_init(c: _Ctx) -> None:
-        """Clone repo, compute diff — called on first domain tool access."""
+        """Clone repo, compute diff, stash PR meta — called on
+        first domain tool access. Sets `_pr_title`/`_pr_description`
+        on ctx so the `pr` data-provider proxy (visible in
+        templates as `{{ pr.title }}` / `{{ pr.description }}`)
+        can serve them after the lazy init triggers."""
         console.print(f"[dim]  cloning repo (lazy)...[/dim]")
         diff_text, repo_path, cleanup_fn, pr_meta = fetch_pr(
             pr_url,
@@ -240,6 +244,8 @@ def _run_with_dispatcher(
         c.repo_path = repo_path
         c.base_ref = pr_meta.get("base_ref", "")
         c.source_ref = pr_meta.get("source_ref", "")
+        c._pr_title = pr_meta.get("title", "")
+        c._pr_description = pr_meta.get("description", "")
 
     ctx._init_fn = _lazy_init
     ctx._bot_user = bot_user

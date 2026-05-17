@@ -26,10 +26,10 @@ data:
     description: "PR description"
   commits:
     type: string
-    from: pr_context.commits
+    from: pr.commits
 ---
-PR: {{ pr_title }}
-{{ pr_description }}
+PR: {{ pr.title }}
+{{ pr.description }}
 
 This is an **introspection task** — do NOT review the PR.
 

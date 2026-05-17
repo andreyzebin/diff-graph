@@ -19,19 +19,19 @@ data:
     description: "PR description"
   commits:
     type: string
-    from: pr_context.commits
+    from: pr.commits
   jira_tickets:
     type: string
-    from: pr_context.jira_tickets
+    from: pr.jira_tickets
 ---
-PR: {{ pr_title }}
-{{ pr_description }}
+PR: {{ pr.title }}
+{{ pr.description }}
 
 Commits *(oldest → newest)*:
 
-{{ commits }}
+{{ pr.commits }}
 
-Linked Jira ticket(s): {{ jira_tickets }}
+Linked Jira ticket(s): {{ pr.jira_tickets }}
 
 Review this PR end-to-end.
 

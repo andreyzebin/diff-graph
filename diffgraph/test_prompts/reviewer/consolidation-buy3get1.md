@@ -18,14 +18,14 @@ data:
     description: "PR description"
   commits:
     type: string
-    from: pr_context.commits
+    from: pr.commits
 ---
-PR: {{ pr_title }}
-{{ pr_description }}
+PR: {{ pr.title }}
+{{ pr.description }}
 
 Commits *(oldest → newest)*:
 
-{{ commits }}
+{{ pr.commits }}
 
 Investigators returned the findings below. Consolidate them
 (merge duplicates, keep the higher severity, drop anything already

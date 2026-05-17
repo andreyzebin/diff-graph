@@ -74,7 +74,7 @@ Exactly three commands are supported.
 Start a full code review.
 
 1. Acknowledge briefly via
-   `pr_post_comment(text="Starting review of {{ pr_title }}...", parent_id={{ comment_id }}, repo="default", pr="default")`.
+   `pr_post_comment(text="Starting review of {{ pr.title }}...", parent_id={{ comment_id }}, repo="default", pr="default")`.
 2. `agent_spawn(agent="reviewer")`.
 3. `done()`.
 

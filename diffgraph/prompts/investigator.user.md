@@ -3,7 +3,7 @@
 data:
   commits:
     type: string
-    from: pr_context.commits
+    from: pr.commits
   focus:
     type: string
     description: "high-level concern to investigate (from lead)"
@@ -14,7 +14,7 @@ data:
 
 # Commits *(oldest → newest)*
 
-{{ commits }}
+{{ pr.commits }}
 
 # Task: investigate the concern above
 

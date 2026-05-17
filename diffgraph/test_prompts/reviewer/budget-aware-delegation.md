@@ -57,19 +57,19 @@ data:
     description: "PR description"
   commits:
     type: string
-    from: pr_context.commits
+    from: pr.commits
   jira_tickets:
     type: string
     description: "Jira ticket reference(s) this PR is associated with"
 ---
-PR: {{ pr_title }}
-{{ pr_description }}
+PR: {{ pr.title }}
+{{ pr.description }}
 
 Commits *(oldest → newest)*:
 
-{{ commits }}
+{{ pr.commits }}
 
-This PR is associated with these Jira ticket(s): {{ jira_tickets }}
+This PR is associated with these Jira ticket(s): {{ pr.jira_tickets }}
 
 **Every reflect call returns your run state.** Each `reflect(...)`
 tool-result carries the current snapshot: time, your own context
