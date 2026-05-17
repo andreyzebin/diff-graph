@@ -4517,20 +4517,43 @@ already answered) so the agent has an honest out for small things.
   clear identity to play, which prompt-following models tend to
   honor.
 
-**If this STILL fails (deepseek or another model insists on
-direct reads):** escalate to tool-level enforcement —
-- TODO §13.10d candidate: new frontmatter field `tools_remove:
-  [diff_read_file, diff_search, diff_outline]` for user-layer
-  overrides. Validator allows tools_add today; tools_remove is
-  symmetric and small.
-- Combined "prompt + physical removal" guarantees the test
-  measures what we think it measures, regardless of model
-  agreeableness.
+**Outcome (REV-U-008 plan 289):** positive framing worked. Trace:
+4 parallel `agent_spawn` calls at step 7 with focuses formulated
+from prior diff inspection (ownership / tax / concurrency /
+partial consumption), semantic mocks matched all 4 and returned
+real investigation summaries, reviewer synthesized into a coherent
+text_answer.
+
+**Important read of the trace (2026-05-17 clarification):** the
+reviewer does direct `diff_read_file` / `diff_search` calls in
+steps 1/3/4 BEFORE delegating. That's NOT a delegation failure —
+it's the orientation phase the reviewer needs to formulate
+*specific* investigator focuses. A two-phase reviewer pattern by
+design:
+
+  1. **Orient** — direct reads of in-diff files + key surrounding
+     context (Order.java to understand the data model, PricingService
+     to see established patterns). Output: a concrete list of
+     concerns with file/line specificity.
+  2. **Delegate** — `agent_spawn(investigator, focus="<specific
+     question grounded in phase-1 understanding>")` per concern.
+     Investigators return real depth; reviewer synthesizes.
+
+A reviewer that skipped Phase 1 would spawn with vague focuses
+("investigate ownership issues in this PR") and get back generic
+investigations — quality of focus = quality of investigation =
+quality of synthesis.
+
+**What this means for the §13.10d "fallback" idea:** scrapped.
+The proposed `tools_remove: [diff_read_file, ...]` would have
+stripped Phase 1 and degraded delegation quality. The depth-as-
+upgrade framing is the right level of intervention; physical
+tool removal is over-correction.
 
 Scope still: ONLY the test prompt
 `diffgraph/test_prompts/reviewer/budget-aware-delegation.md`.
 Production reviewer stays minimal until the test shape proves
-itself.
+itself across providers.
 
 ---
 
