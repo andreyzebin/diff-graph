@@ -251,6 +251,35 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         """Compute default ref dynamically (after lazy init may have set base/source)."""
         return "base..source" if (ctx.base_ref and ctx.source_ref) else "source"
 
+    # ── Test-only abstract tool: do_task ──────────────────────────────────
+    # Deterministic doubler used by the SKILL-001 bench scenario (boss +
+    # worker abstract delegation test). Real production agents never
+    # have this in their tool surface; it's registered in the global
+    # diffgraph tool catalogue so test prompts can reference it via
+    # `tools: [do_task]`. No domain side-effects; pure function so the
+    # judge can verify correctness deterministically.
+    @registry.register(
+        name="do_task",
+        description=(
+            "Compute the result of doubling an integer input. "
+            "Returns the doubled value as a string. Deterministic, no "
+            "side effects — used by abstract delegation tests where the "
+            "actual computation matters less than which agent performs it."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "input": {
+                    "type": "integer",
+                    "description": "The integer to double.",
+                },
+            },
+            "required": ["input"],
+        },
+    )
+    def do_task(input: int = 0) -> str:
+        return str(int(input) * 2)
+
     @registry.register(
         name="diff_list_files",
         description=(

@@ -195,10 +195,10 @@ def run_agent(
     # Tool registry — use provided or empty
     registry = tool_registry or ToolRegistry()
 
-    # Resolve from:tool.field providers and render the prompt
-    # against the resulting data (Jinja, see resolve_agent_data).
-    from orchestra.agent import resolve_agent_data
-    data = resolve_agent_data(config, data, registry)
+    # Templates pull lazy data via the `{{ pr.* }}` proxy on
+    # RunContext.registry (see orchestra/runcontext.py
+    # _HiddenToolProxy). No pre-resolution step needed.
+    data = dict(data)
 
     # Override LLM-level overrides for all agents (root + children).
     # tool_choice / stream / extra_body come from the provider profile, so

@@ -36,7 +36,10 @@ class UnitFixture:
     fixture_path: Path
     fixture_id: str
     agent: str
-    repo_source: Path
+    # None for abstract / PR-free scenarios (no `repo:` block in
+    # fixture yaml). Runner skips clone + fake_bitbucket setup
+    # entirely in that case.
+    repo_source: Optional[Path]
     base_branch: str
     source_branch: str
     agent_data: dict[str, str] = field(default_factory=dict)
@@ -117,20 +120,26 @@ def _resolve_prompt_path(spec: str, fixture_dir: Path) -> Path:
 
 def load_fixture(fixture_path: str | Path) -> UnitFixture:
     """Parse a fixture yaml. The yaml may live anywhere — referenced
-    repo path is resolved as-is (absolute) from the repo.source field."""
+    repo path is resolved as-is (absolute) from the repo.source field.
+
+    `repo:` is OPTIONAL — fixtures without a `repo:` block run in
+    PR-free mode (no clone, no fake_bitbucket setup). Used by
+    abstract / skill-only scenarios whose agents don't need diff_*
+    or PR-context tools. Templates that reference `{{ pr.* }}` in
+    a PR-free scenario will get empty strings (the `pr` tool fails
+    gracefully via _ensure → no-op when ctx.repo_path is empty)."""
     p = Path(fixture_path).expanduser().resolve()
     if not p.is_file():
         raise FileNotFoundError(f"fixture yaml not found: {p}")
     raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     repo_cfg = raw.get("repo") or {}
     repo_source = repo_cfg.get("source")
-    if not repo_source:
-        raise ValueError(f"{p}: missing repo.source")
-    repo_source_path = Path(str(repo_source)).expanduser().resolve()
-    if not (repo_source_path / ".git").exists():
-        raise FileNotFoundError(
-            f"{p}: repo.source {repo_source_path} is not a git checkout"
-        )
+    if repo_source:
+        repo_source_path = Path(str(repo_source)).expanduser().resolve()
+        if not (repo_source_path / ".git").exists():
+            raise FileNotFoundError(
+                f"{p}: repo.source {repo_source_path} is not a git checkout"
+            )
     # user_message_from is resolved against one of two roots:
     #   - relative path (default): relative to the fixture yaml's
     #     directory. Used for paths inside bench (e.g. ../mocks/x.yaml).
@@ -175,7 +184,7 @@ def load_fixture(fixture_path: str | Path) -> UnitFixture:
         fixture_path=p,
         fixture_id=str(raw.get("id") or p.stem),
         agent=str(raw.get("agent") or "investigator"),
-        repo_source=repo_source_path,
+        repo_source=repo_source_path if repo_source else None,
         base_branch=str(repo_cfg.get("base_branch") or "master"),
         source_branch=str(repo_cfg.get("source_branch") or ""),
         agent_data=dict(raw.get("agent_data") or {}),
@@ -301,8 +310,12 @@ def run_unit_fixture(
     QA dashboard surfaces unit scenarios alongside integration ones.
     """
     fixture = load_fixture(fixture_path)
-    tmp_repo = _clone_local(fixture)
-    base_sha, source_sha = _checkout_refs(tmp_repo, fixture)
+    tmp_repo: Optional[Path] = None
+    base_sha: str = ""
+    source_sha: str = ""
+    if fixture.repo_source is not None:
+        tmp_repo = _clone_local(fixture)
+        base_sha, source_sha = _checkout_refs(tmp_repo, fixture)
 
     # Per-attempt trace layout (TODO §5e.10a). When attempt_dir is set,
     # diff-graph's cli.py writes its OTel/SQLite traces under
@@ -335,15 +348,21 @@ def run_unit_fixture(
             str(diff_repo / ".venv" / "bin" / "python"),
             str(diff_repo / "cli.py"), "run",
             f"--agent={fixture.agent}",
-            "--repo", str(tmp_repo),
-            "--base", base_sha,
-            "--source", source_sha,
             "--output", out_path,
         ]
+        if tmp_repo is not None:
+            cmd.extend([
+                "--repo", str(tmp_repo),
+                "--base", base_sha,
+                "--source", source_sha,
+            ])
         if provider:
             cmd.extend(["--provider", provider])
         if fixture.user_message_from:
             cmd.extend(["--user-message-from", fixture.user_message_from])
+        prompt_resource = fixture.raw.get("prompt_resource")
+        if prompt_resource:
+            cmd.extend(["--prompts", str(prompt_resource)])
         if fixture.mocks:
             # cli.py --mocks=<path> ⇒ orchestra.ToolMocks intercepts the
             # named tool calls (e.g. agent_spawn → canned reviewer
@@ -366,28 +385,39 @@ def run_unit_fixture(
                "DIFFGRAPH_SCENARIO_ID": fixture.fixture_id,
                "DIFFGRAPH_SCENARIO_TAGS": ",".join(all_tags)}
 
-        # Fake-PR plumbing — runs for EVERY fixture, including those
-        # without a `pr_state` block. Why: under cli.py's
-        # `_run_with_dispatcher`, the first domain tool call triggers
-        # `_lazy_init` ⇒ `fetch_pr(pr_url)` ⇒ `parse_pr_url(pr_url)`.
-        # With an empty pr_url that raises ValueError, the agent
-        # runner wraps it as `"error: …"`, and every `diff_*` tool
-        # call returns that error. Net effect: investigators on
-        # fixtures without pr_state run blind. Always wiring up a
+        # Fake-PR plumbing — runs for fixtures with a `repo:` block.
+        # Why: under cli.py's `_run_with_dispatcher`, the first domain
+        # tool call triggers `_lazy_init` ⇒ `fetch_pr(pr_url)` ⇒
+        # `parse_pr_url(pr_url)`. With an empty pr_url that raises
+        # ValueError, the agent runner wraps it as `"error: …"`, and
+        # every `diff_*` tool call returns that error. Wiring up a
         # fake PR (empty comments + minimal metadata) lets the
         # bitbucket_fake provider answer `get_pr_info` / `fetch_pr`
-        # /etc. with the local repo, so tools work the same way they
-        # do for reviewer fixtures. `_build_fake_pr_payload` is
-        # already defensive about missing pr_state — `pr.get(...) or
-        # default` everywhere.
-        payload = _build_fake_pr_payload(fixture, tmp_repo, base_sha, source_sha)
-        fpfd, fake_pr_path = tempfile.mkstemp(suffix=".json", prefix="unit-fake-pr-")
-        os.close(fpfd)
-        Path(fake_pr_path).write_text(json.dumps(payload), encoding="utf-8")
-        snk_fd, sink_path = tempfile.mkstemp(suffix=".jsonl", prefix="unit-sink-")
-        os.close(snk_fd)
-        env["DIFFGRAPH_FAKE_PR_FILE"] = fake_pr_path
-        env["DIFFGRAPH_FAKE_PR_SINK"] = sink_path
+        # /etc. with the local repo, so PR-aware tools work the same
+        # way they do for reviewer fixtures.
+        #
+        # PR-free scenarios (no `repo:` block) skip this entirely —
+        # cli.py runs without --pr-url, the agent's prompt is expected
+        # to not reference any `{{ pr.* }}` or call any `diff_*`
+        # tools (template proxies + tool registry handle absence
+        # gracefully — see orchestra/runcontext.py _HiddenToolProxy).
+        if tmp_repo is not None:
+            payload = _build_fake_pr_payload(
+                fixture, tmp_repo, base_sha, source_sha,
+            )
+            fpfd, fake_pr_path = tempfile.mkstemp(
+                suffix=".json", prefix="unit-fake-pr-",
+            )
+            os.close(fpfd)
+            Path(fake_pr_path).write_text(
+                json.dumps(payload), encoding="utf-8",
+            )
+            snk_fd, sink_path = tempfile.mkstemp(
+                suffix=".jsonl", prefix="unit-sink-",
+            )
+            os.close(snk_fd)
+            env["DIFFGRAPH_FAKE_PR_FILE"] = fake_pr_path
+            env["DIFFGRAPH_FAKE_PR_SINK"] = sink_path
         # Jira is OFF by default for unit scenarios. jira_read_ticket is in
         # the reviewer / investigator BASE toolset, but a scenario
         # that isn't about Jira must never make a real tracker call —
@@ -415,17 +445,21 @@ def run_unit_fixture(
         # Pass --pr-url so cli.py routes via _run_with_dispatcher
         # (the path that calls get_pr_info / get_pr_comments /
         # get_comment_thread). bitbucket_fake intercepts them.
-        cmd.extend(["--pr-url", payload["pr_url"]])
-        # Trigger plumbs into --message / --comment-id — only relevant
-        # when the fixture explicitly carries one (reviewer/dispatcher).
-        if fixture.pr_state:
-            trig = fixture.trigger or {}
-            text = trig.get("text")
-            if text:
-                cmd.extend(["--message", str(text)])
-            cid = trig.get("comment_id")
-            if cid is not None:
-                cmd.extend(["--comment-id", str(cid)])
+        # PR-free scenarios skip — cli.py runs without --pr-url
+        # and the agent operates on what's explicitly passed.
+        if tmp_repo is not None:
+            cmd.extend(["--pr-url", payload["pr_url"]])
+            # Trigger plumbs into --message / --comment-id — only
+            # relevant when the fixture explicitly carries one
+            # (reviewer/dispatcher).
+            if fixture.pr_state:
+                trig = fixture.trigger or {}
+                text = trig.get("text")
+                if text:
+                    cmd.extend(["--message", str(text)])
+                cid = trig.get("comment_id")
+                if cid is not None:
+                    cmd.extend(["--comment-id", str(cid)])
 
         proc = subprocess.run(
             cmd, capture_output=True, text=True, env=env,

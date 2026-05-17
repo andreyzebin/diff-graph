@@ -1,0 +1,42 @@
+id: SKILL-001-prefer-delegation-with
+agent: boss
+tags: [tier:unit, skill:prefer_delegation, delegation, abstract]
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmarks.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# Abstract delegation test — half of an A/B pair with SKILL-001-without.
+#
+# Boss receives a trivial numeric task and is expected to DELEGATE
+# to a worker via agent_spawn (because the prefer_delegation skill
+# is mounted). The do_task tool is deterministic (doubles the
+# input) so the judge can verify correctness.
+#
+# Pass criteria — assert via judge:
+#   - intended_text == "42" (the doubled value of 21).
+#   - boss agent invocations contain agent_spawn (delegated).
+#   - boss invocations do NOT contain do_task (worker called it).
+#   - worker invocations contain do_task.
+#
+# Pair: SKILL-001-prefer-delegation-without.yaml — same task,
+# no skill. Expected: boss calls do_task itself, no agent_spawn.
+
+# No `repo:` block — PR-free scenario. bench/cli skip fake_bitbucket
+# setup since boss has no diff_* or PR-aware tools.
+
+prompt_resource: diffgraph:diffgraph/test_prompts/skills
+
+user_message_from: diffgraph:diffgraph/test_prompts/skills/boss-with-skill.user.md
+
+agent_data:
+  task_input: "21"
+
+expected_output:
+  assert_via: [intended_text]
+  expected_answer: "42"
+  metadata:
+    note: "A/B partner — invocation-pattern assertion lives in a follow-up judge channel (intended_tool_calls_by_agent)."

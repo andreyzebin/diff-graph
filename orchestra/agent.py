@@ -75,53 +75,14 @@ class AgentResult:
 
 
 def resolve_agent_data(config: AgentConfig, data: dict, registry: ToolRegistry) -> dict:
-    """
-    Resolve @data fields for an agent config. Single path for all agents.
+    """No-op back-compat shim. The legacy `from:tool.field` resolver
+    + pre-render path has been removed — templates now access
+    hidden data-provider tools directly via the lazy proxies
+    exposed by `RunContext.to_kwargs()` (`{{ pr.title }}` etc.).
 
-    1. Start with provided data
-    2. Auto-resolve from:tool.field for missing fields (cached data providers)
-    3. Interpolate resolved data into system prompt
-
-    Returns the resolved data dict. Mutates config.system_prompt in place.
-    """
-    resolved = dict(data)
-    schema = getattr(config, "input_schema", None) or {}
-    for field_name, field_meta in schema.items():
-        if field_name in resolved and resolved[field_name] not in (
-            "(not available)", "(not yet loaded)", ""
-        ):
-            continue
-        from_tool = field_meta.get("from_tool")
-        from_field = field_meta.get("from_field")
-        if not from_tool or not from_field:
-            continue
-        if not registry.has(from_tool):
-            continue
-        try:
-            result = registry.call_data_provider(from_tool)
-            if isinstance(result, dict) and from_field in result:
-                resolved[field_name] = str(result[from_field])
-        except Exception as e:
-            log.warning("from: tool '%s' failed for field '%s': %s", from_tool, field_name, e)
-            resolved[field_name] = "(not available)"
-
-    if resolved:
-        # Pre-render BOTH system and user templates with the
-        # data this from:-resolver layer produced. After this the
-        # Agent only re-renders against ADDITIONAL data scope at
-        # message-build time; the from:-derived fields are
-        # already baked in. Always Jinja (see template_engine).
-        from .runcontext import RunContext
-        from .template_engine import render as _render
-        _ctx = RunContext(data=resolved)
-        if "{{" in config.system_prompt or "{%" in config.system_prompt:
-            config.system_prompt = _render(config.system_prompt, _ctx)
-        if config.user_prompt and (
-            "{{" in config.user_prompt or "{%" in config.user_prompt
-        ):
-            config.user_prompt = _render(config.user_prompt, _ctx)
-
-    return resolved
+    Returns the data dict unchanged so existing callsites keep
+    working during the cleanup window."""
+    return dict(data)
 
 
 class Agent:
@@ -1168,9 +1129,10 @@ class Agent:
         if focus_arg and "focus" not in resolved_data:
             resolved_data["focus"] = focus_arg
 
-        # Resolve from: providers and render prompt with the data
-        # they produced — see resolve_agent_data().
-        resolved_data = resolve_agent_data(agent_config, resolved_data, self.registry)
+        # Templates pull lazy data via the `{{ pr.* }}` proxy on
+        # RunContext.registry (see orchestra/runcontext.py
+        # _HiddenToolProxy). No pre-resolution step needed.
+        resolved_data = dict(resolved_data)
 
         # Pass handoff context if explicitly requested by LLM
         context: list[dict] = []

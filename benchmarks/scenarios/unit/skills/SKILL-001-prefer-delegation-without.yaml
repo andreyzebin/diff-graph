@@ -1,0 +1,33 @@
+id: SKILL-001-prefer-delegation-without
+agent: boss
+tags: [tier:unit, skill:prefer_delegation, baseline, abstract]
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmarks.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# A/B baseline — same task as SKILL-001-with, no skill mounted.
+# Boss is expected to call do_task itself and report.
+#
+# Pass criteria:
+#   - intended_text == "42".
+#   - boss invocations contain do_task.
+#   - boss invocations do NOT contain agent_spawn.
+#
+# Together with the WITH variant this proves the prefer_delegation
+# skill actually changes behavior — without it boss does the work
+# himself; with it boss routes to a worker.
+
+prompt_resource: diffgraph:diffgraph/test_prompts/skills
+
+user_message_from: diffgraph:diffgraph/test_prompts/skills/boss.user.md
+
+agent_data:
+  task_input: "21"
+
+expected_output:
+  assert_via: [intended_text]
+  expected_answer: "42"
