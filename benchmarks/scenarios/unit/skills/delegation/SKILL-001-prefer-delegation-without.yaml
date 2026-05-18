@@ -21,9 +21,9 @@ bench_cmd: >
 # skill actually changes behavior — without it boss does the work
 # himself; with it boss routes to a worker.
 
-prompt_resource: diffgraph:diffgraph/test_prompts/skills
+prompt_resource: diffgraph:diffgraph/test_prompts/skills/delegation
 
-user_message_from: diffgraph:diffgraph/test_prompts/skills/boss.user.md
+user_message_from: diffgraph:diffgraph/test_prompts/skills/delegation/boss.user.md
 
 agent_data:
   task_input: "21"

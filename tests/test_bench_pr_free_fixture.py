@@ -39,7 +39,7 @@ class TestPRFreeFixtures:
         fixture_path = _write(tmp_path, """
             id: TEST-001-skill
             agent: boss
-            user_message_from: diffgraph:diffgraph/test_prompts/skills/boss.user.md
+            user_message_from: diffgraph:diffgraph/test_prompts/skills/delegation/boss.user.md
             agent_data:
               task_input: "21"
         """)
@@ -51,7 +51,7 @@ class TestPRFreeFixtures:
     def test_shipped_skill_scenarios_load(self):
         """Both SKILL-001 variants ship in the repo — they must
         load without a repo block."""
-        root = Path(__file__).resolve().parent.parent / "benchmarks" / "scenarios" / "unit" / "skills"
+        root = Path(__file__).resolve().parent.parent / "benchmarks" / "scenarios" / "unit" / "skills" / "delegation"
         for name in (
             "SKILL-001-prefer-delegation-with.yaml",
             "SKILL-001-prefer-delegation-without.yaml",

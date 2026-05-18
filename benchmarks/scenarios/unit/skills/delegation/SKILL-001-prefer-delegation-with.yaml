@@ -28,9 +28,9 @@ bench_cmd: >
 # No `repo:` block — PR-free scenario. bench/cli skip fake_bitbucket
 # setup since boss has no diff_* or PR-aware tools.
 
-prompt_resource: diffgraph:diffgraph/test_prompts/skills
+prompt_resource: diffgraph:diffgraph/test_prompts/skills/delegation
 
-user_message_from: diffgraph:diffgraph/test_prompts/skills/boss-with-skill.user.md
+user_message_from: diffgraph:diffgraph/test_prompts/skills/delegation/boss-with-skill.user.md
 
 agent_data:
   task_input: "21"
