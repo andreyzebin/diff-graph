@@ -319,6 +319,110 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             return "lower"
         return "equal"
 
+    # ── Test-only abstract tools: detective trio ──────────────────────────
+    # whereabouts / evidence / motive — three orthogonal axes over a fixed
+    # 4-suspect cast (alice, bob, carol, dave). Each tool returns a short
+    # deterministic string per suspect, hardcoded to map onto one and only
+    # one combinatorial answer:
+    #
+    #   only `bob` is simultaneously (a) without a verifiable alibi,
+    #   (b) tied to physical evidence, and (c) carrying a motive.
+    #
+    # Used by SKILL-003 (detective) to stress-test the reflect skill:
+    # the worker must call all 12 (4 suspects × 3 axes) tools and
+    # accumulate the cross-axis state to deduce the murderer. Without
+    # reflect's externalised state-banking, the chain length puts early
+    # responses out of reach of working memory by the deduction step.
+    _DETECTIVE_HIDDEN_MURDERER = "bob"
+    _WHEREABOUTS = {
+        "alice": "Library — confirmed by the librarian (signed in at 19:42, signed out at 21:15).",
+        "bob":   "Home alone, no one to corroborate.",
+        "carol": "At a party — at least eight other guests place her there the entire evening.",
+        "dave":  "Hospital appointment — clinic records show check-in 19:30 and discharge 22:00.",
+    }
+    _EVIDENCE = {
+        "alice": "No physical evidence places her at the scene.",
+        "bob":   "A footprint at the scene matches his shoe size and tread pattern.",
+        "carol": "No physical evidence places her at the scene.",
+        "dave":  "No physical evidence places him at the scene.",
+    }
+    _MOTIVE = {
+        "alice": "No known motive — relationship with the victim was neutral.",
+        "bob":   "Argued publicly with the victim the day before the crime over an unpaid debt.",
+        "carol": "Stands to inherit if the victim dies, but the will is several years old and she's not in financial need.",
+        "dave":  "No known motive — barely knew the victim.",
+    }
+
+    def _normalise_name(raw: str) -> str:
+        return str(raw or "").strip().lower()
+
+    @registry.register(
+        name="whereabouts",
+        description=(
+            "Look up where the named suspect claims to have been at "
+            "the time of the crime, and whether the alibi has been "
+            "independently corroborated. Deterministic per suspect; "
+            "case-insensitive. Valid names: alice, bob, carol, dave."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Suspect name (alice / bob / carol / dave).",
+                },
+            },
+            "required": ["name"],
+        },
+    )
+    def whereabouts(name: str = "") -> str:
+        return _WHEREABOUTS.get(_normalise_name(name),
+                                "Unknown suspect.")
+
+    @registry.register(
+        name="evidence",
+        description=(
+            "Look up the physical evidence (or lack thereof) "
+            "connecting the named suspect to the crime scene. "
+            "Deterministic per suspect; case-insensitive."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Suspect name (alice / bob / carol / dave).",
+                },
+            },
+            "required": ["name"],
+        },
+    )
+    def evidence(name: str = "") -> str:
+        return _EVIDENCE.get(_normalise_name(name),
+                             "Unknown suspect.")
+
+    @registry.register(
+        name="motive",
+        description=(
+            "Look up the known motive (or lack thereof) the named "
+            "suspect would have to harm the victim. Deterministic "
+            "per suspect; case-insensitive."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Suspect name (alice / bob / carol / dave).",
+                },
+            },
+            "required": ["name"],
+        },
+    )
+    def motive(name: str = "") -> str:
+        return _MOTIVE.get(_normalise_name(name),
+                           "Unknown suspect.")
+
     @registry.register(
         name="diff_list_files",
         description=(

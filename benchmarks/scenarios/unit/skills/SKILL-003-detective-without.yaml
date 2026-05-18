@@ -1,0 +1,81 @@
+id: SKILL-003-detective-without
+agent: detective
+tags: [tier:unit, skill:reflect, baseline, abstract, detective, multi-fact-deduction]
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmarks.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# A/B baseline — same task as SKILL-003-with, no skill mounted.
+# Detective has bare whereabouts/evidence/motive/text_answer/done
+# tools, no reflect, and must accumulate the 12-fact picture in
+# working memory.
+#
+# This is the proof-of-value sibling to SKILL-002. SKILL-002
+# (progressive search) showed the reflect-skill mechanism works
+# but didn't stress-test value — binary search is short enough
+# that working memory holds. SKILL-003 doubles down: 12 sequential
+# tool calls with 1-2 sentence responses each, deduction step at
+# the end, no shortcut path. Expectation: WITHOUT-variant agents
+# may misidentify the murderer (confuse who has the alibi vs who
+# has the motive) as the chain length crowds early responses out
+# of context.
+#
+# Pass criteria:
+#   - text_answer == "bob" (the only suspect satisfying
+#     no-alibi + evidence + motive per the hardcoded tool data).
+#   - Detective invocations contain whereabouts, evidence, motive,
+#     text_answer (the baseline forces full investigation).
+#   - Detective invocations do NOT contain reflect (no skill means
+#     reflect tool isn't even in its registry).
+
+prompt_resource: diffgraph:diffgraph/test_prompts/skills
+
+user_message_from: diffgraph:diffgraph/test_prompts/skills/detective.user.md
+
+agent_data:
+  briefing: |
+    The victim, an antiques dealer, was found stabbed in the back
+    office of the shop yesterday evening between 19:30 and 21:30.
+    Four people had keys to the building: alice (the dealer's
+    business partner), bob (a former associate with whom the dealer
+    had been in a long-running dispute), carol (a niece who visits
+    the shop occasionally), and dave (a friend who sometimes helped
+    with appraisals). One of these four killed the victim during
+    that two-hour window. Find out who.
+
+expected_output:
+  assert_via: [intended_text]
+  concern_focuses:
+    - id: correct-murderer
+      rationale: |
+        The detective's text_answer (intended_text) must contain
+        the suspect name "bob" — the only one satisfying the
+        three-condition rule (no corroborated alibi + physical
+        evidence at scene + known motive). Any other name (alice,
+        carol, dave) is a wrong accusation; an empty answer means
+        the detective failed to complete the investigation.
+  # Structural assertion — the mirror image of SKILL-003-with.
+  # Without the reflect skill, detective is free to probe any
+  # subset of the axis tools (hypothesis-driven, not exhaustive),
+  # but must reach a text_answer and must NOT call reflect (the
+  # tool isn't in its registry). Whether it gets bob right is the
+  # semantic-judge axis above; THIS assertion only enforces the
+  # absence of reflect — proof that the WITHOUT-variant agent
+  # actually ran without the skill.
+  assert_invocations:
+    detective:
+      must_call: [text_answer]
+      must_not_call: [reflect]
+  thresholds:
+    min_score: 0.7
+
+metadata:
+  difficulty: medium
+  language: any
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [detective, multi_fact_deduction, no_reflect]
