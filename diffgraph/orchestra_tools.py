@@ -279,6 +279,46 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     def do_task(input: int = 0) -> str:
         return str(int(input) * 2)
 
+    # ── Test-only abstract tool: probe ────────────────────────────────────
+    # Hidden-number search oracle for SKILL-002 (reflect-skill A/B). The
+    # target is hardcoded so the test is fully deterministic and judges
+    # can assert the final answer exactly. Optimal binary search finds
+    # 73 in ≤ 7 probes; the scenario gives a budget of 10. Pure function,
+    # no domain side-effects.
+    _HIDDEN_TARGET = 73
+
+    @registry.register(
+        name="probe",
+        description=(
+            "Compare your guess against a hidden integer target in "
+            "the inclusive range [1, 100]. Returns one of three "
+            "verdicts:\n"
+            "  - \"higher\" — the target is GREATER than your guess\n"
+            "  - \"lower\"  — the target is LESS than your guess\n"
+            "  - \"equal\"  — your guess IS the target\n"
+            "Deterministic, no side effects — used by progressive-"
+            "search tests where the agent must converge by binary "
+            "search and report the final value via text_answer."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "guess": {
+                    "type": "integer",
+                    "description": "Your candidate value (1..100).",
+                },
+            },
+            "required": ["guess"],
+        },
+    )
+    def probe(guess: int = 0) -> str:
+        g = int(guess)
+        if g < _HIDDEN_TARGET:
+            return "higher"
+        if g > _HIDDEN_TARGET:
+            return "lower"
+        return "equal"
+
     @registry.register(
         name="diff_list_files",
         description=(

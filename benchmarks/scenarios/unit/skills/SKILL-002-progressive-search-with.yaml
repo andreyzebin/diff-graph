@@ -1,0 +1,65 @@
+id: SKILL-002-progressive-search-with
+agent: searcher
+tags: [tier:unit, skill:reflect, delegation, abstract, progressive-search]
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmarks.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# Abstract reflect-skill test — half of an A/B pair with SKILL-002-without.
+#
+# Searcher receives a hidden-number search task: probe in [1,100]
+# until it identifies the target (hardcoded to 73 in the probe
+# tool). With the reflect skill mounted, the searcher gains the
+# `reflect` tool plus guidance to bank progressive state — range
+# bounds, probes tried, question for the next midpoint, resolution
+# of the previous one. The expectation is that the model uses
+# reflect between probes rather than purely linearly probing.
+#
+# Pass criteria — assert via judge + structural:
+#   - text_answer == "73" (the doubled value of the probe target).
+#   - Searcher invocations contain probe (the search itself).
+#   - Searcher invocations contain reflect (the whole point of
+#     this fixture — at least one reflect call to bank state).
+#
+# Pair: SKILL-002-progressive-search-without.yaml — same task,
+# no skill. Expected: searcher calls probe alone, no reflect.
+
+prompt_resource: diffgraph:diffgraph/test_prompts/skills
+
+user_message_from: diffgraph:diffgraph/test_prompts/skills/searcher-with-skill.user.md
+
+agent_data: {}
+
+expected_output:
+  assert_via: [intended_text]
+  concern_focuses:
+    - id: found-target
+      rationale: |
+        The searcher's text_answer (intended_text) must contain
+        the integer "73" — the hardcoded hidden target of the
+        probe oracle. With the reflect skill mounted, the searcher
+        is expected to converge via binary search while banking
+        state through reflect; whatever the path, the final
+        answer reported has to be 73.
+  # Structural assertion (deterministic, complements the LLM judge).
+  # Forces the A/B distinction the semantic answer-check can't see
+  # on its own: did the searcher ACTUALLY use reflect to track its
+  # state, or just answer "73" using working memory alone?
+  assert_invocations:
+    searcher:
+      must_call: [probe, reflect]
+  thresholds:
+    min_score: 0.7
+  metadata:
+    note: "A/B partner — call-pattern assertion (did searcher actually reflect?) is the structural check; the semantic check verifies convergence."
+
+metadata:
+  difficulty: easy
+  language: any
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [searcher, probe, progressive_search, reflect]

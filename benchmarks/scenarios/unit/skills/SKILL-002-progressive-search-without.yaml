@@ -1,0 +1,63 @@
+id: SKILL-002-progressive-search-without
+agent: searcher
+tags: [tier:unit, skill:reflect, baseline, abstract, progressive-search]
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmarks.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# A/B baseline — same task as SKILL-002-with, no skill mounted.
+# Searcher has bare probe/text_answer/done tools, no reflect, and
+# must converge by holding bounds in working memory.
+#
+# Pass criteria:
+#   - text_answer == "73" (the hidden target, see probe tool impl).
+#   - Searcher invocations contain probe (multiple times — binary
+#     search needs ≥ ~7 probes; we don't enforce the count here,
+#     only that probing happened at all).
+#   - Searcher invocations do NOT contain reflect (no skill means
+#     reflect tool isn't even in its registry).
+#
+# Together with the WITH variant this proves the reflect skill
+# actually changes the call trace — without it the searcher works
+# linearly, with it the agent banks state between probes.
+
+prompt_resource: diffgraph:diffgraph/test_prompts/skills
+
+user_message_from: diffgraph:diffgraph/test_prompts/skills/searcher.user.md
+
+agent_data: {}
+
+expected_output:
+  assert_via: [intended_text]
+  concern_focuses:
+    - id: found-target
+      rationale: |
+        The searcher's text_answer (intended_text) must contain
+        the integer "73" — the hardcoded hidden target of the
+        probe oracle. The baseline (no skill) variant expects the
+        searcher to converge by binary search using only working
+        memory; the final answer still has to be 73 regardless of
+        whether reflect was available.
+  # Structural assertion — the mirror image of SKILL-002-with.
+  # Without the reflect skill, the searcher must call probe (the
+  # whole point) and must NOT call reflect (the tool isn't even
+  # in its registry). If reflect appears here, either the skill
+  # is leaking somehow or reflect crept back into the base tools
+  # list.
+  assert_invocations:
+    searcher:
+      must_call: [probe]
+      must_not_call: [reflect]
+  thresholds:
+    min_score: 0.7
+
+metadata:
+  difficulty: easy
+  language: any
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [searcher, probe, progressive_search, no_reflect]
