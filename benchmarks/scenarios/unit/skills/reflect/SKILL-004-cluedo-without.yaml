@@ -28,9 +28,10 @@ bench_cmd: >
 # as the suggestion chain accumulates.
 #
 # Pass criteria:
-#   - answer matches the hardcoded envelope "mustard, knife,
-#     library" (the only three not in the agent's hand or any
-#     opponent's hand).
+#   - answer matches the hardcoded envelope "plum, rope,
+#     ballroom" (the only three not in the agent's hand or any
+#     opponent's hand — the iconic Cluedo trio mustard/knife/
+#     library is opp_1's hand, NOT the envelope).
 #   - Player invocations contain suggest (the whole point) and
 #     answer (the final accusation).
 #   - Player invocations do NOT contain reflect (no skill means
@@ -48,13 +49,14 @@ expected_output:
     - id: correct-envelope
       rationale: |
         The player's answer (intended_text) must contain
-        ALL THREE envelope cards — "mustard" (suspect), "knife"
-        (weapon), "library" (room). All three together are
+        ALL THREE envelope cards — "plum" (suspect), "rope"
+        (weapon), "ballroom" (room). All three together are
         required for a correct accusation; any one missing or
-        substituted (scarlet for mustard, rope for knife, etc.)
-        is a wrong accusation. Order in the text doesn't matter,
-        but the three names do. An empty answer means the
-        deduction never converged.
+        substituted (e.g. the iconic Cluedo trio
+        mustard/knife/library — that's opp_1's hand here, NOT
+        the envelope) is a wrong accusation. Order in the text
+        doesn't matter, but the three names do. An empty answer
+        means the deduction never converged.
   # Structural assertion — the mirror image of SKILL-004-with.
   # Without the reflect skill, the player must still issue at
   # least one suggest() and reach a answer, but must NOT

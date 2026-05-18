@@ -14,9 +14,13 @@ bench_cmd: >
 # cards (adapted from the 6+6+9 setup in arXiv 2603.17169 where
 # multi-agent LLMs win only 4/18 simulated games).
 #
-# Player must identify the 3-card envelope (mustard, knife,
-# library) by issuing suggest() calls and reasoning about which
-# opponent revealed which card. With the reflect skill mounted,
+# Player must identify the 3-card envelope (plum, rope,
+# ballroom) by issuing suggest() calls and reasoning about which
+# opponent revealed which card. Note: the iconic Cluedo trio
+# (mustard, knife, library) is opp_1's hand here, NOT the
+# envelope — deliberately, to defeat the model's training prior
+# of guessing the iconic combo first and getting an instant
+# no_disproof. With the reflect skill mounted,
 # the player gains the `reflect` tool plus guidance to bank the
 # constraint state — eliminated cards per category, opponent
 # attribution, remaining candidate sets — across the multi-
@@ -27,8 +31,8 @@ bench_cmd: >
 # hold the whole constraint graph in working memory.
 #
 # Pass criteria — assert via judge + structural:
-#   - answer matches the hardcoded envelope "mustard, knife,
-#     library" (the only three not in the agent's hand or any
+#   - answer matches the hardcoded envelope "plum, rope,
+#     ballroom" (the only three not in the agent's hand or any
 #     opponent's hand).
 #   - Player invocations contain suggest (the search itself),
 #     reflect (the whole point of this fixture — at least one
@@ -53,11 +57,13 @@ expected_output:
     - id: correct-envelope
       rationale: |
         The player's answer (intended_text) must contain
-        ALL THREE envelope cards — "mustard" (suspect), "knife"
-        (weapon), "library" (room). All three together are
+        ALL THREE envelope cards — "plum" (suspect), "rope"
+        (weapon), "ballroom" (room). All three together are
         required for a correct accusation; any one missing or
-        substituted is a wrong accusation. With the reflect skill
-        mounted, the player is expected to bank constraints
+        substituted (e.g. the iconic Cluedo trio
+        mustard/knife/library — that's opp_1's hand here, NOT
+        the envelope) is a wrong accusation. With the reflect
+        skill mounted, the player is expected to bank constraints
         across the multi-suggestion chain and arrive at the
         correct unique envelope.
   # Structural assertion (deterministic, complements the LLM judge).
