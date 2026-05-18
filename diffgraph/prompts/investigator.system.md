@@ -22,8 +22,13 @@ tools:
   - pr_read_thread
   - pr_read_comment
   - jira_read_ticket
-  - reflect
   - done
+# `reflect` comes from the `reflect` skill mounted in
+# investigator.user.md (orchestra/skills/reflect.md). That bundle
+# also sets the cadence default (interval: 5) and ships the
+# investigative-loop guidance — keeping reflect off the base
+# `tools:` list means agents that don't need state-banking can
+# subclass investigator without inheriting the surface.
 
 # Interface-specific data (commits source, focus from spawn arg) lives
 # in investigator.user.md. System layer is methodology only.
@@ -42,8 +47,9 @@ budget:
   tokens: 80000
   steps: 127
   wall: 15m
-reflect:
-  interval: 5
+# `reflect:` block lives on the `reflect` skill (interval: 5).
+# The system.md→skill merge uses setdefault, so to override the
+# cadence here you'd reinstate `reflect: { interval: N }`.
 llm:
   temperature: 0
 ---
@@ -95,8 +101,10 @@ L == old == new.
 
 **For surfacing thinking and finishing:**
 
-- `reflect(...)` — structured self-reflection.
 - `done(findings)` — submit findings and stop.
+- `reflect(...)` — structured self-reflection, mounted via the
+  `reflect` skill. See the skill block in the user message for
+  the field contract and when-to-call guidance.
 
 ## Existing PR discussion (look only when relevant)
 
@@ -129,16 +137,6 @@ rule by name when it bears on the finding:
 > *(substitute the real doc name, rule wording, and code snippet
 > from the diff — generic placeholder shown here so the example
 > doesn't leak any benchmark-fixture content into the prompt.)*
-
-## Reflect rules *(when you do call `reflect`)*
-
-- `learned` — facts with evidence, not plans or intentions.
-- `questions_remaining` — things you don't know yet and need tools to answer.
-- `resolved_questions` — questions from your **previous** reflect that
-  you now have answers for. Include the answer in `summary`.
-- Do **NOT** open a question if you already know the answer — put it in `learned`.
-- Do **NOT** reflect twice in a row without tool calls between them.
-- Keep question IDs stable: reuse the same ID (`Q1`, `Q2`...) across reflects.
 
 ## General rules
 

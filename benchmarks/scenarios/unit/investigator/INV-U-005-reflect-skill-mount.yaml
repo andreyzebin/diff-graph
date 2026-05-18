@@ -1,0 +1,93 @@
+id: INV-U-005-reflect-skill-mount
+agent: investigator
+tags: [tier:unit, agent:investigator, isolation, skill:reflect, mount-verification]
+
+# Verifies the production investigator actually picks up the
+# `reflect` skill mounted in investigator.user.md.
+#
+# Until commit 7caf886-ish the investigator carried `reflect` in
+# its base `tools:` block and the system.md embedded the reflect-
+# rules section inline. The migration moves both to the `reflect`
+# skill — base tools no longer list reflect, system.md no longer
+# carries the reflect-rules section, and the user.md mounts
+# `skills: [reflect]` which brings the tool + the convergence-aid
+# contract + the cadence default (interval: 5).
+#
+# Other INV-U-* scenarios test investigation quality semantically
+# (does it find the right findings?) but don't structurally assert
+# the skill mount itself. This fixture exists to catch a regression
+# where the mount silently breaks — e.g. a future refactor that
+# drops the `skills:` line, renames the skill, or fails to merge
+# its tools — by failing the deterministic invocation check.
+#
+# Reuses the cancel-NPE setup from INV-U-001 (real multi-step
+# investigation that genuinely benefits from reflect's state
+# banking — agent reads diff, reads AGENTS.md, traces call paths,
+# evolves hypotheses about the root cause). The semantic axis is
+# left lenient here on purpose; the focus is the structural mount
+# proof, not re-grading what INV-U-001 already grades.
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmarks.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+repo:
+  source: /home/andrey/repos/code-review-examples/orderflow
+  base_branch: master
+  source_branch: hotfix/ORD-287-cancel-npe
+
+agent_data:
+  focus: |
+    OrderService.cancelOrder() was hitting a NullPointerException on
+    `order.getItems()`. The hotfix in this diff wraps that loop in
+    `if (order.getItems() != null)`. Investigate whether this is
+    the right place and shape of fix, and whether the underlying
+    cause is properly understood — or whether something more
+    fundamental about the Order entity is going wrong.
+
+expected_output:
+  assert_via: [intended_findings]
+
+  # Semantic floor — investigation should at minimum surface the
+  # AGENTS.md violation. Other concerns are bonus. This is the
+  # weakest of the four cancel-NPE expectations from INV-U-001;
+  # the point of THIS fixture is the mount proof below, not
+  # re-grading INV-U-001's full rubric.
+  concern_focuses:
+    - id: skill-mounted-investigator-still-investigates
+      rationale: |
+        Even with reflect routed through the skill layer, the
+        investigator must still produce SOME substantive finding
+        on this concern — typically referencing AGENTS.md's
+        @OneToMany convention, the upstream mapping, or "fix at
+        entity, not consumer". A pass here just confirms the
+        investigator's investigative output didn't regress when
+        reflect moved from base tools to the skill layer; the
+        rich rubric is INV-U-001's job.
+
+  # Structural assertion — THE point of this fixture. If the
+  # reflect skill is properly mounted on the investigator, then
+  # `reflect` MUST appear in the agent's invocations.json. If it
+  # doesn't, the skill mount silently broke (the schema would be
+  # absent → model can't call it).
+  #
+  # `diff_read_file` and `done` are also required as baseline
+  # sanity — investigator that doesn't read any file or never
+  # closes the loop is broken in a different way, not skill-
+  # related, but worth catching here too.
+  assert_invocations:
+    investigator:
+      must_call: [diff_read_file, reflect, done]
+
+  thresholds:
+    min_score: 0.5
+
+metadata:
+  difficulty: easy
+  language: java
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [investigator, reflect_skill_mount, regression_check]
