@@ -156,15 +156,29 @@ class Agent:
         # the flags-merge block below means the override block
         # sees the merged view (user prompt wins, but absent
         # keys fall back to the skill's defaults).
-        _skill_names = self._fm_meta.get("skills") or []
-        if _skill_names and not isinstance(_skill_names, list):
+        #
+        # Skill sources, in mount order (first wins on per-key
+        # setdefault merges via mount_skills):
+        #   1. System-level (`skills:` in system.md frontmatter,
+        #      surfaced as `config.skills`) — always-on skills the
+        #      agent needs regardless of which user prompt runs.
+        #   2. User-level (`skills:` in the user-message
+        #      frontmatter) — per-call additions. Same skill named
+        #      in both layers is deduped silently.
+        _system_skills = list(getattr(self.config, "skills", None) or [])
+        _user_skills = self._fm_meta.get("skills") or []
+        if _user_skills and not isinstance(_user_skills, list):
             raise ValueError(
                 f"frontmatter.skills must be a list of strings, "
-                f"got {type(_skill_names).__name__}"
+                f"got {type(_user_skills).__name__}"
             )
+        _skill_names: list[str] = []
+        for s in [*_system_skills, *(str(x) for x in _user_skills)]:
+            if s not in _skill_names:
+                _skill_names.append(s)
         from .skills import mount_skills as _mount_skills
         self._mounted_skills_body: str = _mount_skills(
-            [str(s) for s in _skill_names],
+            _skill_names,
             fm_meta=self._fm_meta,
         )
 

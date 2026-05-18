@@ -141,6 +141,14 @@ class AgentConfig:
     # `reflect` here is what we used to call SGR; consumers check for it
     # directly rather than via a separate flag.
     tools: list[str] = field(default_factory=list)
+    # Skills mounted at the AGENT (system.md) level — declared once,
+    # applied to every invocation regardless of which user prompt
+    # runs. Per-call user prompts can mount ADDITIONAL skills via
+    # their own `skills:` frontmatter; the two lists union (system
+    # ones first, user ones after, deduped) at Agent.__init__ time.
+    # Used for skills that the agent always needs (e.g. investigator
+    # always wants `reflect` for state-banking across investigations).
+    skills: list[str] = field(default_factory=list)
     output_schema: Optional[Any] = None  # JSON Schema for done() output
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     condensation: Optional[CondensationConfig] = None

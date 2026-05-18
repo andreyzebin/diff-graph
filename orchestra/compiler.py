@@ -54,6 +54,11 @@ class AgentRegistryEntry:
     # skill blocks + user-message override at Agent.__init__. See
     # AgentConfig.reflect for known keys.
     reflect: dict = field(default_factory=dict)
+    # Skills mounted at the agent (system.md) level. Per-call user
+    # prompts can mount additional skills via their own `skills:`
+    # frontmatter; Agent.__init__ unions the two lists (system
+    # ones first, then user ones, deduped).
+    skills: list[str] = field(default_factory=list)
 
     def to_agent_config(self) -> AgentConfig:
         """Convert to AgentConfig. tools is a single flat list — the
@@ -80,6 +85,7 @@ class AgentRegistryEntry:
             mode=self.mode,
             reflect=dict(self.reflect),
             tools=tools,
+            skills=list(self.skills),
             budget=self.budget,
             llm_params=self.llm_params,
             input_schema=self.input_schema,
@@ -424,6 +430,13 @@ def _parse_prompt_file(
     sgr = "sgr" in capabilities
     raw_reflect = headers.get("reflect")
     reflect = dict(raw_reflect) if isinstance(raw_reflect, dict) else {}
+    raw_skills = headers.get("skills")
+    if isinstance(raw_skills, list):
+        skills = [str(s) for s in raw_skills if isinstance(s, str)]
+    elif isinstance(raw_skills, str):
+        skills = _parse_list(raw_skills)
+    else:
+        skills = []
     summary = headers.get("summary", "").strip()
 
     return AgentRegistryEntry(
@@ -438,6 +451,7 @@ def _parse_prompt_file(
         llm_params=llm_params,
         sgr=sgr,
         reflect=reflect,
+        skills=skills,
         prompt_template=body.strip(),
         user_template=user_template.strip(),
         source_file=str(filepath) if filepath else "",
@@ -471,6 +485,12 @@ def _from_yaml_headers(y: dict) -> tuple[dict[str, str], dict[str, dict[str, str
         # reads it via headers.get("reflect") and copies into the
         # AgentRegistryEntry.
         h["reflect"] = y["reflect"]  # type: ignore[assignment]
+    if "skills" in y:
+        # System-level skills mount — Agent.__init__ unions this list
+        # with user-prompt-frontmatter `skills:` to build the effective
+        # skill list. Carry the raw list through so the downstream
+        # parser preserves order.
+        h["skills"] = y["skills"]  # type: ignore[assignment]
 
     raw_tools = y.get("tools") or []
     if isinstance(raw_tools, list):

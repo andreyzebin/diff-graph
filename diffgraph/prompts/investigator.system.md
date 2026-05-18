@@ -23,12 +23,14 @@ tools:
   - pr_read_comment
   - jira_read_ticket
   - done
-# `reflect` comes from the `reflect` skill mounted in
-# investigator.user.md (orchestra/skills/reflect.md). That bundle
-# also sets the cadence default (interval: 5) and ships the
-# investigative-loop guidance — keeping reflect off the base
-# `tools:` list means agents that don't need state-banking can
-# subclass investigator without inheriting the surface.
+# `reflect` comes from the `reflect` skill mounted at system level
+# below (orchestra/skills/reflect.md). The skill bundles the tool,
+# the convergence-aid contract, and the cadence default (interval:
+# 5). Mounted at the agent level — every invocation, every user
+# prompt, gets reflect. Subclassing this prompt without reflect
+# would need to override `skills: []` explicitly.
+skills:
+  - reflect
 
 # Interface-specific data (commits source, focus from spawn arg) lives
 # in investigator.user.md. System layer is methodology only.
@@ -99,12 +101,9 @@ L == old == new.
 - `diff_search(query, glob?, regex?, before?, after?, repo="default")` —
   diff_search across files in the diff view; hits carry `+`/`-`/` ` markers.
 
-**For surfacing thinking and finishing:**
+**For finishing:**
 
 - `done(findings)` — submit findings and stop.
-- `reflect(...)` — structured self-reflection, mounted via the
-  `reflect` skill. See the skill block in the user message for
-  the field contract and when-to-call guidance.
 
 ## Existing PR discussion (look only when relevant)
 
