@@ -442,10 +442,18 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     #   Weapons : knife, rope, wrench, candlestick
     #   Rooms   : library, kitchen, ballroom, study
     #
-    # Hardcoded distribution:
-    #   Envelope    = mustard, knife, library
+    # Hardcoded distribution — chosen so the envelope is NOT the iconic
+    # Mustard / Knife / Library trio. Without this care, models with
+    # Cluedo cultural prior immediately suggest the iconic combo, hit
+    # `no_disproof` on the first try, and the puzzle collapses to one
+    # tool call. With (plum, rope, ballroom) as the envelope, the
+    # model's most-likely first guess (the iconic trio) is held by
+    # opp_1 — a hit that exposes one of those cards as NOT in the
+    # envelope and forces actual deductive work.
+    #
+    #   Envelope    = plum, rope, ballroom
     #   Agent hand  = scarlet, kitchen, candlestick   (known to agent up-front)
-    #   Opp_1 hand  = plum, rope, ballroom
+    #   Opp_1 hand  = mustard, knife, library          (the iconic combo)
     #   Opp_2 hand  = green, wrench, study
     #
     # suggest(s, w, r) walks opp_1 → opp_2 in fixed order, returns the
@@ -453,10 +461,10 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     # holds ANY of the three suggested cards AND none is in the agent's
     # own hand, the response is "no_disproof" — which uniquely identifies
     # those three cards as the envelope.
-    _CLUE_ENVELOPE = {"suspect": "mustard", "weapon": "knife", "room": "library"}
+    _CLUE_ENVELOPE = {"suspect": "plum", "weapon": "rope", "room": "ballroom"}
     _CLUE_AGENT_HAND = {"scarlet", "kitchen", "candlestick"}
     _CLUE_OPPONENT_HANDS = [
-        ("opp_1", {"plum", "rope", "ballroom"}),
+        ("opp_1", {"mustard", "knife", "library"}),
         ("opp_2", {"green", "wrench", "study"}),
     ]
 

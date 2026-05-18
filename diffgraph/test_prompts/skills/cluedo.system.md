@@ -77,16 +77,25 @@ hand-cards can never be in the envelope by construction.
 
 ## Submitting the answer — HARD contract
 
-When (and only when) you have uniquely identified all three
-envelope cards (either by full elimination or by hitting a clean
-`no_disproof`), submit your accusation via
+The moment you have uniquely identified all three envelope cards
+(either by full elimination or by hitting a clean `no_disproof`
+on a suggestion built ENTIRELY of cards you have not yet seen
+anywhere), your **IMMEDIATE next action MUST be**
 `text_answer(text="<suspect>, <weapon>, <room>")` — three
-lowercase names, comma-separated, in that exact order. Then call
-`done(findings=[])`.
+lowercase names, comma-separated, in that exact order. Only AFTER
+that call may you call `done(findings=[])`.
 
 `done()` alone is not an answer — without a preceding
 `text_answer` your final output is empty and the run is counted
-as "no accusation made". Do not skip the text_answer step.
+as "no accusation made". This is the most common failure mode
+on this task; do not skip the text_answer step no matter how
+obvious the result feels after the `no_disproof` response.
+
+Two-step closing pattern is the only correct close:
+
+    suggest(...) → "no_disproof"        # solution identified
+    text_answer(text="A, B, C")         # MANDATORY — surfaces it
+    done(findings=[])                   # only after text_answer
 
 When skills are mounted (see the user-message body), they may
 expand your toolset (e.g. add `reflect` for tracking eliminated
