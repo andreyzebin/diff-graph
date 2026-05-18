@@ -439,7 +439,17 @@ Repo clone + diff only happen when a domain tool is first called (`ctx.ensure_re
 
 ### SGR (Self-Guided Reasoning)
 
-Every react agent tracks reasoning via `reflect()`: `learned`, `questions_remaining`, `resolved_questions`, `confidence`, `next_action`. Question IDs provide stability across reflects.
+`reflect()` is a **convergence aid for investigative multi-step problems** — not a logging tool. Each call externalises the agent's working state so it survives the next step's prompt rebuild instead of living only in working memory, where it gets crowded out as context grows.
+
+The five fields each defend against a specific failure mode of long LLM chains:
+
+- `learned` — anchors established facts as plain text the next step's prompt sees verbatim. Defends against **drift** (partial findings vanishing as context grows).
+- `questions_remaining` (with stable IDs `Q1`/`Q2`/…) — what the agent still needs to answer to make the NEXT decision. Defends against **loops** (re-asking what was already resolved): later reflects close by ID, not by re-typing prose.
+- `resolved_questions` — references previous IDs with concrete answers. Defends against **premature termination**: the ratio of closed-vs-still-open over successive reflects tells the budget layer whether the agent is converging or spinning.
+- `confidence` (low/medium/high) — defends against **mis-calibration**. Drift between confidence and questions_remaining (e.g. `high` with three load-bearing questions still open) is a smell the judge flags as `wrong-reasoning`.
+- `next_action` — one concrete step, justified against `learned`. Defends against **unjustified branch switches**.
+
+Reflect lives in the skill layer (`orchestra/skills/reflect.md`), not the default builtins, so single-step responders and mechanical pipelines don't carry the cognitive overhead. Production reviewer / investigator / dispatcher mount it via `skills: [reflect]`. The cadence pusher (`ReflectCadencePusher`) only nudges when reflect is in the agent's tool surface — non-reflective agents see no pressure. See `docs/orchestra-architecture.md` for the full conceptual fix.
 
 ### CLI output
 

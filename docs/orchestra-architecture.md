@@ -256,6 +256,58 @@ prompt-declared `sgr_extensions`), records each reflect call into
 a history list, and provides `extract_for_handoff` for child-agent
 prompting.
 
+#### What reflect actually does — the conceptual model
+
+`reflect` is a **convergence aid for investigative multi-step
+problems**, not a logging tool. Each call is a checkpoint that
+externalises the agent's working state so it survives the next
+step's prompt rebuild instead of living only in working memory
+and getting crowded out as context grows.
+
+The five fields aren't decorative — each one defends against a
+specific failure mode of long LLM chains:
+
+| Field | Defends against | How |
+|---|---|---|
+| `learned` | **Drift** — partial findings vanishing as context grows | Anchors facts as plain text that the next step's prompt sees verbatim. One line per fact; if it can't be stated in a line, the agent doesn't actually know it yet. |
+| `questions_remaining` (with stable IDs) | **Loops** — re-asking what was already answered | Each question gets a short ID. Later reflects close by ID, not by re-typing prose. Re-opening the same ID is a flag. |
+| `resolved_questions` | **Premature termination** ("I don't know if I'm making progress") | Closures by ID create a progress signal. The ratio of closed-vs-still-open over successive reflects tells the budget layer whether the agent is converging or spinning. |
+| `confidence` | **Mis-calibration** — wrapping up while still uncertain, or thrashing while actually near the answer | `low`/`medium`/`high`. Drift between confidence and `questions_remaining` (e.g. `high` with three load-bearing questions still open) is a smell the judge picks up as a `wrong-reasoning` warning. |
+| `next_action` | **Unjustified branch switches** — abandoning a thread without saying why | One concrete step, justified against `learned`. Not a plan tree. Forces causal link between current state and next move into the open. |
+
+The complement of "what reflect prevents" is "when reflect adds
+nothing":
+
+- Single-step tasks (one tool call → answer). No state to bank.
+- Mechanically obvious sequences (parse response → fill template
+  → submit). The next step is implied by the previous result;
+  reflect would be narration.
+- Pure logging ("I'm about to call X, then Y, then Z"). The
+  value is in *state-banking*, not commentary.
+
+Production agents that bank state (reviewer, investigator,
+dispatcher in /ask mode) mount the `reflect` skill
+(`orchestra/skills/reflect.md`) which bundles the tool with this
+contract. Agents whose tasks are single-step responders don't.
+
+#### Skill vs builtin — why reflect lives in the skill layer
+
+`reflect` is registered through the skill layer rather than the
+default `register_builtins` chain so that agents whose tasks
+don't need state-banking don't carry the cognitive overhead and
+schema validation cost. The split keeps the surface honest: an
+agent that lists `reflect` in `tools:` (directly or via `skills:
+[reflect]`) is **opting in** to the convergence-aid contract,
+and the prompt-side guidance that comes with the skill is
+visible alongside the tool registration rather than implicit in
+the framework's default chain.
+
+The reflect-cadence pusher (`ReflectCadencePusher` in
+`orchestra/budget.py`) is wired generically — it only nudges
+when `reflect` is in the agent's tool surface, so non-reflective
+agents see no cadence pressure. Same for `FailedReflectGuard`
+(soft-opt): nothing to guard if reflect isn't there.
+
 ### `orchestra/budget.py` — pushers + cadence
 
 Pushers are **step-level controllers** (not "LLM handlers" — the
