@@ -135,6 +135,39 @@ def register_builtins(
             is_builtin=True,
         ))
 
+    # ── answer ────────────────────────────────────────────────────────────
+    # Terminal capture-tool for tasks whose deliverable is a single text
+    # payload (abstract reasoning fixtures, /ask flows, anywhere "submit
+    # your answer and exit" is the natural close). Mirrors `done` as a
+    # special-cased terminator in agent.py's dispatch loop — calling
+    # `answer(text=...)` records the text as the run's intended_text AND
+    # ends the agent loop. Removes the fragile two-step
+    # text_answer-then-done coordination problem (models routinely
+    # dropped one of them).
+    if "answer" in tool_names:
+        registry.register_tool_def(ToolDef(
+            name="answer",
+            description=(
+                "Submit your final text answer AND terminate the run "
+                "in a single call. Pass the answer as the `text` "
+                "argument. The framework records the text as the "
+                "run's deliverable and closes the agent loop — no "
+                "separate `done()` call is needed."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Your final answer as plain text.",
+                    },
+                },
+                "required": ["text"],
+            },
+            handler=lambda **kw: "Answer submitted.",
+            is_builtin=True,
+        ))
+
     # ── done ──────────────────────────────────────────────────────────────
     if "done" in tool_names:
         done_params: dict[str, Any] = {

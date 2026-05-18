@@ -27,23 +27,23 @@ bench_cmd: >
 # hold the whole constraint graph in working memory.
 #
 # Pass criteria — assert via judge + structural:
-#   - text_answer matches the hardcoded envelope "mustard, knife,
+#   - answer matches the hardcoded envelope "mustard, knife,
 #     library" (the only three not in the agent's hand or any
 #     opponent's hand).
 #   - Player invocations contain suggest (the search itself),
 #     reflect (the whole point of this fixture — at least one
-#     reflect call to bank running constraints), and text_answer
+#     reflect call to bank running constraints), and answer
 #     (the final accusation).
 #
 # Pair: SKILL-004-cluedo-without.yaml — same puzzle, no skill.
-# Expected: player calls suggest + text_answer but no reflect. If
+# Expected: player calls suggest + answer but no reflect. If
 # the WITHOUT-variant misaccuses while WITH-variant succeeds,
 # that's the proof-of-value signal — reflect materially helps
 # constraint propagation on this task class.
 
-prompt_resource: diffgraph:diffgraph/test_prompts/skills
+prompt_resource: diffgraph:diffgraph/test_prompts/skills/reflect
 
-user_message_from: diffgraph:diffgraph/test_prompts/skills/cluedo-with-skill.user.md
+user_message_from: diffgraph:diffgraph/test_prompts/skills/reflect/cluedo-with-skill.user.md
 
 agent_data: {}
 
@@ -52,7 +52,7 @@ expected_output:
   concern_focuses:
     - id: correct-envelope
       rationale: |
-        The player's text_answer (intended_text) must contain
+        The player's answer (intended_text) must contain
         ALL THREE envelope cards — "mustard" (suspect), "knife"
         (weapon), "library" (room). All three together are
         required for a correct accusation; any one missing or
@@ -64,11 +64,11 @@ expected_output:
   # The player is free to issue any number of suggest() calls
   # (reflect-banking should let it converge in fewer suggestions
   # than the WITHOUT variant), but MUST call reflect at least
-  # once and reach text_answer. The reflect call is what proves
+  # once and reach answer. The reflect call is what proves
   # the skill is actually being used.
   assert_invocations:
     cluedo_player:
-      must_call: [suggest, reflect, text_answer]
+      must_call: [suggest, reflect, answer]
   thresholds:
     min_score: 0.7
   metadata:

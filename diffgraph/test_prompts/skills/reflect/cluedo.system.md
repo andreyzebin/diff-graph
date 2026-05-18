@@ -3,8 +3,7 @@ agent: cluedo_player
 mode: react
 tools:
   - suggest
-  - text_answer
-  - done
+  - answer
 summary: >-
   Test agent for SKILL-004 (reflect skill proof-of-value on a
   Cluedo-style deductive puzzle, adapted from the
@@ -18,7 +17,7 @@ summary: >-
   so the constraint-propagation chain length puts early shown
   cards out of working memory reach by the time the agent has to
   pin all three categories simultaneously.
-capabilities: [cluedo_player, suggest, text_answer, deductive_reasoning]
+capabilities: [cluedo_player, suggest, answer, deductive_reasoning]
 budget:
   steps: 20
 ---
@@ -75,27 +74,20 @@ hand-cards can never be in the envelope by construction.
   cleanest path to the solution: it directly identifies all three
   envelope cards at once.
 
-## Submitting the answer — HARD contract
+## Submitting the answer
 
 The moment you have uniquely identified all three envelope cards
 (either by full elimination or by hitting a clean `no_disproof`
 on a suggestion built ENTIRELY of cards you have not yet seen
-anywhere), your **IMMEDIATE next action MUST be**
-`text_answer(text="<suspect>, <weapon>, <room>")` — three
-lowercase names, comma-separated, in that exact order. Only AFTER
-that call may you call `done(findings=[])`.
+anywhere), call
+`answer(text="<suspect>, <weapon>, <room>")` — three lowercase
+names, comma-separated, in that exact order. Single call, run
+terminates with your accusation recorded as the deliverable.
 
-`done()` alone is not an answer — without a preceding
-`text_answer` your final output is empty and the run is counted
-as "no accusation made". This is the most common failure mode
-on this task; do not skip the text_answer step no matter how
-obvious the result feels after the `no_disproof` response.
+Closing pattern:
 
-Two-step closing pattern is the only correct close:
-
-    suggest(...) → "no_disproof"        # solution identified
-    text_answer(text="A, B, C")         # MANDATORY — surfaces it
-    done(findings=[])                   # only after text_answer
+    suggest(...) → "no_disproof"          # solution identified
+    answer(text="A, B, C")                 # close — single call
 
 When skills are mounted (see the user-message body), they may
 expand your toolset (e.g. add `reflect` for tracking eliminated

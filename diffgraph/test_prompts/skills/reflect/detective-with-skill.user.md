@@ -23,7 +23,6 @@ data:
 Run the investigative loop described in the methodology — derive
 concerns from the briefing, form hypotheses about who's
 responsible, probe selectively to narrow the candidate set, and
-accuse the unique match. Report via
-`text_answer(text="<name>")`, then call `done(findings=[])`.
+accuse the unique match via `answer(text="<name>")`.
 
 {{ skills }}

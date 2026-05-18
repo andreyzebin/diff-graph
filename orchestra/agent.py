@@ -882,10 +882,20 @@ class Agent:
                                    result_count=r_count)
                 step_record.tool_calls.append({"name": tc.function.name})
 
-                # `done` is the one tool whose result drives control
-                # flow at the agent-loop level (terminates the run).
-                # Validation error → don't mark done, let the LLM
+                # `done` and `answer` are the tools whose result drives
+                # control flow at the agent-loop level (terminate the
+                # run). Validation error → don't mark done, let the LLM
                 # retry on the next turn.
+                #
+                # `done(findings=[...])` is the structured-output close
+                # used by production agents (reviewer / investigator /
+                # dispatcher). `answer(text=...)` is the single-payload
+                # close used by abstract reasoning fixtures and
+                # text-deliverable flows — it captures the text as the
+                # run's deliverable AND terminates without requiring a
+                # separate `done()` call. Both set the same internal
+                # state so the closing path downstream doesn't care
+                # which terminator the model picked.
                 if tc.function.name == "done":
                     if not (isinstance(content, str) and content.startswith("validation error")):
                         try:
@@ -893,6 +903,21 @@ class Agent:
                         except json.JSONDecodeError:
                             args = {}
                         self._done_output = args.get("findings", args)
+                        self._done_called = True
+                        findings_from_done = self._done_output
+                elif tc.function.name == "answer":
+                    if not (isinstance(content, str) and content.startswith("validation error")):
+                        try:
+                            args = json.loads(tc.function.arguments or "{}")
+                        except json.JSONDecodeError:
+                            args = {}
+                        # Wrap the text payload as a single findings
+                        # entry so downstream code that reads
+                        # `_done_output` doesn't need an `answer`-
+                        # specific branch — judges and trace consumers
+                        # already pull `text` out of invocations.json
+                        # by tool-name match.
+                        self._done_output = [{"text": args.get("text", "")}]
                         self._done_called = True
                         findings_from_done = self._done_output
 

@@ -5,8 +5,7 @@ tools:
   - whereabouts
   - evidence
   - motive
-  - text_answer
-  - done
+  - answer
 summary: >-
   Test agent for SKILL-003 (reflect skill proof-of-value).
   Receives a brief crime narrative and a four-suspect cast and
@@ -19,7 +18,7 @@ summary: >-
   rather than mechanical 12-call enumeration; reflect's value
   shows up as the running concern/hypothesis state that survives
   context drift across the chain.
-capabilities: [detective, whereabouts, evidence, motive, text_answer, hypothesis_loop]
+capabilities: [detective, whereabouts, evidence, motive, answer, hypothesis_loop]
 budget:
   steps: 20
 ---
@@ -80,17 +79,13 @@ The murderer is the one and only suspect who simultaneously:
 You're done when exactly one suspect matches all three AND you
 can show the other three each fail at least one condition.
 
-## Submitting the answer — HARD contract
+## Submitting the answer
 
 When (and only when) your investigation pins a unique match
 under the three-condition rule above, submit your accusation via
-`text_answer(text="<name>")` — exactly the lowercase suspect name
-(alice / bob / carol / dave) and nothing else. Then call
-`done(findings=[])`.
-
-`done()` alone is not an answer — without a preceding
-`text_answer` your final output is empty and the run is counted
-as "no accusation made". Do not skip the text_answer step.
+`answer(text="<name>")` — exactly the lowercase suspect name
+(alice / bob / carol / dave). Single call, run terminates with
+your accusation recorded as the deliverable.
 
 When skills are mounted (see the user-message body), they may
 expand your toolset (e.g. add `reflect` for tracking concerns

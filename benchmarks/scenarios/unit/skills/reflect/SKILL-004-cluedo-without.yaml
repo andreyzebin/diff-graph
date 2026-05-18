@@ -10,7 +10,7 @@ bench_cmd: >
   --provider={provider}
 
 # A/B baseline — same Cluedo puzzle as SKILL-004-with, no skill
-# mounted. Player has only suggest/text_answer/done and must
+# mounted. Player has only suggest/answer/done and must
 # accumulate the constraint state (eliminated cards, opponent
 # attribution, per-category candidate sets) in working memory
 # across the multi-suggestion deduction.
@@ -28,17 +28,17 @@ bench_cmd: >
 # as the suggestion chain accumulates.
 #
 # Pass criteria:
-#   - text_answer matches the hardcoded envelope "mustard, knife,
+#   - answer matches the hardcoded envelope "mustard, knife,
 #     library" (the only three not in the agent's hand or any
 #     opponent's hand).
 #   - Player invocations contain suggest (the whole point) and
-#     text_answer (the final accusation).
+#     answer (the final accusation).
 #   - Player invocations do NOT contain reflect (no skill means
 #     reflect tool isn't in its registry).
 
-prompt_resource: diffgraph:diffgraph/test_prompts/skills
+prompt_resource: diffgraph:diffgraph/test_prompts/skills/reflect
 
-user_message_from: diffgraph:diffgraph/test_prompts/skills/cluedo.user.md
+user_message_from: diffgraph:diffgraph/test_prompts/skills/reflect/cluedo.user.md
 
 agent_data: {}
 
@@ -47,7 +47,7 @@ expected_output:
   concern_focuses:
     - id: correct-envelope
       rationale: |
-        The player's text_answer (intended_text) must contain
+        The player's answer (intended_text) must contain
         ALL THREE envelope cards — "mustard" (suspect), "knife"
         (weapon), "library" (room). All three together are
         required for a correct accusation; any one missing or
@@ -57,14 +57,14 @@ expected_output:
         deduction never converged.
   # Structural assertion — the mirror image of SKILL-004-with.
   # Without the reflect skill, the player must still issue at
-  # least one suggest() and reach a text_answer, but must NOT
+  # least one suggest() and reach a answer, but must NOT
   # call reflect (the tool isn't in its registry). The semantic
   # judge axis above grades CORRECTNESS; this assertion only
   # enforces the ABSENCE of reflect — proof that the WITHOUT
   # variant actually ran without the skill.
   assert_invocations:
     cluedo_player:
-      must_call: [suggest, text_answer]
+      must_call: [suggest, answer]
       must_not_call: [reflect]
   thresholds:
     min_score: 0.7

@@ -10,7 +10,7 @@ bench_cmd: >
   --provider={provider}
 
 # A/B baseline — same task as SKILL-003-with, no skill mounted.
-# Detective has bare whereabouts/evidence/motive/text_answer/done
+# Detective has bare whereabouts/evidence/motive/answer/done
 # tools, no reflect, and must accumulate the 12-fact picture in
 # working memory.
 #
@@ -25,16 +25,16 @@ bench_cmd: >
 # of context.
 #
 # Pass criteria:
-#   - text_answer == "bob" (the only suspect satisfying
+#   - answer == "bob" (the only suspect satisfying
 #     no-alibi + evidence + motive per the hardcoded tool data).
 #   - Detective invocations contain whereabouts, evidence, motive,
-#     text_answer (the baseline forces full investigation).
+#     answer (the baseline forces full investigation).
 #   - Detective invocations do NOT contain reflect (no skill means
 #     reflect tool isn't even in its registry).
 
-prompt_resource: diffgraph:diffgraph/test_prompts/skills
+prompt_resource: diffgraph:diffgraph/test_prompts/skills/reflect
 
-user_message_from: diffgraph:diffgraph/test_prompts/skills/detective.user.md
+user_message_from: diffgraph:diffgraph/test_prompts/skills/reflect/detective.user.md
 
 agent_data:
   briefing: |
@@ -52,7 +52,7 @@ expected_output:
   concern_focuses:
     - id: correct-murderer
       rationale: |
-        The detective's text_answer (intended_text) must contain
+        The detective's answer (intended_text) must contain
         the suspect name "bob" — the only one satisfying the
         three-condition rule (no corroborated alibi + physical
         evidence at scene + known motive). Any other name (alice,
@@ -61,14 +61,14 @@ expected_output:
   # Structural assertion — the mirror image of SKILL-003-with.
   # Without the reflect skill, detective is free to probe any
   # subset of the axis tools (hypothesis-driven, not exhaustive),
-  # but must reach a text_answer and must NOT call reflect (the
+  # but must reach a answer and must NOT call reflect (the
   # tool isn't in its registry). Whether it gets bob right is the
   # semantic-judge axis above; THIS assertion only enforces the
   # absence of reflect — proof that the WITHOUT-variant agent
   # actually ran without the skill.
   assert_invocations:
     detective:
-      must_call: [text_answer]
+      must_call: [answer]
       must_not_call: [reflect]
   thresholds:
     min_score: 0.7

@@ -472,13 +472,18 @@ class LLMJudge(Judge):
 
     def _load_intended_text(self) -> str:
         """Agent's final text deliverable for tasks whose channel is
-        plain prose. Two emission shapes the judge knows about:
+        plain prose. Three emission shapes the judge knows about:
 
-          1. `text_answer(text=...)` — capture-style tool registered
-             via prompt frontmatter's `extra_tools`. Works on
+          1. `answer(text=...)` — builtin terminal capture-tool.
+             Single closing call: records text AND ends the agent
+             loop, no separate `done()` needed. Preferred shape for
+             abstract reasoning fixtures.
+          2. `text_answer(text=...)` — capture-style tool registered
+             via prompt frontmatter's `extra_tools`. Legacy /
+             production reviewer concerns-text mode. Works on
              `tool_choice=required` providers (DeepSeek etc.) that
              can't return a tool-less turn.
-          2. A text-only LLM turn (no tool_calls, content present)
+          3. A text-only LLM turn (no tool_calls, content present)
              — emitted by orchestra as a `kind: text` invocation
              with `args.text` / `args.content` carrying the body.
 
@@ -492,7 +497,7 @@ class LLMJudge(Judge):
             args = inv.get("args") or {}
             tool = inv.get("tool") or ""
             kind = args.get("kind") if isinstance(args, dict) else None
-            if tool == "text_answer" or tool == "text" or kind == "text":
+            if tool in ("answer", "text_answer", "text") or kind == "text":
                 return str(args.get("text") or args.get("content") or "")
         return ""
 

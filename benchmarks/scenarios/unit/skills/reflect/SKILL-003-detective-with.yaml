@@ -23,21 +23,21 @@ bench_cmd: >
 # agents have to hold all 12 facts in working memory.
 #
 # Pass criteria — assert via judge + structural:
-#   - text_answer == "bob" (the unique three-condition match per
+#   - answer == "bob" (the unique three-condition match per
 #     the hardcoded tool data).
 #   - Detective invocations contain whereabouts, evidence, motive,
 #     reflect (the whole point of this fixture — at least one
-#     reflect call to bank running deductions), and text_answer.
+#     reflect call to bank running deductions), and answer.
 #
 # Pair: SKILL-003-detective-without.yaml — same task, no skill.
-# Expected: detective calls the three axis tools + text_answer but
+# Expected: detective calls the three axis tools + answer but
 # no reflect. If the WITHOUT variant misidentifies the murderer
 # while WITH succeeds, that's the proof-of-value signal — reflect
 # materially helps convergence on this task class.
 
-prompt_resource: diffgraph:diffgraph/test_prompts/skills
+prompt_resource: diffgraph:diffgraph/test_prompts/skills/reflect
 
-user_message_from: diffgraph:diffgraph/test_prompts/skills/detective-with-skill.user.md
+user_message_from: diffgraph:diffgraph/test_prompts/skills/reflect/detective-with-skill.user.md
 
 agent_data:
   briefing: |
@@ -55,7 +55,7 @@ expected_output:
   concern_focuses:
     - id: correct-murderer
       rationale: |
-        The detective's text_answer (intended_text) must contain
+        The detective's answer (intended_text) must contain
         the suspect name "bob" — the only one satisfying the
         three-condition rule (no corroborated alibi + physical
         evidence at scene + known motive). With the reflect skill
@@ -67,11 +67,11 @@ expected_output:
   # The detective is free to probe any subset of the axis tools
   # (hypothesis-driven, not exhaustive — reflect-banking should
   # let it solve in fewer probes than the WITHOUT variant), but
-  # MUST call reflect at least once and reach text_answer. The
+  # MUST call reflect at least once and reach answer. The
   # reflect call is what proves the skill is actually being used.
   assert_invocations:
     detective:
-      must_call: [reflect, text_answer]
+      must_call: [reflect, answer]
   thresholds:
     min_score: 0.7
   metadata:
