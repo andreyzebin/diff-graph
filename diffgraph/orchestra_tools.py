@@ -423,6 +423,112 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         return _MOTIVE.get(_normalise_name(name),
                            "Unknown suspect.")
 
+    # ── Test-only abstract tool: cluedo `suggest` ─────────────────────────
+    # Single-agent Clue/Cluedo adaptation for SKILL-004 (reflect skill
+    # proof-of-value on academically-validated multi-step deductive
+    # reasoning — see arXiv 2603.17169, where multi-agent LLMs win only
+    # 4/18 simulated games). Opponents are NOT LLMs here: they're
+    # deterministic lookup tables baked into this tool. The agent under
+    # test is the only LLM in the loop; opponents always reveal their
+    # match deterministically (alphabetical-first if multiple) and the
+    # envelope + hand distributions are hardcoded so the puzzle is
+    # reproducible across runs.
+    #
+    # Universe (12 cards, 4+4+4 — reduced from the canonical 6+6+9 to
+    # keep unit-runs fast while preserving the multi-step state-tracking
+    # load that makes the task hard for LLMs):
+    #
+    #   Suspects: mustard, scarlet, plum, green
+    #   Weapons : knife, rope, wrench, candlestick
+    #   Rooms   : library, kitchen, ballroom, study
+    #
+    # Hardcoded distribution:
+    #   Envelope    = mustard, knife, library
+    #   Agent hand  = scarlet, kitchen, candlestick   (known to agent up-front)
+    #   Opp_1 hand  = plum, rope, ballroom
+    #   Opp_2 hand  = green, wrench, study
+    #
+    # suggest(s, w, r) walks opp_1 → opp_2 in fixed order, returns the
+    # first match alphabetically (deterministic). If neither opponent
+    # holds ANY of the three suggested cards AND none is in the agent's
+    # own hand, the response is "no_disproof" — which uniquely identifies
+    # those three cards as the envelope.
+    _CLUE_ENVELOPE = {"suspect": "mustard", "weapon": "knife", "room": "library"}
+    _CLUE_AGENT_HAND = {"scarlet", "kitchen", "candlestick"}
+    _CLUE_OPPONENT_HANDS = [
+        ("opp_1", {"plum", "rope", "ballroom"}),
+        ("opp_2", {"green", "wrench", "study"}),
+    ]
+
+    @registry.register(
+        name="suggest",
+        description=(
+            "Make a Cluedo suggestion: ask whether the trio "
+            "(suspect, weapon, room) appears in any opponent's hand. "
+            "The tool walks opponents in fixed order (opp_1, opp_2) "
+            "and returns the FIRST match alphabetically as "
+            "\"shown by <opp_N>: <card>\" (privately to you). If "
+            "neither opponent holds ANY of the three cards, the "
+            "response is \"no_disproof\" — which uniquely identifies "
+            "those exact three as the envelope (i.e. the solution). "
+            "Cards already in your own hand (scarlet / kitchen / "
+            "candlestick) are NOT in the envelope by construction; "
+            "if your suggestion contains them, opponents simply don't "
+            "show them — so building all three suggestion slots out "
+            "of your own hand is wasted information.\n"
+            "Names are case-insensitive. Universe of cards:\n"
+            "  Suspects: mustard, scarlet, plum, green\n"
+            "  Weapons : knife, rope, wrench, candlestick\n"
+            "  Rooms   : library, kitchen, ballroom, study"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "suspect": {
+                    "type": "string",
+                    "description": "Suspect name (mustard/scarlet/plum/green).",
+                },
+                "weapon": {
+                    "type": "string",
+                    "description": "Weapon name (knife/rope/wrench/candlestick).",
+                },
+                "room": {
+                    "type": "string",
+                    "description": "Room name (library/kitchen/ballroom/study).",
+                },
+            },
+            "required": ["suspect", "weapon", "room"],
+        },
+    )
+    def suggest(suspect: str = "", weapon: str = "", room: str = "") -> str:
+        trio = {_normalise_name(suspect),
+                _normalise_name(weapon),
+                _normalise_name(room)}
+        for opp_name, hand in _CLUE_OPPONENT_HANDS:
+            intersection = trio & hand
+            if intersection:
+                # Alphabetical-first to keep the response stable across
+                # tie-breaking changes in set iteration order.
+                shown = sorted(intersection)[0]
+                return f"shown by {opp_name}: {shown}"
+        # Neither opponent has anything — but check whether one or more
+        # of the suggested cards is in the AGENT's own hand. The
+        # academic Clue rule says nobody (including the asker) reveals
+        # in that case, so we just return no_disproof — but it would be
+        # wrong to conclude "envelope!" because the agent's own card
+        # could be silencing the suggestion. Add an explicit hint so
+        # the model learns not to confuse the cases.
+        own_overlap = trio & _CLUE_AGENT_HAND
+        if own_overlap:
+            return (
+                f"no_disproof — but you suggested {len(own_overlap)} "
+                f"card(s) from your own hand ({sorted(own_overlap)}); "
+                f"those cards can't be in the envelope by construction, "
+                f"so this is not yet a solution. Try a suggestion built "
+                f"from cards you have NOT seen anywhere."
+            )
+        return "no_disproof"
+
     @registry.register(
         name="diff_list_files",
         description=(

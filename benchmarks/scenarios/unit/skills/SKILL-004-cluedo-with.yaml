@@ -1,0 +1,82 @@
+id: SKILL-004-cluedo-with
+agent: cluedo_player
+tags: [tier:unit, skill:reflect, abstract, cluedo, deductive-reasoning, proof-of-value]
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmarks.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# Proof-of-value reflect-skill test on an academically-validated
+# multi-step deductive-reasoning puzzle — Cluedo, scaled to 4+4+4
+# cards (adapted from the 6+6+9 setup in arXiv 2603.17169 where
+# multi-agent LLMs win only 4/18 simulated games).
+#
+# Player must identify the 3-card envelope (mustard, knife,
+# library) by issuing suggest() calls and reasoning about which
+# opponent revealed which card. With the reflect skill mounted,
+# the player gains the `reflect` tool plus guidance to bank the
+# constraint state — eliminated cards per category, opponent
+# attribution, remaining candidate sets — across the multi-
+# suggestion deduction. Expectation: WITH-variant agents reach
+# the deduction step with state externalised (won't lose
+# opp_1's first reveal by the time they propagate the third
+# suggestion's constraint), while WITHOUT-variant agents have to
+# hold the whole constraint graph in working memory.
+#
+# Pass criteria — assert via judge + structural:
+#   - text_answer matches the hardcoded envelope "mustard, knife,
+#     library" (the only three not in the agent's hand or any
+#     opponent's hand).
+#   - Player invocations contain suggest (the search itself),
+#     reflect (the whole point of this fixture — at least one
+#     reflect call to bank running constraints), and text_answer
+#     (the final accusation).
+#
+# Pair: SKILL-004-cluedo-without.yaml — same puzzle, no skill.
+# Expected: player calls suggest + text_answer but no reflect. If
+# the WITHOUT-variant misaccuses while WITH-variant succeeds,
+# that's the proof-of-value signal — reflect materially helps
+# constraint propagation on this task class.
+
+prompt_resource: diffgraph:diffgraph/test_prompts/skills
+
+user_message_from: diffgraph:diffgraph/test_prompts/skills/cluedo-with-skill.user.md
+
+agent_data: {}
+
+expected_output:
+  assert_via: [intended_text]
+  concern_focuses:
+    - id: correct-envelope
+      rationale: |
+        The player's text_answer (intended_text) must contain
+        ALL THREE envelope cards — "mustard" (suspect), "knife"
+        (weapon), "library" (room). All three together are
+        required for a correct accusation; any one missing or
+        substituted is a wrong accusation. With the reflect skill
+        mounted, the player is expected to bank constraints
+        across the multi-suggestion chain and arrive at the
+        correct unique envelope.
+  # Structural assertion (deterministic, complements the LLM judge).
+  # The player is free to issue any number of suggest() calls
+  # (reflect-banking should let it converge in fewer suggestions
+  # than the WITHOUT variant), but MUST call reflect at least
+  # once and reach text_answer. The reflect call is what proves
+  # the skill is actually being used.
+  assert_invocations:
+    cluedo_player:
+      must_call: [suggest, reflect, text_answer]
+  thresholds:
+    min_score: 0.7
+  metadata:
+    note: "A/B partner — call-pattern assertion (did player actually reflect?) is the structural check; the semantic check verifies the correct accusation; trace comparison shows whether reflect changed convergence speed."
+
+metadata:
+  difficulty: hard
+  language: any
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [cluedo_player, deductive_reasoning, constraint_propagation, reflect, proof_of_value]

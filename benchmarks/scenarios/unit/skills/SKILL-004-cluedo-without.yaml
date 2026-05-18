@@ -1,0 +1,77 @@
+id: SKILL-004-cluedo-without
+agent: cluedo_player
+tags: [tier:unit, skill:reflect, baseline, abstract, cluedo, deductive-reasoning]
+
+bench_cmd: >
+  cd {bench_root} && source .env
+  && unset ALL_PROXY all_proxy
+  && .venv/bin/python -m benchmarks.cli run-unit
+  {fixture_path}
+  --provider={provider}
+
+# A/B baseline — same Cluedo puzzle as SKILL-004-with, no skill
+# mounted. Player has only suggest/text_answer/done and must
+# accumulate the constraint state (eliminated cards, opponent
+# attribution, per-category candidate sets) in working memory
+# across the multi-suggestion deduction.
+#
+# This is the proof-of-value sibling to SKILL-003. SKILL-003
+# (detective) ended up too easy because the LLM parallelised the
+# 12 tool calls into 3 batches and the boolean AND deduction was
+# trivial. SKILL-004 (Cluedo) is genuinely hard for current LLMs
+# (per arXiv 2603.17169, multi-agent LLMs win only 4/18 simulated
+# games at the full 21-card scale; even our reduced 4+4+4 puzzle
+# requires constraint propagation across 5-10 sequential
+# suggestions). Expectation: WITHOUT-variant agents may misaccuse
+# (confuse which card was shown by which opponent, fail to
+# propagate "if I know 2 of 3, the disprover MUST hold the third")
+# as the suggestion chain accumulates.
+#
+# Pass criteria:
+#   - text_answer matches the hardcoded envelope "mustard, knife,
+#     library" (the only three not in the agent's hand or any
+#     opponent's hand).
+#   - Player invocations contain suggest (the whole point) and
+#     text_answer (the final accusation).
+#   - Player invocations do NOT contain reflect (no skill means
+#     reflect tool isn't in its registry).
+
+prompt_resource: diffgraph:diffgraph/test_prompts/skills
+
+user_message_from: diffgraph:diffgraph/test_prompts/skills/cluedo.user.md
+
+agent_data: {}
+
+expected_output:
+  assert_via: [intended_text]
+  concern_focuses:
+    - id: correct-envelope
+      rationale: |
+        The player's text_answer (intended_text) must contain
+        ALL THREE envelope cards — "mustard" (suspect), "knife"
+        (weapon), "library" (room). All three together are
+        required for a correct accusation; any one missing or
+        substituted (scarlet for mustard, rope for knife, etc.)
+        is a wrong accusation. Order in the text doesn't matter,
+        but the three names do. An empty answer means the
+        deduction never converged.
+  # Structural assertion — the mirror image of SKILL-004-with.
+  # Without the reflect skill, the player must still issue at
+  # least one suggest() and reach a text_answer, but must NOT
+  # call reflect (the tool isn't in its registry). The semantic
+  # judge axis above grades CORRECTNESS; this assertion only
+  # enforces the ABSENCE of reflect — proof that the WITHOUT
+  # variant actually ran without the skill.
+  assert_invocations:
+    cluedo_player:
+      must_call: [suggest, text_answer]
+      must_not_call: [reflect]
+  thresholds:
+    min_score: 0.7
+
+metadata:
+  difficulty: hard
+  language: any
+  pr_size: small
+  scenario_type: agent_unit
+  capabilities: [cluedo_player, deductive_reasoning, constraint_propagation, no_reflect]
