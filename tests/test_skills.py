@@ -342,6 +342,62 @@ class TestAgentIntegration:
         a = self._agent(override)
         assert a.config.reflect.get("with_state") is True
 
+    def test_skill_brings_reflect_creates_sgr_tracker(self, tmp_path, monkeypatch):
+        """Regression: when reflect arrives via a skill (not via
+        the agent's base `tools:` list), the agent's SGR tracker
+        and the reflect-cadence pusher must still wire up. Before
+        the fix, Agent.__init__ checked `reflect in config.tools`
+        (base only) — missing skill-mounted reflect → sgr=None →
+        cadence pusher silently neutered → models never get
+        nudged to reflect on long chains.
+        """
+        fake_dir = tmp_path / "skills"
+        fake_dir.mkdir()
+        (fake_dir / "reflect.md").write_text(
+            "---\ntools: [reflect]\nreflect: { interval: 5 }\n---\n"
+            "Reflect skill body.\n", encoding="utf-8",
+        )
+        from orchestra import skills as skills_mod
+        monkeypatch.setattr(skills_mod, "_SKILLS_DIR", fake_dir)
+
+        from orchestra.agent import Agent
+        from orchestra.tools.registry import ToolRegistry
+        from orchestra.types import AgentConfig
+        # Crucial: `reflect` is NOT in the base tools list. It
+        # arrives ONLY via the skill mount below.
+        cfg = AgentConfig(
+            name="probe", system_prompt="sys", user_prompt="base",
+            tools=["done"],
+        )
+        override = (
+            "---\n"
+            "skills: [reflect]\n"
+            "---\n"
+            "body\n"
+        )
+        a = Agent(
+            config=cfg,
+            tool_registry=ToolRegistry(),
+            llm=None,
+            model="probe-model",
+            user_message_override=override,
+        )
+        # SGR tracker MUST exist — without it, reflect-cadence
+        # pushers all no-op (gated by `if self.sgr`).
+        assert a.sgr is not None, (
+            "Agent.sgr is None despite skill mounting reflect — "
+            "_init must check post-skill effective tools, not "
+            "just config.tools."
+        )
+        # Cadence config flowed through too — skill's interval=5
+        # landed on config.reflect via the per-area merge.
+        assert a.config.reflect.get("interval") == 5
+        # Reflect cadence pusher is in the budget tracker's chain
+        # (sanity check that the wiring downstream of sgr fired).
+        pusher_names = [type(h).__name__ for h in a.budget_tracker.handlers]
+        assert "ReflectCadencePusher" in pusher_names
+        assert "ReflectCadenceCounter" in pusher_names
+
     def test_invalid_skills_type_raises(self):
         override = (
             "---\n"

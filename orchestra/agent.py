@@ -209,8 +209,17 @@ class Agent:
                 parameters=spec["parameters"],
             )
 
-        # SGR
-        self.sgr = SGRTracker(config.sgr_extensions) if "reflect" in config.tools else None
+        # SGR — gate on the POST-SKILL-MERGE effective tool set, not
+        # just `config.tools`. Skills mounted in the user message
+        # (e.g. `skills: [reflect]`) bring reflect via _fm_meta["tools"];
+        # using `config.tools` alone misses that and silently disables
+        # the SGR tracker + reflect cadence pushers for any agent that
+        # gets reflect via skill rather than via its base tools list.
+        _effective_tools = set(config.tools or [])
+        _fm_tools_for_sgr = self._fm_meta.get("tools") or []
+        if isinstance(_fm_tools_for_sgr, list):
+            _effective_tools |= {t for t in _fm_tools_for_sgr if isinstance(t, str)}
+        self.sgr = SGRTracker(config.sgr_extensions) if "reflect" in _effective_tools else None
 
         # Budget
         self.budget_tracker = BudgetTracker(config.budget, self.event_bus)
