@@ -36,5 +36,15 @@ When skills are mounted (see the user-message body), they may
 expand your toolset (e.g. add `reflect` for state-tracking).
 Read the skill block carefully when present.
 
-Submit ONLY the final integer via `text_answer(text="N")`, then
-call `done(findings=[])`.
+## Submitting the answer — HARD contract
+
+The moment `probe(...)` returns `"equal"`, your **immediate
+next action MUST be** `text_answer(text="<the guess that just
+returned equal>")`. Only AFTER that call may you call
+`done(findings=[])`.
+
+`done()` alone is not an answer — without a preceding
+`text_answer` your final output is empty and the run is
+counted as "no answer". This is the most common failure mode
+on this task; do not skip the text_answer step no matter how
+obvious the result feels.

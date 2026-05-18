@@ -51,7 +51,11 @@ expected_output:
   # state, or just answer "73" using working memory alone?
   assert_invocations:
     searcher:
-      must_call: [probe, reflect]
+      # text_answer is in must_call so the "model went straight to
+      # done() without surfacing the answer" failure mode is caught
+      # deterministically (faster + clearer signal than waiting for
+      # the LLM judge to grade intended_text=empty).
+      must_call: [probe, reflect, text_answer]
   thresholds:
     min_score: 0.7
   metadata:

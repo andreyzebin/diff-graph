@@ -50,7 +50,11 @@ expected_output:
   # list.
   assert_invocations:
     searcher:
-      must_call: [probe]
+      # text_answer is in must_call so the "model went straight to
+      # done() without surfacing the answer" failure mode is caught
+      # deterministically (faster + clearer signal than waiting for
+      # the LLM judge to grade intended_text=empty).
+      must_call: [probe, text_answer]
       must_not_call: [reflect]
   thresholds:
     min_score: 0.7
