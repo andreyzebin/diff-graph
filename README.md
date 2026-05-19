@@ -479,6 +479,24 @@ Tools that read PR / repo / discussion data accept an optional `repo=<uri>` para
 
 In production these route through a real Bitbucket Registry (TBD); for tests they route through `FakeBitbucket.cross_source_*` payload maps. `"default"` resolves to the current PR's URI/id (existing behaviour, unchanged).
 
+### Data the agent sends to the LLM
+
+Conceptually, what leaves the agent process and reaches the LLM provider falls into three layers, each with a distinct source-of-truth and lifecycle:
+
+| Layer | Source | Lifecycle |
+|---|---|---|
+| **Prompt scaffold** — methodology, tool contracts, skill bodies | Static files in `diffgraph/prompts/` + `orchestra/skills/` | Versioned with the codebase; identical across runs of the same revision |
+| **Task context** — PR metadata, diff hunks, file contents, PR threads, Jira ticket bodies, dev-info linkage | Pulled at runtime through tool calls (`diff_*`, `pr_*`, `jira_*`, `read_file`, `search`, `read_outline`) | Per-run snapshot; the slice fetched during one review |
+| **Reasoning history** — tool-call arguments, tool results, model's intermediate text | Accumulated by the agent loop within one run | Discarded at end-of-run; persisted only to the local trace store |
+
+Three properties make the flow auditable end-to-end:
+
+1. **Visibility is bounded by the bot account's permissions.** Every external read uses the configured Bitbucket bot user's token and the Jira service-account token. Repos, projects, branches, and PRs the bot is not entitled to see remain invisible to the tools, and therefore can never reach the prompt. The agent inherits its principal's authorization surface; it does not bypass it. Cross-source reads (`repo=`, `pr=`) follow the same rule — the other-repo content is fetched through the same token and is only available where that token already had access.
+2. **The tool layer is the only egress path.** No arbitrary filesystem access outside the lazily-cloned working copy of the current PR, no arbitrary HTTP, no shell. The complete set of channels the agent can read from is the registered tool list in `diffgraph/orchestra_tools.py`; the complete set of channels it can write to is the same list (`pr_post_comment`, `set_review_status`). Every call is recorded — name, arguments, result — in `~/.diffgraph/traces.db` and, optionally, mirrored on disk under `--trace-dir`.
+3. **The provider boundary is one explicit endpoint.** The LLM endpoint is selected per run via `--provider`, resolving to a single profile in `.llm_creds.toml`. Switching between a public API, a self-hosted vLLM, or an on-prem endpoint is a configuration change, not a code change — the agent's data flow is identical, only the destination URL moves.
+
+The model a security review usually cares about: the agent is a constrained client of three things — a versioned prompt set, the bot account's read surface, and one LLM endpoint — and every artefact crossing any of those boundaries is enumerable and traced.
+
 ### CLI output
 
 ```
