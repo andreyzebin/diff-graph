@@ -6,13 +6,33 @@ rich>=13.7.0
 pyyaml>=6.0
 pytest>=8.0.0
 tree-sitter>=0.23.0
+# Language grammars — one per supported source language. The per-
+# language packages (`tree_sitter_<lang>`) replace the legacy
+# `tree-sitter-languages` aggregator (incompatible with
+# tree-sitter>=0.22's Parser API change). Outline / search / diff
+# view detect language by file extension and dispatch to the
+# right parser via `diffgraph.outline._get_parser`. Missing
+# package at runtime → that language's outline degrades to
+# "tree-sitter unavailable" but diff_read_file / diff_search
+# still work (they're not grammar-dependent).
 tree-sitter-python>=0.23.0
 tree-sitter-java>=0.23.0
+tree-sitter-javascript>=0.23.0
 tree-sitter-typescript>=0.23.0
 tree-sitter-go>=0.23.0
-tree-sitter-kotlin>=0.23.0
-tree-sitter-ruby>=0.23.0
+tree-sitter-rust>=0.23.0
+tree-sitter-c>=0.23.0
+tree-sitter-cpp>=0.23.0
 tree-sitter-c-sharp>=0.23.0
+tree-sitter-php>=0.23.0
+tree-sitter-ruby>=0.23.0
+tree-sitter-kotlin>=0.23.0
+tree-sitter-scala>=0.23.0
+tree-sitter-bash>=0.23.0
+tree-sitter-html>=0.23.0
+tree-sitter-css>=0.23.0
+tree-sitter-json>=0.23.0
+tree-sitter-yaml>=0.23.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 jinja2>=3.1.0

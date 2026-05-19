@@ -15,7 +15,13 @@ from typing import Optional
 from .lang import detect_lang
 from .tools import read_file as _read_file
 
-# tree-sitter node types that represent containers (classes, interfaces, etc.)
+# tree-sitter node types that represent containers (classes,
+# interfaces, structs, modules, etc). Adding a new language here
+# without a matching `_TS_LANG` / `_TS_MODULES` entry is fine — the
+# outline just degrades to "no symbols" until the parser is wired
+# up. The reverse (parser wired, no containers/members) means the
+# language parses but the outline finds nothing, which is also a
+# safe degradation.
 _CONTAINERS: dict[str, set[str]] = {
     "python": {"class_definition"},
     "java": {
@@ -23,57 +29,127 @@ _CONTAINERS: dict[str, set[str]] = {
         "enum_declaration", "record_declaration",
         "annotation_type_declaration",
     },
+    "javascript": {
+        "class_declaration",
+    },
     "typescript": {
         "class_declaration", "abstract_class_declaration",
         "interface_declaration",
     },
     "go": {"type_declaration"},
+    "rust": {
+        "struct_item", "enum_item", "trait_item", "impl_item",
+        "mod_item", "union_item",
+    },
+    "c": {"struct_specifier", "union_specifier", "enum_specifier"},
+    "cpp": {
+        "class_specifier", "struct_specifier", "union_specifier",
+        "namespace_definition", "enum_specifier",
+    },
     "kotlin": {"class_declaration", "object_declaration", "interface_declaration"},
+    "scala": {
+        "class_definition", "object_definition", "trait_definition",
+        "enum_definition",
+    },
     "ruby": {"class", "module"},
     "csharp": {
         "class_declaration", "interface_declaration",
         "struct_declaration", "record_declaration",
+        "enum_declaration", "namespace_declaration",
+    },
+    "php": {
+        "class_declaration", "interface_declaration", "trait_declaration",
         "enum_declaration",
     },
+    # bash has no containers — functions are top-level only.
+    # html / css / json / yaml have no useful symbol model.
 }
 
 # tree-sitter node types that represent members (functions, methods, fields)
 _MEMBERS: dict[str, set[str]] = {
     "python": {"function_definition", "decorated_definition"},
     "java": {"method_declaration", "constructor_declaration", "field_declaration"},
+    "javascript": {
+        "function_declaration", "method_definition",
+        "arrow_function", "lexical_declaration",
+    },
     "typescript": {
         "function_declaration", "method_definition",
         "arrow_function", "lexical_declaration",
     },
     "go": {"function_declaration", "method_declaration"},
+    "rust": {
+        "function_item", "function_signature_item",
+        "const_item", "static_item",
+    },
+    "c": {"function_definition", "declaration"},
+    "cpp": {
+        "function_definition", "declaration",
+        "field_declaration", "template_declaration",
+    },
     "kotlin": {"function_declaration", "property_declaration"},
+    "scala": {
+        "function_definition", "function_declaration",
+        "val_definition", "var_definition",
+    },
     "ruby": {"method", "singleton_method"},
     "csharp": {
         "method_declaration", "constructor_declaration",
         "property_declaration", "field_declaration",
     },
+    "php": {
+        "method_declaration", "function_definition",
+        "property_declaration",
+    },
+    "bash": {"function_definition"},
 }
 
-# Map DiffGraph lang names → tree-sitter-languages names
+# Map DiffGraph lang names → tree-sitter language names (sometimes
+# differs from the lang id, e.g. "csharp" → "c_sharp").
 _TS_LANG: dict[str, str] = {
     "python":     "python",
     "java":       "java",
+    "javascript": "javascript",
     "typescript": "typescript",
     "go":         "go",
-    "kotlin":     "kotlin",
-    "ruby":       "ruby",
+    "rust":       "rust",
+    "c":          "c",
+    "cpp":        "cpp",
     "csharp":     "c_sharp",
+    "php":        "php",
+    "ruby":       "ruby",
+    "kotlin":     "kotlin",
+    "scala":      "scala",
+    "bash":       "bash",
+    "html":       "html",
+    "css":        "css",
+    "json":       "json",
+    "yaml":       "yaml",
 }
 
-# tree-sitter language module mapping (for new API: tree-sitter >= 0.23)
+# tree-sitter language module mapping (for new API: tree-sitter >= 0.23).
+# Each value is the Python package name; `_get_parser` calls
+# `importlib.import_module(<name>)` then `language()` / `language_<lang>()`
+# on the module to get the grammar.
 _TS_MODULES: dict[str, str] = {
     "python":     "tree_sitter_python",
     "java":       "tree_sitter_java",
-    "typescript":  "tree_sitter_typescript",
+    "javascript": "tree_sitter_javascript",
+    "typescript": "tree_sitter_typescript",
     "go":         "tree_sitter_go",
-    "kotlin":     "tree_sitter_kotlin",
-    "ruby":       "tree_sitter_ruby",
+    "rust":       "tree_sitter_rust",
+    "c":          "tree_sitter_c",
+    "cpp":        "tree_sitter_cpp",
     "c_sharp":    "tree_sitter_c_sharp",
+    "php":        "tree_sitter_php",
+    "ruby":       "tree_sitter_ruby",
+    "kotlin":     "tree_sitter_kotlin",
+    "scala":      "tree_sitter_scala",
+    "bash":       "tree_sitter_bash",
+    "html":       "tree_sitter_html",
+    "css":        "tree_sitter_css",
+    "json":       "tree_sitter_json",
+    "yaml":       "tree_sitter_yaml",
 }
 
 _parser_cache: dict[str, object] = {}
