@@ -38,15 +38,42 @@ trigger = "cli"
 command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id}'
 timeout = 600
 
-# Optional: record every invocation as a replay fixture under
-# <dir>/<host>/<project>/<repo>/PR-<id>/. See TODO §19 for the layout
-# and /qa/recordings UI for inventory + replay. Best-effort — disk
-# free below 5GB or unwritable target disables capture for that run
-# without aborting the agent. Forwarded to the cli.py subprocess via
-# DIFFGRAPH_RECORD_DIR / DIFFGRAPH_RECORD_SCOPE env.
-# [agents.dg.recording]
-# dir = "~/eden/diffgraph-recordings"
-# scope = "range"   # "range" (default — base..source + ancestry) or "full" (--all)
+# ── Recording (replay tier, TODO §19) ────────────────────────────
+# When this block is present, EVERY invocation of this agent writes
+# a self-contained replay fixture to disk under
+#     <dir>/<host>/<project>/<repo>/PR-<id>/
+# layout:
+#     pr.json              # static metadata (written once per PR)
+#     manifest.json        # bundle scope + bundle_revs list
+#     invocations/NNN-<ts>/{snapshot.json, triggered_by.json,
+#                            output.json, jira/<KEY>.json, …}
+#     repo.bundle          # incremental git bundle with per-rev refs
+#     refs.txt             # integrity audit
+#     outcomes.yaml        # ground-truth labels (auto-infer or manual)
+#
+# The recording survives the upstream PR being merged, force-pushed
+# or deleted — the bundle holds every revision the source branch
+# went through (refs/diffgraph/PR-<id>/rev-NN), with author identity
+# byte-identical to the original. After capture:
+#
+#   • Browse:   http://<qa-server>/qa/recordings
+#   • Replay one invocation: bench replay-single <dir> --invocation N
+#   • Replay full PR lifecycle: bench replay <dir>
+#   • Auto-infer labels for metrics: bench outcomes-auto-infer <dir>
+#
+# Capture is best-effort: any write failure (disk full, permission
+# denied, free space below 5 GB floor) disables capture for THAT
+# run without aborting the agent. Pick a path on a partition with
+# room — recordings accumulate quickly (~10-100 MB per PR depending
+# on diff size + scope).
+#
+# The QA-server process needs DIFFGRAPH_RECORDINGS_DIR set to the
+# same path to surface recordings in /qa/recordings.
+[agents.dg.recording]
+dir = "~/eden/diffgraph-recordings"
+scope = "range"   # "range" (default — base..source + merge-base ancestry,
+                  # ~10-50 MB per PR) or "full" (--all, ~100 MB-1 GB on big
+                  # monorepos — only for archival / golden corpus)
 
 # DiffGraph — dispatcher entry point with set_review_status disabled.
 # Same as dg above, but --mocks is passed to the dispatcher (the root

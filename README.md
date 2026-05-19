@@ -15,6 +15,7 @@ Multi-agent PR code reviewer powered by the **Orchestra** framework. All agents 
   - [Data flow: from:tool.field](#data-flow-fromtoolfield)
   - [Guards](#guards)
   - [Three-phase review](#three-phase-review-methodology)
+  - [Replay tier — record real PRs](#replay-tier--record-real-prs-replay-against-the-current-agent)
 - [Orchestra Framework](#orchestra-framework)
 - [Architecture](#architecture)
 - [Running as systemd services on RHEL](#running-as-systemd-services-on-rhel)
@@ -133,6 +134,9 @@ BITBUCKET_SERVER_CLIENT_CERT=/path/to/client.pem  # mTLS client cert (optional)
 # Git auth mode
 # DIFFGRAPH_GIT_AUTH=ssh                       # Use SSH instead of http.extraHeader
 # BITBUCKET_SSH_PORT=7999                      # SSH port (default 7999)
+
+# Replay tier (optional — see "Replay tier" section)
+# DIFFGRAPH_RECORDINGS_DIR=/home/andrey/eden/diffgraph-recordings   # qa-server root
 ```
 
 ### Git authentication
@@ -478,6 +482,86 @@ Tools that read PR / repo / discussion data accept an optional `repo=<uri>` para
 - `jira_search_tickets(jql)` is the JQL discovery channel — find tickets beyond what the PR already links to.
 
 In production these route through a real Bitbucket Registry (TBD); for tests they route through `FakeBitbucket.cross_source_*` payload maps. `"default"` resolves to the current PR's URI/id (existing behaviour, unchanged).
+
+### Replay tier — record real PRs, replay against the current agent
+
+Every webhook-triggered run can mirror its state to disk as a self-contained replay fixture: PR metadata + per-invocation snapshot + Jira responses + an incremental `git bundle` carrying every revision the PR went through. Once captured, a recording survives the upstream PR being merged, force-pushed, or deleted — the bundle is a real git repo with real refs and intact author identity, so `git checkout rev-NN` works exactly as it did on the day of capture.
+
+Captured recordings show up under **`/qa/recordings`** in the QA UI. Each row is one PR; drill in to see its timeline of invocations and replay any of them through the bench.
+
+#### Enabling capture
+
+Two switches — one for one-off runs, one for the webhook router.
+
+**One-off run** (`cli.py run`):
+
+```bash
+python cli.py run --pr-url ... --record-fixture ~/eden/diffgraph-recordings
+# Or via env:
+DIFFGRAPH_RECORD_DIR=~/eden/diffgraph-recordings python cli.py run --pr-url ...
+```
+
+**Webhook router** — per-agent opt-in in `webhook.toml`:
+
+```toml
+[agents.dg]
+trigger = "cli"
+command = '...'
+
+[agents.dg.recording]
+dir = "~/eden/diffgraph-recordings"
+scope = "range"   # "range" (default — base..source + ancestry, ~10-50 MB / PR)
+                  # "full"  (--all, ~100 MB-1 GB on big monorepos)
+```
+
+The router forwards `DIFFGRAPH_RECORD_DIR` + `DIFFGRAPH_RECORD_SCOPE` on the subprocess env, no template change to `command =` needed. Capture is best-effort: free space below 5 GB or an unwritable target disables capture for that run without aborting the agent. Pick a path on a partition with headroom — recordings can grow to tens of GB at scale (one bundle per PR, lots of PRs).
+
+#### Replay modes
+
+Two granularities, both reachable from the recording detail page or the bench CLI:
+
+| Mode | Command | When to use |
+|---|---|---|
+| **Single invocation** | `bench replay-single <dir> --invocation N` | Drop today's agent into one captured PR-state moment, score against the LLM judge. Closest to existing unit-tier; deterministic given the recording. |
+| **Full lifecycle** | `bench replay <dir>` | Walk the whole PR timeline. The agent acts at every recorded invocation point with **accumulating state** — humans replay verbatim from the recording, the agent's own outputs from earlier invocations of THIS replay carry forward as `[SELF]` context, exactly like a real PR proceeding. |
+
+Lifecycle replay is the one that produces business-grade metrics. It implements the **orphan-skip rule** for free: a recorded human reply whose parent agent comment didn't get produced this run is silently dropped (cascade applies to chained replies) and counted as a divergence signal. Comment IDs are remapped at replay time — stable IDs in the recording (`a-NNN-K` for agent comments, `c-<bb-id>` for humans) map to dynamic runtime IDs as events apply.
+
+#### Ground-truth labels and metrics
+
+`outcomes.yaml` next to a recording carries human verdicts on every agent comment and a list of missed-finding nominations (TODO §19.9 schema). Auto-infer bootstraps it from captured human reactions:
+
+```bash
+# Auto-infer reads captured comments and applies marker-based rules:
+#   "❌" / "[noise]" / "не согласен" / "false positive"  → noise
+#   "+1" / "nice catch" / "согласен" / "поправлю"        → valid
+#   thread resolved with no counter-reply                → valid (medium confidence)
+#   conflicting signals                                  → undecided
+bench outcomes-auto-infer ~/eden/diffgraph-recordings/.../PR-1234
+
+# Or from the UI: "Auto-infer outcomes" button on the recording detail page.
+```
+
+Once `outcomes.yaml` exists, lifecycle replays auto-score against it:
+
+| Metric | What it measures |
+|---|---|
+| `miss_rate` / `miss_rate_blocker` | Issues humans raised that the agent never surfaced. The `_blocker` variant filters to BLOCKER/MAJOR — the only miss rate that matters to the business. |
+| `cumulative_noise_rate` | Agent comments humans labelled noise / total agent comments. The cost the agent imposes on reviewers per finding produced. |
+| `convergence_invocations[topic]` | At which invocation index a verified finding first appeared. "Found in rev-01" beats "found after rev-03 / force-push". |
+| `drift_alerts` | A topic raised in invocation N but absent from N+1 — agent forgot a true finding. |
+| `orphan_skip_count` | How many recorded human replies got dropped because today's agent took a different topic — a divergence signal. |
+
+#### What this unlocks
+
+Once a corpus accumulates (50-100 labelled recordings is enough), the standard moves become real regression measurements:
+
+- **Prompt change**: every commit on master runs the replay corpus → score deltas surface before merge.
+- **Model migration**: replay corpus tells you whether `miss_rate_blocker` regressed before flipping the production endpoint.
+- **Skill A/B**: replay corpus measures BUSINESS impact (miss/noise/stability), not just structural extraction.
+- **Production drift detection**: same recording, weekly replay → catch silent regressions when nothing in your code changed but model endpoint / prompt cache / provider did.
+
+See `TODO.md §19` for the full design and `tests/test_recording.py` for end-to-end coverage of capture + replay + orphan-skip + scoring.
 
 ### Data the agent sends to the LLM
 
