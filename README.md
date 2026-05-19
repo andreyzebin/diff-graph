@@ -453,7 +453,7 @@ Reflect lives in the skill layer (`orchestra/skills/reflect.md`), not the defaul
 
 ### Skills — composable bundles of tools + methodology
 
-A skill is a single `.md` file that bundles a set of tools with the rationale / contract / cadence configuration for using them. The framework injects the skill body as a SEPARATE system-role message between the agent's own system prompt and the user task — no per-prompt placeholder needed. The skill's tools are unioned into the agent's tool surface; its `reflect: {…}` / `extra_tools` blocks merge into the agent config. Skills are mounted at either the system level (`skills:` in `<agent>.system.md` frontmatter — every invocation of that agent gets the skill) or the user level (`skills:` in the per-call user message). Both layers union, deduped.
+A skill is a single `.md` file that bundles a set of tools with the rationale / contract / cadence configuration for using them. The framework appends the skill body to the agent's system message (separated by `---`) — no per-prompt placeholder needed. The skill's tools are unioned into the agent's tool surface; its `reflect: {…}` / `extra_tools` blocks merge into the agent config. Skills are mounted at either the system level (`skills:` in `<agent>.system.md` frontmatter — every invocation of that agent gets the skill) or the user level (`skills:` in the per-call user message). Both layers union, deduped.
 
 Current skills (`orchestra/skills/`):
 

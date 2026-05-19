@@ -346,16 +346,19 @@ appended), then calls `mount_skills()` which:
    `self._mounted_skills_body`.
 
 **Render — framework-level injection.** The combined skill body
-is injected as a SEPARATE system-role message between the
-agent's own system prompt and the conversation / user task —
-done by `_build_messages()` in `orchestra/agent.py`. No
-per-prompt placeholder is required; user.md files stay clean.
-Modern OpenAI-compatible providers (DeepSeek, OpenAI,
-Anthropic-via-proxy, …) accept multiple system messages at the
-head of the conversation, and the explicit separation makes it
-obvious in traces where each surface comes from. An agent with
-no `skills:` declared keeps the same single-system-message
-shape as before.
+is APPENDED to the single system message — below the agent's
+own methodology, separated by a `---` line — done by
+`_build_messages()` in `orchestra/agent.py`. No per-prompt
+placeholder is required; user.md files stay clean.
+
+Earlier draft sent the skill body as a SECOND `role: system`
+message between system and user. Visually nicer in traces, but
+some providers (cloud.ru's Qwen3 broker — observed 2026-05-19)
+strictly reject multi-system requests with
+`BadRequestError: System message must be at the beginning`.
+Appending to the single system message is the
+universally-compatible shape; the `---` line keeps the visual
+split when humans read the system message in a trace.
 
 Backward-compat: legacy `{{ skills }}` placeholders in existing
 user.md files render as empty (`RunContext.skills_body` is now

@@ -1321,25 +1321,26 @@ class Agent:
         )
         if system_text:
             system_text = _render_template(system_text, _ctx)
-        messages = [{"role": "system", "content": system_text}]
 
         # Skills — framework-level injection. The rendered skill body
         # (combined `## Skill: <name>` blocks built by `mount_skills`
-        # in __init__) goes in as a SEPARATE system-role message
-        # between the agent's own system prompt and the conversation
-        # / user task. Modern OpenAI-compatible providers (DeepSeek,
-        # OpenAI, Anthropic-via-proxy, …) all accept multiple system
-        # messages at the head of the conversation; the explicit
-        # separation makes it obvious where each surface comes from
-        # in traces. Empty mount → no skill message (every agent
-        # with no `skills:` declared keeps the same shape as before).
+        # in __init__) is appended to the single system message,
+        # below the agent's own methodology. We tried sending it as
+        # a second `role: system` message but cloud.ru / Qwen3
+        # strictly reject anything but ONE system message at the
+        # head ("System message must be at the beginning"). One
+        # system message with a `---` separator is the
+        # universally-compatible shape; the visual split in traces
+        # is preserved as a marker line.
         _skills_body = getattr(self, "_mounted_skills_body", "") or ""
         if _skills_body.strip():
-            messages.append({
-                "role": "system",
-                "content": _skills_body,
-            })
+            system_text = (
+                f"{system_text}\n\n"
+                f"---\n\n"
+                f"{_skills_body}"
+            )
 
+        messages = [{"role": "system", "content": system_text}]
         messages.extend(self.context_messages)
 
         # User message — the body of whichever source we parsed in

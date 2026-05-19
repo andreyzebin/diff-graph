@@ -164,7 +164,7 @@ Meta-tools built in (registered when listed in the agent's effective tool surfac
 
 ### Skills — composable bundles of tools + methodology (`orchestra/skills/`)
 
-A skill is a `.md` file with YAML frontmatter (`tools:` it brings, optional `reflect: {…}` / `extra_tools` config) + a body that the framework injects as a separate system-role message between the agent's own system prompt and the user task. Mounted via `skills:` in the system.md frontmatter (always-on for that agent) or the per-call user prompt (per-task addition). The two lists union with dedup at `Agent.__init__`.
+A skill is a `.md` file with YAML frontmatter (`tools:` it brings, optional `reflect: {…}` / `extra_tools` config) + a body that the framework appends to the agent's system message (separated by `---`). Mounted via `skills:` in the system.md frontmatter (always-on for that agent) or the per-call user prompt (per-task addition). The two lists union with dedup at `Agent.__init__`.
 
 Current set: `reflect`, `prefer_delegation`, `diff_view`, `pr_threads`, `project_conventions`, `finding_format`. See README §"Skills" for the table of what each bundles and where it's mounted.
 

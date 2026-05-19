@@ -288,11 +288,12 @@ class TestAgentIntegration:
         assert "agent_spawn" in tools
         assert "agent_list" in tools
 
-    def test_skills_inject_as_separate_system_message(self):
-        """Framework injects the rendered skill body as a SEPARATE
-        system-role message between the agent's own system prompt
-        and the conversation/user task. No per-prompt placeholder
-        needed — the user.md body stays clean."""
+    def test_skills_appended_to_system_message(self):
+        """Framework appends the rendered skill body to the single
+        system message (separated by `---`). One system message at
+        the head — required by some providers (cloud.ru / Qwen3
+        reject multi-system). User message stays clean — no skill
+        content bleeds into it."""
         override = (
             "---\n"
             "skills: [prefer_delegation]\n"
@@ -302,24 +303,30 @@ class TestAgentIntegration:
         a = self._agent(override)
         msgs = a._build_messages()
         system_msgs = [m for m in msgs if m.get("role") == "system"]
-        # First system message is the agent's own; the injected
-        # skill block follows as a second system message.
-        assert len(system_msgs) == 2
-        skill_msg = system_msgs[1]
-        assert "## Skill: prefer_delegation" in skill_msg["content"]
-        assert "Delegation" in skill_msg["content"]
+        # Always exactly ONE system message regardless of skill mount.
+        assert len(system_msgs) == 1
+        system_content = system_msgs[0]["content"]
+        # Skill body landed at the bottom of the system message,
+        # below a `---` separator.
+        assert "---" in system_content
+        assert "## Skill: prefer_delegation" in system_content
+        assert "Delegation" in system_content
+        # Original system prompt content still present.
+        assert "sys" in system_content
         # User message stays clean — no skill content bleeding in.
         user = next(m for m in msgs if m.get("role") == "user")
         assert "## Skill:" not in user["content"]
         assert user["content"].strip() == "Task body."
 
-    def test_no_skills_no_extra_system_message(self):
-        """Agent with no `skills:` declared gets the same single-
-        system-message shape as before (no skill injection)."""
+    def test_no_skills_no_separator_in_system(self):
+        """Agent with no `skills:` declared gets a clean system
+        message with no `---` skill separator."""
         a = self._agent("Plain body, no skills.")
         msgs = a._build_messages()
         system_msgs = [m for m in msgs if m.get("role") == "system"]
         assert len(system_msgs) == 1
+        # No skill block → no extra `---` separator at the end.
+        assert "## Skill:" not in system_msgs[0]["content"]
         user = next(m for m in msgs if m.get("role") == "user")
         assert user["content"].strip() == "Plain body, no skills."
 
