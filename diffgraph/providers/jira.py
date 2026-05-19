@@ -77,6 +77,57 @@ class TicketLink:
 
 
 @dataclass
+class DevInfoBranch:
+    name: str
+    url: str
+    repository_name: str
+    repository_url: str
+
+
+@dataclass
+class DevInfoCommit:
+    id: str               # full SHA when available
+    display_id: str       # short SHA
+    url: str
+    message: str
+    author: str
+    repository_name: str
+    repository_url: str
+
+
+@dataclass
+class DevInfoPullRequest:
+    id: str               # PR number as string
+    name: str             # PR title
+    url: str
+    status: str           # OPEN / MERGED / DECLINED / SUPERSEDED
+    source_branch: str
+    destination_branch: str
+    author: str
+    repository_name: str
+    repository_url: str
+    # `repo_uri` is the bitbucket://handle/project/repo address —
+    # computed from `repository_url` so the agent can pass it
+    # straight to `pr_get(repo=..., pr=id)`. Empty string when the
+    # URL doesn't parse (unknown host layout).
+    repo_uri: str = ""
+
+
+@dataclass
+class DevInfoContext:
+    """Distilled output of `JiraProvider.fetch_dev_info` — the
+    branches / commits / pull-requests Jira has linked to a ticket.
+    Empty lists are not an error — they mean "no dev activity
+    linked yet" or the dev-status integration isn't configured."""
+    key: str
+    branches: list[DevInfoBranch] = field(default_factory=list)
+    commits: list[DevInfoCommit] = field(default_factory=list)
+    pull_requests: list[DevInfoPullRequest] = field(default_factory=list)
+    configured: bool = True
+    note: str = ""        # set when configured=False
+
+
+@dataclass
 class TicketContext:
     key: str
     summary: str
@@ -271,6 +322,164 @@ def format_ticket(tc: TicketContext) -> str:
     return "\n".join(lines)
 
 
+# ── dev-info (branches / commits / PRs Jira links to a ticket) ─────
+
+
+_BITBUCKET_URL_RE = re.compile(
+    r"https?://[^/]+/projects/(?P<project>[^/]+)/repos/(?P<repo>[^/?#]+)"
+)
+
+
+def _repo_uri_from_bitbucket_url(url: str, *, handle: str = "default") -> str:
+    """Convert a Bitbucket Server repository URL into our
+    `bitbucket://<handle>/<project>/<repo>` URI. Returns empty when
+    the URL doesn't match the expected layout (e.g. cloud-style URLs,
+    SSH refs, unconfigured deployments) — the agent then has to fall
+    back to the human URL alone."""
+    if not url:
+        return ""
+    m = _BITBUCKET_URL_RE.search(url)
+    if not m:
+        return ""
+    return f"bitbucket://{handle}/{m.group('project')}/{m.group('repo')}"
+
+
+def distill_dev_info(key: str, raw: dict, *, handle: str = "default") -> DevInfoContext:
+    """Pure: raw dev-status payload → `DevInfoContext`. Flattens
+    Atlassian's nested response, extracts the few fields the agent
+    actually needs to navigate (branch name, commit SHA, PR id +
+    repo URI), drops the rest.
+
+    Tolerant of missing keys — dev-status responses vary by
+    Bitbucket version + Application Link configuration; absent
+    branches / commits / pullRequests blocks degrade to empty
+    lists.
+    """
+    branches_raw = raw.get("branches") or []
+    commits_raw = raw.get("commits") or []
+    prs_raw = raw.get("pullRequests") or []
+
+    branches: list[DevInfoBranch] = []
+    for b in branches_raw:
+        repo = (b or {}).get("repository") or {}
+        branches.append(DevInfoBranch(
+            name=str(b.get("name") or "").strip(),
+            url=str(b.get("url") or "").strip(),
+            repository_name=str(repo.get("name") or "").strip(),
+            repository_url=str(repo.get("url") or "").strip(),
+        ))
+
+    commits: list[DevInfoCommit] = []
+    for c in commits_raw:
+        repo = (c or {}).get("repository") or {}
+        author = (c or {}).get("author") or {}
+        commits.append(DevInfoCommit(
+            id=str(c.get("id") or "").strip(),
+            display_id=str(c.get("displayId") or "").strip(),
+            url=str(c.get("url") or "").strip(),
+            message=str(c.get("message") or "").strip(),
+            author=str(author.get("name") or "").strip(),
+            repository_name=str(repo.get("name") or "").strip(),
+            repository_url=str(repo.get("url") or "").strip(),
+        ))
+
+    pull_requests: list[DevInfoPullRequest] = []
+    for p in prs_raw:
+        repo = (p or {}).get("repository") or {}
+        author = (p or {}).get("author") or {}
+        source = (p or {}).get("source") or {}
+        dest = (p or {}).get("destination") or {}
+        repo_url = str(repo.get("url") or "").strip()
+        pull_requests.append(DevInfoPullRequest(
+            id=str(p.get("id") or "").lstrip("#").strip(),
+            name=str(p.get("name") or "").strip(),
+            url=str(p.get("url") or "").strip(),
+            status=str(p.get("status") or "").strip().upper(),
+            source_branch=str(source.get("branch") or "").strip(),
+            destination_branch=str(dest.get("branch") or "").strip(),
+            author=str(author.get("name") or "").strip(),
+            repository_name=str(repo.get("name") or "").strip(),
+            repository_url=repo_url,
+            repo_uri=_repo_uri_from_bitbucket_url(repo_url, handle=handle),
+        ))
+
+    return DevInfoContext(
+        key=key,
+        branches=branches,
+        commits=commits,
+        pull_requests=pull_requests,
+    )
+
+
+def format_dev_info(di: DevInfoContext) -> str:
+    """Stable text render of a `DevInfoContext`. Output is the
+    `jira_dev_info` tool's return contract — the agent reads this
+    string verbatim. Always lists PRs first (the most useful edge for
+    cross-source navigation) with the exact `pr_get(repo=..., pr=...)`
+    call shape pre-formatted, so the agent can copy-paste it."""
+    if not di.configured or (di.note and not di.pull_requests
+                              and not di.commits and not di.branches):
+        return f"[dev_info {di.key}] {di.note or 'Jira dev-status unavailable.'}"
+
+    if not (di.branches or di.commits or di.pull_requests):
+        return (
+            f"[dev_info {di.key}] No linked branches, commits, or PRs. "
+            f"(Either none have been created yet, or the Application "
+            f"Link between Jira and Bitbucket isn't wired.)"
+        )
+
+    lines: list[str] = [f"DEV_INFO {di.key}"]
+
+    if di.pull_requests:
+        lines += ["", f"Pull requests ({len(di.pull_requests)}):"]
+        for p in di.pull_requests:
+            head = (
+                f"  #{p.id} [{p.status}] {p.name} "
+                f"({p.source_branch} → {p.destination_branch}, "
+                f"by {p.author or '?'} in {p.repository_name or '?'})"
+            )
+            lines.append(head)
+            if p.repo_uri:
+                lines.append(
+                    f"      → pr_get(repo=\"{p.repo_uri}\", pr=\"{p.id}\")"
+                )
+            elif p.url:
+                lines.append(f"      → URL: {p.url}")
+
+    if di.branches:
+        lines += ["", f"Branches ({len(di.branches)}):"]
+        for b in di.branches:
+            lines.append(
+                f"  {b.name}  ({b.repository_name or '?'})"
+            )
+
+    if di.commits:
+        lines += ["", f"Commits ({len(di.commits)}):"]
+        for c in di.commits:
+            short = c.display_id or c.id[:7]
+            first_line = (c.message or "").splitlines()[0] if c.message else ""
+            lines.append(
+                f"  {short}  {first_line[:80]}  "
+                f"(by {c.author or '?'} in {c.repository_name or '?'})"
+            )
+
+    return "\n".join(lines)
+
+
+def _dev_info_not_configured(key: str) -> DevInfoContext:
+    return DevInfoContext(
+        key=key, configured=False,
+        note="Jira dev-status is not configured for this deployment.",
+    )
+
+
+def _dev_info_disabled(key: str) -> DevInfoContext:
+    return DevInfoContext(
+        key=key, configured=False,
+        note="Jira integration is disabled in this run.",
+    )
+
+
 class JiraProvider:
     """Thin wrapper over `atlassian.Jira`. Lazily builds the client
     on first use so constructing the provider never does I/O and
@@ -340,17 +549,85 @@ class JiraProvider:
         file when DIFFGRAPH_JIRA_FIXTURE is set (fake path), else
         hits the network. A missing fixture file fails loud — that's
         a test misconfiguration, not a runtime condition to paper
-        over."""
+        over.
+
+        Fixture format supports two shapes for backward compatibility:
+          - Legacy: the JSON file IS the issue payload — used as
+            ticket body, dev_info is empty.
+          - Extended: `{"issue": {...}, "dev_info": {...}}` — the
+            `issue` key holds the ticket body, `dev_info` holds the
+            shape `fetch_dev_info_raw` returns.
+        """
         if self.fixture_path:
-            import json
-            from pathlib import Path
-            p = Path(self.fixture_path).expanduser()
-            if not p.is_file():
-                raise FileNotFoundError(
-                    f"DIFFGRAPH_JIRA_FIXTURE points at a missing file: {p}"
-                )
-            return json.loads(p.read_text(encoding="utf-8"))
+            blob = self._load_fixture()
+            if isinstance(blob, dict) and "issue" in blob and "dev_info" in blob:
+                return blob["issue"] or {}
+            return blob
         return self._jira().issue(key, expand="changelog")
+
+    def fetch_dev_info_raw(self, key: str) -> dict:
+        """Raw dev-status payload — branches / commits / pull-requests
+        Jira links to the issue. Real-network path hits Atlassian's
+        `dev-status` API; fake-path reads from the fixture's
+        `dev_info:` block (empty when fixture is legacy-shaped).
+
+        Atlassian's dev-status endpoint requires the NUMERIC internal
+        issue id, not the human key — so we fetch the issue first to
+        resolve it. (For fixture mode the id lookup is skipped — the
+        fixture already carries pre-baked dev_info.)
+        """
+        if self.fixture_path:
+            blob = self._load_fixture()
+            if isinstance(blob, dict) and "dev_info" in blob:
+                return blob.get("dev_info") or {}
+            # Legacy fixture: no dev-info baked in.
+            return {}
+        # Real path — resolve numeric id, then call dev-status. Wrapped
+        # in a try because dev-status isn't enabled on every Atlassian
+        # install; an unsupported endpoint should degrade to empty
+        # rather than crash the agent.
+        issue = self._jira().issue(key, fields="id")
+        issue_id = (issue or {}).get("id") or ""
+        if not issue_id:
+            return {}
+        # Sum branches + commits + pull_requests for the bitbucket
+        # application type. atlassian-python-api doesn't expose
+        # dev-status directly, so use the raw GET.
+        out: dict = {}
+        for data_type in ("branch", "commit", "pullrequest"):
+            try:
+                resp = self._jira().get(
+                    "rest/dev-status/1.0/issue/detail",
+                    params={
+                        "issueId": issue_id,
+                        "applicationType": "bitbucket",
+                        "dataType": data_type,
+                    },
+                )
+            except Exception as exc:
+                log.info("jira_dev_info: %s dataType=%s unavailable (%s): %s",
+                         key, data_type, type(exc).__name__, exc)
+                continue
+            if isinstance(resp, dict):
+                # Response shape: { detail: [{ branches: [...], commits: [...],
+                # pullRequests: [...] }] }. Flatten into the merged dict.
+                for entry in (resp.get("detail") or []):
+                    for k, v in (entry or {}).items():
+                        if v:
+                            out.setdefault(k, []).extend(v)
+        return out
+
+    def _load_fixture(self) -> dict:
+        """Read + parse the configured fixture JSON. Shared by
+        `fetch_ticket_raw` and `fetch_dev_info_raw`."""
+        import json
+        from pathlib import Path
+        p = Path(self.fixture_path).expanduser()
+        if not p.is_file():
+            raise FileNotFoundError(
+                f"DIFFGRAPH_JIRA_FIXTURE points at a missing file: {p}"
+            )
+        return json.loads(p.read_text(encoding="utf-8"))
 
     def fetch_ticket(self, key: str) -> TicketContext:
         """`fetch_ticket_raw` + `distill_ticket`, with graceful
@@ -382,6 +659,34 @@ class JiraProvider:
             log.info("jira_read_ticket: %s not viewable (%s): %s",
                      key, type(exc).__name__, exc)
             return _not_viewable(key, exc)
+
+    def fetch_dev_info(self, key: str, *, handle: str = "default") -> DevInfoContext:
+        """`fetch_dev_info_raw` + `distill_dev_info`, with the same
+        graceful-degradation pattern as `fetch_ticket`:
+
+          - disabled                       → `_dev_info_disabled` sentinel
+          - no token / no fixture          → `_dev_info_not_configured`
+          - any error in fixture mode      → propagates (broken fixture)
+          - any error in network mode      → empty `DevInfoContext`
+                                             with a note (the endpoint
+                                             isn't enabled on every
+                                             Atlassian install)
+        """
+        if self.disabled:
+            return _dev_info_disabled(key)
+        if not self.configured:
+            return _dev_info_not_configured(key)
+        if self.fixture_path:
+            return distill_dev_info(key, self.fetch_dev_info_raw(key), handle=handle)
+        try:
+            return distill_dev_info(key, self.fetch_dev_info_raw(key), handle=handle)
+        except Exception as exc:
+            log.info("jira_dev_info: %s unavailable (%s): %s",
+                     key, type(exc).__name__, exc)
+            return DevInfoContext(
+                key=key, configured=False,
+                note=f"dev-status endpoint unavailable: {type(exc).__name__}",
+            )
 
 
 # ── Multi-server registry + reference parsing ──────────────────────
@@ -496,3 +801,15 @@ class JiraRegistry:
         the right server. The one call the `jira_read_ticket` tool needs."""
         handle, _namespace, ticket_id = parse_ticket_ref(ref)
         return self.provider_for(handle).fetch_ticket(ticket_id)
+
+    def fetch_dev_info(self, ref: str) -> DevInfoContext:
+        """Parse a `handle/namespace/ticket_id` ref and fetch its
+        linked dev-status info (branches / commits / PRs). The one
+        call the `jira_dev_info` tool needs. The PR-refs returned
+        carry `repo_uri` set to `bitbucket://<handle>/...` using
+        the ticket's own handle — letting the agent feed them
+        straight back to `pr_get`."""
+        handle, _namespace, ticket_id = parse_ticket_ref(ref)
+        return self.provider_for(handle).fetch_dev_info(
+            ticket_id, handle=handle,
+        )

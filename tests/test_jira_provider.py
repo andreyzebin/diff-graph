@@ -581,3 +581,138 @@ class TestPrJiraIssues:
         out = bb.pr_jira_issues(
             "https://bb.example/projects/P/repos/R/pull-requests/1")
         assert [d["key"] for d in out] == ["ORD-1"]
+
+
+# ── jira_dev_info — dev-status (PRs/branches/commits linked to ticket) ────
+
+
+class TestDevInfoDistill:
+    """Pure: raw dev-status payload → `DevInfoContext`. Same pattern
+    as TestDistillEdgeCases — exercise the flatten/extract logic
+    without touching the network or fixture machinery."""
+
+    def test_extracts_pull_request_with_repo_uri(self):
+        from diffgraph.providers.jira import distill_dev_info
+        raw = {
+            "pullRequests": [
+                {
+                    "id": "287",
+                    "name": "ORD-301: hotfix",
+                    "url": "https://bb.example.com/projects/PROJ/repos/orderflow/pull-requests/287",
+                    "status": "open",
+                    "source": {"branch": "hotfix/ORD-287"},
+                    "destination": {"branch": "master"},
+                    "author": {"name": "alice"},
+                    "repository": {
+                        "name": "orderflow",
+                        "url": "https://bb.example.com/projects/PROJ/repos/orderflow",
+                    },
+                }
+            ],
+        }
+        di = distill_dev_info("ORD-301", raw, handle="internal")
+        assert len(di.pull_requests) == 1
+        pr = di.pull_requests[0]
+        assert pr.id == "287"
+        assert pr.status == "OPEN"  # normalised to upper
+        assert pr.source_branch == "hotfix/ORD-287"
+        # repo_uri uses the passed handle + parsed project/repo
+        assert pr.repo_uri == "bitbucket://internal/PROJ/orderflow"
+
+    def test_strips_leading_hash_on_pr_id(self):
+        from diffgraph.providers.jira import distill_dev_info
+        raw = {"pullRequests": [{"id": "#42"}]}
+        di = distill_dev_info("K", raw)
+        assert di.pull_requests[0].id == "42"
+
+    def test_unparseable_repo_url_leaves_empty_uri(self):
+        from diffgraph.providers.jira import distill_dev_info
+        raw = {"pullRequests": [{
+            "id": "1",
+            "repository": {"url": "git@bb.example:foo/bar.git"},
+        }]}
+        di = distill_dev_info("K", raw)
+        assert di.pull_requests[0].repo_uri == ""
+
+    def test_branches_and_commits_round_trip(self):
+        from diffgraph.providers.jira import distill_dev_info
+        raw = {
+            "branches": [{"name": "f/x", "url": "u",
+                           "repository": {"name": "r", "url": "u2"}}],
+            "commits": [{"id": "abc1234567", "displayId": "abc1234",
+                         "message": "fix\nbody", "author": {"name": "a"},
+                         "repository": {"name": "r", "url": "u2"}}],
+        }
+        di = distill_dev_info("K", raw)
+        assert di.branches[0].name == "f/x"
+        assert di.commits[0].display_id == "abc1234"
+
+    def test_empty_payload(self):
+        from diffgraph.providers.jira import distill_dev_info
+        di = distill_dev_info("K", {})
+        assert di.branches == []
+        assert di.commits == []
+        assert di.pull_requests == []
+        assert di.configured is True
+
+    def test_format_dev_info_pre_renders_pr_get_call(self):
+        from diffgraph.providers.jira import (
+            DevInfoContext, DevInfoPullRequest, format_dev_info,
+        )
+        di = DevInfoContext(
+            key="ORD-301",
+            pull_requests=[DevInfoPullRequest(
+                id="287", name="hotfix", url="",
+                status="OPEN", source_branch="src", destination_branch="dst",
+                author="alice", repository_name="orderflow",
+                repository_url="", repo_uri="bitbucket://default/P/orderflow",
+            )],
+        )
+        out = format_dev_info(di)
+        assert 'pr_get(repo="bitbucket://default/P/orderflow", pr="287")' in out
+
+    def test_format_dev_info_empty_says_so(self):
+        from diffgraph.providers.jira import DevInfoContext, format_dev_info
+        out = format_dev_info(DevInfoContext(key="K"))
+        assert "No linked branches" in out
+
+
+class TestDevInfoFixtureMode:
+    """Fixture-mode end-to-end: extended fixture shape
+    (`{issue: ..., dev_info: ...}`) feeds both ticket and dev_info
+    paths from one file. Backward compat: legacy fixtures (just an
+    issue payload) keep working — fetch_dev_info returns empty."""
+
+    def _write_fixture(self, tmp_path, body: dict):
+        import json
+        p = tmp_path / "fx.json"
+        p.write_text(json.dumps(body), encoding="utf-8")
+        return p
+
+    def test_extended_fixture_serves_both(self, monkeypatch, tmp_path):
+        body = {
+            "issue": {"key": "ORD-301", "fields": {"summary": "S"}},
+            "dev_info": {"pullRequests": [{"id": "1", "repository": {
+                "url": "https://bb.example/projects/P/repos/r"}}]},
+        }
+        p = self._write_fixture(tmp_path, body)
+        monkeypatch.setenv("DIFFGRAPH_JIRA_FIXTURE", str(p))
+        from diffgraph.providers.jira import JiraProvider
+        prov = JiraProvider()
+        tc = prov.fetch_ticket("ORD-301")
+        assert tc.key == "ORD-301"
+        di = prov.fetch_dev_info("ORD-301")
+        assert len(di.pull_requests) == 1
+
+    def test_legacy_fixture_dev_info_is_empty(self, monkeypatch, tmp_path):
+        # Legacy: the JSON IS the issue payload, no dev_info key.
+        body = {"key": "ORD-301", "fields": {"summary": "S"}}
+        p = self._write_fixture(tmp_path, body)
+        monkeypatch.setenv("DIFFGRAPH_JIRA_FIXTURE", str(p))
+        from diffgraph.providers.jira import JiraProvider
+        prov = JiraProvider()
+        assert prov.fetch_ticket("ORD-301").key == "ORD-301"
+        di = prov.fetch_dev_info("ORD-301")
+        assert di.pull_requests == []
+        assert di.branches == []
+        assert di.commits == []

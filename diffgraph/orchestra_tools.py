@@ -1000,6 +1000,50 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             )
 
     @registry.register(
+        name="jira_dev_info",
+        description=(
+            "Read the branches, commits, and pull requests Jira has "
+            "linked to a ticket — the bridge from a Jira issue into "
+            "Bitbucket (§10 cross-source investigation toolset). Each "
+            "linked PR comes back with its repo URI + id pre-formatted "
+            "as a ready `pr_get(repo=..., pr=...)` call so the agent "
+            "can follow the edge in one step without parsing URLs.\n\n"
+            "`ref` is copied verbatim from the PR's jira_tickets list "
+            "(`handle/namespace/ticket_id`) or a bare ticket key. "
+            "When the Application Link between Jira and Bitbucket "
+            "isn't configured, or no dev activity is linked yet, the "
+            "tool says so plainly — proceed with what you have, don't "
+            "retry."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": (
+                        "Ticket reference — `handle/namespace/ticket_id` "
+                        "as given in the PR's jira_tickets list, or a "
+                        "bare ticket key (e.g. ORD-301)."
+                    ),
+                },
+            },
+            "required": ["ref"],
+        },
+    )
+    def dev_info_tool(ref: str = "") -> str:
+        ref = (ref or "").strip()
+        if not ref:
+            return "(ref is required)"
+        try:
+            from .providers.jira import format_dev_info
+            return format_dev_info(_jira().fetch_dev_info(ref))
+        except Exception as exc:
+            return (
+                f"(jira_dev_info failed for {ref!r}: {type(exc).__name__}: "
+                f"{exc} — proceed with the diff + ticket alone)"
+            )
+
+    @registry.register(
         name="pr_post_comment",
         description=(
             "Post a single comment on the PR. One tool covers all three "

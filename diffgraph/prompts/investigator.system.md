@@ -22,6 +22,20 @@ tools:
   - pr_read_thread
   - pr_read_comment
   - jira_read_ticket
+  # ── §10 cross-source investigation toolset ───────────────────────
+  # `jira_dev_info` is the bridge: it returns the branches, commits,
+  # and PRs Jira has linked to a ticket, with each PR pre-formatted
+  # as a `pr_get(repo=..., pr=...)` call. `pr_get` / `pr_list` /
+  # `repo_list` round out the graph navigation. Today (Phase B) all
+  # three Bitbucket-side tools return current-PR data only; non-
+  # default URIs come back with a "Phase C" notice. The surface
+  # ships now so the investigator can use the Jira → PR bridge
+  # immediately and adopt cross-repo reads transparently when
+  # Phase C lands.
+  - jira_dev_info
+  - pr_get
+  - pr_list
+  - repo_list
   - done
 # `reflect` comes from the `reflect` skill mounted at system level
 # below (orchestra/skills/reflect.md). The skill bundles the tool,
