@@ -11,19 +11,23 @@ bench_cmd: >
 
 # Abstract delegation test — half of an A/B pair with SKILL-001-without.
 #
-# Boss receives a trivial numeric task and is expected to DELEGATE
-# to a worker via agent_spawn (because the prefer_delegation skill
-# is mounted). The do_task tool is deterministic (doubles the
-# input) so the judge can verify correctness.
+# Boss receives a fan-out compute task (5 integer inputs, each
+# needs do_task to produce its result, then merged). Without the
+# skill the boss can reasonably do them sequentially itself; WITH
+# the prefer_delegation skill mounted, the skill body's "Multiple
+# agent_spawn calls in one step fan out in parallel" guidance is
+# the obvious fit and the boss should spawn one worker per input.
+# The do_task tool is deterministic (doubles the input) so the
+# judge can verify each output.
 #
 # Pass criteria — assert via judge:
-#   - intended_text == "42" (the doubled value of 21).
+#   - intended_text == "42, 14, 200, 10, 66" (doubled inputs, in order).
 #   - boss agent invocations contain agent_spawn (delegated).
-#   - boss invocations do NOT contain do_task (worker called it).
+#   - boss invocations do NOT contain do_task (workers called it).
 #   - worker invocations contain do_task.
 #
 # Pair: SKILL-001-prefer-delegation-without.yaml — same task,
-# no skill. Expected: boss calls do_task itself, no agent_spawn.
+# no skill. Expected: boss runs 5 sequential do_task calls.
 
 # No `repo:` block — PR-free scenario. bench/cli skip fake_bitbucket
 # setup since boss has no diff_* or PR-aware tools.
@@ -33,7 +37,7 @@ prompt_resource: diffgraph:diffgraph/test_prompts/skills/delegation
 user_message_from: diffgraph:diffgraph/test_prompts/skills/delegation/boss-with-skill.user.md
 
 agent_data:
-  task_input: "21"
+  task_input: "21, 7, 100, 5, 33"
 
 expected_output:
   assert_via: [intended_text]
@@ -41,13 +45,13 @@ expected_output:
     - id: doubled-answer
       rationale: |
         The boss's text_answer (intended_text) must contain the
-        string "42" — the doubled value of the input "21". With the
-        prefer_delegation skill mounted, the boss is expected to
-        delegate the doubling to a worker (via agent_spawn) and then
-        synthesize the worker's response back into a final answer.
-        Whatever the path, the final answer reported has to be 42 —
-        anything else means the boss/worker chain broke (no spawn,
-        wrong answer, dropped synthesis).
+        five doubled values "42, 14, 200, 10, 66" in the SAME
+        ORDER as the inputs "21, 7, 100, 5, 33". With the
+        prefer_delegation skill mounted, the boss should fan out
+        across workers (one agent_spawn per input — possibly all
+        in one step) and synthesize their results into the final
+        comma-separated answer. Any ordering OR any wrong number
+        means the fan-out / synthesis chain broke.
   # Structural assertion (deterministic, complements the LLM judge).
   # Forces an A/B distinction the semantic answer-check can't see on
   # its own: did the boss ACTUALLY delegate, or just answer "42" itself?

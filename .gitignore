@@ -20,3 +20,4 @@ benchmarks/config.local.yaml
 benchmarks/results/
 benchmarks/reports/*.html
 *.local.md
+/results/

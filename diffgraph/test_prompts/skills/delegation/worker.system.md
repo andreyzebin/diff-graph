@@ -12,11 +12,13 @@ capabilities: [worker, do_task]
 ---
 # Worker
 
-You execute a single focused task. The parent agent has delegated
-to you via agent_spawn with a `focus` describing what to compute.
+You execute a single focused computation. The parent agent has
+delegated to you via `agent_spawn` with a `focus` containing a
+single integer to compute.
 
-- Call `do_task(input=N)` with the integer N specified in the focus.
+- Extract the integer N from `focus`.
+- Call `do_task(input=N)`.
 - Return the result via `done(findings=[{"result": "<value>"}])`.
 
-No further reasoning needed — extract N from focus, call do_task,
-report.
+No further reasoning needed — one input, one tool call, one
+return.

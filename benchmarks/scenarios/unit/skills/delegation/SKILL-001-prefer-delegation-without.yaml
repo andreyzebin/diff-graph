@@ -9,24 +9,25 @@ bench_cmd: >
   {fixture_path}
   --provider={provider}
 
-# A/B baseline — same task as SKILL-001-with, no skill mounted.
-# Boss is expected to call do_task itself and report.
+# A/B baseline — same task as SKILL-001-with (5-input fan-out
+# compute), no skill mounted. Boss is expected to run do_task
+# sequentially 5 times itself.
 #
 # Pass criteria:
-#   - intended_text == "42".
+#   - intended_text == "42, 14, 200, 10, 66" (doubled inputs, in order).
 #   - boss invocations contain do_task.
 #   - boss invocations do NOT contain agent_spawn.
 #
 # Together with the WITH variant this proves the prefer_delegation
 # skill actually changes behavior — without it boss does the work
-# himself; with it boss routes to a worker.
+# himself; with it boss fans out to workers.
 
 prompt_resource: diffgraph:diffgraph/test_prompts/skills/delegation
 
 user_message_from: diffgraph:diffgraph/test_prompts/skills/delegation/boss.user.md
 
 agent_data:
-  task_input: "21"
+  task_input: "21, 7, 100, 5, 33"
 
 expected_output:
   assert_via: [intended_text]
@@ -34,9 +35,10 @@ expected_output:
     - id: doubled-answer
       rationale: |
         The boss's text_answer (intended_text) must contain the
-        string "42" — the doubled value of the input "21". The
-        baseline (no skill) variant expects the boss to do the work
-        itself; the answer still has to be 42 regardless of path.
+        five doubled values "42, 14, 200, 10, 66" in the SAME
+        ORDER as the inputs "21, 7, 100, 5, 33". The baseline (no
+        skill) variant expects the boss to do the work itself by
+        calling do_task five times sequentially.
   # Structural assertion — the mirror image of SKILL-001-with.
   # Without the prefer_delegation skill, the boss must call do_task
   # itself and must NOT spawn a worker. If this fails, either the
