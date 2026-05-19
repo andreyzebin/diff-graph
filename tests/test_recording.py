@@ -291,6 +291,151 @@ def test_full_capture_flow(upstream_repo: Path, record_root: Path) -> None:
         assert all(line == "alice <alice@example.com>" for line in commit_meta)
 
 
+def test_timeline_builder_synthesizes_world_events(
+    upstream_repo: Path, record_root: Path,
+) -> None:
+    """The timeline builder walks invocation snapshots and emits
+    pr_opened + comment_added + commit_pushed + agent_invocation
+    events. Verifies orphan-skip identity bookkeeping (TODO §19.4)
+    by capturing a reply whose parent agent comment never gets
+    re-issued by the current "agent" (i.e., not in posted output)."""
+    from benchmarks.runner.replay import (
+        RecordingReader, build_timeline,
+    )
+
+    source_revs = subprocess.run(
+        ["git", "-C", str(upstream_repo), "log", "--format=%H", "master..feat"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip().splitlines()
+    source_revs.reverse()
+    base_sha = _git(upstream_repo, "rev-parse", "master")
+
+    PR_URL_LOCAL = (
+        "https://bitbucket.example.com/projects/PROJ/repos/orderflow/"
+        "pull-requests/9001"
+    )
+
+    # Build a 2-invocation recording with growing comment thread:
+    # inv-1: one human top-level comment (h-1).
+    # inv-2: same human comment + a new human reply to it (h-2 -> h-1).
+    for inv_idx, source_sha in enumerate(source_revs[:2], start=1):
+        w = RecordingWriter.open(record_root, PR_URL_LOCAL, min_free_bytes=0)
+        w.write_pr_meta(title="Lifecycle test", description="",
+                        author="alice", source_branch="feat",
+                        target_branch="master")
+        w.start_invocation(triggered_by={"kind": "webhook"},
+                           message="/review", agent_name="reviewer")
+        comments = [
+            CommentSnapshot(
+                stable_id="c-1", bb_id=1, author="bob",
+                is_bot=False, body="check this",
+                parent_stable_id=None,
+                anchor={"file": "OrderService.java", "line": 1,
+                         "side": "new", "rev_sha": source_sha},
+                created_at="2026-05-10T13:00:00Z", resolved=False,
+            ),
+        ]
+        if inv_idx == 2:
+            comments.append(CommentSnapshot(
+                stable_id="c-2", bb_id=2, author="bob",
+                is_bot=False, body="follow-up",
+                parent_stable_id="c-1",
+                anchor=None,
+                created_at="2026-05-10T15:00:00Z", resolved=False,
+            ))
+        w.write_snapshot(PRSnapshot(
+            base_sha=base_sha,
+            source_sha=source_sha,
+            source_branch="feat", target_branch="master",
+            pr_status="open", rev_id=f"rev-{inv_idx:02d}",
+            captured_at=f"2026-05-10T14:0{inv_idx}:00Z",
+            comments=comments,
+        ))
+        w.write_output(findings=[], posted_comments=[], status_changes=[],
+                       exit_status="ok")
+
+    pr_dir = (record_root / "bitbucket.example.com" / "PROJ" /
+              "orderflow" / "PR-9001")
+    rec = RecordingReader.load(pr_dir)
+    events = build_timeline(rec)
+    kinds = [e.kind for e in events]
+    # Expect: pr_opened, comment_added (c-1 from inv-1 seed),
+    #         agent_invocation (inv 1), commit_pushed (rev-01 → rev-02),
+    #         comment_added (c-2 new in inv-2), agent_invocation (inv 2)
+    assert kinds[0] == "pr_opened"
+    assert "agent_invocation" in kinds
+    assert kinds.count("agent_invocation") == 2
+    assert kinds.count("comment_added") == 2
+    assert "commit_pushed" in kinds
+    # comment_added events carry stable_ids as expected.
+    comment_events = [e for e in events if e.kind == "comment_added"]
+    assert {e.data["stable_id"] for e in comment_events} == {"c-1", "c-2"}
+    # The reply (c-2) names c-1 as parent — exactly what orphan-skip
+    # would consult at lifecycle time.
+    reply = next(e for e in comment_events if e.data["stable_id"] == "c-2")
+    assert reply.data["parent_stable_id"] == "c-1"
+
+
+def test_lifecycle_state_orphan_skip(record_root: Path) -> None:
+    """ReplayState applies the orphan-skip rule: a human reply whose
+    parent stable_id isn't in stable_to_bb_id at event time gets
+    logged as a skip rather than injected (TODO §19.4 cascade)."""
+    from benchmarks.runner.replay import (
+        ReplayState, LifecycleReplayDriver, TimelineEvent, Recording,
+    )
+
+    # Construct a minimal Recording — bypass the full disk loader.
+    rec = Recording(pr_dir=Path("/nonexistent/PR-1"), pr_meta={}, manifest={})
+    drv = LifecycleReplayDriver.__new__(LifecycleReplayDriver)
+    drv.rec = rec
+    drv.state = ReplayState()
+    drv.events = []
+    drv._results = []
+    drv.workspace = Path("/tmp")
+    drv.provider = None
+    drv.timeout = 30
+    drv.judge_cfg = None
+
+    # First: a top-level human comment lands cleanly.
+    drv._on_comment_added(TimelineEvent(
+        at_ts="2026-05-10T13:00Z",
+        kind="comment_added",
+        data={"stable_id": "c-100", "bb_id": 100, "author": "bob",
+              "body": "valid top-level", "parent_stable_id": None,
+              "anchor": None, "is_bot": False, "resolved": False},
+    ))
+    assert len(drv.state.comments) == 1
+    assert drv.state.stable_to_bb_id["c-100"] == 100
+
+    # Second: a reply to an agent comment that was NEVER produced (a-001-01
+    # is the recorded agent's stable_id but the current agent didn't post
+    # anything — so the parent_stable_id won't resolve). Should be skipped.
+    drv._on_comment_added(TimelineEvent(
+        at_ts="2026-05-10T13:05Z",
+        kind="comment_added",
+        data={"stable_id": "c-101", "bb_id": 101, "author": "bob",
+              "body": "reply to ghost", "parent_stable_id": "a-001-01",
+              "anchor": None, "is_bot": False, "resolved": False},
+    ))
+    assert len(drv.state.comments) == 1  # unchanged — skipped
+    assert len(drv.state.orphan_skips) == 1
+    assert drv.state.orphan_skips[0]["stable_id"] == "c-101"
+    assert drv.state.orphan_skips[0]["missing_parent"] == "a-001-01"
+
+    # Third: another reply, this time chained behind c-101 (which was
+    # itself orphaned). Also skipped — cascade rule.
+    drv._on_comment_added(TimelineEvent(
+        at_ts="2026-05-10T13:10Z",
+        kind="comment_added",
+        data={"stable_id": "c-102", "bb_id": 102, "author": "bob",
+              "body": "reply to a skipped reply", "parent_stable_id": "c-101",
+              "anchor": None, "is_bot": False, "resolved": False},
+    ))
+    assert len(drv.state.comments) == 1
+    assert len(drv.state.orphan_skips) == 2
+    assert drv.state.orphan_skips[1]["stable_id"] == "c-102"
+
+
 def test_disabled_writer_on_oserror(record_root: Path, monkeypatch) -> None:
     """A persistent write failure flips the writer to disabled and
     subsequent calls become silent no-ops. Critical so a degraded

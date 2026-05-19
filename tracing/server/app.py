@@ -1835,21 +1835,33 @@ async def api_qa_recording_detail(rec_id: str):
 
 
 class ReplayRequestPayload(BaseModel):
-    invocation: int | str = "first"
+    mode: str = "single"            # "single" or "lifecycle"
+    invocation: int | str = "first"  # ignored when mode='lifecycle'
     queue: str = "deepseek"
     priority: int = 100
 
 
 @app.post("/api/qa/recordings/{rec_id}/replay")
 async def api_qa_recording_replay(rec_id: str, p: ReplayRequestPayload):
-    """Enqueue a replay-single task for one invocation of the recording.
+    """Enqueue a replay task for this recording.
+
+    mode='single'   — one agent run against one captured state
+                       (Phase 2; default).
+    mode='lifecycle'— walks the full timeline, runs the agent at
+                       every agent_invocation event with accumulating
+                       state (TODO §19 Phase 3).
 
     Returns the task id — the UI links it to /qa/sessions?task=<id>
     so the human sees the replay's progress through the same view
     they use for every other bench run.
     """
+    if p.mode not in ("single", "lifecycle"):
+        return JSONResponse({"error": {"code": "bad_request",
+                                          "message": f"unknown mode {p.mode!r}"}},
+                             status_code=400)
     task_id = _recordings_mod.enqueue_replay(
         _qa_queue, rec_id,
+        mode=p.mode,
         invocation=p.invocation,
         queue=p.queue,
         priority=p.priority,
@@ -1858,7 +1870,8 @@ async def api_qa_recording_replay(rec_id: str, p: ReplayRequestPayload):
         return JSONResponse({"error": {"code": "not_found",
                                           "message": "recording not found"}},
                              status_code=404)
-    return JSONResponse({"data": {"task_id": task_id, "queue": p.queue}})
+    return JSONResponse({"data": {"task_id": task_id, "queue": p.queue,
+                                     "mode": p.mode}})
 
 
 @app.get("/api/qa/plans/{plan_id}")

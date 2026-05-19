@@ -75,6 +75,18 @@ code, .mono { font-family: ui-monospace, monospace; }
   {% if not detail.has_bundle %}
   <div class="exit-failed">⚠ repo.bundle missing — replay disabled.</div>
   {% endif %}
+  {% if detail.has_bundle and detail.invocations|length > 1 %}
+  <div class="controls">
+    <span><b>Lifecycle replay:</b> walks the full timeline, accumulates state across invocations (TODO §19 Phase 3)</span>
+    <select id="lc-provider">
+      {% for q in available_queues %}
+      <option value="{{ q }}">{{ q }}</option>
+      {% endfor %}
+    </select>
+    <button onclick="replayLifecycle('{{ detail.rec_id }}')">Replay full lifecycle</button>
+    <span id="lc-result" class="replay-result"></span>
+  </div>
+  {% endif %}
 </div>
 
 <h3>Invocations ({{ detail.invocations|length }})</h3>
@@ -128,26 +140,36 @@ code, .mono { font-family: ui-monospace, monospace; }
 async function replay(invIndex, recId) {
   const provider = document.getElementById('provider-' + invIndex).value;
   const result = document.getElementById('replay-result-' + invIndex);
-  result.textContent = "enqueueing…";
-  result.className = "replay-result";
+  await _replayCommon(recId, result, {mode: "single", invocation: invIndex, queue: provider}, provider);
+}
+
+async function replayLifecycle(recId) {
+  const provider = document.getElementById('lc-provider').value;
+  const result = document.getElementById('lc-result');
+  await _replayCommon(recId, result, {mode: "lifecycle", queue: provider}, provider);
+}
+
+async function _replayCommon(recId, resultEl, body, provider) {
+  resultEl.textContent = "enqueueing…";
+  resultEl.className = "replay-result";
   try {
     const r = await fetch(`{{ base_path }}/api/qa/recordings/${recId}/replay`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({invocation: invIndex, queue: provider}),
+      body: JSON.stringify(body),
     });
     if (!r.ok) {
       const text = await r.text();
-      result.textContent = `error: ${r.status} ${text}`;
-      result.className = "replay-result replay-error";
+      resultEl.textContent = `error: ${r.status} ${text}`;
+      resultEl.className = "replay-result replay-error";
       return;
     }
     const data = await r.json();
     const task_id = data.task_id || (data.data && data.data.task_id);
-    result.innerHTML = `enqueued as task <a href="{{ base_path }}/qa/sessions?task=${task_id}" target="_blank">#${task_id}</a> on <b>${provider}</b>`;
+    resultEl.innerHTML = `enqueued as task <a href="{{ base_path }}/qa/sessions?task=${task_id}" target="_blank">#${task_id}</a> on <b>${provider}</b>`;
   } catch (e) {
-    result.textContent = `error: ${e.message}`;
-    result.className = "replay-result replay-error";
+    resultEl.textContent = `error: ${e.message}`;
+    resultEl.className = "replay-result replay-error";
   }
 }
 </script>

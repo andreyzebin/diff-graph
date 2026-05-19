@@ -394,6 +394,616 @@ def synthesize_unit_fixture_yaml(
     return target
 
 
+# ── Timeline builder (Phase 3 foundation) ────────────────────────────────
+
+
+@dataclass
+class TimelineEvent:
+    """One event in the chronological replay timeline.
+
+    Synthesized by comparing consecutive invocation snapshots — the
+    capture writer only persists STATE snapshots, the replay-side
+    derives the EVENTS between them. This decouples capture (one
+    snapshot per invocation, cheap) from replay (an unbounded event
+    stream, parameterizable).
+    """
+    at_ts: str                         # ISO timestamp from the source snapshot/output
+    kind: str                          # see TODO §19.6 table
+    # Kind-specific payload fields. Free-form dict — driver dispatches on `kind`.
+    data: dict = field(default_factory=dict)
+
+
+def build_timeline(rec: Recording) -> list[TimelineEvent]:
+    """Derive a chronological event list from the recording.
+
+    Algorithm:
+      - Initial state: emit `pr_opened` from invocation 1's snapshot.
+      - Between invocations N and N+1:
+          • If source_sha changed → `commit_pushed` (or `force_pushed`
+            when the new SHA is not an ancestor descendant of the old —
+            the bundle's ancestry is the source of truth, but we
+            conservatively treat any SHA change as commit_pushed for
+            now; force-push detection is a Phase 3.5 refinement).
+          • New comments (in snap[N+1] but not snap[N]) → `comment_added`.
+          • Comments that flipped resolved=True/False → `comment_resolved`
+            / `comment_reopened`.
+          • pr_status change → `status_changed`.
+      - At each invocation: emit `agent_invocation` event.
+      - At the end (if pr_status is 'merged' in the last snapshot or
+        the recording's pr.json has merged_at): emit `pr_merged`.
+
+    All events carry `at_ts`. Order = chronological by `at_ts`, with
+    ties broken by emission order (deterministic given the snapshots).
+    """
+    events: list[TimelineEvent] = []
+    if not rec.invocations:
+        return events
+
+    # Initial PR open — capture only writes pr.json once per PR, so
+    # pr_opened isn't an event we observe; we synthesise it from the
+    # first invocation's snapshot.
+    first = rec.invocations[0]
+    first_snap = first.snapshot
+    events.append(TimelineEvent(
+        at_ts=str(rec.pr_meta.get("created_at") or first_snap.get("captured_at", "")),
+        kind="pr_opened",
+        data={
+            "base_sha":     first_snap.get("base_sha", ""),
+            "source_sha":   first_snap.get("source_sha", ""),
+            "source_branch": first_snap.get("source_branch", ""),
+            "target_branch": first_snap.get("target_branch", ""),
+            "title":        rec.pr_meta.get("title", ""),
+            "description":  rec.pr_meta.get("description", ""),
+            "author":       rec.pr_meta.get("author", ""),
+        },
+    ))
+
+    prev_snap: Optional[dict] = None
+    prev_rev: Optional[str] = None
+    for inv in rec.invocations:
+        snap = inv.snapshot
+        rev_id = snap.get("rev_id", "")
+
+        # Delta vs previous snapshot
+        if prev_snap is not None:
+            # 1. Source SHA advanced.
+            if snap.get("source_sha") != prev_snap.get("source_sha"):
+                events.append(TimelineEvent(
+                    at_ts=snap.get("captured_at", ""),
+                    kind="commit_pushed",
+                    data={
+                        "rev_id":           rev_id,
+                        "new_source_sha":   snap.get("source_sha", ""),
+                        "prior_source_sha": prev_snap.get("source_sha", ""),
+                        "prior_rev_id":     prev_rev or "",
+                    },
+                ))
+            # 2. Comment deltas — new + resolved/reopened.
+            prev_by_stable = {
+                (c.get("stable_id") or ""): c
+                for c in (prev_snap.get("comments") or [])
+            }
+            curr_by_stable = {
+                (c.get("stable_id") or ""): c
+                for c in (snap.get("comments") or [])
+            }
+            for sid, c in curr_by_stable.items():
+                if sid not in prev_by_stable:
+                    events.append(TimelineEvent(
+                        at_ts=str(c.get("created_at") or snap.get("captured_at", "")),
+                        kind="comment_added",
+                        data={
+                            "stable_id":        sid,
+                            "bb_id":            c.get("bb_id"),
+                            "author":           c.get("author", ""),
+                            "is_bot":           bool(c.get("is_bot")),
+                            "body":             c.get("body", ""),
+                            "parent_stable_id": c.get("parent_stable_id"),
+                            "anchor":           c.get("anchor"),
+                            "resolved":         bool(c.get("resolved", False)),
+                        },
+                    ))
+                else:
+                    prev_c = prev_by_stable[sid]
+                    if bool(prev_c.get("resolved")) != bool(c.get("resolved")):
+                        events.append(TimelineEvent(
+                            at_ts=snap.get("captured_at", ""),
+                            kind=("comment_resolved" if c.get("resolved")
+                                  else "comment_reopened"),
+                            data={"stable_id": sid, "bb_id": c.get("bb_id")},
+                        ))
+            # 3. PR status change.
+            if snap.get("pr_status") != prev_snap.get("pr_status"):
+                events.append(TimelineEvent(
+                    at_ts=snap.get("captured_at", ""),
+                    kind="status_changed",
+                    data={"to": snap.get("pr_status", "")},
+                ))
+        else:
+            # First invocation — seed all comments from the snapshot as
+            # comment_added events so the replay has a populated thread
+            # graph from t0.
+            for c in (snap.get("comments") or []):
+                events.append(TimelineEvent(
+                    at_ts=str(c.get("created_at") or snap.get("captured_at", "")),
+                    kind="comment_added",
+                    data={
+                        "stable_id":        c.get("stable_id"),
+                        "bb_id":            c.get("bb_id"),
+                        "author":           c.get("author", ""),
+                        "is_bot":           bool(c.get("is_bot")),
+                        "body":             c.get("body", ""),
+                        "parent_stable_id": c.get("parent_stable_id"),
+                        "anchor":           c.get("anchor"),
+                        "resolved":         bool(c.get("resolved", False)),
+                    },
+                ))
+
+        # The invocation itself.
+        trig = inv.triggered_by or {}
+        events.append(TimelineEvent(
+            at_ts=snap.get("captured_at", ""),
+            kind="agent_invocation",
+            data={
+                "index":         inv.index,
+                "rev_id":        rev_id,
+                "triggered_by":  trig.get("kind", "unknown"),
+                "comment_id":    trig.get("comment_id"),
+                "message":       trig.get("message", ""),
+                "agent_name":    trig.get("agent_name", "reviewer"),
+                # Reference for scoring: where the recorded agent's
+                # baseline output lives.
+                "_recorded_output_path": str(inv.dir / "output.json"),
+            },
+        ))
+
+        prev_snap = snap
+        prev_rev = rev_id
+
+    # Final merge / close event if visible in last snapshot.
+    last_status = (rec.invocations[-1].snapshot or {}).get("pr_status", "")
+    if last_status in ("merged", "declined"):
+        events.append(TimelineEvent(
+            at_ts=rec.invocations[-1].snapshot.get("captured_at", ""),
+            kind=("pr_merged" if last_status == "merged" else "pr_declined"),
+            data={"merge_sha": rec.invocations[-1].snapshot.get("source_sha", "")},
+        ))
+    return events
+
+
+# ── Identity model state (Phase 3) ────────────────────────────────────────
+
+
+@dataclass
+class ReplayState:
+    """Mutable state the lifecycle driver evolves as it walks the
+    timeline. The captured snapshot is read-only; this is its
+    runtime mirror — comments accumulate, source_sha advances,
+    agent outputs land here for subsequent events to see.
+    """
+    base_sha: str = ""
+    source_sha: str = ""
+    source_branch: str = ""
+    target_branch: str = ""
+    pr_status: str = "open"
+    title: str = ""
+    description: str = ""
+    author: str = ""
+
+    # Runtime comments — full Bitbucket-fake shape, mutable.
+    comments: list[dict] = field(default_factory=list)
+
+    # Identity map: stable_id (captured) → bb_id (runtime).
+    # Populated as the world events apply. Agent comments live in
+    # `comments` but DO NOT enter this map (they have no stable_id
+    # because the recording doesn't own them).
+    stable_to_bb_id: dict[str, int] = field(default_factory=dict)
+
+    # Skipped-as-orphan log: stable_ids whose parent didn't exist in
+    # the runtime state when the event fired. Surfaced as a
+    # divergence_signal in the aggregate.
+    orphan_skips: list[dict] = field(default_factory=list)
+
+    # Allocator for fresh runtime IDs (for agent comments + any human
+    # comment that lacked a bb_id in the recording).
+    next_runtime_bb_id: int = 1_000_000
+
+
+@dataclass
+class InvocationReplay:
+    """Result of replaying one agent_invocation event."""
+    index: int
+    rev_id: str
+    exit_code: int
+    judge_score: Optional[float]
+    judge_verdict: Optional[str]
+    posted_comments: list[dict]
+    recorded_baseline_path: str
+    stdout_tail: str
+    stderr_tail: str
+    duration_seconds: float
+    error: Optional[str] = None
+
+
+@dataclass
+class LifecycleReplayResult:
+    """Aggregate output of a full lifecycle replay."""
+    recording_dir: str
+    pr_id: int
+    n_events: int
+    n_invocations_replayed: int
+    invocations: list[InvocationReplay]
+    orphan_skip_count: int
+    orphan_skips: list[dict]
+    avg_judge_score: Optional[float]
+    final_pr_status: str
+    workspace: str
+
+    def to_dict(self) -> dict:
+        return {
+            "recording_dir":         self.recording_dir,
+            "pr_id":                 self.pr_id,
+            "n_events":              self.n_events,
+            "n_invocations_replayed": self.n_invocations_replayed,
+            "invocations": [
+                {
+                    "index":          i.index,
+                    "rev_id":         i.rev_id,
+                    "exit_code":      i.exit_code,
+                    "judge_score":    i.judge_score,
+                    "judge_verdict":  i.judge_verdict,
+                    "n_posted":       len(i.posted_comments),
+                    "duration_s":     i.duration_seconds,
+                    "error":          i.error,
+                } for i in self.invocations
+            ],
+            "orphan_skip_count":     self.orphan_skip_count,
+            "orphan_skips":          self.orphan_skips,
+            "avg_judge_score":       self.avg_judge_score,
+            "final_pr_status":       self.final_pr_status,
+            "workspace":             self.workspace,
+        }
+
+
+# ── Lifecycle driver ─────────────────────────────────────────────────────
+
+
+class LifecycleReplayDriver:
+    """Walks the recording's timeline, manages runtime state, spawns
+    the agent at every agent_invocation event.
+
+    Construction is cheap (no I/O). `.run()` does all the heavy work.
+    """
+
+    def __init__(self, rec: Recording, *, workspace: Path,
+                 provider: Optional[str] = None,
+                 timeout: int = 300,
+                 judge_cfg: Optional[dict] = None):
+        self.rec = rec
+        self.workspace = workspace
+        self.provider = provider
+        self.timeout = timeout
+        self.judge_cfg = judge_cfg
+        self.state = ReplayState()
+        self.events = build_timeline(rec)
+        self._results: list[InvocationReplay] = []
+
+    # ── Public ────────────────────────────────────────────────────────
+
+    def run(self) -> LifecycleReplayResult:
+        """Drive the full timeline. Returns an aggregate result.
+
+        Best-effort per invocation: an agent that crashes or times
+        out is recorded as a failed InvocationReplay and the timeline
+        proceeds — subsequent events still apply, subsequent
+        invocations still fire. (Mirrors how a real PR would: one
+        flaky reviewer comment doesn't undo the next push.)
+        """
+        for ev in self.events:
+            if ev.kind == "agent_invocation":
+                self._run_invocation(ev)
+            else:
+                self._apply_world_event(ev)
+
+        scores = [r.judge_score for r in self._results
+                  if r.judge_score is not None]
+        avg = sum(scores) / len(scores) if scores else None
+        return LifecycleReplayResult(
+            recording_dir=str(self.rec.pr_dir),
+            pr_id=self.rec.pr_id,
+            n_events=len(self.events),
+            n_invocations_replayed=len(self._results),
+            invocations=self._results,
+            orphan_skip_count=len(self.state.orphan_skips),
+            orphan_skips=self.state.orphan_skips,
+            avg_judge_score=avg,
+            final_pr_status=self.state.pr_status,
+            workspace=str(self.workspace),
+        )
+
+    # ── World-event handlers ──────────────────────────────────────────
+
+    def _apply_world_event(self, ev: TimelineEvent) -> None:
+        h = getattr(self, f"_on_{ev.kind}", None)
+        if h is None:
+            log.debug("replay: ignoring unknown event kind %s", ev.kind)
+            return
+        h(ev)
+
+    def _on_pr_opened(self, ev: TimelineEvent) -> None:
+        d = ev.data
+        self.state.base_sha = d.get("base_sha", "")
+        self.state.source_sha = d.get("source_sha", "")
+        self.state.source_branch = d.get("source_branch", "")
+        self.state.target_branch = d.get("target_branch", "")
+        self.state.title = d.get("title", "")
+        self.state.description = d.get("description", "")
+        self.state.author = d.get("author", "")
+
+    def _on_commit_pushed(self, ev: TimelineEvent) -> None:
+        self.state.source_sha = ev.data.get("new_source_sha",
+                                              self.state.source_sha)
+
+    def _on_force_pushed(self, ev: TimelineEvent) -> None:
+        # Same effect on state; the divergence signal is on the kind.
+        self._on_commit_pushed(ev)
+
+    def _on_comment_added(self, ev: TimelineEvent) -> None:
+        d = ev.data
+        sid = d.get("stable_id") or ""
+        parent_sid = d.get("parent_stable_id")
+        # Orphan-skip rule (TODO §19.4).
+        parent_bb_id: Optional[int] = None
+        if parent_sid:
+            parent_bb_id = self.state.stable_to_bb_id.get(parent_sid)
+            if parent_bb_id is None:
+                self.state.orphan_skips.append({
+                    "stable_id":         sid,
+                    "missing_parent":    parent_sid,
+                    "at_ts":             ev.at_ts,
+                    "author":            d.get("author"),
+                })
+                return
+        # Assign a runtime bb_id. Prefer the captured one when present.
+        bb_id = d.get("bb_id")
+        if not isinstance(bb_id, int) or bb_id <= 0:
+            bb_id = self._fresh_bb_id()
+        if sid:
+            self.state.stable_to_bb_id[sid] = bb_id
+        self.state.comments.append({
+            "id":         bb_id,
+            "stable_id":  sid,
+            "parent_id":  parent_bb_id or 0,
+            "text":       d.get("body", ""),
+            "author":     d.get("author", ""),
+            "anchor":     d.get("anchor"),
+            "is_bot":     bool(d.get("is_bot")),
+            "resolved":   bool(d.get("resolved", False)),
+            "created_at": ev.at_ts,
+        })
+
+    def _on_comment_resolved(self, ev: TimelineEvent) -> None:
+        sid = ev.data.get("stable_id") or ""
+        bb_id = self.state.stable_to_bb_id.get(sid)
+        if bb_id is None:
+            return  # orphan
+        for c in self.state.comments:
+            if c.get("id") == bb_id:
+                c["resolved"] = True
+                break
+
+    def _on_comment_reopened(self, ev: TimelineEvent) -> None:
+        sid = ev.data.get("stable_id") or ""
+        bb_id = self.state.stable_to_bb_id.get(sid)
+        if bb_id is None:
+            return
+        for c in self.state.comments:
+            if c.get("id") == bb_id:
+                c["resolved"] = False
+                break
+
+    def _on_status_changed(self, ev: TimelineEvent) -> None:
+        self.state.pr_status = ev.data.get("to", self.state.pr_status)
+
+    def _on_pr_merged(self, ev: TimelineEvent) -> None:
+        self.state.pr_status = "merged"
+
+    def _on_pr_declined(self, ev: TimelineEvent) -> None:
+        self.state.pr_status = "declined"
+
+    # ── Invocation runner ─────────────────────────────────────────────
+
+    def _run_invocation(self, ev: TimelineEvent) -> None:
+        """Spawn cli.py for one agent_invocation event using the
+        current runtime state. Output's posted_comments are
+        integrated back into self.state so subsequent events see
+        them (lifecycle accumulation)."""
+        import time
+        from .run_unit import run_unit_fixture
+
+        idx = int(ev.data.get("index", 0))
+        rec_inv = next((i for i in self.rec.invocations if i.index == idx),
+                       None)
+        if rec_inv is None:
+            log.warning("replay: agent_invocation index=%d has no recording", idx)
+            return
+
+        inv_workspace = self.workspace / f"inv-{idx:03d}"
+        inv_workspace.mkdir(parents=True, exist_ok=True)
+        try:
+            repo = materialize_repo(self.rec, rec_inv, inv_workspace)
+        except Exception as exc:
+            log.warning("replay: materialize_repo failed for inv %d: %s", idx, exc)
+            self._results.append(InvocationReplay(
+                index=idx, rev_id=rec_inv.snapshot.get("rev_id", ""),
+                exit_code=2, judge_score=None, judge_verdict=None,
+                posted_comments=[],
+                recorded_baseline_path=str(rec_inv.dir / "output.json"),
+                stdout_tail="", stderr_tail=str(exc),
+                duration_seconds=0.0, error=f"materialize: {exc}",
+            ))
+            return
+
+        fixture_yaml = self._synthesize_invocation_fixture(
+            rec_inv, repo, inv_workspace, current_state=self.state,
+        )
+
+        t0 = time.time()
+        try:
+            result = run_unit_fixture(
+                fixture_yaml,
+                provider=self.provider,
+                timeout=self.timeout,
+                keep_tmp_on_success=False,
+                attempt_dir=str(inv_workspace / "attempt"),
+                judge_cfg=self.judge_cfg or None,
+            )
+        except Exception as exc:
+            log.warning("replay: run_unit_fixture raised for inv %d: %s", idx, exc)
+            self._results.append(InvocationReplay(
+                index=idx, rev_id=rec_inv.snapshot.get("rev_id", ""),
+                exit_code=3, judge_score=None, judge_verdict=None,
+                posted_comments=[],
+                recorded_baseline_path=str(rec_inv.dir / "output.json"),
+                stdout_tail="", stderr_tail=str(exc),
+                duration_seconds=time.time() - t0,
+                error=f"runner: {exc}",
+            ))
+            return
+
+        # Integrate posted comments into state so the NEXT events see them
+        # as if the agent really had posted to Bitbucket.
+        posted = list(result.posted or [])
+        for rec in posted:
+            if rec.get("kind") != "pr_post_comment":
+                continue
+            bb_id = rec.get("new_id") or self._fresh_bb_id()
+            self.state.comments.append({
+                "id":         bb_id,
+                "stable_id":  "",   # agent comments have no captured stable_id
+                "parent_id":  rec.get("parent_id") or 0,
+                "text":       rec.get("text", ""),
+                "author":     "diffgraph-bot",
+                "is_bot":     True,
+                "anchor": {
+                    "file": rec.get("file", ""),
+                    "line": rec.get("line", 0),
+                    "side": rec.get("side", "new"),
+                },
+                "resolved":   False,
+                "created_at": "",
+            })
+        # And any status change.
+        for rec in posted:
+            if rec.get("kind") == "set_status":
+                # `status` is the Bitbucket participant status —
+                # APPROVED / NEEDS_WORK / UNAPPROVED. Map to our
+                # state's pr_status approximation.
+                self.state.pr_status = (rec.get("status") or
+                                          self.state.pr_status).lower()
+
+        self._results.append(InvocationReplay(
+            index=idx,
+            rev_id=rec_inv.snapshot.get("rev_id", ""),
+            exit_code=result.exit_code,
+            judge_score=result.judge_score,
+            judge_verdict=result.judge_verdict,
+            posted_comments=posted,
+            recorded_baseline_path=str(rec_inv.dir / "output.json"),
+            stdout_tail=result.stdout_tail or "",
+            stderr_tail=result.stderr_tail or "",
+            duration_seconds=time.time() - t0,
+            error=None if result.exit_code == 0 else "non-zero exit",
+        ))
+
+    # ── Helpers ───────────────────────────────────────────────────────
+
+    def _fresh_bb_id(self) -> int:
+        bb = self.state.next_runtime_bb_id
+        self.state.next_runtime_bb_id += 1
+        return bb
+
+    def _synthesize_invocation_fixture(
+        self, rec_inv: Invocation, repo: Path,
+        inv_workspace: Path, *, current_state: ReplayState,
+    ) -> Path:
+        """Build a unit-tier fixture YAML using the CURRENT runtime
+        state (not the recorded snapshot) — that's what makes this
+        lifecycle replay rather than per-invocation replay. Each
+        agent run sees:
+          - The accumulated comments (humans verbatim + bot's own
+            past outputs from earlier invocations)
+          - The current source/base SHAs
+          - The captured trigger info for THIS invocation point
+        """
+        import yaml
+        trig = rec_inv.triggered_by or {}
+
+        # Map runtime comments → unit-fixture pr_state.comments shape.
+        comments_out: list[dict] = []
+        for c in current_state.comments:
+            anchor = c.get("anchor") or {}
+            author_name = c.get("author") or "anonymous"
+            comments_out.append({
+                "id":        c.get("id"),
+                "parent_id": c.get("parent_id") or 0,
+                "file":      anchor.get("file") or "",
+                "line":      anchor.get("line") or 0,
+                "text":      c.get("text") or "",
+                "author":    {"name": author_name, "slug": author_name},
+                "timestamp": c.get("created_at") or "",
+                "resolved":  bool(c.get("resolved", False)),
+            })
+
+        trigger_block: dict = {}
+        if trig.get("comment_id") is not None:
+            trigger_block["comment_id"] = trig["comment_id"]
+        if trig.get("message"):
+            trigger_block["text"] = trig["message"]
+
+        agent = trig.get("agent_name") or "reviewer"
+        fixture_id = (
+            f"replay-PR{self.rec.pr_id}-inv{rec_inv.index:03d}-"
+            f"lifecycle"
+        )
+
+        fixture_yaml = {
+            "id":     fixture_id,
+            "agent":  agent,
+            "tags":   ["tier:replay", "mode:lifecycle",
+                       f"recording:{self.rec.pr_dir.name}",
+                       f"inv:{rec_inv.index:03d}"],
+            "repo": {
+                "source":        str(repo),
+                "base_branch":   current_state.target_branch or "master",
+                "source_branch": current_state.source_branch or "feat",
+            },
+            "pr_state": {
+                "metadata": {
+                    "title":       current_state.title,
+                    "description": current_state.description,
+                    "pr_url":      self.rec.pr_meta.get("pr_url", ""),
+                    "bot_user":    "diffgraph-bot",
+                    "state":       current_state.pr_status,
+                },
+                "comments":   comments_out,
+                "self_user":  "diffgraph-bot",
+            },
+            "trigger": trigger_block,
+        }
+        # Jira fixture, captured at this invocation.
+        jira_target = inv_workspace / "jira-fixture.yaml"
+        if build_jira_fixture(rec_inv, jira_target):
+            fixture_yaml["jira_fixture"] = str(jira_target)
+
+        target = inv_workspace / "scenario.yaml"
+        target.write_text(
+            yaml.safe_dump(fixture_yaml, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        return target
+
+
 def build_jira_fixture(inv: Invocation, target_path: Path) -> Optional[Path]:
     """Convert the captured jira/ raw responses into a single yaml
     fixture the JiraProvider can read in fake mode.

@@ -1152,6 +1152,104 @@ def replay_single(
             console.print(f"  [yellow]workspace kept at:[/yellow] {workspace}")
 
 
+@app.command("replay")
+def replay(
+    recording: str = typer.Argument(..., help="Path to a recording directory"),
+    provider: Optional[str] = typer.Option(None, "--provider", "-p",
+                                            help="LLM provider profile"),
+    timeout: int = typer.Option(300, "--timeout", "-t", help="Per-invocation timeout"),
+    keep_workspace: bool = typer.Option(False, "--keep-workspace",
+                                          help="Keep materialized repos + scenarios on disk after the run"),
+    no_judge: bool = typer.Option(False, "--no-judge",
+                                    help="Skip the LLM judge"),
+    output: Optional[str] = typer.Option(None, "--output", "-o",
+                                          help="Write the aggregate result as JSON"),
+):
+    """Lifecycle replay (TODO §19 Phase 3) — walks the full timeline.
+
+    Replays every agent_invocation event in the recording with
+    accumulating runtime state: humans verbatim from the recording,
+    agent's own past outputs from this replay carrying forward.
+    Orphan-skip rule (TODO §19.4) handles human replies to agent
+    comments the current agent didn't produce.
+
+    Aggregate result printed at the end: per-invocation scores,
+    orphan_skip_count, average judge score, final PR status.
+    """
+    import tempfile, shutil, json as _json
+    from runner.replay import RecordingReader, LifecycleReplayDriver
+
+    rec = RecordingReader.load(recording)
+    if not rec.invocations:
+        console.print(f"[red]recording {rec.pr_dir} has no invocations[/red]")
+        raise typer.Exit(2)
+    if not rec.has_bundle:
+        console.print(f"[red]recording {rec.pr_dir} has no repo.bundle — replay disabled[/red]")
+        raise typer.Exit(2)
+
+    console.print(
+        f"[bold]Lifecycle replay[/bold] PR-{rec.pr_id} "
+        f"({len(rec.invocations)} invocations) from {rec.pr_dir}"
+    )
+
+    workspace = Path(tempfile.mkdtemp(prefix=f"replay-lc-PR{rec.pr_id}-"))
+    cfg = _expand_config(_load_config())
+    judge_cfg = cfg.get("judge", {}) if not no_judge else {}
+
+    driver = LifecycleReplayDriver(
+        rec, workspace=workspace,
+        provider=provider, timeout=timeout,
+        judge_cfg=judge_cfg or None,
+    )
+    try:
+        result = driver.run()
+
+        # Pretty summary.
+        console.print(
+            f"\n[bold]Result[/bold]: {result.n_invocations_replayed}/"
+            f"{len([e for e in driver.events if e.kind == 'agent_invocation'])} "
+            f"invocations completed, "
+            f"avg_score={('%.2f' % result.avg_judge_score) if result.avg_judge_score is not None else '—'}, "
+            f"orphan_skips={result.orphan_skip_count}, "
+            f"final_status={result.final_pr_status}"
+        )
+        for inv in result.invocations:
+            score_str = (f"{inv.judge_score:.2f}" if inv.judge_score is not None
+                         else "—")
+            color = ("green" if inv.exit_code == 0 else "red")
+            console.print(
+                f"  [{color}]inv {inv.index:03d}[/{color}] "
+                f"rev={inv.rev_id}  exit={inv.exit_code}  "
+                f"score={score_str}  posted={len(inv.posted_comments)}  "
+                f"t={inv.duration_seconds:.1f}s"
+                + (f"  err={inv.error}" if inv.error else "")
+            )
+        if result.orphan_skip_count:
+            console.print(
+                f"\n[yellow]Orphan-skips ({result.orphan_skip_count}):[/yellow]"
+            )
+            for skip in result.orphan_skips[:10]:
+                console.print(
+                    f"  • {skip.get('stable_id')} "
+                    f"(parent {skip.get('missing_parent')} not produced "
+                    f"by current agent)"
+                )
+            if len(result.orphan_skips) > 10:
+                console.print(f"  … and {len(result.orphan_skips) - 10} more")
+
+        if output:
+            Path(output).write_text(
+                _json.dumps(result.to_dict(), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            console.print(f"\n[dim]Aggregate JSON written to {output}[/dim]")
+    finally:
+        if not keep_workspace:
+            shutil.rmtree(workspace, ignore_errors=True)
+        else:
+            console.print(f"  [yellow]workspace kept at:[/yellow] {workspace}")
+
+
 @app.command()
 def ab(
     agent_a: str = typer.Option(..., "--agent-a", help="URL of agent A"),

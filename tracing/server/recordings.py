@@ -225,42 +225,57 @@ def _jira_files(inv_dir: Path) -> dict:
 # ── Replay enqueue ───────────────────────────────────────────────────────
 
 
-def build_replay_bench_cmd(pr_dir: Path, invocation: int | str,
-                           provider: str) -> str:
+def build_replay_bench_cmd(
+    pr_dir: Path, *, mode: str = "single",
+    invocation: int | str = "first", provider: str = "deepseek",
+) -> str:
     """Build the shell command a worker runs to perform the replay.
 
-    Layout mirrors how the auto-plan workers call `bench run-unit`:
-        cd <repo> && source .env && unset proxies && .venv/bin/python -m benchmarks.cli replay-single <recording-dir> --invocation <N> --provider <P>
+    mode='single'   → `bench replay-single <dir> --invocation <N>` (one
+                       agent run against one captured state).
+    mode='lifecycle'→ `bench replay <dir>` (walks the full timeline,
+                       runs the agent at every agent_invocation event
+                       with accumulating state; see TODO §19 Phase 3).
     """
-    # Resolve the host repo path — same env var the bench worker reads.
     repo = os.environ.get("DIFFGRAPH_REPO") or str(Path(__file__).resolve().parents[2])
-    return (
+    base = (
         f"cd {repo} && source .env && unset ALL_PROXY all_proxy "
-        f"&& .venv/bin/python -m benchmarks.cli replay-single "
-        f"{pr_dir} --invocation {invocation} --provider {provider}"
+        f"&& .venv/bin/python -m benchmarks.cli "
+    )
+    if mode == "lifecycle":
+        return base + f"replay {pr_dir} --provider {provider}"
+    return base + (
+        f"replay-single {pr_dir} --invocation {invocation} "
+        f"--provider {provider}"
     )
 
 
 def enqueue_replay(_qa_queue, rec_id: str, *,
+                   mode: str = "single",
                    invocation: int | str = "first",
                    queue: str = "deepseek",
                    priority: int = 100) -> Optional[int]:
-    """Enqueue a qa_task that runs replay-single for this recording.
-
-    Returns the new task id, or None when the rec_id doesn't resolve
-    (404 from the route layer)."""
+    """Enqueue a qa_task that runs replay-single or replay (lifecycle)
+    for this recording. Returns the new task id, or None when the
+    rec_id doesn't resolve (404 from the route layer)."""
     pr_dir = safe_recording_dir(rec_id)
     if pr_dir is None:
         return None
     from quality_api.queue import TaskSpec  # late import to avoid cycles
 
-    bench_cmd = build_replay_bench_cmd(pr_dir, invocation, queue)
+    bench_cmd = build_replay_bench_cmd(
+        pr_dir, mode=mode, invocation=invocation, provider=queue,
+    )
     payload = {
         "kind":         "replay",
         "recording":    str(pr_dir),
+        "mode":         mode,
         "invocation":   invocation,
         "bench_cmd":    bench_cmd,
-        "plan_name":    f"replay:{pr_dir.name}:inv-{invocation}",
+        "plan_name":    (
+            f"replay-lifecycle:{pr_dir.name}" if mode == "lifecycle"
+            else f"replay:{pr_dir.name}:inv-{invocation}"
+        ),
     }
     spec = TaskSpec(
         queue=queue,
