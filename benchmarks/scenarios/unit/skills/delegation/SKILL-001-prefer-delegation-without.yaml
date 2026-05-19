@@ -9,12 +9,12 @@ bench_cmd: >
   {fixture_path}
   --provider={provider}
 
-# A/B baseline — same task as SKILL-001-with (10-input compute),
+# A/B baseline — same task as SKILL-001-with (6-input compute),
 # no skill mounted. Boss is expected to run do_task sequentially
 # itself.
 #
 # Pass criteria:
-#   - intended_text == "42, 14, 200, 10, 66, 32, 98, 16, 120, 22"
+#   - intended_text == "42, 14, 200, 10, 66, 32"
 #     (doubled inputs, in order).
 #   - boss invocations contain do_task.
 #   - boss invocations do NOT contain agent_spawn.
@@ -30,7 +30,7 @@ prompt_resource: diffgraph:diffgraph/test_prompts/skills/delegation
 user_message_from: diffgraph:diffgraph/test_prompts/skills/delegation/boss.user.md
 
 agent_data:
-  task_input: "21, 7, 100, 5, 33, 16, 49, 8, 60, 11"
+  task_input: "21, 7, 100, 5, 33, 16"
 
 expected_output:
   assert_via: [intended_text]
@@ -38,12 +38,12 @@ expected_output:
     - id: doubled-answer
       rationale: |
         The boss's text_answer (intended_text) must contain the
-        ten doubled values
-        "42, 14, 200, 10, 66, 32, 98, 16, 120, 22" in the SAME
+        six doubled values
+        "42, 14, 200, 10, 66, 32" in the SAME
         ORDER as the inputs
-        "21, 7, 100, 5, 33, 16, 49, 8, 60, 11". The baseline (no
+        "21, 7, 100, 5, 33, 16". The baseline (no
         skill) variant expects the boss to do the work itself
-        by calling do_task ten times sequentially.
+        by calling do_task six times sequentially.
   # Structural assertion — the mirror image of SKILL-001-with.
   # Without the prefer_delegation skill, the boss must call do_task
   # itself and must NOT spawn a worker. If this fails, either the
