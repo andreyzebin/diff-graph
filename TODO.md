@@ -5053,3 +5053,517 @@ That fixes the LLM signal direction (model would see "result was
 6000 chars truncated") but doesn't solve heap usage and still
 leaves wall-clock latency on the tool call. Size guard at the
 reader is the only spot that addresses all three.
+
+## 19. Replay tier — lifecycle recordings as ground-truth bench corpus
+
+**Status:** design phase. No code yet. The captured corpus is the
+prerequisite for "real" business metrics (miss_rate /
+noise_rate / lifecycle stability) measured against scenarios that
+mirror production behaviour byte-for-byte instead of synthetic
+unit fixtures. Sits between unit-tier (synthesised, deterministic,
+small) and integration-tier (live PRs that drift after merge):
+the missing tier is **deterministic AND realistic**.
+
+### 19.1 Why this exists
+
+The two tiers we have today don't measure what production cares
+about:
+
+| Tier | What it measures | What it can't |
+|---|---|---|
+| **Unit** (`benchmarks/scenarios/unit/`) | "does the agent emit the right *shape* of finding on a known fixture?" | doesn't reproduce the messy lifecycle: multi-round review, force-pushes, prior `[SELF]` comments, human counter-replies |
+| **Integration** (`benchmarks/scenarios/*.yaml` against live Bitbucket) | "does the agent post a real comment, change real status?" | scenarios drift the moment the upstream PR is merged / re-pushed; not reproducible after the fact |
+| **Replay** (this section) | "given the *exact* state of a real PR at each invocation, what does today's agent do?" | needs a corpus to be useful — has to be built up over time |
+
+Concrete metrics the replay tier produces (and unit/integration
+cannot):
+
+- **`miss_rate`** — issues human reviewers flagged on this PR that
+  the agent never raised in any of its invocations. The relevant
+  variant for business is `miss_rate_blocker` (only counts human
+  comments labelled BLOCKER/MAJOR) — agent missing a stylistic
+  nit isn't a real cost; missing a null-pointer is.
+- **`noise_rate`** — agent comments human reviewers labelled
+  noise (resolved with disagreement, replied with `❌` / `[noise]`,
+  or marked as such in `outcomes.yaml`). The cost the agent
+  imposes on humans per finding raised.
+- **`lifecycle_stability`** — variance of agent's output across N
+  re-runs of the same recording. Captures real-world determinism:
+  same input twice → same output twice?
+- **`convergence_invocations`** — on which invocation index did
+  each verified finding first appear? "Found on rev-01" is
+  better than "found on rev-03 after force-push".
+- **`drift_alerts`** — finding raised in an earlier invocation
+  but absent from a later one (agent forgot or contradicted its
+  past self).
+
+### 19.2 The single replay mode — humans verbatim, agent live
+
+There is ONE mode, not two. The replay rule is:
+
+> Reproduce everything in the recording **except** what the agent
+> produces — those slots are filled live by the current agent.
+
+In practice:
+
+- Commits, force-pushes, status changes, all NON-agent comments
+  (humans, other bots, CI bot announcements) → replayed exactly
+  from the recording at their original timeline position.
+- Agent invocations → spawn the current agent with the current
+  state. Its output joins the FakeBitbucket state under fresh
+  runtime IDs. The next event in the timeline sees this output
+  as if the agent had really posted it.
+- The recorded agent's output is read but **never injected** into
+  the replay state. It exists only as a comparison baseline for
+  the `divergence_signal` log and the scoring layer.
+
+The replay therefore looks like a real PR proceeding normally,
+with the agent being its current self at every invocation point.
+This is the only mode that produces meaningful cumulative metrics
+(miss_rate / noise_rate at merge time).
+
+### 19.3 Identity model — stable IDs in recording, runtime IDs in replay
+
+Bitbucket comment IDs are issued on write — the replay can't reuse
+the recorded numeric IDs because the agent's live outputs occupy
+different positions. Solution: record-time **stable IDs**, runtime
+**dynamic IDs**, and a map between them.
+
+```jsonc
+// timeline.json — events reference comments by stable_id
+{
+  "kind": "comment_added",
+  "stable_id": "h-007",
+  "author": "alice",
+  "parent_stable_id": "a-003-1",        // ← reply to an agent comment
+  "anchor": { "file": "OrderService.java",
+              "line": 42, "side": "new",
+              "rev": "rev-02" },
+  "body": "А разве это не должно учитывать..."
+}
+```
+
+stable_id namespacing:
+- `h-NNN` — human (or other non-agent participant) comments. Stable
+  across recordings.
+- `a-NN-K` — agent-recorded comments. `NN` = invocation index,
+  `K` = sequence within that invocation. (Agent often posts
+  several comments per invocation; reply chains may target any.)
+- Runtime IDs assigned at replay time for whatever the current
+  agent actually posts — no `stable_id` ever, since the recording
+  doesn't own them.
+
+The replay driver maintains:
+
+```
+stable_to_runtime: dict[stable_id, runtime_id]   # alive across the replay
+```
+
+For human comments: insert into FakeBitbucket → record the
+assigned runtime_id under the comment's stable_id. For agent
+comments: insert into FakeBitbucket under fresh runtime_id, **no**
+stable_id entry (these are today's outputs, not recorded ones).
+
+### 19.4 Orphan reply rule
+
+When a recorded human comment is a reply to an agent comment
+that didn't get posted in this replay (because today's agent
+behaves differently), the reply has no anchor. Rule:
+
+```
+for event in timeline:
+    if event.kind == "comment_added" and event.parent_stable_id:
+        parent_runtime = stable_to_runtime.get(event.parent_stable_id)
+        if parent_runtime is None:
+            # Today's agent didn't produce that anchor — skip the reply.
+            log_divergence("orphan_skip",
+                           stable=event.stable_id,
+                           missing_parent=event.parent_stable_id)
+            continue
+        inject_reply(parent=parent_runtime, ...)
+    else:
+        inject_top_level(...)
+```
+
+The skip is logged but doesn't abort replay. The aggregate
+`orphan_skip_count` per replay run is a divergence signal in its
+own right ("topic shift between recorded and current agent").
+Orphan replies cascade: if `h-007` is skipped because its parent
+agent comment is missing, `h-009` (which replied to `h-007`) is
+also orphan and gets skipped. Algorithm is recursive by
+construction since the lookup happens per-event.
+
+### 19.5 Recording layout on disk
+
+One directory per recorded PR. Multiple invocations of the agent
+on the same PR accumulate as sibling subdirectories under
+`invocations/`. After merge the whole thing is read-only and
+self-contained.
+
+```
+recordings/<server>/<project>/<repo>/PR-<id>/
+├── pr.json                       # static PR metadata (title, description,
+│                                 #   author, target/source branch names,
+│                                 #   created_at, merged_at if applicable)
+├── timeline.json                 # chronologically-ordered event log (see 19.6)
+├── refs.txt                      # `git for-each-ref` snapshot of repo.bundle
+│                                 #   for audit/integrity check
+├── repo.bundle                   # `git bundle create --all` of the relevant
+│                                 #   ref scope — see 19.7 for truthfulness rules
+├── invocations/
+│   ├── 001-2026-05-10T14-22-19/
+│   │   ├── pr-state.json         # FakeBitbucket payload at this exact moment:
+│   │   │                         #   base_sha, source_sha (= rev-01),
+│   │   │                         #   threads with their stable_ids
+│   │   ├── diff.txt              # rendered unified diff at this moment
+│   │   │                         #   (convenience artefact; bench can regenerate
+│   │   │                         #   from sha refs in the bundle)
+│   │   ├── jira/
+│   │   │   ├── PROJ-1234.json    # full ticket state at invocation time
+│   │   │   ├── dev_info/...      # dev_info responses captured per ticket
+│   │   │   └── searches/...      # any JQL responses the agent triggered
+│   │   ├── triggered_by.json     # who/what initiated the agent:
+│   │   │                         #   {kind: "comment", stable_id: "h-005"}
+│   │   │                         #   or {kind: "webhook", event: "pr.opened"}
+│   │   └── recorded-output.json  # what the recorded agent produced —
+│   │                             #   the baseline, NEVER injected into replay
+│   ├── 002-2026-05-10T16-08-43/...
+│   └── 003-2026-05-12T09-15-02/...
+├── outcomes.yaml                 # post-merge labels (see 19.9):
+│                                 #   valid/noise per recorded agent comment,
+│                                 #   missed_findings list, label provenance
+└── replay.yaml                   # bench thresholds for THIS recording-as-scenario
+```
+
+The recording-as-scenario shape: every recording directory IS a
+bench scenario via its `replay.yaml`. No translation step. The
+"corpus of scenarios" is the union of
+`recordings/**/replay.yaml`. The bench discovery code adds a new
+`kind: replay` to its loader.
+
+### 19.6 `timeline.json` event schema
+
+Sparse but ordered. Every event has `at_ts` (recording-time
+ISO-8601), `kind`, and kind-specific fields. Replay walks events
+in `at_ts` order; the actual timestamps don't matter for replay
+speed (we don't sleep between events).
+
+| `kind` | Required fields | Effect on replay |
+|---|---|---|
+| `pr_opened` | `base_sha`, `source_sha`, `title`, `description`, `author` | Initialise FakeBitbucket PR meta |
+| `commit_pushed` | `new_source_sha`, `rev_id` (e.g. `rev-02`) | Update source-branch ref to `new_source_sha`, advance `rev_id` |
+| `force_pushed` | same as `commit_pushed` + `prior_source_sha` | Same as commit_pushed; flagged in trace for visibility |
+| `comment_added` | `stable_id`, `author`, `body`, optional `parent_stable_id`, optional `anchor: {file, line, side, rev}` | If human → inject (or orphan-skip per 19.4). If agent → ignore (replay's own agent does the posting) |
+| `comment_resolved` | `stable_id` | Mark thread resolved in FakeBitbucket; orphan-skip if stable_id missing |
+| `comment_reopened` | `stable_id` | Inverse of resolved |
+| `status_changed` | `to: open\|merged\|approved\|declined\|needs_work`, optional `by` | Update PR status in FakeBitbucket |
+| `agent_invocation` | `index: NN`, `triggered_by: stable_id\|"webhook"`, `mode: review\|ask\|help` | Spawn current agent with current state, capture output, score |
+| `pr_merged` | `merge_sha` | Final event; finalise FakeBitbucket; trigger aggregate metrics |
+
+Events are immutable once recorded. New events go to the END of
+`timeline.json` (append-only) — no reordering, no edits.
+
+### 19.7 Truthful repo bundle — git refs as real as the source
+
+The recording's `repo.bundle` is a real `git bundle create` output
+and must satisfy:
+
+1. **Real refs.** After
+   `git clone --mirror repo.bundle ./pr-NN-replay.git`:
+   - `refs/heads/<base_branch>` exists at the recorded base SHA.
+   - `refs/heads/<source_branch>` exists at the final source SHA.
+   - Both are reachable commits with full ancestry.
+2. **Every revision preserved.** Each push to source during the
+   PR lifecycle creates a stable ref:
+   - `refs/diffgraph/PR-<id>/rev-01` → source SHA at first invocation
+   - `refs/diffgraph/PR-<id>/rev-02` → source SHA after first push
+   - `refs/diffgraph/PR-<id>/rev-N` → final source SHA at merge
+   - `refs/heads/<source_branch>` aliases the last `rev-N` for
+     convenience; the per-rev refs are the load-bearing ones.
+3. **Author identity intact.** Commit author/committer name +
+   email + timestamp are byte-identical to the original — the
+   agent's `git blame` / commit-author reasoning depends on it.
+4. **No simplification.** Merge commits from base into the source
+   branch (if any in the original) stay merge commits. No
+   rebase-flattening, no cherry-picking, no squashing during
+   recording.
+5. **`refs.txt` matches the bundle.** A textual dump of
+   `git for-each-ref --format='%(objectname) %(refname)'` is
+   stored alongside the bundle. Replay verifies bundle ↔ refs.txt
+   parity on load; any mismatch aborts the replay with a clear
+   "bundle damaged / incomplete" error.
+6. **Bundle scope is configurable.** `--bundle-scope full|range`:
+   - `full` = `git bundle create --all` (default for archival
+     recordings — ~100MB-1GB depending on repo)
+   - `range` = bundle only `base..source + merge_base ancestry`
+     (~10-50MB; default for high-frequency capture)
+7. **LFS objects.** If the repo uses git-lfs, capture runs
+   `git lfs fetch --all` before `git bundle`, and the bundle dir
+   includes an `lfs/` subdir with the objects. Recordings without
+   LFS objects flag themselves `lfs_incomplete: true` and the
+   replay refuses unless explicitly forced.
+8. **Submodules.** Each submodule pointer is recorded but
+   submodule content is NOT bundled (would explode size). If the
+   recorded agent didn't traverse into submodules, this is fine;
+   if it did, the corresponding sub-recordings exist as sibling
+   directories and `replay.yaml` cross-references them.
+
+### 19.8 Three phases
+
+#### Phase 1 — Capture (foundational, ship first)
+
+Goal: collect recordings in shadow mode against live traffic
+without changing agent behaviour or trace surface. Once this is
+running on the webhook router, the corpus accumulates passively.
+
+**Acceptance criteria:**
+
+- `cli.py run` gains `--record-fixture <dir>` flag (and env
+  `DIFFGRAPH_RECORD_DIR`).
+- When set, the run writes:
+  - `pr.json` on first invocation per PR (idempotent — re-runs
+    don't overwrite if PR already has the file).
+  - One `invocations/<index>-<ts>/` directory per run.
+  - `timeline.json` is APPENDED (atomic write via tmp+rename),
+    not rewritten. Concurrent invocations on the same PR must
+    not corrupt it.
+  - Jira state under `jira/<KEY>.json` if any Jira tool was
+    called. Captures the FULL response, not the distilled
+    summary, so future replays can choose their own distillation.
+- Webhook router config gains `recordings_dir: <path>` (per route).
+- Bundle creation is incremental:
+  - First invocation: `git bundle create` with the range scope
+    visible at that moment.
+  - Subsequent invocations on the same PR: re-bundle if any new
+    commits appeared in source-branch, append `rev-N` refs.
+  - On `pr_merged` event (detected from webhook payload): final
+    bundle with `--all` to lock in the post-merge ancestry.
+- Agent's `[SELF]` past in the recording is NOT touched — what
+  goes into `recorded-output.json` for each invocation is the
+  agent's CURRENT output at that recording time. (The recording
+  is just observing reality; replay is what mutates which
+  outputs are kept.)
+- Disk-quota guard: capture refuses to write if free space at
+  `recordings_dir` drops below a configurable floor (default 5GB)
+  to avoid wedging the host the way `/tmp/unit-*` did.
+- Test: end-to-end on a 3-invocation fake PR, verify all
+  artefacts present + bundle restorable + refs match `refs.txt`.
+
+#### Phase 2 — Single-invocation replay (closest to existing unit-tier)
+
+Goal: pick ONE invocation from a recording, restore its state,
+run today's agent, score. This is the smallest useful replay and
+the easiest stepping stone — extends the existing unit-tier
+runner with a new "recording-backed fixture" loader.
+
+**Acceptance criteria:**
+
+- New scenario kind `replay-single`:
+  ```yaml
+  kind: replay-single
+  recording: recordings/<server>/<project>/<repo>/PR-<id>
+  invocation: 002             # which one to replay; or "first" / "last"
+  thresholds:
+    judge_score_min: 0.6
+  ```
+- `bench run-unit` (or a new `bench run-replay`) loads the
+  recording, unbundles to a tmp repo at the per-rev SHA, builds
+  a FakeBitbucket payload from `invocations/002/pr-state.json` +
+  the slice of `timeline.json` up to (but not including) the
+  invocation event.
+- Jira fixture comes from `invocations/002/jira/` automatically;
+  `JiraRegistry` reads it like any other extended fixture.
+- Agent runs as it would in `bench run-unit`. Judge scores
+  against `recorded-output.json` as the baseline (NOT as ground
+  truth — that's `outcomes.yaml` in Phase 3).
+- Tmp dir cleanup follows the same rule as unit-tier (clean on
+  success, keep on failure, optional keep-on-success flag).
+- Test: take a captured 3-invocation recording, run
+  `replay-single` against each, verify deterministic output
+  for a fixed-seed mock LLM.
+
+#### Phase 3 — Lifecycle replay (the cumulative metrics)
+
+Goal: walk the full timeline of a recording, running today's
+agent at every `agent_invocation` event, accumulating its
+outputs into the live state for subsequent events, scoring at
+the end.
+
+**Acceptance criteria:**
+
+- New scenario kind `replay`:
+  ```yaml
+  kind: replay
+  recording: recordings/<server>/<project>/<repo>/PR-<id>
+  thresholds:
+    final_miss_rate_max: 0.20
+    final_miss_rate_blocker_max: 0.05
+    cumulative_noise_rate_max: 0.15
+    drift_alerts_max: 0
+    orphan_skip_count_max: 10
+  per_invocation:               # optional: thresholds per invocation
+    judge_score_min: 0.5
+  ```
+- Driver semantics:
+  - Walk `timeline.json` events in order.
+  - For each non-`agent_invocation` event: mutate FakeBitbucket
+    state per 19.6 table. Apply orphan-skip rule from 19.4.
+  - For each `agent_invocation` event: build the agent command
+    line as it would have been called in capture (trigger comment
+    as `--message`, comment id as `--comment-id`, etc), spawn,
+    wait, integrate output into FakeBitbucket state under fresh
+    runtime IDs.
+  - At `pr_merged`: emit aggregate metrics.
+- Aggregate scoring reads `outcomes.yaml` (see 19.9). The judge
+  per-invocation scoring stays optional.
+- Tests: a 3-invocation recording with a known
+  `outcomes.yaml` produces a deterministic
+  `final_miss_rate` / `cumulative_noise_rate` for a fixed-seed
+  mock agent.
+
+### 19.9 `outcomes.yaml` — ground-truth labels
+
+Capture writes timeline+state. Labels are NOT capturable
+automatically with full reliability — some signals can be
+inferred from how humans reacted, but the final ground-truth
+file is semi-manual:
+
+```yaml
+# recordings/.../PR-1234/outcomes.yaml
+labels:
+  # agent comments (by stable_id from recorded-output.json)
+  a-001-1:
+    verdict: valid           # valid | noise | undecided
+    confidence: high         # high | medium | low
+    source: auto             # auto = derived from human reaction
+                             # manual = labeller marked it
+    rationale: "human resolved thread without counter-reply"
+  a-002-3:
+    verdict: noise
+    confidence: high
+    source: manual
+    rationale: "human replied '❌ это уже учитывается строкой выше'"
+missed_findings:
+  # issues humans raised that the agent did not surface in ANY invocation
+  - human_comment_stable_id: h-012
+    severity: MAJOR
+    topic: "null check on order.items() before iterate"
+  - human_comment_stable_id: h-018
+    severity: MINOR
+    topic: "method name doesn't match domain language"
+labelled_by: alice@example.com
+labelled_at: 2026-06-01T...
+```
+
+Automatic inference rules (the `source: auto` cases):
+
+- Agent comment + human reply containing `[noise]` or `❌` →
+  `verdict: noise, confidence: high`.
+- Agent comment + human reply containing `+1` / `valid` / `nice
+  catch` / `согласен` → `verdict: valid, confidence: high`.
+- Agent comment + thread `resolved` by a human with no counter-
+  reply within N follow-up events → `verdict: valid, confidence:
+  medium`. (Resolution without protest is acceptance.)
+- Agent comment + human reply that disagrees on substance (LLM
+  classifier over the reply body, scored against
+  "agreement | disagreement | neutral") → if disagreement:
+  `verdict: noise, confidence: medium`.
+- Anything else → `undecided`. Surfaced in a labelling UI for
+  human disambiguation.
+
+Manual labelling lives in a tiny `/qa/recordings/<id>/label` UI
+(future) — for now, hand-edit `outcomes.yaml`.
+
+The `missed_findings` array is the harder part — there's no
+automatic way to know that human comment `h-012` corresponds to
+"the agent should have caught this." Three discovery patterns:
+
+1. **Topic clustering between recorded agent output + human
+   comments.** Human comments that are NOT clearly replies to
+   agent comments (i.e. top-level new threads) and have no
+   topic match against any agent comment → candidate misses.
+2. **Post-merge incident link.** If the PR caused a production
+   incident later (tracked in Jira), the incident's root cause
+   is automatically a miss.
+3. **Manual nomination.** A labeller marks "this thread should
+   have been raised by the agent."
+
+`final_miss_rate_blocker` is the most useful single number for
+business — agent missing a stylistic nit (`MINOR`) isn't worth
+optimising for; missing a `BLOCKER` is the only cost that
+matters.
+
+### 19.10 Storage & retention
+
+- **Mount.** `recordings/` MUST live on a partition with headroom
+  — eden (`/home/andrey/eden`, 649GB free on this host) or
+  survivor (`/home/andrey/survivor`, 347GB free). NOT `/`.
+- **Per-PR size budget.** Range-mode bundle + state + Jira =
+  typically 10-100MB per PR. 1000 PRs ≈ 10-100GB. Set
+  `recordings_dir` to a dedicated mount with ≥200GB.
+- **Retention policy.** Defaults:
+  - Unlabeled (no `outcomes.yaml`): auto-prune after 90 days.
+    Capture without labels is just noise that crowds storage.
+  - Labelled (any `outcomes.yaml` present): kept indefinitely
+    until manual delete. These are the actual bench corpus.
+  - Flagged as `corpus: golden` in `replay.yaml`: kept
+    indefinitely + write-protected (`chmod -R a-w` after capture
+    finalisation).
+- **Backup.** Golden recordings should be replicated off-host
+  (S3-compatible bucket or similar). Per-PR size is small enough
+  that an `aws s3 sync` cron job suffices.
+
+### 19.11 Security & compliance
+
+Recordings contain real corporate code + human comments + Jira
+ticket bodies. Same compliance perimeter as the live agent (see
+README "Data the agent sends to the LLM" section). Constraints
+the capture must respect:
+
+- Don't write `recordings_dir` to any path that's part of a
+  shared network mount visible to users without code access.
+- The `outcomes.yaml` labelling UI is INTERNAL-only and must
+  authenticate (read-only access to recordings ≠ access to all
+  PRs the bot ever reviewed — that's a privilege escalation).
+- Replay tier runs in the same process / pod boundaries as the
+  agent. No new egress.
+- Optionally: secret-scanner pass over `pr-state.json` /
+  `recorded-output.json` at capture time (regex for AWS keys,
+  JWT, bearer tokens, private keys). Flagged recordings refuse
+  to ship to a golden corpus without manual review.
+
+### 19.12 What this unlocks (downstream)
+
+Once a corpus of, say, 50-100 labelled recordings exists, the
+following workflows become real:
+
+- **Prompt change regression**: every commit on `master` runs
+  the full replay corpus via QA queue → score deltas surface
+  before merge.
+- **Model migration testing**: switching the agent's LLM from
+  DeepSeek to Qwen3-6 → replay corpus tells whether
+  `miss_rate_blocker` regressed before the switch hits prod.
+- **Skill A/B**: extracting a new skill (or removing one) → run
+  the replay corpus twice, compare. Earlier than the unit-tier
+  SKILL-* fixtures which test extraction structurally; the
+  replay corpus tests the BUSINESS impact.
+- **Drift detection in production**: replaying a recording every
+  week against the current `master` shows if the agent quietly
+  regressed without anyone noticing (no PR change, but model
+  endpoint drifted, prompt cache changed, etc).
+
+### 19.13 Why not just "save the SQLite trace and replay it"?
+
+The trace store (`~/.diffgraph/traces.db`) is the agent's own
+log of what IT did. It records LLM requests, tool calls, SGR
+reflects. It does NOT record:
+- Why the run was triggered (which human comment, at what state
+  of the PR — the trigger is logged but not the full context).
+- What OTHER comments existed in the PR at that moment.
+- What the Jira ticket said at that moment (only what the agent
+  read from it via `jira_read_ticket`).
+- Subsequent state (next push, next human reply).
+- The repo state outside what the agent read.
+
+Trace = agent's POV; recording = world's POV. Replay needs
+world's POV.
