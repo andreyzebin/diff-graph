@@ -108,14 +108,20 @@ class TestPhaseGateOnDiffStar:
     """`diff_*` tools — the gate runs before any VFS access, so we
     can probe it without a real git repo."""
 
-    def test_non_default_repo_rejected(self, ctx_and_registry):
+    def test_non_default_repo_returns_phase_c_msg(self, ctx_and_registry):
+        """diff_* tools now consult FakeBitbucket's
+        cross_source_repos (Phase C entry-point) for non-default
+        URIs. Without a fixture entry → clear "not available"
+        message naming the missing URI — not the old Phase B
+        rejection. The Phase B label remains accurate as a concept
+        for tools that still bounce non-defaults (none of the ones
+        we've migrated)."""
         _, reg = ctx_and_registry
-        # diff_list_files has no required params, so the gate is the
-        # only thing the call exercises before the handler body.
         out = reg.dispatch("diff_list_files",
                             {"repo": "bitbucket://default/PROJ/shared-lib"})
         assert isinstance(out, str)
-        assert "Phase B" in out
+        assert "cross-source" in out
+        assert "shared-lib" in out
 
     def test_malformed_repo_returns_invalid_uri_error(self, ctx_and_registry):
         _, reg = ctx_and_registry
@@ -138,12 +144,16 @@ class TestPhaseGateOnDiffStar:
 class TestPhaseGateOnPrStar:
     """`pr_*` tools — same gate, with `pr=` also checked."""
 
-    def test_non_default_pr_rejected(self, ctx_and_registry):
+    def test_non_default_pr_returns_phase_c_msg(self, ctx_and_registry):
+        """pr_list_threads now consults FakeBitbucket's
+        cross_source_threads (Phase C entry-point) for non-default
+        PR ids. Without a fixture entry → clear "not available"
+        message that names the missing `<uri>:<pr>` key."""
         _, reg = ctx_and_registry
         out = reg.dispatch("pr_list_threads", {"pr": "9999"})
         assert isinstance(out, str)
-        assert "Phase B" in out
-        assert "pr" in out
+        assert "cross-source" in out
+        assert "9999" in out
 
     def test_matching_pr_id_silently_accepted(self, ctx_and_registry):
         """`pr="1630"` (matching ctx's PR) is accepted — the gate
@@ -415,3 +425,207 @@ class TestPrListRepoListCrossSourceFake:
         out = reg.dispatch("pr_list", {"repo": "not-a-uri"})
         assert "error" in out[0]
         assert "invalid repo URI" in out[0]["error"]
+
+
+# ── §10 Phase C: pr_list_threads / pr_read_thread / pr_read_comment ──
+
+
+class TestThreadsCrossSourceFake:
+    """The three thread tools consult FakeBitbucket's
+    cross_source_threads map when the caller passes a non-default
+    URI/PR. Fixture hit → comments rendered through the same impl
+    functions as the default-path; miss → Phase C message."""
+
+    def _install_fake(self, monkeypatch, threads_map):
+        from diffgraph import bitbucket_fake as fb
+        fake = fb.FakeBitbucket(payload={
+            "pr_url": REAL_PR_URL,
+            "repo_path": "/tmp/_x", "base_sha": "a", "source_sha": "b",
+            "metadata": {}, "comments": [], "self_user": "bot",
+            "cross_source_threads": threads_map,
+        })
+        fb.install(fake)
+        monkeypatch.setattr("diffgraph.bitbucket_fake._instance",
+                            lambda: fake)
+        return fake
+
+    def test_pr_list_threads_cross_source_hit(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake(monkeypatch, {
+            "bitbucket://default/SHARED/lib:42": [
+                {"id": 100, "parent_id": 0, "text": "Looks good to me",
+                 "author": "alice", "anchor": None},
+                {"id": 101, "parent_id": 100, "text": "lgtm",
+                 "author": "bob", "anchor": None},
+                {"id": 200, "parent_id": 0, "text": "What about the perf hit?",
+                 "author": "carol", "anchor": None},
+            ],
+        })
+        out = reg.dispatch("pr_list_threads", {
+            "repo": "bitbucket://default/SHARED/lib", "pr": "42",
+        })
+        assert isinstance(out, str)
+        assert "Phase B" not in out and "cross-source" not in out
+        # Both root threads listed (id=100 and id=200).
+        assert "100" in out and "200" in out
+
+    def test_pr_read_thread_cross_source_walks_subtree(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake(monkeypatch, {
+            "bitbucket://default/SHARED/lib:42": [
+                {"id": 100, "parent_id": 0, "text": "root",
+                 "author": "alice", "anchor": None},
+                {"id": 101, "parent_id": 100, "text": "reply",
+                 "author": "bob", "anchor": None},
+            ],
+        })
+        out = reg.dispatch("pr_read_thread", {
+            "comment_id": 101,
+            "repo": "bitbucket://default/SHARED/lib", "pr": "42",
+        })
+        # Reading the reply walks UP to the root and renders the
+        # whole subtree, so both comments show in the output.
+        assert "root" in out and "reply" in out
+
+    def test_pr_read_comment_cross_source(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake(monkeypatch, {
+            "bitbucket://default/SHARED/lib:42": [
+                {"id": 100, "parent_id": 0,
+                 "text": "the entire comment body here",
+                 "author": "alice", "anchor": None},
+            ],
+        })
+        out = reg.dispatch("pr_read_comment", {
+            "comment_id": 100,
+            "repo": "bitbucket://default/SHARED/lib", "pr": "42",
+        })
+        assert "entire comment body" in out
+
+    def test_missing_entry_returns_phase_c_msg(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake(monkeypatch, {})
+        out = reg.dispatch("pr_list_threads", {
+            "repo": "bitbucket://default/SHARED/lib", "pr": "42",
+        })
+        assert "cross-source" in out
+        assert "lib:42" in out
+
+
+# ── §10 Phase C: diff_* cross-source VFS via fake ──────────────────
+
+
+def _make_tiny_git_repo(tmp_path, files_v1: dict, files_v2: dict) -> tuple[str, str, str]:
+    """Build a 2-commit git repo at tmp_path and return
+    (repo_path, base_sha, source_sha). v1 → v2 commit pair is
+    everything diff_* / VFS materialization needs."""
+    import subprocess
+    repo = tmp_path / "x_repo"
+    repo.mkdir()
+    def _git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+    _git("init", "-q", "-b", "main")
+    _git("config", "user.email", "t@t")
+    _git("config", "user.name", "t")
+    for rel, content in files_v1.items():
+        p = repo / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    _git("add", ".")
+    _git("commit", "-q", "-m", "v1")
+    base = _git("rev-parse", "HEAD")
+    for rel, content in files_v2.items():
+        p = repo / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    _git("add", ".")
+    _git("commit", "-q", "-m", "v2")
+    source = _git("rev-parse", "HEAD")
+    return str(repo), base, source
+
+
+class TestDiffStarCrossSourceFake:
+    """diff_* tools materialize a VFS against the cross-source
+    (repo_path, base_sha, source_sha) triple from FakeBitbucket's
+    cross_source_repos map. Production Phase C will swap a real
+    BitbucketRegistry behind the same method shape."""
+
+    def _install_fake(self, monkeypatch, repos_map):
+        from diffgraph import bitbucket_fake as fb
+        fake = fb.FakeBitbucket(payload={
+            "pr_url": REAL_PR_URL,
+            "repo_path": "/tmp/_unused", "base_sha": "a", "source_sha": "b",
+            "metadata": {}, "comments": [], "self_user": "bot",
+            "cross_source_repos": repos_map,
+        })
+        fb.install(fake)
+        monkeypatch.setattr("diffgraph.bitbucket_fake._instance",
+                            lambda: fake)
+        return fake
+
+    def test_diff_read_file_cross_source(self, monkeypatch, tmp_path, ctx_and_registry):
+        _, reg = ctx_and_registry
+        repo_path, base, source = _make_tiny_git_repo(
+            tmp_path,
+            files_v1={"src/lib.py": "def hello():\n    return 'old'\n"},
+            files_v2={"src/lib.py": "def hello():\n    return 'new'\n"},
+        )
+        self._install_fake(monkeypatch, {
+            "bitbucket://default/SHARED/lib": {
+                "repo_path": repo_path, "base_sha": base, "source_sha": source,
+            },
+        })
+        out = reg.dispatch("diff_read_file", {
+            "path": "src/lib.py",
+            "repo": "bitbucket://default/SHARED/lib",
+        })
+        assert isinstance(out, str)
+        assert "cross-source" not in out
+        # Diff annotations should show the - and + lines.
+        assert "old" in out and "new" in out
+
+    def test_diff_list_files_cross_source(self, monkeypatch, tmp_path, ctx_and_registry):
+        _, reg = ctx_and_registry
+        repo_path, base, source = _make_tiny_git_repo(
+            tmp_path,
+            files_v1={"a.txt": "1\n", "b.txt": "x\n"},
+            files_v2={"a.txt": "1\n", "b.txt": "y\n"},  # only b changed
+        )
+        self._install_fake(monkeypatch, {
+            "bitbucket://default/SHARED/lib": {
+                "repo_path": repo_path, "base_sha": base, "source_sha": source,
+            },
+        })
+        out = reg.dispatch("diff_list_files", {
+            "repo": "bitbucket://default/SHARED/lib",
+            "changes_only": True,
+        })
+        assert "cross-source" not in out
+        assert "b.txt" in out
+
+    def test_missing_entry_returns_phase_c_msg(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake(monkeypatch, {})
+        out = reg.dispatch("diff_read_file", {
+            "path": "anything.txt",
+            "repo": "bitbucket://default/SHARED/lib",
+        })
+        assert "cross-source" in out
+        assert "lib" in out
+
+    def test_non_leaf_uri_rejected(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake(monkeypatch, {})
+        out = reg.dispatch("diff_list_files", {
+            "repo": "bitbucket://default/SHARED",  # project level
+        })
+        assert "leaf URI" in out
+
+    def test_invalid_uri_returns_parse_error(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake(monkeypatch, {})
+        out = reg.dispatch("diff_list_files", {"repo": "not-a-uri"})
+        assert "invalid repo URI" in out

@@ -3,14 +3,14 @@ Register diffgraph's domain-specific tools in an Orchestra ToolRegistry.
 
 Each tool is a closure over the review context (_Ctx). Tools accept an
 optional `ref` parameter for selecting the diff view:
-  - "base..source" (default) — unified diff VFS
-  - "<sha1>..<sha2>" — VFS for specific commit range
+  - "base...source" (default) — unified diff VFS, three-dot semantics
+  - "<sha1>...<sha2>" — VFS for specific commit range, three-dot
   - "source" — plain filesystem, no diff markers
 """
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from orchestra.tools.registry import ToolRegistry
 
@@ -88,10 +88,24 @@ def _format_plain_listing(paths: list[str], repo_path: str) -> str:
 
 
 def _resolve_ref(ctx: "_Ctx", ref: str) -> tuple[str, str] | None:
-    """Resolve abstract ref names to SHA pair. Returns None for plain mode."""
+    """Resolve abstract ref names to SHA pair. Returns None for plain
+    mode (single SHA / `ref="source"` / etc).
+
+    Accepts BOTH `a..b` and `a...b` separators and treats them as the
+    same input — the underlying `materialize_vfs` uses three-dot
+    semantics (`git diff -U99999 a...b`) regardless of which form
+    arrived, so the two surface forms differ only in label. Three-
+    dot is the canonical convention in prompts (matches what
+    Bitbucket's PR UI shows); two-dot stays accepted for backward
+    compat with agents that still emit it."""
     if ".." not in ref:
         return None  # plain mode (ref="source" or single SHA)
-    left, right = ref.split("..", 1)
+    # Try three-dot first to avoid leaving a stray "." on the right
+    # half (a..b.split("..") on `a...b` yields ("a", ".b")).
+    if "..." in ref:
+        left, right = ref.split("...", 1)
+    else:
+        left, right = ref.split("..", 1)
     left = ctx.base_ref if left == "base" else left
     right = ctx.source_ref if right == "source" else right
     if not left or not right:
@@ -113,6 +127,48 @@ def _get_vfs(ctx: "_Ctx", ref: str) -> str | None:
         ctx.vfs_cache[cache_key] = vfs_dir
         log.info("VFS materialized for %s: %s", cache_key[:16], vfs_dir)
     return ctx.vfs_cache[cache_key]
+
+
+def _get_cross_source_vfs(
+    ctx: "_Ctx",
+    repo_path: str,
+    base_sha: str,
+    source_sha: str,
+    ref: str,
+) -> str | None:
+    """Materialize a VFS at a DIFFERENT repo than the current PR's,
+    for `diff_*(repo=<other-uri>)` cross-source reads. Mirrors
+    `_get_vfs` but accepts the (repo_path, base/source) triple
+    explicitly. Cached on a per-ctx dict keyed by
+    `<repo_path>|<sha_pair>` so two cross-source URIs whose SHAs
+    happen to collide don't share the wrong VFS. Accepts both `..`
+    and `...` separators (three-dot is canonical; see `_resolve_ref`)."""
+    if not repo_path:
+        return None
+    # Resolve aliases the same way `_resolve_ref` does, but against
+    # the cross-source SHAs (not ctx's).
+    if ".." not in ref:
+        return None
+    if "..." in ref:
+        left, right = ref.split("...", 1)
+    else:
+        left, right = ref.split("..", 1)
+    left = base_sha if left == "base" else left
+    right = source_sha if right == "source" else right
+    if not left or not right:
+        return None
+    cache = getattr(ctx, "_cross_source_vfs_cache", None)
+    if cache is None:
+        cache = {}
+        ctx._cross_source_vfs_cache = cache
+    cache_key = f"{repo_path}|{left}..{right}"
+    if cache_key not in cache:
+        from diffsearch.virtual_fs import materialize_vfs
+        vfs_dir = materialize_vfs(repo_path, left, right)
+        cache[cache_key] = vfs_dir
+        log.info("cross-source VFS materialized for %s",
+                 cache_key[:64])
+    return cache[cache_key]
 
 
 def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
@@ -248,7 +304,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
 
     def _default_ref() -> str:
         """Compute default ref dynamically (after lazy init may have set base/source)."""
-        return "base..source" if (ctx.base_ref and ctx.source_ref) else "source"
+        return "base...source" if (ctx.base_ref and ctx.source_ref) else "source"
 
     # ── Test-only abstract tool: do_task ──────────────────────────────────
     # Deterministic doubler used by the SKILL-001 bench scenario (boss +
@@ -540,7 +596,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     @registry.register(
         name="diff_list_files",
         description=(
-            "List paths in the diff view (default `ref=base..source`) "
+            "List paths in the diff view (default `ref=base...source`) "
             "as plain text, one row per file with a status code and a "
             "size summary so you can budget reads before calling "
             "`diff_read_file`. Example rows:\n"
@@ -569,7 +625,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "description": "Glob, e.g. '**/*.java'. Default '**/*' = everything — call with no args to list every file."},
-                "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
+                "ref": {"type": "string", "description": 'Diff view: "base...source" (three-dot, the canonical form — default in PR mode; matches what Bitbucket\'s PR UI shows), "<sha1>...<sha2>" between specific commits, or "source" for plain working-tree (no markers). Two-dot "a..b" is also accepted for backward compat and behaves the same.'},
                 "changes_only": {"type": "boolean", "description": "Default true — only files with status M/A/D/R/C/T. Set false to also include unchanged context files."},
                 "start": {"type": "integer", "description": "Pagination offset (default 0)."},
                 "n": {"type": "integer", "description": "Page size (default 50)."},
@@ -591,23 +647,31 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         n: int = 50,
         repo: str = "default",
     ) -> str:
-        err = _phase_b_gate(repo=repo)
+        from .repo_uri import is_default_literal
+        triple, err = _resolve_diff_source(repo)
         if err:
             return err
-        _ensure()
-        ref = ref or _default_ref()
-        vfs_dir = _get_vfs(ctx, ref)
+        repo_path, base_sha, source_sha = triple
+        if is_default_literal(repo) or repo_path == ctx.repo_path:
+            _ensure()
+            ref = ref or _default_ref()
+            vfs_dir = _get_vfs(ctx, ref)
+        else:
+            ref = ref or "base...source"
+            vfs_dir = _get_cross_source_vfs(
+                ctx, repo_path, base_sha, source_sha, ref,
+            )
         if vfs_dir:
             from diffsearch.tools import list_files_vfs
             text = list_files_vfs(vfs_dir, pattern, changes_only=changes_only)
             return _filter_and_page_listing(text, start=start, n=n)
         # Plain mode (no VFS, no diff metadata) — no status info, so
         # `changes_only` is a no-op here. Paginate against the raw list.
-        files = _list_files_impl(pattern, ctx.repo_path)
+        files = _list_files_impl(pattern, repo_path)
         files = [f for f in files if not _skip_dir(f)]
         total = len(files)
         page = files[start : start + n]
-        out = _format_plain_listing(page, ctx.repo_path)
+        out = _format_plain_listing(page, repo_path)
         if total > start + n or start > 0:
             out += (
                 f"\n\n[showing {start}..{start + len(page) - 1} of {total} — "
@@ -634,7 +698,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                 "changes_only": {"type": "boolean", "description": "Collapse output to changed lines with ±context."},
                 "before": {"type": "integer", "description": "Context lines before each hunk when changes_only=true (default 3)."},
                 "after": {"type": "integer", "description": "Context lines after each hunk when changes_only=true (default 3)."},
-                "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
+                "ref": {"type": "string", "description": 'Diff view: "base...source" (three-dot, the canonical form — default in PR mode; matches what Bitbucket\'s PR UI shows), "<sha1>...<sha2>" between specific commits, or "source" for plain working-tree (no markers). Two-dot "a..b" is also accepted for backward compat and behaves the same.'},
                 "repo": {"type": "string", "description": 'Repo URI "bitbucket://<handle>/<project>/<repo>" or "default" (the current PR\'s repo). Defaults to "default"; in this release leave as default.'},
             },
             "required": ["path"],
@@ -643,14 +707,22 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     def read_file_tool(path: str = "", start_line: int = None, end_line: int = None,
                        changes_only: bool = False, before: int = 3, after: int = 3,
                        ref: str = "", repo: str = "default") -> str:
-        err = _phase_b_gate(repo=repo)
+        from .repo_uri import is_default_literal
+        triple, err = _resolve_diff_source(repo)
         if err:
             return err
-        _ensure()
-        ref = ref or _default_ref()
+        repo_path, base_sha, source_sha = triple
         if not changes_only and start_line is not None and end_line is not None and (end_line - start_line) > 100:
             end_line = start_line + 99
-        vfs_dir = _get_vfs(ctx, ref)
+        if is_default_literal(repo) or repo_path == ctx.repo_path:
+            _ensure()
+            ref = ref or _default_ref()
+            vfs_dir = _get_vfs(ctx, ref)
+        else:
+            ref = ref or "base...source"
+            vfs_dir = _get_cross_source_vfs(
+                ctx, repo_path, base_sha, source_sha, ref,
+            )
         if vfs_dir:
             from diffsearch.tools import read_file_vfs
             return read_file_vfs(
@@ -661,7 +733,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                 context_before=before,
                 context_after=after,
             )
-        return read_file(path, ctx.repo_path, start_line, end_line) or "(file not found)"
+        return read_file(path, repo_path, start_line, end_line) or "(file not found)"
 
     @registry.register(
         name="diff_outline",
@@ -677,25 +749,33 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
-                "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
+                "ref": {"type": "string", "description": 'Diff view: "base...source" (three-dot, the canonical form — default in PR mode; matches what Bitbucket\'s PR UI shows), "<sha1>...<sha2>" between specific commits, or "source" for plain working-tree (no markers). Two-dot "a..b" is also accepted for backward compat and behaves the same.'},
                 "repo": {"type": "string", "description": 'Repo URI "bitbucket://<handle>/<project>/<repo>" or "default" (the current PR\'s repo). Defaults to "default"; in this release leave as default.'},
             },
             "required": ["path"],
         },
     )
     def read_outline_tool(path: str = "", ref: str = "", repo: str = "default") -> str:
-        err = _phase_b_gate(repo=repo)
+        from .repo_uri import is_default_literal
+        triple, err = _resolve_diff_source(repo)
         if err:
             return err
-        _ensure()
-        ref = ref or _default_ref()
-        vfs_dir = _get_vfs(ctx, ref)
+        repo_path, base_sha, source_sha = triple
+        if is_default_literal(repo) or repo_path == ctx.repo_path:
+            _ensure()
+            ref = ref or _default_ref()
+            vfs_dir = _get_vfs(ctx, ref)
+        else:
+            ref = ref or "base...source"
+            vfs_dir = _get_cross_source_vfs(
+                ctx, repo_path, base_sha, source_sha, ref,
+            )
         if vfs_dir:
             from diffsearch.tools import read_outline_vfs
-            return read_outline_vfs(vfs_dir, path, repo_path=ctx.repo_path)
+            return read_outline_vfs(vfs_dir, path, repo_path=repo_path)
         fd = ctx.diff_result.files.get(path)
         changed = set(fd.after_changed_lines) if fd else None
-        return get_outline(path, ctx.repo_path, changed)
+        return get_outline(path, repo_path, changed)
 
     @registry.register(
         name="diff_search",
@@ -713,7 +793,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
                 "regex": {"type": "boolean", "description": "Treat query as regex."},
                 "before": {"type": "integer", "description": "Context lines before each match (default 0)."},
                 "after": {"type": "integer", "description": "Context lines after each match (default 0)."},
-                "ref": {"type": "string", "description": 'Diff view: "base..source" (default in PR mode), "<sha1>..<sha2>", or "source" for plain working-tree (no markers).'},
+                "ref": {"type": "string", "description": 'Diff view: "base...source" (three-dot, the canonical form — default in PR mode; matches what Bitbucket\'s PR UI shows), "<sha1>...<sha2>" between specific commits, or "source" for plain working-tree (no markers). Two-dot "a..b" is also accepted for backward compat and behaves the same.'},
                 "repo": {"type": "string", "description": 'Repo URI "bitbucket://<handle>/<project>/<repo>" or "default" (the current PR\'s repo). Defaults to "default"; in this release leave as default.'},
             },
             "required": ["query"],
@@ -722,19 +802,27 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     def search_tool(query: str = "", glob: str = "**/*", regex: bool = False,
                     before: int = 0, after: int = 0, ref: str = "",
                     repo: str = "default") -> str:
-        err = _phase_b_gate(repo=repo)
+        from .repo_uri import is_default_literal
+        triple, err = _resolve_diff_source(repo)
         if err:
             return err
-        _ensure()
-        ref = ref or _default_ref()
-        vfs_dir = _get_vfs(ctx, ref)
+        repo_path, base_sha, source_sha = triple
+        if is_default_literal(repo) or repo_path == ctx.repo_path:
+            _ensure()
+            ref = ref or _default_ref()
+            vfs_dir = _get_vfs(ctx, ref)
+        else:
+            ref = ref or "base...source"
+            vfs_dir = _get_cross_source_vfs(
+                ctx, repo_path, base_sha, source_sha, ref,
+            )
         if vfs_dir:
             from diffsearch.tools import search_vfs
             return search_vfs(
                 vfs_dir, query, glob=glob, regex=regex,
                 before=before, after=after,
             )
-        results = search_text(query, ctx.repo_path, glob=glob, regex=regex)
+        results = search_text(query, repo_path, glob=glob, regex=regex)
         filtered = [r for r in results if not _skip_dir(r.file)][:30]
         if not filtered:
             return "(no matches)"
@@ -744,6 +832,102 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         return "\n".join(lines)
 
     # ── Comment-graph navigation (replaces baked EXISTING COMMENTS) ──────
+
+    def _resolve_diff_source(
+        repo: str,
+    ) -> tuple[Optional[tuple[str, str, str]], Optional[str]]:
+        """Return `((repo_path, base_sha, source_sha), None)` for
+        diff_* tools to materialize a VFS against, or
+        `(None, error_or_phase_c_msg)` on parse error / missing
+        cross-source fixture entry. Default URI → ctx's values.
+        Cross-source URI → fake's cross_source_repos lookup.
+        """
+        from .repo_uri import is_default_literal, parse_repo_uri
+        ctx_uri = _ctx_repo_uri()
+        if is_default_literal(repo):
+            return (ctx.repo_path, ctx.base_ref or "", ctx.source_ref or ""), None
+        try:
+            parsed = parse_repo_uri(repo)
+        except ValueError as exc:
+            return None, f"(invalid repo URI: {exc})"
+        # Same-as-current → reuse ctx (tolerated per §10.6).
+        if ctx_uri and str(parsed) == str(ctx_uri):
+            return (ctx.repo_path, ctx.base_ref or "", ctx.source_ref or ""), None
+        # diff_* needs a leaf URI (specific repo). Reject server /
+        # project levels with a focused message.
+        if not parsed.is_leaf():
+            return None, (
+                f"(diff_* needs a leaf URI for the repo to read; "
+                f"got {parsed} which is server/project level — use "
+                "`repo_list({parsed})` to discover the actual repo "
+                "URIs)"
+            )
+        try:
+            from . import bitbucket_fake as _fb
+            entry = _fb._instance().cross_source_repo_info(str(parsed))
+        except Exception:
+            entry = None
+        if entry is None:
+            return None, (
+                f"(cross-source diff_* not available for {parsed} — "
+                "Phase C scenarios need an entry under "
+                "`cross_source_repos` in the fake fixture, or a real "
+                "BitbucketRegistry must be configured)"
+            )
+        return (
+            entry.get("repo_path", ""),
+            entry.get("base_sha", ""),
+            entry.get("source_sha", ""),
+        ), None
+
+    def _resolve_thread_source(
+        repo: str, pr: str,
+    ) -> tuple[Optional[list[dict]], Optional[str]]:
+        """Return `(comments, error_or_phase_c_msg)` for the three
+        thread tools. Default → ctx.existing_comments. Cross-source
+        URI/PR → fake's cross_source_pr_comments. Missing fixture
+        entry → clear Phase C message. Parse errors surface as
+        focused "invalid repo URI" messages."""
+        from .repo_uri import is_default_literal, parse_repo_uri
+        ctx_uri = _ctx_repo_uri()
+        ctx_pr = _ctx_pr_id() or ""
+        is_default_call = (
+            is_default_literal(repo) and is_default_literal(pr)
+        )
+        if is_default_call:
+            return (ctx.existing_comments or []), None
+        # Non-default — parse the URI, look up cross-source.
+        try:
+            parsed_uri = (
+                ctx_uri if is_default_literal(repo)
+                else parse_repo_uri(repo)
+            )
+        except ValueError as exc:
+            return None, f"(invalid repo URI: {exc})"
+        if parsed_uri is None:
+            return None, "(repo URI missing and ctx has no PR)"
+        pr_id = ctx_pr if is_default_literal(pr) else str(pr).strip()
+        if not pr_id:
+            return None, "(pr id required for cross-source threads)"
+        # Same-as-current → reuse ctx (tolerated per §10.6).
+        if (ctx_uri and str(parsed_uri) == str(ctx_uri)
+                and pr_id == ctx_pr):
+            return (ctx.existing_comments or []), None
+        try:
+            from . import bitbucket_fake as _fb
+            entries = _fb._instance().cross_source_pr_comments(
+                str(parsed_uri), pr_id,
+            )
+        except Exception:
+            entries = []
+        if not entries:
+            return None, (
+                f"(cross-source pr threads not available for "
+                f"{parsed_uri}:{pr_id} — Phase C scenarios need this "
+                "PR's comments in `cross_source_threads` fixture data, "
+                "or a real BitbucketRegistry must be configured)"
+            )
+        return entries, None
 
     @registry.register(
         name="pr_list_threads",
@@ -772,11 +956,11 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     )
     def list_threads_tool(start: int = 0, n: int = 30, sort: str = "newest",
                           repo: str = "default", pr: str = "default") -> str:
-        err = _phase_b_gate(repo=repo, pr=pr)
+        comments, err = _resolve_thread_source(repo, pr)
         if err:
             return err
         return _list_threads_impl(
-            ctx.existing_comments or [],
+            comments or [],
             snapshot_max_id_value=_comment_snapshot(),
             bot_user=_bot_user(),
             subject_pattern=_subject_pattern(),
@@ -808,13 +992,13 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     )
     def read_thread_tool(comment_id: int = 0,
                          repo: str = "default", pr: str = "default") -> str:
-        err = _phase_b_gate(repo=repo, pr=pr)
-        if err:
-            return err
         if not comment_id:
             return "(comment_id is required)"
+        comments, err = _resolve_thread_source(repo, pr)
+        if err:
+            return err
         return _read_thread_impl(
-            ctx.existing_comments or [],
+            comments or [],
             comment_id=comment_id,
             snapshot_max_id_value=_comment_snapshot(),
             bot_user=_bot_user(),
@@ -839,13 +1023,13 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
     )
     def read_comment_tool(comment_id: int = 0,
                           repo: str = "default", pr: str = "default") -> str:
-        err = _phase_b_gate(repo=repo, pr=pr)
-        if err:
-            return err
         if not comment_id:
             return "(comment_id is required)"
+        comments, err = _resolve_thread_source(repo, pr)
+        if err:
+            return err
         return _read_comment_impl(
-            ctx.existing_comments or [],
+            comments or [],
             comment_id=comment_id,
             snapshot_max_id_value=_comment_snapshot(),
             bot_user=_bot_user(),

@@ -119,6 +119,24 @@ _EMPTY_PAYLOAD: dict[str, Any] = {
     # `repo_list(repo=<uri>)` consults this. Same prefix-matching
     # rules. Values: lists of {uri, name, ...}.
     "cross_source_repo_list": {},
+    # `pr_list_threads(repo=<uri>, pr=<id>)` / `pr_read_thread(...)`
+    # / `pr_read_comment(...)` consult this when the URI/PR isn't
+    # the current one. Keys: `"<repo_uri>:<pr_id>"`. Values: lists
+    # of comment dicts in the SAME shape the current PR's
+    # `existing_comments` carries (id, parent_id, file, line,
+    # text, author, anchor). Empty → tools surface a clear "no
+    # threads for this cross-source PR" message.
+    "cross_source_threads": {},
+    # `diff_*(repo=<uri>)` consults this when the URI isn't the
+    # current PR's. Keys: `<repo_uri>` (leaf URI only — diff tools
+    # need a specific repo). Values: dicts with
+    # `{repo_path, base_sha, source_sha}` — same shape the
+    # top-level payload carries for the current PR. The diff
+    # tools materialize a separate VFS at the cross-source
+    # (repo_path, base_sha, source_sha) and run reads/searches
+    # against it. Tests typically point repo_path at a small
+    # local clone of a fixture repo.
+    "cross_source_repos": {},
 }
 
 
@@ -278,6 +296,43 @@ class FakeBitbucket:
         level. Each entry is `{uri, name, ...}`."""
         m = self.payload.get("cross_source_repo_list") or {}
         return _flatten_cross_source_lookup(m, query_uri)
+
+    def cross_source_repo_info(self, repo_uri: str) -> Optional[dict]:
+        """Look up the (repo_path, base_sha, source_sha) triple for a
+        cross-source repo URI — what `diff_*(repo=<uri>)` needs to
+        materialize a separate VFS. Returns None when the fixture
+        has no entry for the URI; the diff tools then surface a
+        clear Phase C message."""
+        if not repo_uri:
+            return None
+        m = self.payload.get("cross_source_repos") or {}
+        if not isinstance(m, dict):
+            return None
+        entry = m.get(repo_uri)
+        if not isinstance(entry, dict):
+            return None
+        return entry
+
+    def cross_source_pr_comments(
+        self, repo_uri: str, pr_id: str,
+    ) -> list[dict]:
+        """Look up fake-fed comments for `<repo_uri>:<pr_id>`. The
+        three thread tools (`pr_list_threads`, `pr_read_thread`,
+        `pr_read_comment`) consult this when the caller passes a
+        non-default URI or PR. Returns the list of raw comment
+        dicts; empty when the fixture has no entry for the key.
+        Production Phase C swaps in a real provider behind the same
+        method shape."""
+        if not repo_uri or not pr_id:
+            return []
+        m = self.payload.get("cross_source_threads") or {}
+        if not isinstance(m, dict):
+            return []
+        key = f"{repo_uri}:{pr_id}"
+        entries = m.get(key)
+        if not isinstance(entries, list):
+            return []
+        return [e for e in entries if isinstance(e, dict)]
 
     # ── write-side ───────────────────────────────────────────────────────
 

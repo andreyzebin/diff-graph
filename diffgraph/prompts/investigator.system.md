@@ -88,10 +88,13 @@ contract for **how** your output is interpreted regardless of the task.
 on a **unified-diff view** of the repo, controlled by the `ref`
 parameter:
 
-- `ref="base..source"` (default in PR mode) — virtual filesystem
-  where each line of a changed file is annotated:
+- `ref="base...source"` (default in PR mode) — virtual filesystem
+  where each line of a changed file is annotated. Three-dot
+  semantics: the diff is anchored at `merge-base(base, source)`,
+  so you see only what THIS branch added — what Bitbucket's PR
+  view shows, not whatever base may have advanced to.
   - `+` added in source, `-` removed from base, ` ` unchanged context.
-- `ref="<sha1>..<sha2>"` — same shape, between specific commits.
+- `ref="<sha1>...<sha2>"` — same shape, between specific commits.
 - `ref="source"` — plain working-tree files, no markers.
 
 Each annotated line has three coordinates:
