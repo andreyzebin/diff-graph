@@ -32,7 +32,11 @@ tree-sitter-bash>=0.23.0
 tree-sitter-html>=0.23.0
 tree-sitter-css>=0.23.0
 tree-sitter-json>=0.23.0
-tree-sitter-yaml>=0.23.0
+# tree-sitter-yaml uses its own versioning (0.7.x at the latest;
+# no 0.23+ tag) — drop the floor. The package still imports under
+# `tree_sitter_yaml` and exposes the `language()` callable the
+# parser loader expects.
+tree-sitter-yaml
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 jinja2>=3.1.0
