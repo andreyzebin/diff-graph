@@ -86,8 +86,3 @@ under the three-condition rule above, submit your accusation via
 `answer(text="<name>")` — exactly the lowercase suspect name
 (alice / bob / carol / dave). Single call, run terminates with
 your accusation recorded as the deliverable.
-
-When skills are mounted (see the user-message body), they may
-expand your toolset (e.g. add `reflect` for tracking concerns
-and resolving hypotheses across the investigation). Read the
-skill block carefully when present.

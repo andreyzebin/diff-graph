@@ -31,10 +31,6 @@ Tools:
 - `answer(text: str)` — submit your final answer AND terminate
   the run in a single call. No separate `done()` needed.
 
-When skills are mounted (see the user-message body), they may
-expand your toolset (e.g. add `reflect` for state-tracking).
-Read the skill block carefully when present.
-
 ## Submitting the answer
 
 The moment `probe(...)` returns `"equal"`, call

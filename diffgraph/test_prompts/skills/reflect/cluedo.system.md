@@ -88,9 +88,3 @@ Closing pattern:
 
     suggest(...) → "no_disproof"          # solution identified
     answer(text="A, B, C")                 # close — single call
-
-When skills are mounted (see the user-message body), they may
-expand your toolset (e.g. add `reflect` for tracking eliminated
-cards / opponent attribution / candidate sets per category
-across the multi-suggestion deduction). Read the skill block
-carefully when present.
