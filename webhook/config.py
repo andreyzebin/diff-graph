@@ -18,6 +18,13 @@ class AgentConfig:
     base_url: str = ""
     api_key: str = ""
     timeout: int = 600
+    # Recording (TODO §19) — when set, the spawned cli.py captures
+    # the full PR state + diff + agent output under
+    # <recording_dir>/<host>/<project>/<repo>/PR-<id>/. Forwarded as
+    # DIFFGRAPH_RECORD_DIR / DIFFGRAPH_RECORD_SCOPE on the subprocess
+    # env. Empty string disables capture for this agent.
+    recording_dir: str = ""
+    recording_scope: str = "range"  # "range" or "full" — see recording.py
 
 
 @dataclass
@@ -63,6 +70,7 @@ def load_config(path: str | Path) -> WebhookConfig:
         per_cmd = {}
         for k, v in cfg.get("commands", {}).items():
             per_cmd[k] = str(v)
+        rec_block = cfg.get("recording") or {}
         agents[name] = AgentConfig(
             name=name,
             trigger=cfg.get("trigger", "cli"),
@@ -71,6 +79,8 @@ def load_config(path: str | Path) -> WebhookConfig:
             base_url=cfg.get("base_url", ""),
             api_key=cfg.get("api_key", ""),
             timeout=cfg.get("timeout", 600),
+            recording_dir=str(rec_block.get("dir", "") or ""),
+            recording_scope=str(rec_block.get("scope", "range") or "range"),
         )
 
     # Events

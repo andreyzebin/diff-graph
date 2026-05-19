@@ -8,6 +8,7 @@ try:
 except ImportError:
     pass
 
+import datetime as _dt
 import os
 # Force UTF-8 mode on Windows (avoids cp1251 crashes in subprocess)
 os.environ["PYTHONUTF8"] = "1"
@@ -167,6 +168,38 @@ def _run_with_dispatcher(
         pass
 
     bot_user = review_cfg.get("bot_user", "")
+
+    # ── Recording (TODO §19) — best-effort capture of this invocation ─────
+    # Disabled when DIFFGRAPH_RECORD_DIR is unset or pr_url is empty
+    # (no PR identity to anchor recording on). Failures inside the
+    # writer are swallowed; the agent run is unaffected.
+    _recording = None  # type: Optional[Any]
+    _record_root = os.environ.get("DIFFGRAPH_RECORD_DIR", "").strip()
+    if _record_root and pr_url:
+        try:
+            from diffgraph.recording import RecordingWriter as _RecWriter
+            _recording = _RecWriter.open(_record_root, pr_url)
+        except Exception as exc:  # pragma: no cover — defensive
+            console.print(f"[yellow]  recording: open failed: {exc}[/yellow]")
+            _recording = None
+        if _recording is not None:
+            try:
+                _recording.start_invocation(
+                    triggered_by={
+                        "kind": "comment" if (message and comment_id > 0) else
+                                ("webhook" if not message else "cli"),
+                    },
+                    message=message,
+                    comment_id=comment_id,
+                    agent_name=agent_name,
+                    # trace_run_id is set later, after _trace_db init.
+                )
+                console.print(
+                    f"[dim]  recording: {_recording.pr_dir} "
+                    f"inv={_recording.invocation_index:03d}[/dim]"
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                console.print(f"[yellow]  recording: start_invocation failed: {exc}[/yellow]")
     import re as _re
     pat = None
     if subject_pattern:
@@ -205,9 +238,77 @@ def _run_with_dispatcher(
         c._pr_title = pr_meta.get("title", "")
         c._pr_description = pr_meta.get("description", "")
 
+        # Recording (TODO §19) — now that we have PR meta + comments
+        # + SHAs, write pr.json (idempotent) + invocation snapshot.
+        if _recording is not None and not _recording.disabled:
+            try:
+                from diffgraph.recording import (
+                    PRSnapshot as _Snap, CommentSnapshot as _CSnap,
+                    stable_id_for_external_comment as _stable_ext,
+                )
+                _recording.write_pr_meta(
+                    title=pr_meta.get("title", ""),
+                    description=pr_meta.get("description", ""),
+                    author=pr_meta.get("author", ""),
+                    source_branch=pr_meta.get("from_branch", ""),
+                    target_branch=pr_meta.get("to_branch", ""),
+                )
+                comments_snap = []
+                for cm in (existing_comments or []):
+                    bb_id = cm.get("id")
+                    if bb_id is None:
+                        continue
+                    author_slug = cm.get("author") or cm.get("user") or ""
+                    comments_snap.append(_CSnap(
+                        stable_id=_stable_ext(bb_id),
+                        bb_id=bb_id,
+                        author=author_slug,
+                        is_bot=bool(bot_user) and author_slug == bot_user,
+                        body=cm.get("text") or cm.get("body") or "",
+                        parent_stable_id=(
+                            _stable_ext(cm["parent_id"])
+                            if cm.get("parent_id") is not None else None
+                        ),
+                        anchor=cm.get("anchor"),
+                        created_at=cm.get("created_at") or "",
+                        resolved=bool(cm.get("resolved")),
+                    ))
+                # rev_id is "rev-NN" for the current invocation index.
+                rev_id = f"rev-{_recording.invocation_index:02d}"
+                _recording.write_snapshot(_Snap(
+                    base_sha=pr_meta.get("base_ref", ""),
+                    source_sha=pr_meta.get("source_ref", ""),
+                    source_branch=pr_meta.get("from_branch", ""),
+                    target_branch=pr_meta.get("to_branch", ""),
+                    pr_status=pr_meta.get("state", "open"),
+                    rev_id=rev_id,
+                    captured_at=_dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+                    comments=comments_snap,
+                ))
+            except Exception as exc:  # pragma: no cover — defensive
+                console.print(f"[yellow]  recording: snapshot failed: {exc}[/yellow]")
+
     ctx._init_fn = _lazy_init
     ctx._bot_user = bot_user
     ctx._subject_pattern = pat
+
+    # Plumb the Jira capture hook into ctx so register_diffgraph_tools'
+    # lazy JiraRegistry picks it up on first jira_* tool call. No-op
+    # when recording is disabled.
+    if _recording is not None:
+        def _jira_record_hook(kind: str, key: str, raw: dict) -> None:
+            if _recording.disabled:
+                return
+            try:
+                if kind == "ticket":
+                    _recording.capture_jira_ticket(key, raw)
+                elif kind == "dev_info":
+                    _recording.capture_jira_dev_info(key, raw)
+                elif kind == "search":
+                    _recording.capture_jira_search(key, raw)
+            except Exception:
+                pass
+        ctx._jira_record_hook = _jira_record_hook
 
     # ── Tool registry with all domain tools ───────────────────────────────
     tool_registry = ToolRegistry(
@@ -415,7 +516,10 @@ def _run_with_dispatcher(
     import signal as _signal
     _finalized = {"v": False}
 
-    def _finalize(status: str) -> None:
+    def _finalize(status: str, *, findings: Optional[list] = None,
+                  posted_comments: Optional[list[dict]] = None,
+                  status_changes: Optional[list[dict]] = None,
+                  error: Optional[str] = None) -> None:
         if _finalized["v"]:
             return
         _finalized["v"] = True
@@ -433,6 +537,32 @@ def _run_with_dispatcher(
             _trace_db.close()
         except Exception:
             pass
+        # Recording finalisation — write output.json + update bundle.
+        # Both wrapped: capture must never raise into the agent path.
+        if _recording is not None and not _recording.disabled:
+            try:
+                _recording.write_output(
+                    findings=findings,
+                    posted_comments=posted_comments,
+                    status_changes=status_changes,
+                    exit_status=("ok" if status == "completed" else status),
+                    error=error,
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                console.print(f"[yellow]  recording: write_output failed: {exc}[/yellow]")
+            # Bundle update only if lazy_init succeeded (we have a repo).
+            try:
+                if ctx.repo_path and ctx.base_ref and ctx.source_ref:
+                    rev_id = f"rev-{_recording.invocation_index:02d}"
+                    _recording.update_bundle(
+                        ctx.repo_path,
+                        base_sha=ctx.base_ref,
+                        source_sha=ctx.source_ref,
+                        rev_id=rev_id,
+                        scope=os.environ.get("DIFFGRAPH_RECORD_SCOPE", "range"),
+                    )
+            except Exception as exc:  # pragma: no cover — defensive
+                console.print(f"[yellow]  recording: bundle update failed: {exc}[/yellow]")
 
     def _on_signal(signum, _frame):
         # Just raise SystemExit so the surrounding try/finally
@@ -504,13 +634,26 @@ def _run_with_dispatcher(
             )
             console.print(f"[green]{label} written to {output}[/green]")
 
-        _finalize("completed")
+        # Collect what the agent actually produced for the recording.
+        _rec_findings = [f.to_dict() for f in findings] if findings else []
+        _rec_posted   = list(review_ctx.posted_comments or [])
+        _rec_status   = []
+        if review_ctx.review_status:
+            _rec_status.append({
+                "to":     review_ctx.review_status,
+                "reason": review_ctx.review_status_reason or "",
+            })
+
+        _finalize("completed",
+                  findings=_rec_findings,
+                  posted_comments=_rec_posted,
+                  status_changes=_rec_status)
         console.print(f"[dim]  trace: {_trace_db.db_path} run={_trace_db.run_id}[/dim]")
-    except (SystemExit, KeyboardInterrupt):
-        _finalize("failed")
+    except (SystemExit, KeyboardInterrupt) as exc:
+        _finalize("failed", error=f"{type(exc).__name__}: {exc}")
         raise
-    except Exception:
-        _finalize("failed")
+    except Exception as exc:
+        _finalize("failed", error=f"{type(exc).__name__}: {exc}")
         raise
     finally:
         # Defensive: if we exited via an unexpected path (e.g. an
@@ -621,6 +764,7 @@ def run(
     invocations_out: Optional[str] = typer.Option(None, "--invocations-out",   help="Write a JSON list of every tool invocation made during the run (tool name, args, mocked, mock_when, step, agent) to this path on exit. Used by the bench judge for Mockito-style verify on agent unit tests."),
     user_message:  Optional[str] = typer.Option(None,  "--user-message",       help="Override the agent's default user-message template. Useful for unit tests where you want to keep the system prompt (methodology) intact but change the task framing — e.g. give the reviewer pre-investigated findings and ask only for consolidation."),
     user_message_from: Optional[str] = typer.Option(None, "--user-message-from", help="Same as --user-message but reads the override text from a file. Convenient for multi-line message templates."),
+    record_fixture: Optional[str] = typer.Option(None, "--record-fixture",     help="Capture this run as a replay fixture under <dir>/<host>/<project>/<repo>/PR-<id>/. See TODO §19 for the layout. Falls back to $DIFFGRAPH_RECORD_DIR. Best-effort — capture failures do not abort the agent."),
 ):
     """
     Run an agent. Default: dispatcher (with --message) or reviewer (without).
@@ -728,6 +872,12 @@ def run(
         logging.getLogger("urllib3").setLevel(logging.WARNING)
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+    # Recording (TODO §19) — env or --record-fixture flag enables capture.
+    # Plumbed into the process via env so _run_with_dispatcher (and any
+    # subprocess we might spawn later) sees the same setting.
+    if record_fixture:
+        os.environ["DIFFGRAPH_RECORD_DIR"] = str(Path(record_fixture).expanduser().resolve())
 
     # Disable SSL verification globally
     if no_verify_ssl:

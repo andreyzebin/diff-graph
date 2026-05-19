@@ -38,6 +38,16 @@ trigger = "cli"
 command = 'cd ~/repos/diff-graph && source .env && .venv/bin/python cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id}'
 timeout = 600
 
+# Optional: record every invocation as a replay fixture under
+# <dir>/<host>/<project>/<repo>/PR-<id>/. See TODO §19 for the layout
+# and /qa/recordings UI for inventory + replay. Best-effort — disk
+# free below 5GB or unwritable target disables capture for that run
+# without aborting the agent. Forwarded to the cli.py subprocess via
+# DIFFGRAPH_RECORD_DIR / DIFFGRAPH_RECORD_SCOPE env.
+# [agents.dg.recording]
+# dir = "~/eden/diffgraph-recordings"
+# scope = "range"   # "range" (default — base..source + ancestry) or "full" (--all)
+
 # DiffGraph — dispatcher entry point with set_review_status disabled.
 # Same as dg above, but --mocks is passed to the dispatcher (the root
 # agent). ToolMocks is inherited by every spawned child — the

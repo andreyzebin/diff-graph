@@ -1075,6 +1075,83 @@ def run_unit(
         raise typer.Exit(result.exit_code)
 
 
+@app.command("replay-single")
+def replay_single(
+    recording: str = typer.Argument(..., help="Path to a recording directory (the `PR-<id>/` dir written by --record-fixture, see TODO §19)"),
+    invocation: str = typer.Option("first", "--invocation", "-i",
+                                    help="Which invocation to replay: numeric index (1-based), 'first', or 'last'"),
+    provider: Optional[str] = typer.Option(None, "--provider", "-p",
+                                            help="Provider profile from .llm_creds.toml — same as run-unit"),
+    timeout: int = typer.Option(300, "--timeout", "-t", help="Hard timeout (seconds)"),
+    keep_workspace: bool = typer.Option(False, "--keep-workspace",
+                                          help="Keep the materialized bundle + synthesized fixture on disk after the run (debug)"),
+    no_judge: bool = typer.Option(False, "--no-judge", help="Skip the LLM judge"),
+):
+    """Replay one invocation from a recording (TODO §19 Phase 2).
+
+    Restores the bundle into a fresh repo, rebuilds the FakeBitbucket
+    state from the captured snapshot, synthesizes a unit-tier fixture
+    yaml, and runs the agent through the existing `bench run-unit`
+    machinery. Score, posted actions, OTel trace and structural
+    asserts all light up the same way as a unit-tier run.
+    """
+    import tempfile, shutil
+    from runner.replay import (
+        RecordingReader, materialize_repo, synthesize_unit_fixture_yaml,
+    )
+    from runner.run_unit import run_unit_fixture
+
+    rec = RecordingReader.load(recording)
+    if not rec.invocations:
+        console.print(f"[red]recording {rec.pr_dir} has no invocations[/red]")
+        raise typer.Exit(2)
+    inv = RecordingReader.find_invocation(rec, invocation)
+    console.print(
+        f"[bold]Replay[/bold] PR-{rec.pr_id} inv "
+        f"[cyan]{inv.index:03d}[/cyan] (rev={inv.snapshot.get('rev_id','?')}) "
+        f"from {rec.pr_dir}"
+    )
+
+    workspace = Path(tempfile.mkdtemp(prefix=f"replay-PR{rec.pr_id}-"))
+    try:
+        repo = materialize_repo(rec, inv, workspace)
+        console.print(f"  [dim]materialized repo at {repo}[/dim]")
+        synth_yaml = synthesize_unit_fixture_yaml(
+            rec, inv, workspace=workspace, repo_path=repo,
+        )
+        console.print(f"  [dim]synthetic fixture: {synth_yaml}[/dim]")
+
+        cfg = _expand_config(_load_config())
+        judge_cfg = cfg.get("judge", {}) if not no_judge else {}
+
+        result = run_unit_fixture(
+            synth_yaml,
+            provider=provider,
+            timeout=timeout,
+            keep_tmp_on_success=False,
+            attempt_dir=None,
+            judge_cfg=judge_cfg or None,
+        )
+        status_label = "[green]PASS[/green]" if result.exit_code == 0 else "[red]FAIL[/red]"
+        console.print(f"\n{status_label}  {result.fixture_id}  exit={result.exit_code}")
+        if result.judge_score is not None:
+            verdict_colour = {"pass": "green", "fail": "red"}.get(
+                (result.judge_verdict or "").lower(), "yellow"
+            )
+            console.print(
+                f"  judge: score=[bold]{result.judge_score:.2f}[/bold] "
+                f"verdict=[{verdict_colour}]{result.judge_verdict}[/{verdict_colour}]"
+            )
+        if result.exit_code != 0:
+            console.print(f"\n[dim]stderr (tail):[/dim]\n{result.stderr_tail}")
+            raise typer.Exit(result.exit_code)
+    finally:
+        if not keep_workspace:
+            shutil.rmtree(workspace, ignore_errors=True)
+        else:
+            console.print(f"  [yellow]workspace kept at:[/yellow] {workspace}")
+
+
 @app.command()
 def ab(
     agent_a: str = typer.Option(..., "--agent-a", help="URL of agent A"),

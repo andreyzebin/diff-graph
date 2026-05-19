@@ -34,7 +34,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
 
@@ -945,6 +945,24 @@ class JiraRegistry:
     def __init__(self, servers: Optional[dict] = None):
         self._servers: dict = servers or {}      # handle -> JiraServer
         self._cache: dict = {}                   # handle -> JiraProvider
+        # Optional hook fired after every raw fetch — used by the
+        # recording layer (TODO §19) to mirror each response to disk.
+        # Signature: (kind: "ticket"|"dev_info"|"search", key_or_jql, raw_dict)
+        # Set None to disable; tolerant of exceptions (capture is best-effort).
+        self._record_hook: Optional[Callable[[str, str, dict], None]] = None
+
+    def set_record_hook(
+        self, hook: Optional[Callable[[str, str, dict], None]],
+    ) -> None:
+        self._record_hook = hook
+
+    def _fire_hook(self, kind: str, key: str, raw: dict) -> None:
+        if self._record_hook is None:
+            return
+        try:
+            self._record_hook(kind, key, raw)
+        except Exception as exc:
+            log.warning("jira: record_hook(%s, %s) failed: %s", kind, key, exc)
 
     @classmethod
     def from_config(cls, config_path: Optional[str] = None) -> "JiraRegistry":
@@ -994,7 +1012,19 @@ class JiraRegistry:
         """Parse a `handle/namespace/ticket_id` ref and fetch it from
         the right server. The one call the `jira_read_ticket` tool needs."""
         handle, _namespace, ticket_id = parse_ticket_ref(ref)
-        return self.provider_for(handle).fetch_ticket(ticket_id)
+        prov = self.provider_for(handle)
+        # Capture raw response for the recording before distillation —
+        # gracefully tolerates _disabled/_not_configured sentinels which
+        # don't call out to fetch_*_raw at all (hook just doesn't fire).
+        if self._record_hook is not None and not prov.disabled and prov.configured:
+            try:
+                raw = prov.fetch_ticket_raw(ticket_id)
+                self._fire_hook("ticket", ticket_id, raw)
+                return distill_ticket(raw)
+            except Exception:
+                # fall through to the provider's own graceful handling
+                pass
+        return prov.fetch_ticket(ticket_id)
 
     def fetch_dev_info(self, ref: str) -> DevInfoContext:
         """Parse a `handle/namespace/ticket_id` ref and fetch its
@@ -1004,9 +1034,15 @@ class JiraRegistry:
         the ticket's own handle — letting the agent feed them
         straight back to `pr_get`."""
         handle, _namespace, ticket_id = parse_ticket_ref(ref)
-        return self.provider_for(handle).fetch_dev_info(
-            ticket_id, handle=handle,
-        )
+        prov = self.provider_for(handle)
+        if self._record_hook is not None and not prov.disabled and prov.configured:
+            try:
+                raw = prov.fetch_dev_info_raw(ticket_id)
+                self._fire_hook("dev_info", ticket_id, raw)
+                return distill_dev_info(raw, handle=handle)
+            except Exception:
+                pass
+        return prov.fetch_dev_info(ticket_id, handle=handle)
 
     def search_tickets(
         self, jql: str, *, handle: str = "default", limit: int = 20,
@@ -1017,6 +1053,14 @@ class JiraRegistry:
         (defaulting to `"default"`). Multi-server deployments that
         want to search a non-default tracker pass e.g.
         `handle="internal"`."""
-        return self.provider_for(handle).search_tickets(
+        prov = self.provider_for(handle)
+        if self._record_hook is not None and not prov.disabled and prov.configured:
+            try:
+                raw = prov.search_tickets_raw(jql, limit=limit)
+                self._fire_hook("search", jql, raw)
+                return distill_search_results(jql, raw, limit=limit)
+            except Exception:
+                pass
+        return prov.search_tickets(
             jql, limit=limit, handle=handle,
         )

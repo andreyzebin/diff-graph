@@ -1788,6 +1788,79 @@ async def qa_mutations_page(request: Request):
     return templates.TemplateResponse(request, "qa_mutations.html", {"active": "mutations"})
 
 
+# ── Recordings (TODO §19) ──────────────────────────────────────────────
+
+from tracing.server import recordings as _recordings_mod  # noqa: E402
+
+
+@app.get("/qa/recordings", response_class=HTMLResponse)
+async def qa_recordings_page(request: Request):
+    root = _recordings_mod.root_path()
+    return templates.TemplateResponse(request, "qa_recordings.html", {
+        "active":      "recordings",
+        "root_path":   str(root) if root else "",
+        "recordings":  _recordings_mod.list_recordings(),
+    })
+
+
+@app.get("/qa/recordings/{rec_id}", response_class=HTMLResponse)
+async def qa_recording_detail_page(request: Request, rec_id: str):
+    detail = _recordings_mod.load_detail(rec_id)
+    if detail is None:
+        return HTMLResponse(status_code=404, content="recording not found")
+    # Surface pool queues so the replay button offers a real choice.
+    queues = [p.queue for p in _qa_pools.list()] or ["deepseek"]
+    return templates.TemplateResponse(request, "qa_recording_detail.html", {
+        "active":           "recordings",
+        "detail":           detail,
+        "available_queues": queues,
+    })
+
+
+@app.get("/api/qa/recordings")
+async def api_qa_list_recordings():
+    return JSONResponse({"data": [
+        r.__dict__ for r in _recordings_mod.list_recordings()
+    ]})
+
+
+@app.get("/api/qa/recordings/{rec_id}")
+async def api_qa_recording_detail(rec_id: str):
+    detail = _recordings_mod.load_detail(rec_id)
+    if detail is None:
+        return JSONResponse({"error": {"code": "not_found",
+                                          "message": "recording not found"}},
+                             status_code=404)
+    return JSONResponse({"data": detail})
+
+
+class ReplayRequestPayload(BaseModel):
+    invocation: int | str = "first"
+    queue: str = "deepseek"
+    priority: int = 100
+
+
+@app.post("/api/qa/recordings/{rec_id}/replay")
+async def api_qa_recording_replay(rec_id: str, p: ReplayRequestPayload):
+    """Enqueue a replay-single task for one invocation of the recording.
+
+    Returns the task id — the UI links it to /qa/sessions?task=<id>
+    so the human sees the replay's progress through the same view
+    they use for every other bench run.
+    """
+    task_id = _recordings_mod.enqueue_replay(
+        _qa_queue, rec_id,
+        invocation=p.invocation,
+        queue=p.queue,
+        priority=p.priority,
+    )
+    if task_id is None:
+        return JSONResponse({"error": {"code": "not_found",
+                                          "message": "recording not found"}},
+                             status_code=404)
+    return JSONResponse({"data": {"task_id": task_id, "queue": p.queue}})
+
+
 @app.get("/api/qa/plans/{plan_id}")
 async def api_qa_get_plan(plan_id: int):
     p = _qa_plans.get(plan_id)

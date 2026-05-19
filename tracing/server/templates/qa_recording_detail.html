@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>QA · Recording {{ detail.pr_meta.project }}/{{ detail.pr_meta.repo }} #{{ detail.pr_meta.pr_id }}</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="{{ base_path }}/static/trace.css">
+<style>
+body { padding: 20px; max-width: 1600px; margin: 0 auto; }
+.qa-nav { margin-bottom: 16px; font-size: 0.9em; }
+.qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
+.qa-nav a:hover { text-decoration: underline; }
+h2, h3 { margin-top: 0; }
+.banner, .invocation {
+  padding: 12px; background: #161b22; border: 1px solid #30363d;
+  border-radius: 6px; margin-bottom: 16px;
+}
+.invocation h3 { margin: 0 0 8px; }
+.invocation .row { display: flex; gap: 18px; flex-wrap: wrap;
+                   font-size: 0.85em; margin-bottom: 4px; }
+.invocation .row b { color: #8b949e; }
+.invocation pre { background: #0d1117; padding: 8px;
+                   border-radius: 4px; font-size: 0.85em;
+                   max-height: 200px; overflow: auto; }
+.dim { color: #6e7681; font-size: 0.85em; }
+code, .mono { font-family: ui-monospace, monospace; }
+.controls { display: flex; gap: 12px; align-items: center;
+            margin-top: 12px; padding-top: 12px;
+            border-top: 1px solid #30363d; }
+.controls select, .controls button {
+  background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+  padding: 6px 12px; border-radius: 4px; font-size: 0.85em;
+  cursor: pointer;
+}
+.controls button:hover { border-color: #58a6ff; }
+.controls button[disabled] { opacity: 0.5; cursor: not-allowed; }
+.replay-result { margin-top: 8px; font-size: 0.85em; color: #56d364; }
+.replay-error { color: #f85149; }
+.exit-ok { color: #56d364; }
+.exit-failed { color: #f85149; font-weight: bold; }
+.exit-unknown { color: #d29922; }
+.rev-pill {
+  background: #1f6feb33; color: #58a6ff;
+  padding: 1px 8px; border-radius: 3px;
+  font-family: ui-monospace, monospace; font-size: 0.85em;
+}
+</style>
+</head>
+<body>
+{% include "_qa_nav.html" %}
+
+<h2>
+  Recording — {{ detail.pr_meta.project }}/{{ detail.pr_meta.repo }}
+  #{{ detail.pr_meta.pr_id }}
+</h2>
+
+<div class="banner">
+  <div><b>Title:</b> {{ detail.pr_meta.title or "—" }}</div>
+  <div><b>Author:</b> {{ detail.pr_meta.author or "—" }}</div>
+  {% if detail.pr_meta.description %}
+  <div class="dim" style="margin-top: 6px; white-space: pre-wrap;">{{ detail.pr_meta.description[:500] }}{% if detail.pr_meta.description|length > 500 %}…{% endif %}</div>
+  {% endif %}
+  <div class="dim" style="margin-top: 8px;">
+    Source: <span class="rev-pill">{{ detail.pr_meta.source_branch }}</span>
+    →
+    Target: <span class="rev-pill">{{ detail.pr_meta.target_branch }}</span>
+  </div>
+  <div class="dim">URL: <span class="mono">{{ detail.pr_meta.pr_url }}</span></div>
+  <div class="dim">Path: <span class="mono">{{ detail.pr_dir }}</span></div>
+  {% if detail.manifest %}
+  <div class="dim">
+    Bundle scope: <b>{{ detail.manifest.scope or "range" }}</b>;
+    revs: {% for r in detail.manifest.bundle_revs %}<span class="rev-pill">{{ r.rev_id }}</span> {% endfor %}
+  </div>
+  {% endif %}
+  {% if not detail.has_bundle %}
+  <div class="exit-failed">⚠ repo.bundle missing — replay disabled.</div>
+  {% endif %}
+</div>
+
+<h3>Invocations ({{ detail.invocations|length }})</h3>
+
+{% for inv in detail.invocations %}
+<div class="invocation" id="inv-{{ inv.index }}">
+  <h3>
+    <span class="rev-pill">{{ inv.rev_id or "rev-?" }}</span>
+    Invocation #{{ "%03d"|format(inv.index) }}
+    <span class="dim">{{ inv.captured_at[:19].replace("T", " ") }}</span>
+  </h3>
+  <div class="row">
+    <span><b>triggered by:</b> {{ inv.triggered_by.kind or "?" }}{% if inv.triggered_by.message %} • <span class="mono">{{ inv.triggered_by.message[:80] }}</span>{% endif %}</span>
+    {% if inv.triggered_by.agent_name %}<span><b>agent:</b> {{ inv.triggered_by.agent_name }}</span>{% endif %}
+    {% if inv.triggered_by.comment_id is not none %}<span><b>comment_id:</b> {{ inv.triggered_by.comment_id }}</span>{% endif %}
+  </div>
+  <div class="row">
+    <span><b>base:</b> <span class="mono">{{ inv.base_sha[:12] }}</span></span>
+    <span><b>source:</b> <span class="mono">{{ inv.source_sha[:12] }}</span></span>
+    <span><b>status:</b> {{ inv.pr_status }}</span>
+    <span><b>comments:</b> {{ inv.n_comments }}</span>
+    <span><b>jira:</b> {{ inv.jira_count.tickets }} ticket(s), {{ inv.jira_count.searches }} search(es)</span>
+  </div>
+  <div class="row">
+    <span><b>output:</b>
+      <span class="exit-{{ inv.output_summary.exit_status }}">{{ inv.output_summary.exit_status }}</span>
+      • {{ inv.output_summary.n_findings }} findings
+      • {{ inv.output_summary.n_posted }} posted
+      • {{ inv.output_summary.n_status }} status changes
+    </span>
+    {% if inv.output_summary.error %}
+    <span class="replay-error">{{ inv.output_summary.error }}</span>
+    {% endif %}
+  </div>
+  <div class="controls">
+    <select id="provider-{{ inv.index }}">
+      {% for q in available_queues %}
+      <option value="{{ q }}">{{ q }}</option>
+      {% endfor %}
+    </select>
+    <button onclick="replay({{ inv.index }}, '{{ detail.rec_id }}')"
+            {% if not detail.has_bundle %}disabled{% endif %}>
+      Replay this invocation
+    </button>
+    <span id="replay-result-{{ inv.index }}" class="replay-result"></span>
+  </div>
+</div>
+{% endfor %}
+
+<script>
+async function replay(invIndex, recId) {
+  const provider = document.getElementById('provider-' + invIndex).value;
+  const result = document.getElementById('replay-result-' + invIndex);
+  result.textContent = "enqueueing…";
+  result.className = "replay-result";
+  try {
+    const r = await fetch(`{{ base_path }}/api/qa/recordings/${recId}/replay`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({invocation: invIndex, queue: provider}),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      result.textContent = `error: ${r.status} ${text}`;
+      result.className = "replay-result replay-error";
+      return;
+    }
+    const data = await r.json();
+    const task_id = data.task_id || (data.data && data.data.task_id);
+    result.innerHTML = `enqueued as task <a href="{{ base_path }}/qa/sessions?task=${task_id}" target="_blank">#${task_id}</a> on <b>${provider}</b>`;
+  } catch (e) {
+    result.textContent = `error: ${e.message}`;
+    result.className = "replay-result replay-error";
+  }
+}
+</script>
+
+</body>
+</html>

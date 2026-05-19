@@ -1245,6 +1245,12 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         if _jira_registry is None:
             from .providers.jira import JiraRegistry
             _jira_registry = JiraRegistry.from_config()
+            # Wire recording hook (TODO §19) if cli.py stamped one on
+            # ctx. Best-effort — failures inside the hook are swallowed
+            # at the registry level (see jira.py:_fire_hook).
+            hook = getattr(ctx, "_jira_record_hook", None)
+            if hook is not None:
+                _jira_registry.set_record_hook(hook)
         return _jira_registry
 
     @registry.register(

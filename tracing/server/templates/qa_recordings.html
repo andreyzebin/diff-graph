@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>QA · Recordings</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="{{ base_path }}/static/trace.css">
+<style>
+body { padding: 20px; max-width: 1600px; margin: 0 auto; }
+.qa-nav { margin-bottom: 16px; font-size: 0.9em; }
+.qa-nav a { color: #58a6ff; margin-right: 12px; text-decoration: none; }
+.qa-nav a:hover { text-decoration: underline; }
+h2 { margin-top: 0; }
+.banner { padding: 12px; background: #161b22; border: 1px solid #30363d;
+          border-radius: 6px; margin-bottom: 16px; }
+.banner code { background: #0d1117; padding: 2px 6px; border-radius: 3px;
+               color: #d29922; font-family: ui-monospace, monospace; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #30363d; }
+th { color: #8b949e; font-weight: normal; }
+tr:hover { background: #161b22; }
+.rec-link { color: #58a6ff; text-decoration: none;
+            font-family: ui-monospace, monospace; }
+.rec-link:hover { text-decoration: underline; }
+.dim { color: #6e7681; font-size: 0.85em; }
+.size { text-align: right; font-family: ui-monospace, monospace; }
+.no-bundle { color: #f85149; font-weight: bold; }
+.has-bundle { color: #56d364; }
+.empty { color: #8b949e; padding: 30px; text-align: center; }
+</style>
+</head>
+<body>
+{% include "_qa_nav.html" %}
+
+<h2>Recordings</h2>
+
+{% if root_path %}
+<div class="banner">
+  <div>Root: <code>{{ root_path }}</code></div>
+  <div class="dim">
+    Captured by webhook agents with <code>[agents.&lt;name&gt;.recording]</code>
+    enabled, or by <code>cli.py run --record-fixture &lt;dir&gt;</code>. Each
+    row is one PR.
+  </div>
+</div>
+{% else %}
+<div class="banner">
+  <div class="no-bundle">Recordings root is not configured.</div>
+  <div class="dim">
+    Set <code>DIFFGRAPH_RECORDINGS_DIR</code> on the QA-server
+    process to point at the directory the webhook writes into.
+  </div>
+</div>
+{% endif %}
+
+{% if recordings %}
+<table>
+  <thead>
+    <tr>
+      <th>PR</th>
+      <th>Title</th>
+      <th>Author</th>
+      <th>Invocations</th>
+      <th>Bundle</th>
+      <th class="size">Size</th>
+      <th>First</th>
+      <th>Last</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in recordings %}
+    <tr>
+      <td>
+        <a class="rec-link"
+           href="{{ base_path }}/qa/recordings/{{ r.rec_id }}">
+          {{ r.project }}/{{ r.repo }} #{{ r.pr_id }}
+        </a>
+        <div class="dim">{{ r.server }}</div>
+      </td>
+      <td>{{ r.title or "—" }}</td>
+      <td>{{ r.author or "—" }}</td>
+      <td>{{ r.n_invocations }}</td>
+      <td class="{% if r.has_bundle %}has-bundle{% else %}no-bundle{% endif %}">
+        {% if r.has_bundle %}✓{% else %}missing{% endif %}
+      </td>
+      <td class="size">{{ "%.1f"|format(r.total_bytes / 1024 / 1024) }} MB</td>
+      <td class="dim">{{ r.first_recorded_at[:19].replace("T", " ") }}</td>
+      <td class="dim">{{ r.last_recorded_at[:19].replace("T", " ") }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">
+  No recordings yet. Enable capture on a webhook agent or pass
+  <code>--record-fixture &lt;dir&gt;</code> to <code>cli.py run</code>.
+</div>
+{% endif %}
+
+</body>
+</html>
