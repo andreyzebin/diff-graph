@@ -60,7 +60,7 @@ budget:
 reflect:
   interval: 5
 llm:
-  temperature: 0.2
+  temperature: 0
 ---
 # Reviewer
 
