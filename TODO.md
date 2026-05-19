@@ -5567,3 +5567,387 @@ reflects. It does NOT record:
 
 Trace = agent's POV; recording = world's POV. Replay needs
 world's POV.
+
+## 20. Passive GitHub capture + blind-mode replay
+
+**Status:** design phase. Extends §19 (Replay tier) along two new
+axes: **provider** (passive GitHub listener) and **replay-mode**
+(blind — agent sees no human comments). Both are additive — the
+existing Bitbucket capture and collaborative-mode replay keep
+working unchanged.
+
+### 20.1 Why this exists
+
+§19 ships ONE provider (Bitbucket) and ONE replay model
+(collaborative — human comments visible to the replay-agent as
+the timeline progresses). For the question "how well does
+today's agent **find** issues independently on a typical PR" the
+collaborative model is wrong:
+
+- The replay-agent sees what human reviewers already wrote, then
+  produces its own findings. That's not an independent skill
+  measure — it's a "summarisation-vs-original-reviewer" task.
+- Topic match between replay-postings and recorded-human-postings
+  is contaminated: an agent can score "valid" simply by
+  re-stating a concern it just read.
+- Real production use is the opposite: the agent is the **first**
+  reviewer, scanning the diff before humans engage. Replay should
+  mirror that.
+
+§20 introduces **blind replay**: at every agent_invocation event
+the replay-agent sees only its OWN past outputs (from earlier
+invocations in this replay) + the diff at the current rev_id +
+Jira / repo context. Human comments stay in the recording as
+ground-truth signal for offline scoring — never injected into
+the agent's visible state.
+
+Parallel motivation: **GitHub listening**. The same capture
+infrastructure can collect a much larger, faster-moving corpus
+if it can speak GitHub. No write-back is needed — a passive
+listener is enough to grow the labelled training set.
+
+### 20.2 Two-axis split
+
+| Axis | Today (§19) | §20 adds |
+|---|---|---|
+| **Capture provider** | Bitbucket (writes + reads through `pr_post_comment` etc) | GitHub passive (listener-only — captures state, never posts) |
+| **Replay mode** | Collaborative (humans injected into agent's view) | Blind (only revisions + agent's own past + diff/Jira) |
+
+The two axes are orthogonal. Bitbucket + blind, Bitbucket +
+collaborative, GitHub + blind, GitHub + collaborative are all
+valid combinations once both axes ship. For the corpus the user
+actually wants — clean miss/noise measurement — the right combo
+is **GitHub passive capture + blind lifecycle replay**.
+
+### 20.3 Blind replay semantics — what the agent sees
+
+```
+At agent_invocation event N, the agent's FakeBitbucket view contains:
+  ┌─────────────────────────────────────────────────────────┐
+  │  diff at rev_id (this invocation's source SHA)          │  ← from bundle
+  │  PR meta: title, description, branches                  │  ← from snapshot
+  │  agent's posted_comments from invocations 1..N-1        │  ← live-replay only
+  │  Jira ticket state captured at this invocation          │  ← from jira/*.json
+  └─────────────────────────────────────────────────────────┘
+
+The agent's view does NOT contain:
+  - Any human comment from the recording (top-level OR replies)
+  - The recorded agent's past output from this PR
+  - status_changed events authored by humans
+```
+
+Concrete handler delta vs `LifecycleReplayDriver`:
+
+| Event | Collaborative mode (current) | Blind mode (new) |
+|---|---|---|
+| `commit_pushed` | update source_sha | update source_sha |
+| `comment_added` (human) | inject into state.comments | record in `state.recorded_humans` (scoring-only); DO NOT touch state.comments |
+| `comment_added` (agent recorded) | inject as `is_bot=True` | skip — live-agent posts its own |
+| `comment_resolved` / `_reopened` | flip on state.comments entry | apply only to live-agent comments (humans never enter state.comments) |
+| `status_changed` | apply to state.pr_status | apply (PR-open / merged / closed are environmental, not reviewer chatter) |
+| `agent_invocation` | spawn agent with current state.comments | spawn agent with current state.comments (which contains ONLY live-replay agent comments) |
+
+`stable_to_bb_id` for humans is still tracked — needed if a
+recorded agent comment had a `parent_stable_id` pointing at one
+(e.g., the trigger comment). But the parent_id lookup is
+score-time only; agent never sees the parent text.
+
+Orphan-skip rule from §19.4 doesn't apply in blind mode — no
+human-comment injection means no parent lookups happen during
+replay. Logged as a metric only if `score_blind_lifecycle` finds
+human replies that referenced agent comments that today's agent
+didn't produce.
+
+### 20.4 `outcomes.yaml` extended schema for human classification
+
+§19.9's `outcomes.yaml` labels **agent comments** by **human
+reaction**. Blind-mode scoring needs the opposite: label **human
+comments** by **what they actually are**, so the scorer knows
+which humans to use as ground truth and which to ignore.
+
+Extended schema (additive — collaborative-mode keys still valid):
+
+```yaml
+# Existing — labels on AGENT comments (collaborative scoring)
+labels:
+  a-001-01:
+    verdict: valid | noise | undecided
+    confidence: high | medium | low
+    source: auto | manual
+    rationale: "<why>"
+
+# New (§20) — labels on HUMAN comments (blind scoring)
+human_labels:
+  c-3001:                    # stable_id of the human comment
+    kind: bug | nit | discussion | noise | architecture
+    severity: BLOCKER | MAJOR | MINOR | COMMENT  # only meaningful for kind=bug|architecture
+    confidence: high | medium | low
+    source: auto | manual
+    rationale: "<why>"
+    # Was this issue the agent COULD have plausibly found?
+    # E.g. "requires reading file X which isn't in the diff" → false
+    findable_from_diff: true | false
+
+# Unchanged — missed-finding nominations
+missed_findings:
+  - human_comment_stable_id: c-3001
+    severity: BLOCKER
+    topic: "..."
+```
+
+`kind` is the dominant classifier:
+- `bug` — a real issue. The replay agent **should** find this.
+- `architecture` — design-level concern (e.g., "this should be a
+  separate service"). Higher-tier than bug; agent may or may not
+  flag depending on configuration.
+- `nit` — style, naming, formatting. Agent flagging it = ok but
+  noise rate excludes nits in the production metric.
+- `discussion` — question, clarification, off-topic chatter.
+  Excluded from miss_rate and noise_rate entirely.
+- `noise` — bikeshedding, unconstructive. Excluded.
+
+`findable_from_diff: false` excludes from miss_rate when the
+issue genuinely required cross-source context the agent didn't
+have. Surfaces as a separate `out_of_scope_missed` count.
+
+### 20.5 Auto-infer for human classification — LLM-backed
+
+Marker-based heuristics work for English/Russian reaction
+phrases (§19.9) but fail at intent classification of a human
+review comment. §20's auto-infer uses a one-shot LLM call per
+unlabelled human comment:
+
+```
+prompt:
+  Classify this PR review comment into one of:
+    bug, architecture, nit, discussion, noise.
+  Then estimate severity (BLOCKER/MAJOR/MINOR/COMMENT) for bug+architecture only.
+  Also flag findable_from_diff: true if the issue could be
+  spotted from the diff alone, false if it requires cross-source
+  context the diff doesn't show.
+
+  Comment body:
+    <body>
+  PR title:
+    <title>
+  Anchor (if any):
+    <file>:<line>
+
+  Output JSON: {kind, severity, findable_from_diff, rationale}.
+```
+
+Cost: ~one call per human comment in the corpus. On a cheap
+model (Qwen3-6, DeepSeek-Chat, GPT-4o-mini), $0.001-0.003 per
+classification. A 100-PR corpus with ~5 human comments per PR =
+500 calls = $0.50-$1.50 to bootstrap full ground truth.
+
+This LLM run is **stateless per comment** — no chained
+classification, no thread-context. Run on demand (CLI or UI
+button). Caching: classification keyed by `sha1(body + anchor)`
+so re-classifying the same recording across runs is free.
+
+Markers (the §19.9 auto-infer rules) stay as a separate code
+path for AGENT-comment reaction labels — same engine, different
+target.
+
+### 20.6 Blind scoring metrics
+
+`score_blind_lifecycle(replay_result, outcomes)` produces a
+metric set parallel to (but different from) §19.9:
+
+| Metric | Computation | What it measures |
+|---|---|---|
+| `n_human_bugs` | count of `human_labels[*].kind in {bug, architecture}` AND `findable_from_diff=true` | The set the agent is expected to cover |
+| `n_human_bugs_blocker` | same, filtered to severity in {BLOCKER, MAJOR} | The set whose miss is a real business cost |
+| `n_agent_findings_total` | sum of replay agent's posted_comments across all invocations, deduped by topic | What the agent produced |
+| `n_matched` | human-bugs that have at least one replay-agent posting matching the same topic | Coverage |
+| `n_missed` | n_human_bugs − n_matched | What slipped through |
+| `n_missed_blocker` | same, blocker tier | The business-critical missed |
+| `n_noise_findings` | replay-agent postings that don't match any human-bug AND aren't matched to a human-nit either | Pure noise (not even agreed by humans as a nit) |
+| `miss_rate` | n_missed / n_human_bugs | … |
+| `miss_rate_blocker` | n_missed_blocker / n_human_bugs_blocker | The headline business metric |
+| `noise_rate` | n_noise_findings / n_agent_findings_total | The reviewer-cost-of-living metric |
+| `convergence_invocations[bug]` | min N where the agent first posted a match for this bug | Speed-of-find |
+| `out_of_scope_missed` | count of `human_labels[*].kind in {bug, architecture}` AND `findable_from_diff=false` AND no agent match | Excused misses (require cross-source) |
+
+Topic match — same problem as §19. Phase 1 fallback: file:line
+overlap + first 200 chars of body cosine-similarity ≥ 0.5 (cheap
+embedding model). Phase 2: LLM-judge pairwise as another
+auto-infer call.
+
+### 20.7 GitHub passive capture
+
+The capture writer (`diffgraph/recording.py`) is provider-
+agnostic — same `RecordingWriter.open(record_dir, pr_url)`
+interface. Only the upper layer (URL parser + API client +
+webhook event parser) is Bitbucket-specific today.
+
+New modules:
+
+```
+diffgraph/github_pr.py         # GitHub REST/GraphQL client (~250 LOC)
+  parse_pr_url(url) → (server, owner, repo, pr_id)
+  fetch_pr_meta(url) → PRMeta  # title, description, author, base/source SHA
+  fetch_pr_comments(url) → list[CommentSnapshot-shaped dicts]
+    Note: GitHub splits PR comments across TWO endpoints:
+      /pulls/<n>/comments     — inline review comments (line-anchored)
+      /issues/<n>/comments    — top-level PR comments
+    Fetch both, merge into one ordered list by created_at.
+  clone_url(url) → "git@github.com:<owner>/<repo>.git" or HTTPS variant
+  github_app_token(installation_id) → JWT-derived short-lived token
+
+webhook/github.py              # webhook event mapper (~150 LOC)
+  parse_event(payload, headers) → list[CommandRequest]
+    pull_request.opened/reopened/synchronize → "/review"-equivalent capture trigger
+    issue_comment.created                    → comment-trigger capture
+    pull_request_review_comment.created      → inline-comment-trigger capture
+    push (on a PR's source branch)           → commit_pushed capture
+```
+
+URL scheme: extend `pr_dir_for` to accept `github://<owner>/<repo>/<n>`
+(or just continue producing `github.com__<owner>/<repo>/PR-<n>` —
+the host segment already distinguishes recordings cleanly).
+
+### 20.8 GitHub App vs PAT
+
+Listening to multiple fast-moving repos at scale requires a
+**GitHub App**, not a PAT. Trade-offs:
+
+| Property | PAT | GitHub App |
+|---|---|---|
+| Rate limit | 5000 req/hour (per token) | 15000 req/hour minimum, scales with installation count (~12000 + 50/installed-repo, up to 12500 per installation, cumulative) |
+| Permission scope | Account-wide (overshare) | Per-installation, per-repo, fine-grained |
+| Multi-org install | New token per user | One App, many installs |
+| Token lifetime | Manual rotation | 60-min JWT-derived install tokens |
+| Webhook | Per-repo, per-user | One App webhook, fan-out by install |
+
+Recommendation: GitHub App from the start. Install steps:
+
+1. Create App in org settings (`/organizations/X/settings/apps`).
+2. Permissions: Repository → Contents: read, Issues: read, Pull
+   requests: read, Metadata: read. Org → Members: read (optional).
+   No write permissions — we're listening only.
+3. Subscribe to events: `pull_request`, `pull_request_review`,
+   `pull_request_review_comment`, `issue_comment`, `push`.
+4. Webhook URL: `https://<webhook-host>/webhooks/github`.
+5. Install on selected repos.
+6. Store `app_id` + `private_key_path` in env; the webhook
+   router builds per-installation tokens on demand.
+
+### 20.9 Phases + acceptance criteria
+
+**Phase A — Blind-mode replay (Bitbucket, existing recordings)**
+
+Lowest-effort foundation. Doesn't need GitHub yet — adds the
+right replay model to existing Bitbucket recordings so the
+metric definition can ship and be validated before GitHub work.
+
+- `LifecycleReplayDriver` gains `mode: "blind" | "collaborative"`
+  field; default `"collaborative"` for back-compat. `--blind`
+  flag on `bench replay` switches.
+- New `state.recorded_humans: dict[stable_id → dict]` populated
+  on every `comment_added` event from non-bot authors in blind
+  mode. Used by scoring; never touches `state.comments`.
+- `outcomes.yaml` schema extended with `human_labels` block.
+  Loader tolerates both old (agent-reaction) and new
+  (human-classification) blocks side-by-side.
+- `score_blind_lifecycle()` consumes `human_labels` + replay
+  result, produces the metric table from 20.6. The legacy
+  `score_lifecycle()` keeps working for collaborative-mode runs.
+- Tests: end-to-end on the same upstream-repo fixture used for
+  `test_lifecycle_state_orphan_skip`, but in blind mode — assert
+  zero human comments end up in `state.comments` AND
+  `state.recorded_humans` is populated correctly.
+
+**Phase B — LLM auto-classifier for human_labels**
+
+- `bench outcomes-classify-humans <dir> --provider <p>` CLI
+  command. Iterates unlabelled human comments, fires one
+  classification call per comment, writes `human_labels[]` with
+  `source: auto`.
+- Cache by `sha1(body + anchor)` so re-runs against the same
+  recording are free.
+- UI: "Auto-classify humans" button on recording detail page,
+  surfaces the count by `kind`.
+- Tests: a fixed-seed mock LLM returns deterministic
+  classifications; validate scoring uses them correctly.
+
+**Phase C — GitHub passive capture**
+
+- `diffgraph/github_pr.py` with REST client + URL parser. Tests
+  against the public GitHub API for a known PR (record/replay
+  the API calls via responses or hand-rolled fixtures).
+- `webhook/github.py` event mapper. Maps each GitHub webhook
+  shape to a "capture this PR state now" action — NOT to an
+  agent spawn. The webhook router gains an `agents.<name>.mode`
+  field: `active` (current — spawns agent) or `passive` (new —
+  capture only).
+- `agents.<name>.recording` block usable with `mode: passive`
+  even without `command =` set — the listener invokes a slim
+  internal capture function instead of shelling out to cli.py.
+  This is the new code path; cli.py stays untouched.
+- GitHub App setup docs in `webhook/README.md`. Example
+  `webhook.toml` block:
+  ```toml
+  [agents.gh-listener]
+  trigger = "passive-capture"     # new trigger kind
+
+  [agents.gh-listener.recording]
+  dir = "~/eden/diffgraph-recordings"
+  scope = "range"
+
+  [github_app]
+  app_id = 12345
+  private_key_path = "/etc/diffgraph/github-app.pem"
+  webhook_secret = "${GITHUB_WEBHOOK_SECRET}"
+  installations = [123, 456, 789]   # which installs to listen on
+  ```
+
+**Phase D — Lifecycle replay against GitHub recordings**
+
+- Replay reads work uniformly via the recording layout (no
+  GitHub API touch needed at replay time — the bundle is
+  self-contained). Already true by §19 design — just verify on
+  a GitHub-captured recording.
+- Cross-source surface (§10) extension: `github://<owner>/<repo>`
+  URI in addition to `bitbucket://`. Replay-side fake-fed; live
+  GitHub reads stay out of scope until someone needs them.
+
+### 20.10 What's deliberately NOT in scope
+
+- **GitHub write-back**. No `pr_post_comment` to GitHub. The
+  agent never publishes findings on real GitHub PRs from this
+  path — listener is passive. If production GitHub review is
+  ever desired, that's a separate §21.
+- **Live GitHub `pr_get` / `pr_list`** for cross-source reads
+  during agent runs. The capture provides the data; the agent
+  during replay reads from the recording, not from GitHub
+  directly. Production GitHub cross-source reads would need a
+  GithubRegistry mirror.
+- **GitHub Enterprise vs github.com**. The URL parser MUST
+  accept both, but private-network GHE deployments are likely
+  to need extra auth flavours (SAML SSO tokens, etc) — assess
+  per-deployment in Phase C testing.
+- **GitLab / Gitea**. Adding more providers follows the same
+  pattern but isn't part of §20. The capture writer's neutrality
+  makes it cheap to add later (one new `<provider>_pr.py` + one
+  webhook mapper); the bench machinery stays unchanged.
+
+### 20.11 Why blind, why now, why GitHub
+
+The corpus is the bottleneck. §19 ships the capture mechanism
+but no production traffic flows to it yet (Bitbucket integration
+is the user's day-job repo — slow PR pace, small team). GitHub
+listening hooks the corpus into a much larger PR firehose
+without changing production agent behaviour.
+
+Blind replay is the right semantic for the actual measurement
+the project cares about (`miss_rate_blocker`, `noise_rate` as
+real business metrics, not "did agent paraphrase what humans
+said"). It needs to ship before metrics are trustworthy.
+
+The combined phase order (A→B→C→D) means the metric definition
+gets validated on existing Bitbucket recordings (A+B) BEFORE
+the GitHub firehose makes correcting course expensive. By the
+time GH recordings start flowing in volume (Phase C), the
+scoring layer is debugged.
