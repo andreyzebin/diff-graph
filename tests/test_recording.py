@@ -436,6 +436,194 @@ def test_lifecycle_state_orphan_skip(record_root: Path) -> None:
     assert drv.state.orphan_skips[1]["stable_id"] == "c-102"
 
 
+def test_outcomes_auto_infer_classifies_human_replies(
+    upstream_repo: Path, record_root: Path,
+) -> None:
+    """Auto-infer reads captured comments and labels each agent
+    comment by the human reaction it received. Verifies the three
+    inference paths:
+      - reply with "не согласен" → noise (high)
+      - reply with "согласен" → valid (high)
+      - thread resolved with no counter-reply → valid (medium)
+    """
+    from benchmarks.runner.replay import RecordingReader
+    from benchmarks.runner.outcomes import auto_infer, save_outcomes, load_outcomes
+
+    PR_URL_LOCAL = (
+        "https://bitbucket.example.com/projects/PROJ/repos/orderflow/"
+        "pull-requests/9050"
+    )
+    source_revs = subprocess.run(
+        ["git", "-C", str(upstream_repo), "log", "--format=%H", "master..feat"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip().splitlines()
+    source_revs.reverse()
+    base_sha = _git(upstream_repo, "rev-parse", "master")
+
+    # One invocation: agent posts 3 comments (a-001-01..03).
+    # Captured snapshot includes the bot's own comments + human
+    # replies that classify each agent comment differently.
+    w = RecordingWriter.open(record_root, PR_URL_LOCAL, min_free_bytes=0)
+    w.write_pr_meta(title="Outcomes test", description="",
+                    author="alice", source_branch="feat",
+                    target_branch="master")
+    w.start_invocation(triggered_by={"kind": "webhook"},
+                       message="/review", agent_name="reviewer")
+
+    # Captured snapshot — humans + the bot's posted comments
+    # together. (In real capture, write_output writes posted ones;
+    # the next snapshot's comments would mirror them. Here we
+    # simulate the merged view directly.)
+    comments = [
+        # Agent comment 1 (bot) — gets a "noise" reply.
+        CommentSnapshot(
+            stable_id="a-001-01", bb_id=901, author="diffgraph-bot",
+            is_bot=True, body="possible null pointer",
+            parent_stable_id=None, anchor=None,
+            created_at="2026-05-10T13:00Z", resolved=False),
+        CommentSnapshot(
+            stable_id="h-1", bb_id=801, author="alice", is_bot=False,
+            body="не согласен — этот сценарий невозможен",
+            parent_stable_id="a-001-01", anchor=None,
+            created_at="2026-05-10T13:05Z", resolved=False),
+        # Agent comment 2 (bot) — gets a "valid" reply.
+        CommentSnapshot(
+            stable_id="a-001-02", bb_id=902, author="diffgraph-bot",
+            is_bot=True, body="thread-safety concern",
+            parent_stable_id=None, anchor=None,
+            created_at="2026-05-10T13:01Z", resolved=False),
+        CommentSnapshot(
+            stable_id="h-2", bb_id=802, author="bob", is_bot=False,
+            body="согласен, поправлю",
+            parent_stable_id="a-001-02", anchor=None,
+            created_at="2026-05-10T13:06Z", resolved=False),
+        # Agent comment 3 (bot) — resolved with no counter-reply.
+        CommentSnapshot(
+            stable_id="a-001-03", bb_id=903, author="diffgraph-bot",
+            is_bot=True, body="naming nit",
+            parent_stable_id=None, anchor=None,
+            created_at="2026-05-10T13:02Z", resolved=True),
+    ]
+    w.write_snapshot(PRSnapshot(
+        base_sha=base_sha, source_sha=source_revs[0],
+        source_branch="feat", target_branch="master",
+        pr_status="open", rev_id="rev-01",
+        captured_at="2026-05-10T14:01Z", comments=comments,
+    ))
+    # Write the agent's output WITH the same stable_ids the
+    # snapshot's bot comments carry, so auto-infer's matching works.
+    w.write_output(
+        findings=[],
+        posted_comments=[
+            {"stable_id": "a-001-01", "bb_id": 901,
+             "body": "possible null pointer"},
+            {"stable_id": "a-001-02", "bb_id": 902,
+             "body": "thread-safety concern"},
+            {"stable_id": "a-001-03", "bb_id": 903,
+             "body": "naming nit"},
+        ],
+        status_changes=[],
+        exit_status="ok",
+    )
+
+    pr_dir = (record_root / "bitbucket.example.com" / "PROJ" /
+              "orderflow" / "PR-9050")
+    out = auto_infer(RecordingReader.load, pr_dir)
+
+    # Round-trip through file for save+load symmetry.
+    out_path = pr_dir / "outcomes.yaml"
+    save_outcomes(out, out_path)
+    reloaded = load_outcomes(out_path)
+    assert reloaded is not None
+    assert reloaded.labels == out.labels  # same shape after yaml round-trip
+
+    labels = out.labels
+    assert labels["a-001-01"].verdict == "noise"
+    assert labels["a-001-01"].confidence == "high"
+    assert labels["a-001-02"].verdict == "valid"
+    assert labels["a-001-02"].confidence == "high"
+    # Resolved-no-reply path is medium confidence per the rule.
+    assert labels["a-001-03"].verdict == "valid"
+    assert labels["a-001-03"].confidence == "medium"
+
+
+def test_score_lifecycle_metrics() -> None:
+    """`score_lifecycle` aggregates miss/noise rates from a replay
+    result + outcomes.yaml. Verifies the rates math + drift
+    detection by feeding a hand-built (replay_result, outcomes,
+    recorded) triple."""
+    from types import SimpleNamespace
+    from benchmarks.runner.outcomes import (
+        score_lifecycle, Outcomes, CommentLabel, MissedFinding,
+    )
+
+    # Replay produces 3 findings across 2 invocations.
+    # File:line keys: (App.java, 10), (App.java, 20), (App.java, 30).
+    # Recorded baseline says (App.java, 10) was valid, (App.java, 20)
+    # was noise. (App.java, 30) had no recorded peer → unlabeled.
+    # One MAJOR miss is in outcomes.missed_findings.
+    inv1 = SimpleNamespace(
+        index=1, posted_comments=[
+            {"file": "App.java", "line": 10, "body": "issue A"},
+            {"file": "App.java", "line": 20, "body": "issue B"},
+        ],
+    )
+    inv2 = SimpleNamespace(
+        index=2, posted_comments=[
+            {"file": "App.java", "line": 30, "body": "issue C"},
+            # (App.java, 10) drift-dropped — was present in inv1 but
+            # NOT in inv2.
+        ],
+    )
+    replay_result = SimpleNamespace(
+        invocations=[inv1, inv2], orphan_skip_count=2,
+    )
+    outcomes = Outcomes(
+        labels={
+            "a-001-01": CommentLabel(verdict="valid", confidence="high",
+                                      source="manual"),
+            "a-001-02": CommentLabel(verdict="noise", confidence="high",
+                                      source="manual"),
+        },
+        missed_findings=[
+            MissedFinding(human_comment_stable_id="h-5",
+                          severity="MAJOR", topic="missing null check"),
+        ],
+    )
+    recorded = {
+        1: [
+            {"stable_id": "a-001-01", "file": "App.java", "line": 10},
+            {"stable_id": "a-001-02", "file": "App.java", "line": 20},
+        ],
+        2: [],  # nothing extra in inv2
+    }
+
+    m = score_lifecycle(
+        replay_result=replay_result,
+        outcomes=outcomes,
+        recorded_findings_by_invocation=recorded,
+    )
+    # Findings counts: 3 total (2 + 1). One valid (line 10), one
+    # noise (line 20), one unlabeled (line 30).
+    assert m.n_findings_total == 3
+    assert m.n_findings_valid == 1
+    assert m.n_findings_noise == 1
+    assert m.n_findings_unlabeled == 1
+    # Misses: 1 total, 1 blocker-tier (MAJOR counts).
+    assert m.n_missed_total == 1
+    assert m.n_missed_blocker == 1
+    # miss_rate = missed / (valid + missed) = 1 / (1 + 1) = 0.5.
+    assert m.miss_rate == 0.5
+    # miss_rate_blocker = blocker_missed / (valid + blocker_missed) = 1/2.
+    assert m.miss_rate_blocker == 0.5
+    # cumulative_noise_rate = noise / total = 1/3.
+    assert abs(m.cumulative_noise_rate - 1/3) < 1e-9
+    # Drift alert for (App.java:10) — present in inv1, missing in inv2.
+    assert any(d["topic"] == "App.java:10" for d in m.drift_alerts)
+    # Orphan-skip count piped through from replay result.
+    assert m.orphan_skip_count == 2
+
+
 def test_disabled_writer_on_oserror(record_root: Path, monkeypatch) -> None:
     """A persistent write failure flips the writer to disabled and
     subsequent calls become silent no-ops. Critical so a degraded

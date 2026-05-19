@@ -1874,6 +1874,36 @@ async def api_qa_recording_replay(rec_id: str, p: ReplayRequestPayload):
                                      "mode": p.mode}})
 
 
+@app.post("/api/qa/recordings/{rec_id}/outcomes/auto-infer")
+async def api_qa_recording_outcomes_auto_infer(rec_id: str):
+    """Run auto-infer on this recording and save the result as
+    outcomes.yaml. Idempotent: overwrites the previous outcomes file."""
+    pr_dir = _recordings_mod.safe_recording_dir(rec_id)
+    if pr_dir is None:
+        return JSONResponse({"error": {"code": "not_found",
+                                          "message": "recording not found"}},
+                             status_code=404)
+    try:
+        from benchmarks.runner.replay import RecordingReader
+        from benchmarks.runner.outcomes import auto_infer, save_outcomes
+        out = auto_infer(RecordingReader.load, pr_dir)
+        save_outcomes(out, pr_dir / "outcomes.yaml")
+        n_valid = sum(1 for l in out.labels.values() if l.verdict == "valid")
+        n_noise = sum(1 for l in out.labels.values() if l.verdict == "noise")
+        n_undec = sum(1 for l in out.labels.values() if l.verdict == "undecided")
+        return JSONResponse({"data": {
+            "n_labels":   len(out.labels),
+            "n_valid":    n_valid,
+            "n_noise":    n_noise,
+            "n_undecided": n_undec,
+            "path":       str(pr_dir / "outcomes.yaml"),
+        }})
+    except Exception as exc:  # pragma: no cover — defensive
+        return JSONResponse({"error": {"code": "internal",
+                                          "message": f"{type(exc).__name__}: {exc}"}},
+                             status_code=500)
+
+
 @app.get("/api/qa/plans/{plan_id}")
 async def api_qa_get_plan(plan_id: int):
     p = _qa_plans.get(plan_id)

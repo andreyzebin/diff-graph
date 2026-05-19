@@ -639,8 +639,15 @@ class LifecycleReplayResult:
     final_pr_status: str
     workspace: str
 
+    # Populated when outcomes.yaml is present in the recording and the
+    # driver was told to score against it (or scored after the fact via
+    # benchmarks.runner.outcomes.score_lifecycle). None when no
+    # outcomes were available — replay still produces per-invocation
+    # judge scores.
+    metrics: Optional[Any] = None
+
     def to_dict(self) -> dict:
-        return {
+        d = {
             "recording_dir":         self.recording_dir,
             "pr_id":                 self.pr_id,
             "n_events":              self.n_events,
@@ -663,6 +670,11 @@ class LifecycleReplayResult:
             "final_pr_status":       self.final_pr_status,
             "workspace":             self.workspace,
         }
+        if self.metrics is not None:
+            d["metrics"] = (self.metrics.to_dict()
+                            if hasattr(self.metrics, "to_dict")
+                            else dict(self.metrics))
+        return d
 
 
 # ── Lifecycle driver ─────────────────────────────────────────────────────
@@ -708,7 +720,7 @@ class LifecycleReplayDriver:
         scores = [r.judge_score for r in self._results
                   if r.judge_score is not None]
         avg = sum(scores) / len(scores) if scores else None
-        return LifecycleReplayResult(
+        result = LifecycleReplayResult(
             recording_dir=str(self.rec.pr_dir),
             pr_id=self.rec.pr_id,
             n_events=len(self.events),
@@ -720,6 +732,23 @@ class LifecycleReplayDriver:
             final_pr_status=self.state.pr_status,
             workspace=str(self.workspace),
         )
+        # If outcomes.yaml is present alongside the recording, score
+        # against it for business metrics (miss_rate, noise_rate, …).
+        # Best-effort: a malformed outcomes.yaml is reported in logs
+        # but doesn't break the replay run.
+        try:
+            from .outcomes import load_outcomes, score_lifecycle
+            outcomes = load_outcomes(self.rec.pr_dir / "outcomes.yaml")
+            if outcomes is not None:
+                recorded = _build_recorded_findings_index(self.rec)
+                result.metrics = score_lifecycle(
+                    replay_result=result,
+                    outcomes=outcomes,
+                    recorded_findings_by_invocation=recorded,
+                )
+        except Exception as exc:  # pragma: no cover — defensive
+            log.warning("replay: outcomes scoring failed: %s", exc)
+        return result
 
     # ── World-event handlers ──────────────────────────────────────────
 
@@ -1002,6 +1031,28 @@ class LifecycleReplayDriver:
             encoding="utf-8",
         )
         return target
+
+
+def _build_recorded_findings_index(rec: Recording) -> dict[int, list[dict]]:
+    """Map invocation_index → list of agent comments recorded at that
+    invocation. Used by outcomes.score_lifecycle to look up the
+    recorded peer of a replay-posted comment."""
+    out: dict[int, list[dict]] = {}
+    for inv in rec.invocations:
+        bucket: list[dict] = []
+        out_data = inv.output or {}
+        for c in (out_data.get("posted_comments") or []):
+            bucket.append({
+                "stable_id": c.get("stable_id", ""),
+                "bb_id":     c.get("bb_id"),
+                "file":      c.get("file", "") or
+                             (c.get("anchor", {}) or {}).get("file", ""),
+                "line":      c.get("line", 0) or
+                             (c.get("anchor", {}) or {}).get("line", 0),
+                "body":      c.get("body", "") or c.get("text", ""),
+            })
+        out[inv.index] = bucket
+    return out
 
 
 def build_jira_fixture(inv: Invocation, target_path: Path) -> Optional[Path]:

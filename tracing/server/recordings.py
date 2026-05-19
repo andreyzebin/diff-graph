@@ -153,6 +153,30 @@ def load_detail(rec_id: str) -> Optional[dict]:
     manifest_p = pr_dir / "manifest.json"
     manifest = json.loads(manifest_p.read_text(encoding="utf-8")) \
         if manifest_p.is_file() else {}
+    # Outcomes (TODO §19.9) — optional; serves as ground truth for
+    # lifecycle metrics when present.
+    outcomes_summary: Optional[dict] = None
+    outcomes_p = pr_dir / "outcomes.yaml"
+    if outcomes_p.is_file():
+        try:
+            import yaml
+            raw = yaml.safe_load(outcomes_p.read_text(encoding="utf-8")) or {}
+            labels = raw.get("labels") or {}
+            verdicts: dict[str, int] = {}
+            for lbl in labels.values():
+                if isinstance(lbl, dict):
+                    v = str(lbl.get("verdict", "undecided"))
+                    verdicts[v] = verdicts.get(v, 0) + 1
+            outcomes_summary = {
+                "exists":       True,
+                "n_labels":     len(labels),
+                "n_missed":     len(raw.get("missed_findings") or []),
+                "verdicts":     verdicts,
+                "labelled_by":  raw.get("labelled_by", ""),
+                "labelled_at":  raw.get("labelled_at", ""),
+            }
+        except Exception:
+            outcomes_summary = {"exists": True, "error": "malformed"}
     invocations: list[dict] = []
     inv_root = pr_dir / "invocations"
     if inv_root.is_dir():
@@ -194,6 +218,7 @@ def load_detail(rec_id: str) -> Optional[dict]:
         "manifest":    manifest,
         "invocations": invocations,
         "has_bundle":  (pr_dir / "repo.bundle").is_file(),
+        "outcomes":    outcomes_summary,
     }
 
 

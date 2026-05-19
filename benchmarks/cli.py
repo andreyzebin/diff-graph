@@ -1250,6 +1250,49 @@ def replay(
             console.print(f"  [yellow]workspace kept at:[/yellow] {workspace}")
 
 
+@app.command("outcomes-auto-infer")
+def outcomes_auto_infer(
+    recording: str = typer.Argument(..., help="Path to a recording directory"),
+    output: Optional[str] = typer.Option(None, "--output", "-o",
+                                          help="Write outcomes.yaml to this path "
+                                          "(default: <recording>/outcomes.yaml)"),
+    force: bool = typer.Option(False, "--force",
+                                help="Overwrite an existing outcomes.yaml"),
+):
+    """Auto-infer outcomes.yaml from a recording's timeline (TODO §19.9).
+
+    Walks the captured comments and applies marker-based rules:
+
+      - Human reply with ❌ / [noise] / "не согласен" → noise (high)
+      - Human reply with +1 / "nice catch" / "согласен" → valid (high)
+      - Thread resolved with no counter-reply → valid (medium)
+      - Conflicting signals → undecided (low)
+
+    Saves an outcomes.yaml file with `source: auto` labels — humans
+    review & promote to `source: manual` when curating the corpus.
+    Misses (TODO §19.9 missed_findings) are NOT auto-inferred — they
+    require manual nomination or post-merge incident linking.
+    """
+    from runner.replay import RecordingReader
+    from runner.outcomes import auto_infer, save_outcomes
+    rec_dir = Path(recording).expanduser().resolve()
+    target = Path(output).expanduser() if output else (rec_dir / "outcomes.yaml")
+    if target.exists() and not force:
+        console.print(f"[yellow]outcomes file already at {target}; "
+                       f"use --force to overwrite[/yellow]")
+        raise typer.Exit(2)
+    out = auto_infer(RecordingReader.load, rec_dir)
+    save_outcomes(out, target)
+    n_valid = sum(1 for l in out.labels.values() if l.verdict == "valid")
+    n_noise = sum(1 for l in out.labels.values() if l.verdict == "noise")
+    n_undec = sum(1 for l in out.labels.values() if l.verdict == "undecided")
+    console.print(
+        f"[green]auto-inferred[/green] {len(out.labels)} labels "
+        f"([green]{n_valid} valid[/green], [red]{n_noise} noise[/red], "
+        f"[yellow]{n_undec} undecided[/yellow]) → {target}"
+    )
+
+
 @app.command()
 def ab(
     agent_a: str = typer.Option(..., "--agent-a", help="URL of agent A"),

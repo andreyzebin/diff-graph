@@ -87,6 +87,29 @@ code, .mono { font-family: ui-monospace, monospace; }
     <span id="lc-result" class="replay-result"></span>
   </div>
   {% endif %}
+
+  {# Outcomes section (TODO §19.9) — ground-truth labels and metrics #}
+  <div class="controls" style="margin-top: 12px;">
+    <span><b>Outcomes (ground truth):</b></span>
+    {% if detail.outcomes and detail.outcomes.exists %}
+      {% if detail.outcomes.error %}
+        <span class="replay-error">malformed outcomes.yaml</span>
+      {% else %}
+        <span>{{ detail.outcomes.n_labels }} labels
+          ({% set v = detail.outcomes.verdicts %}{% if v.valid %}<span style="color:#56d364;">{{ v.valid }} valid</span>{% endif %}{% if v.noise %}{% if v.valid %} · {% endif %}<span style="color:#f85149;">{{ v.noise }} noise</span>{% endif %}{% if v.undecided %}{% if v.valid or v.noise %} · {% endif %}<span style="color:#d29922;">{{ v.undecided }} undecided</span>{% endif %})
+          · {{ detail.outcomes.n_missed }} missed_findings</span>
+        {% if detail.outcomes.labelled_by %}
+          <span class="dim">by {{ detail.outcomes.labelled_by }}</span>
+        {% endif %}
+      {% endif %}
+    {% else %}
+      <span class="dim">no outcomes.yaml yet — auto-infer to bootstrap</span>
+    {% endif %}
+    <button onclick="autoInferOutcomes('{{ detail.rec_id }}')">
+      {% if detail.outcomes and detail.outcomes.exists %}Re-run auto-infer{% else %}Auto-infer outcomes{% endif %}
+    </button>
+    <span id="outcomes-result" class="replay-result"></span>
+  </div>
 </div>
 
 <h3>Invocations ({{ detail.invocations|length }})</h3>
@@ -147,6 +170,29 @@ async function replayLifecycle(recId) {
   const provider = document.getElementById('lc-provider').value;
   const result = document.getElementById('lc-result');
   await _replayCommon(recId, result, {mode: "lifecycle", queue: provider}, provider);
+}
+
+async function autoInferOutcomes(recId) {
+  const result = document.getElementById('outcomes-result');
+  result.textContent = "running auto-infer…";
+  result.className = "replay-result";
+  try {
+    const r = await fetch(`{{ base_path }}/api/qa/recordings/${recId}/outcomes/auto-infer`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: "{}",
+    });
+    if (!r.ok) {
+      result.textContent = `error: ${r.status} ${await r.text()}`;
+      result.className = "replay-result replay-error";
+      return;
+    }
+    const data = (await r.json()).data;
+    result.innerHTML = `wrote <b>${data.n_labels}</b> labels — ${data.n_valid} valid, ${data.n_noise} noise, ${data.n_undecided} undecided. <a href="">reload</a>`;
+  } catch (e) {
+    result.textContent = `error: ${e.message}`;
+    result.className = "replay-result replay-error";
+  }
 }
 
 async function _replayCommon(recId, resultEl, body, provider) {
