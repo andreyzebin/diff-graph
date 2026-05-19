@@ -294,9 +294,6 @@ class TaskQueue:
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_lease    ON qa_tasks(lease_expires_at);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_kind     ON qa_tasks(kind, state);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_trace_run ON qa_tasks(trace_run_id);
-                CREATE INDEX IF NOT EXISTS idx_events_run_agent  ON events(run_id, agent_id);
-                CREATE INDEX IF NOT EXISTS idx_events_timestamp  ON events(timestamp DESC);
-                CREATE INDEX IF NOT EXISTS idx_otel_spans_start  ON otel_spans(start_ns DESC);
                 CREATE INDEX IF NOT EXISTS idx_qa_tasks_parent   ON qa_tasks(parent_task_id);
 
                 CREATE TABLE IF NOT EXISTS qa_workers (

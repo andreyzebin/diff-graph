@@ -54,15 +54,20 @@ def _sweep_once(
         # Two-step: find candidate run ids, then close only those.
         # SQLite's UPDATE with a NOT-EXISTS subquery on a multi-million
         # row spans table is slow; this split is faster + auditable.
-        candidates = conn.execute(
-            """
-            SELECT id FROM runs
-             WHERE status='running'
-               AND started_at IS NOT NULL
-               AND started_at < ?
-            """,
-            (age_cutoff,),
-        ).fetchall()
+        try:
+            candidates = conn.execute(
+                """
+                SELECT id FROM runs
+                 WHERE status='running'
+                   AND started_at IS NOT NULL
+                   AND started_at < ?
+                """,
+                (age_cutoff,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # Fresh DB — orchestra's TraceDBWriter hasn't run yet, so
+            # `runs` doesn't exist. Nothing to sweep until an agent runs.
+            return 0
         if not candidates:
             return 0
 

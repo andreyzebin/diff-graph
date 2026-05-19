@@ -974,6 +974,16 @@ from quality_api.discovery import AutoPlanStore, DiscoverySupervisor, config_to_
 from quality_api.pools import PoolStore, WorkerSupervisor, pool_to_dict
 
 
+# Bootstrap orchestra's trace schema at server startup, before any
+# reader/sweeper/queue path touches the DB. On a freshly-wiped DB the
+# `runs` / `events` / `otel_spans` tables wouldn't otherwise exist
+# until the first agent run, and orphan_sweeper / TraceDBReader /
+# the QA queue's startup pass would all error out.
+from orchestra.trace_db import ensure_trace_schema as _ensure_trace_schema  # noqa: E402
+from orchestra.otel import SQLiteSpanExporter as _OtelExporter  # noqa: E402
+_ensure_trace_schema()
+_OtelExporter()  # constructor calls _ensure_schema(); discard.
+
 _qa_queue = TaskQueue()
 _qa_plans = PlanStore(_qa_queue)
 _qa_auto = AutoPlanStore(_qa_queue)

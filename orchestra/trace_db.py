@@ -17,6 +17,96 @@ from typing import Any, Optional
 DEFAULT_DB_PATH = Path.home() / ".diffgraph" / "traces.db"
 
 
+def ensure_trace_schema(
+    db_path: str | Path = DEFAULT_DB_PATH,
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Idempotent schema bootstrap for runs + events.
+
+    Safe to call multiple times and at any point in the server
+    lifecycle — `CREATE TABLE IF NOT EXISTS` / migrations are guarded.
+    Pass `conn` to reuse an existing connection (TraceDBWriter does
+    this so schema setup shares the writer's transaction context);
+    omit to let the function open + close its own short-lived one.
+    """
+    own_conn = conn is None
+    if own_conn:
+        db_path = Path(db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS runs (
+                id TEXT PRIMARY KEY,
+                started_at TEXT,
+                finished_at TEXT,
+                model TEXT,
+                pr_url TEXT,
+                status TEXT DEFAULT 'running',
+                prompt_source TEXT,
+                prompt_hash TEXT
+            );
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT,
+                agent_id TEXT,
+                agent_name TEXT,
+                timestamp TEXT,
+                event_type TEXT,
+                step INTEGER,
+                data_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id);
+            CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id);
+            CREATE INDEX IF NOT EXISTS idx_events_run_agent ON events(run_id, agent_id);
+            CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp DESC);
+        """)
+        for col in ("findings_count", "diff_summary", "total_tokens_paid"):
+            try:
+                conn.execute(f"ALTER TABLE runs DROP COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass
+        for col, decl in [
+            ("prompt_source", "TEXT"),
+            ("prompt_hash", "TEXT"),
+            ("tags", "TEXT"),
+            ("kind", "TEXT DEFAULT 'agent'"),
+            ("agent_name", "TEXT"),
+            ("generation", "TEXT"),
+            ("mutation", "TEXT"),
+            ("genes", "TEXT"),
+            ("project", "TEXT"),
+            ("files_touched", "TEXT"),
+            ("jira_keys", "TEXT"),
+            ("scenario_id", "TEXT"),
+            ("scenario_tags", "TEXT"),
+            ("linked_run_id", "TEXT"),
+            ("duration_ms", "INTEGER"),
+            ("fs_trace_path", "TEXT"),
+        ]:
+            try:
+                conn.execute(f"SELECT {col} FROM runs LIMIT 0")
+            except sqlite3.OperationalError:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_runs_kind        ON runs(kind);
+            CREATE INDEX IF NOT EXISTS idx_runs_started     ON runs(started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_runs_mutation    ON runs(mutation);
+            CREATE INDEX IF NOT EXISTS idx_runs_generation  ON runs(generation);
+            CREATE INDEX IF NOT EXISTS idx_runs_agent       ON runs(agent_name);
+            CREATE INDEX IF NOT EXISTS idx_runs_project     ON runs(project);
+            CREATE INDEX IF NOT EXISTS idx_runs_scenario    ON runs(scenario_id);
+            CREATE INDEX IF NOT EXISTS idx_runs_linked      ON runs(linked_run_id);
+            CREATE INDEX IF NOT EXISTS idx_runs_status      ON runs(status);
+        """)
+        if own_conn:
+            conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
+
+
 class TraceDBWriter:
     """Writes events to SQLite in real-time.
 
@@ -42,80 +132,7 @@ class TraceDBWriter:
         self._insert_run()
 
     def _create_tables(self):
-        self.conn.executescript("""
-            CREATE TABLE IF NOT EXISTS runs (
-                id TEXT PRIMARY KEY,
-                started_at TEXT,
-                finished_at TEXT,
-                model TEXT,
-                pr_url TEXT,
-                status TEXT DEFAULT 'running',
-                prompt_source TEXT,
-                prompt_hash TEXT
-            );
-            CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id TEXT,
-                agent_id TEXT,
-                agent_name TEXT,
-                timestamp TEXT,
-                event_type TEXT,
-                step INTEGER,
-                data_json TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id);
-            CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id);
-        """)
-        # Migration: drop the diff-graph-specific columns
-        # (findings_count, diff_summary, total_tokens_paid) from
-        # existing databases. SQLite 3.35+ supports DROP COLUMN.
-        # The trace layer is domain-agnostic — agents store their own
-        # output (findings, etc.) via --output JSON files / events.
-        for col in ("findings_count", "diff_summary", "total_tokens_paid"):
-            try:
-                self.conn.execute(f"ALTER TABLE runs DROP COLUMN {col}")
-            except sqlite3.OperationalError:
-                pass  # already absent
-
-        # Migrate: add columns if missing (existing DBs).
-        # Each column is a separate try/except so we can add new ones
-        # without disturbing the existing migration order.
-        for col, decl in [
-            ("prompt_source", "TEXT"),
-            ("prompt_hash", "TEXT"),
-            ("tags", "TEXT"),
-            ("kind", "TEXT DEFAULT 'agent'"),
-            # 5e.11 — first-class search dimensions
-            ("agent_name", "TEXT"),
-            ("generation", "TEXT"),
-            ("mutation", "TEXT"),
-            ("genes", "TEXT"),                # JSON array — legacy column, no longer written; kept to avoid migration
-            ("project", "TEXT"),
-            ("files_touched", "TEXT"),        # JSON array
-            ("jira_keys", "TEXT"),            # JSON array
-            ("scenario_id", "TEXT"),
-            ("scenario_tags", "TEXT"),        # JSON array
-            ("linked_run_id", "TEXT"),
-            ("duration_ms", "INTEGER"),
-            ("fs_trace_path", "TEXT"),
-        ]:
-            try:
-                self.conn.execute(f"SELECT {col} FROM runs LIMIT 0")
-            except sqlite3.OperationalError:
-                self.conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
-
-        # Indices for the search dimensions (5e.11)
-        self.conn.executescript("""
-            CREATE INDEX IF NOT EXISTS idx_runs_kind        ON runs(kind);
-            CREATE INDEX IF NOT EXISTS idx_runs_started     ON runs(started_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_runs_mutation    ON runs(mutation);
-            CREATE INDEX IF NOT EXISTS idx_runs_generation  ON runs(generation);
-            CREATE INDEX IF NOT EXISTS idx_runs_agent       ON runs(agent_name);
-            CREATE INDEX IF NOT EXISTS idx_runs_project     ON runs(project);
-            CREATE INDEX IF NOT EXISTS idx_runs_scenario    ON runs(scenario_id);
-            CREATE INDEX IF NOT EXISTS idx_runs_linked      ON runs(linked_run_id);
-            CREATE INDEX IF NOT EXISTS idx_runs_status      ON runs(status);
-        """)
+        ensure_trace_schema(self.db_path, conn=self.conn)
 
     def _insert_run(self):
         # OR IGNORE: when the worker pre-stamps DIFFGRAPH_TRACE_RUN_ID on
