@@ -185,12 +185,19 @@ class TestNewTools:
         assert out["pr_url"] == REAL_PR_URL
         assert "error" not in out
 
-    def test_pr_get_non_default_returns_phase_b_error(self, ctx_and_registry):
+    def test_pr_get_non_default_unknown_returns_phase_c_error(self, ctx_and_registry):
+        """pr_get now consults FakeBitbucket.cross_source_pr_meta for
+        non-default URIs. Without a fixture entry, it returns a clear
+        Phase-C "not configured" message — not the old Phase B
+        rejection. The Phase C entry-point shape is locked in even
+        though the in-fixture path is exercised separately
+        (test_pr_get_cross_source_hits_fake)."""
         _, reg = ctx_and_registry
         out = reg.dispatch("pr_get", {"pr": "9999"})
         assert isinstance(out, dict)
         assert "error" in out
-        assert "Phase B" in out["error"]
+        assert "cross-source" in out["error"]
+        assert "9999" in out["error"]
 
     def test_pr_list_default_returns_current_pr_only(self, ctx_and_registry):
         _, reg = ctx_and_registry
@@ -241,3 +248,90 @@ class TestOmittedParamsActAsDefault:
         _, reg = ctx_and_registry
         out = reg.dispatch("pr_list_threads", {})
         assert "Phase B" not in str(out)
+
+
+# ── §10 Phase C entry-point: pr_get against fake cross-source ─────
+
+
+class TestPrGetCrossSourceFake:
+    """`pr_get(repo=<other-uri>, pr=<id>)` consults
+    FakeBitbucket.cross_source_pr_meta. Fixture entry → meta
+    returned; missing → Phase C "not configured" message. Production
+    swaps a real BitbucketRegistry behind the same method shape."""
+
+    def _install_fake_with_cross(self, monkeypatch, cross: dict):
+        """Install a FakeBitbucket whose payload carries the given
+        cross_source_prs map. The orchestra_tools' pr_get reaches
+        the singleton via `bitbucket_fake._instance()`."""
+        from diffgraph import bitbucket_fake as fb
+        fake = fb.FakeBitbucket(payload={
+            "pr_url": REAL_PR_URL,
+            "repo_path": "/tmp/_x", "base_sha": "a", "source_sha": "b",
+            "metadata": {}, "comments": [], "self_user": "bot",
+            "cross_source_prs": cross,
+        })
+        fb.install(fake)
+        # Idempotent teardown for the next test.
+        monkeypatch.setattr("diffgraph.bitbucket_fake._instance",
+                            lambda: fake)
+        return fake
+
+    def test_returns_meta_when_entry_present(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake_with_cross(monkeypatch, {
+            "bitbucket://default/SHARED/lib:42": {
+                "base_ref": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                "source_ref": "feedfacefeedfacefeedfacefeedfacefeedface",
+                "pr_url": "https://bitbucket.example.com/projects/SHARED/repos/lib/pull-requests/42",
+                "metadata": {
+                    "title": "Bump library to 2.3",
+                    "state": "OPEN",
+                    "author": "alice",
+                },
+            },
+        })
+        out = reg.dispatch("pr_get", {
+            "repo": "bitbucket://default/SHARED/lib",
+            "pr": "42",
+        })
+        assert "error" not in out, out
+        assert out["uri"] == "bitbucket://default/SHARED/lib"
+        assert out["pr"] == "42"
+        assert out["base_ref"].startswith("deadbeef")
+        assert out["title"] == "Bump library to 2.3"
+        assert out["state"] == "OPEN"
+
+    def test_missing_entry_returns_phase_c_msg(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake_with_cross(monkeypatch, {})
+        out = reg.dispatch("pr_get", {
+            "repo": "bitbucket://default/SHARED/lib",
+            "pr": "99",
+        })
+        assert "error" in out
+        assert "cross-source" in out["error"]
+        assert "lib:99" in out["error"]
+
+    def test_explicit_current_uri_silently_ok(self, monkeypatch, ctx_and_registry):
+        """§10.6: passing the current PR's exact URI must be tolerated
+        as silently equivalent to "default" — no cross-source lookup
+        needed."""
+        _, reg = ctx_and_registry
+        self._install_fake_with_cross(monkeypatch, {})  # empty cross-source map
+        out = reg.dispatch("pr_get", {
+            "repo": REAL_PR_URI,
+            "pr": REAL_PR_ID,
+        })
+        assert "error" not in out, out
+        assert out["uri"] == REAL_PR_URI
+        assert out["pr"] == REAL_PR_ID
+
+    def test_invalid_uri_returns_parse_error(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake_with_cross(monkeypatch, {})
+        out = reg.dispatch("pr_get", {
+            "repo": "not-a-valid-uri",
+            "pr": "1",
+        })
+        assert "error" in out
+        assert "invalid repo URI" in out["error"]

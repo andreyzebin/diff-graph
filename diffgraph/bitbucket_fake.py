@@ -68,6 +68,15 @@ def parse_pr_url(pr_url: str) -> tuple[str, str, str, int]:
 _EMPTY_PAYLOAD: dict[str, Any] = {
     "pr_url": "", "repo_path": "", "base_sha": "", "source_sha": "",
     "metadata": {}, "comments": [], "self_user": "",
+    # §10 cross-source support. When the agent calls
+    # `pr_get(repo=<other-uri>, pr=<id>)`, the tool consults this
+    # mapping to serve PR metadata for repos OTHER than the current
+    # PR's. Keys: `"<repo_uri>:<pr_id>"` (e.g.
+    # `"bitbucket://default/ORDERFLOW/orderflow:287"`). Values:
+    # dicts with at least `{base_ref, source_ref, metadata: {...}}`;
+    # additional fields surface through unchanged. Empty mapping
+    # (default) keeps Phase B behaviour for cross-source calls.
+    "cross_source_prs": {},
 }
 
 
@@ -178,6 +187,34 @@ class FakeBitbucket:
 
     def _normalised_comments(self) -> list[dict]:
         return [_normalise_comment(c) for c in (self.payload.get("comments") or [])]
+
+    # ── §10 cross-source — PR meta for OTHER repos ────────────────────
+    # The agent reaches a non-default URI (typically via a
+    # `jira_dev_info`-returned PR-ref) and calls `pr_get(repo=...,
+    # pr=...)`. The tool consults this method to fake the cross-
+    # source lookup deterministically. Production Phase C will mirror
+    # the surface against a real BitbucketRegistry; the contract here
+    # is what the tool needs and what real provider must also return.
+
+    def cross_source_pr_meta(
+        self, repo_uri: str, pr_id: str,
+    ) -> Optional[dict]:
+        """Look up fake-fed PR metadata for an `<repo_uri>:<pr_id>`
+        pair. Returns the meta dict (`{base_ref, source_ref,
+        metadata: {...}, ...}`) or None when the fixture has no
+        entry for that key. Used by `pr_get` to serve cross-source
+        calls without a real Bitbucket; production swaps in the
+        real provider behind the same method shape."""
+        if not repo_uri or not pr_id:
+            return None
+        m = self.payload.get("cross_source_prs") or {}
+        if not isinstance(m, dict):
+            return None
+        key = f"{repo_uri}:{pr_id}"
+        entry = m.get(key)
+        if not isinstance(entry, dict):
+            return None
+        return entry
 
     # ── write-side ───────────────────────────────────────────────────────
 

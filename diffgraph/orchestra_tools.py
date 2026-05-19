@@ -877,16 +877,79 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         },
     )
     def pr_get_tool(repo: str = "default", pr: str = "default") -> dict:
-        err = _phase_b_gate(repo=repo, pr=pr)
-        if err:
-            return {"error": err}
-        uri = _ctx_repo_uri()
+        from .repo_uri import is_default_literal, parse_repo_uri
+        # Default / matches-current path — same as before. The
+        # _phase_b_gate accepts these silently; non-defaults hit the
+        # cross-source lookup below before falling back to the gate
+        # message.
+        ctx_uri = _ctx_repo_uri()
+        ctx_pr = _ctx_pr_id() or ""
+        is_default_call = (
+            is_default_literal(repo) and is_default_literal(pr)
+        )
+        if is_default_call:
+            return {
+                "uri": str(ctx_uri) if ctx_uri else "",
+                "pr": ctx_pr,
+                "base_ref": ctx.base_ref or "",
+                "source_ref": ctx.source_ref or "",
+                "pr_url": getattr(ctx, "_pr_url", "") or "",
+            }
+        # Non-default call. Parse the URI; on parse error, surface a
+        # clear message instead of crashing.
+        try:
+            parsed_uri = (
+                ctx_uri if is_default_literal(repo)
+                else parse_repo_uri(repo)
+            )
+        except ValueError as exc:
+            return {"error": f"(invalid repo URI: {exc})"}
+        if parsed_uri is None:
+            return {"error": "(repo URI missing and ctx has no PR)"}
+        pr_id = ctx_pr if is_default_literal(pr) else str(pr).strip()
+        if not pr_id:
+            return {"error": "(pr id required for cross-source lookup)"}
+        # Same-as-current → reuse the ctx path (tolerated per §10.6).
+        if ctx_uri and str(parsed_uri) == str(ctx_uri) and pr_id == ctx_pr:
+            return {
+                "uri": str(parsed_uri),
+                "pr": pr_id,
+                "base_ref": ctx.base_ref or "",
+                "source_ref": ctx.source_ref or "",
+                "pr_url": getattr(ctx, "_pr_url", "") or "",
+            }
+        # Cross-source: try the fake-bitbucket fixture (Phase C
+        # plumbing — production swaps in a real BitbucketRegistry
+        # behind the same method shape). Found → return meta;
+        # not-in-fixture → Phase C message so the agent stops
+        # retrying instead of looping on an empty answer.
+        try:
+            from . import bitbucket_fake as _fb
+            entry = _fb._instance().cross_source_pr_meta(
+                str(parsed_uri), pr_id,
+            )
+        except Exception:
+            entry = None
+        if entry is not None:
+            md = entry.get("metadata") or {}
+            return {
+                "uri": str(parsed_uri),
+                "pr": pr_id,
+                "base_ref": entry.get("base_ref", ""),
+                "source_ref": entry.get("source_ref", ""),
+                "pr_url": entry.get("pr_url", md.get("pr_url", "")),
+                # Useful extras the agent may want: title, state,
+                # author. Surface them when present.
+                **{k: v for k, v in md.items()
+                   if k in ("title", "description", "state", "author")},
+            }
         return {
-            "uri": str(uri) if uri else "",
-            "pr": _ctx_pr_id() or "",
-            "base_ref": ctx.base_ref or "",
-            "source_ref": ctx.source_ref or "",
-            "pr_url": getattr(ctx, "_pr_url", "") or "",
+            "error": (
+                f"(cross-source pr_get not available for "
+                f"{parsed_uri}:{pr_id} — Phase C scenarios need this "
+                "PR in `cross_source_prs` fixture data, or a real "
+                "BitbucketRegistry must be configured)"
+            )
         }
 
     @registry.register(
