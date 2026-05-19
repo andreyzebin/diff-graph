@@ -77,6 +77,30 @@ class TicketLink:
 
 
 @dataclass
+class SearchResult:
+    """One row of a `search_tickets` response. Three fields per
+    TODO §5b Phase 2 — `key + summary + status`. Agents copy `key`
+    verbatim into `jira_read_ticket` to drill in."""
+    key: str
+    summary: str
+    status: str
+    issue_type: str = ""
+
+
+@dataclass
+class SearchResults:
+    """Distilled output of `JiraProvider.search_tickets`. `total` is
+    the server-side total when the response carries it (real Jira),
+    or `len(results)` for fakes."""
+    jql: str
+    results: list[SearchResult] = field(default_factory=list)
+    total: int = 0
+    truncated: bool = False    # True when limit clipped the response
+    configured: bool = True
+    note: str = ""             # set when configured=False or on error
+
+
+@dataclass
 class DevInfoBranch:
     name: str
     url: str
@@ -480,6 +504,112 @@ def _dev_info_disabled(key: str) -> DevInfoContext:
     )
 
 
+# ── search_tickets (JQL discovery) ─────────────────────────────────
+
+
+def distill_search_results(
+    jql: str, raw: dict, *, limit: int = 0,
+) -> SearchResults:
+    """Pure: raw `Jira.jql(jql)` response → `SearchResults`. Tolerant
+    of the variations Jira returns — some endpoints set `total`, some
+    don't; some fields land under `fields.summary`, some at top level
+    (depending on the search API version and the `fields=` param)."""
+    issues_raw = raw.get("issues") or []
+    if limit and len(issues_raw) > limit:
+        issues_used = issues_raw[:limit]
+        truncated = True
+    else:
+        issues_used = issues_raw
+        truncated = False
+    results: list[SearchResult] = []
+    for issue in issues_used:
+        fields = (issue or {}).get("fields") or {}
+        summary = str(
+            (fields.get("summary") if fields.get("summary") is not None
+             else issue.get("summary")) or ""
+        ).strip()
+        status_obj = fields.get("status") or {}
+        status = str(
+            (status_obj.get("name") if isinstance(status_obj, dict)
+             else status_obj) or issue.get("status") or ""
+        ).strip()
+        issue_type_obj = fields.get("issuetype") or {}
+        issue_type = str(
+            (issue_type_obj.get("name") if isinstance(issue_type_obj, dict)
+             else issue_type_obj) or ""
+        ).strip()
+        results.append(SearchResult(
+            key=str(issue.get("key") or "").strip(),
+            summary=summary,
+            status=status,
+            issue_type=issue_type,
+        ))
+    total = int(raw.get("total") or len(issues_raw))
+    return SearchResults(
+        jql=jql,
+        results=results,
+        total=total,
+        truncated=truncated,
+    )
+
+
+def format_search_results(sr: SearchResults) -> str:
+    """Stable text render — the `search_tickets` tool's contract.
+    One line per result, copy-paste friendly: the `key` is bare and
+    the agent feeds it straight into `jira_read_ticket`."""
+    if not sr.configured:
+        return f"[search_tickets jql={sr.jql!r}] {sr.note or 'Jira unavailable.'}"
+
+    if not sr.results:
+        return (
+            f"[search_tickets jql={sr.jql!r}] No matching tickets "
+            f"(total={sr.total})."
+        )
+
+    lines: list[str] = [
+        f"SEARCH_TICKETS jql={sr.jql!r}  "
+        f"results={len(sr.results)}/{sr.total}"
+        + ("  (truncated)" if sr.truncated else "")
+    ]
+    for r in sr.results:
+        type_part = f"[{r.issue_type}] " if r.issue_type else ""
+        lines.append(
+            f"  {r.key}  {type_part}[{r.status or '?'}]  {r.summary}"
+        )
+    lines.append(
+        "Drill in with: jira_read_ticket(\"<key>\") or "
+        "jira_dev_info(\"<key>\") for linked PRs/branches/commits."
+    )
+    return "\n".join(lines)
+
+
+def _search_results_not_configured(jql: str) -> SearchResults:
+    return SearchResults(
+        jql=jql, configured=False,
+        note="Jira search is not configured for this deployment.",
+    )
+
+
+def _search_results_disabled(jql: str) -> SearchResults:
+    return SearchResults(
+        jql=jql, configured=False,
+        note="Jira integration is disabled in this run.",
+    )
+
+
+# Wrapper keys that mark a fixture as the extended multi-fetch
+# envelope (`{issue, dev_info, searches}`) rather than the legacy
+# "the JSON IS the issue payload" shape. Presence of ANY of these
+# at the top level flips the parser into envelope mode — so an
+# extended fixture can ship just `{issue: ...}` or just
+# `{searches: ...}` without having to populate every block.
+_EXTENDED_FIXTURE_KEYS = frozenset({"issue", "dev_info", "searches"})
+
+
+def _is_extended_fixture(blob: dict) -> bool:
+    return any(k in blob for k in _EXTENDED_FIXTURE_KEYS)
+
+
 class JiraProvider:
     """Thin wrapper over `atlassian.Jira`. Lazily builds the client
     on first use so constructing the provider never does I/O and
@@ -560,8 +690,13 @@ class JiraProvider:
         """
         if self.fixture_path:
             blob = self._load_fixture()
-            if isinstance(blob, dict) and "issue" in blob and "dev_info" in blob:
-                return blob["issue"] or {}
+            # Extended shape — any of the wrapper keys present →
+            # treat the blob as the multi-fetch envelope and pull
+            # the issue body out. Legacy shape (the blob IS the
+            # issue payload) keeps working when none of those
+            # wrapper keys appear.
+            if isinstance(blob, dict) and _is_extended_fixture(blob):
+                return blob.get("issue") or {}
             return blob
         return self._jira().issue(key, expand="changelog")
 
@@ -578,7 +713,7 @@ class JiraProvider:
         """
         if self.fixture_path:
             blob = self._load_fixture()
-            if isinstance(blob, dict) and "dev_info" in blob:
+            if isinstance(blob, dict) and _is_extended_fixture(blob):
                 return blob.get("dev_info") or {}
             # Legacy fixture: no dev-info baked in.
             return {}
@@ -659,6 +794,65 @@ class JiraProvider:
             log.info("jira_read_ticket: %s not viewable (%s): %s",
                      key, type(exc).__name__, exc)
             return _not_viewable(key, exc)
+
+    def search_tickets_raw(self, jql: str, *, limit: int = 20) -> dict:
+        """Raw `Jira.jql(jql)` response (or fixture replay).
+
+        Fake mode: the fixture's `searches:` block maps `<jql_pattern>`
+        → `<raw_jql_response>` (the same shape `atlassian.Jira.jql`
+        returns). Exact-string match on jql; a `"*"` entry serves as
+        catch-all when no exact match. No entries → empty result set.
+        """
+        if self.fixture_path:
+            blob = self._load_fixture()
+            # Only the extended-shape fixture carries `searches:`.
+            # Legacy issue-only fixtures have no search data → empty.
+            if not (isinstance(blob, dict) and _is_extended_fixture(blob)):
+                return {"issues": [], "total": 0}
+            searches = blob.get("searches") or {}
+            if not isinstance(searches, dict):
+                return {"issues": [], "total": 0}
+            # Try exact jql, then the catch-all `*`.
+            for key in (jql, "*"):
+                entry = searches.get(key)
+                if isinstance(entry, dict):
+                    return entry
+                if isinstance(entry, list):
+                    # Convenience: bare list of issue dicts → wrap.
+                    return {"issues": entry, "total": len(entry)}
+            return {"issues": [], "total": 0}
+        return self._jira().jql(
+            jql, limit=limit,
+            fields="summary,status,issuetype",
+        ) or {}
+
+    def search_tickets(
+        self, jql: str, *, limit: int = 20, handle: str = "default",
+    ) -> SearchResults:
+        """`search_tickets_raw` + `distill_search_results` with the
+        same four-level graceful degradation pattern as the other
+        fetch_* methods. Empty results are not an error — they mean
+        the JQL just didn't match anything.
+        """
+        if self.disabled:
+            return _search_results_disabled(jql)
+        if not self.configured:
+            return _search_results_not_configured(jql)
+        if self.fixture_path:
+            return distill_search_results(
+                jql, self.search_tickets_raw(jql, limit=limit), limit=limit,
+            )
+        try:
+            return distill_search_results(
+                jql, self.search_tickets_raw(jql, limit=limit), limit=limit,
+            )
+        except Exception as exc:
+            log.info("search_tickets: jql=%r unavailable (%s): %s",
+                     jql, type(exc).__name__, exc)
+            return SearchResults(
+                jql=jql, configured=False,
+                note=f"search endpoint unavailable: {type(exc).__name__}",
+            )
 
     def fetch_dev_info(self, key: str, *, handle: str = "default") -> DevInfoContext:
         """`fetch_dev_info_raw` + `distill_dev_info`, with the same
@@ -812,4 +1006,17 @@ class JiraRegistry:
         handle, _namespace, ticket_id = parse_ticket_ref(ref)
         return self.provider_for(handle).fetch_dev_info(
             ticket_id, handle=handle,
+        )
+
+    def search_tickets(
+        self, jql: str, *, handle: str = "default", limit: int = 20,
+    ) -> SearchResults:
+        """Run a JQL query against the named server. Unlike
+        `fetch` / `fetch_dev_info`, the search isn't tied to a
+        specific ticket ref — so the handle is passed explicitly
+        (defaulting to `"default"`). Multi-server deployments that
+        want to search a non-default tracker pass e.g.
+        `handle="internal"`."""
+        return self.provider_for(handle).search_tickets(
+            jql, limit=limit, handle=handle,
         )

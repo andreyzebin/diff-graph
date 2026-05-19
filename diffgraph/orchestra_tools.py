@@ -1107,6 +1107,73 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             )
 
     @registry.register(
+        name="search_tickets",
+        description=(
+            "Run a JQL search against the issue tracker — the "
+            "discovery channel for finding tickets BEYOND the ones a "
+            "PR already links to. Use cases: prior similar fixes "
+            "(`project = ORD AND text ~ 'cancel NPE' AND status != "
+            "Closed`), all open work in an epic (`'Epic Link' = "
+            "ORD-100`), the assignee's queue (`assignee = currentUser() "
+            "AND status = 'In Review'`).\n\n"
+            "Returns key + summary + status per matching ticket — feed "
+            "any key straight into `jira_read_ticket` to drill in, or "
+            "`jira_dev_info` to cross into Bitbucket via its linked "
+            "PRs/branches/commits. Default limit 20; pass a smaller "
+            "limit when you only need a few. Empty result is not an "
+            "error — it just means nothing matched."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "jql": {
+                    "type": "string",
+                    "description": (
+                        "JQL query — Atlassian's standard query "
+                        "syntax. Quote string values; supports "
+                        "AND/OR/NOT, ORDER BY, etc."
+                    ),
+                },
+                "handle": {
+                    "type": "string",
+                    "description": (
+                        "Server handle from `jira_servers:` in "
+                        "config.local.yaml. Defaults to the env-based "
+                        "default tracker — multi-server setups pass "
+                        "an explicit handle to search a non-default."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Cap on returned rows (default 20). The "
+                        "underlying Jira call also enforces a server-"
+                        "side cap; the smaller of the two wins."
+                    ),
+                },
+            },
+            "required": ["jql"],
+        },
+    )
+    def search_tickets_tool(
+        jql: str = "", handle: str = "default", limit: int = 20,
+    ) -> str:
+        jql = (jql or "").strip()
+        if not jql:
+            return "(jql is required)"
+        try:
+            from .providers.jira import format_search_results
+            return format_search_results(_jira().search_tickets(
+                jql, handle=handle or "default", limit=int(limit or 20),
+            ))
+        except Exception as exc:
+            return (
+                f"(search_tickets failed for jql={jql!r}: "
+                f"{type(exc).__name__}: {exc} — proceed without the "
+                f"search results)"
+            )
+
+    @registry.register(
         name="pr_post_comment",
         description=(
             "Post a single comment on the PR. One tool covers all three "

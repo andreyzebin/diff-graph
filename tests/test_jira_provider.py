@@ -716,3 +716,143 @@ class TestDevInfoFixtureMode:
         assert di.pull_requests == []
         assert di.branches == []
         assert di.commits == []
+
+
+# ── search_tickets (JQL discovery) ─────────────────────────────────
+
+
+class TestSearchResultsDistill:
+    """Pure: raw `Jira.jql` response → `SearchResults`. Pin the
+    flatten + tolerance logic without touching the network."""
+
+    def test_basic_extraction(self):
+        from diffgraph.providers.jira import distill_search_results
+        raw = {
+            "total": 2,
+            "issues": [
+                {"key": "ORD-1", "fields": {
+                    "summary": "First",
+                    "status": {"name": "Open"},
+                    "issuetype": {"name": "Bug"},
+                }},
+                {"key": "ORD-2", "fields": {
+                    "summary": "Second",
+                    "status": {"name": "Closed"},
+                    "issuetype": {"name": "Task"},
+                }},
+            ],
+        }
+        sr = distill_search_results("project = ORD", raw)
+        assert sr.jql == "project = ORD"
+        assert sr.total == 2
+        assert len(sr.results) == 2
+        assert sr.results[0].key == "ORD-1"
+        assert sr.results[0].issue_type == "Bug"
+        assert sr.results[1].status == "Closed"
+        assert sr.truncated is False
+
+    def test_limit_clips_and_marks_truncated(self):
+        from diffgraph.providers.jira import distill_search_results
+        raw = {"issues": [{"key": f"K-{i}"} for i in range(5)]}
+        sr = distill_search_results("x", raw, limit=2)
+        assert len(sr.results) == 2
+        assert sr.truncated is True
+
+    def test_empty_response(self):
+        from diffgraph.providers.jira import distill_search_results
+        sr = distill_search_results("x", {})
+        assert sr.results == []
+        assert sr.total == 0
+        assert sr.configured is True
+
+    def test_status_can_be_string_not_dict(self):
+        """Some Jira API versions return status as a plain string."""
+        from diffgraph.providers.jira import distill_search_results
+        raw = {"issues": [{"key": "K-1",
+                            "fields": {"status": "Open", "summary": "S"}}]}
+        sr = distill_search_results("x", raw)
+        assert sr.results[0].status == "Open"
+
+    def test_format_search_results_renders_help_line(self):
+        from diffgraph.providers.jira import (
+            SearchResult, SearchResults, format_search_results,
+        )
+        sr = SearchResults(
+            jql="x", total=1, results=[SearchResult(
+                key="ORD-1", summary="S", status="Open", issue_type="Bug",
+            )],
+        )
+        out = format_search_results(sr)
+        assert "ORD-1" in out
+        assert 'jira_read_ticket("<key>")' in out
+
+    def test_format_search_results_empty_says_so(self):
+        from diffgraph.providers.jira import SearchResults, format_search_results
+        out = format_search_results(SearchResults(jql="x", total=0))
+        assert "No matching tickets" in out
+
+
+class TestSearchTicketsFixtureMode:
+    """Fixture-mode: the `searches:` block maps `<jql_pattern>` →
+    `<raw_jql_response>`. Tests exercise exact match, the `*` catch-
+    all, and the bare-list convenience shape."""
+
+    def _write(self, tmp_path, body: dict):
+        import json
+        p = tmp_path / "search.json"
+        p.write_text(json.dumps(body), encoding="utf-8")
+        return p
+
+    def test_exact_jql_match(self, monkeypatch, tmp_path):
+        body = {
+            "searches": {
+                "project = ORD": {
+                    "total": 1,
+                    "issues": [{"key": "ORD-7",
+                                 "fields": {"summary": "S",
+                                            "status": {"name": "Open"}}}],
+                },
+            },
+        }
+        monkeypatch.setenv("DIFFGRAPH_JIRA_FIXTURE", str(self._write(tmp_path, body)))
+        from diffgraph.providers.jira import JiraProvider
+        sr = JiraProvider().search_tickets("project = ORD")
+        assert [r.key for r in sr.results] == ["ORD-7"]
+
+    def test_wildcard_catch_all(self, monkeypatch, tmp_path):
+        body = {
+            "searches": {
+                "*": [{"key": "FOO-1",
+                        "fields": {"summary": "S", "status": {"name": "Open"}}}],
+            },
+        }
+        monkeypatch.setenv("DIFFGRAPH_JIRA_FIXTURE", str(self._write(tmp_path, body)))
+        from diffgraph.providers.jira import JiraProvider
+        sr = JiraProvider().search_tickets("anything goes here")
+        assert [r.key for r in sr.results] == ["FOO-1"]
+
+    def test_no_match_returns_empty(self, monkeypatch, tmp_path):
+        body = {"searches": {"x = 1": {"issues": []}}}
+        monkeypatch.setenv("DIFFGRAPH_JIRA_FIXTURE", str(self._write(tmp_path, body)))
+        from diffgraph.providers.jira import JiraProvider
+        sr = JiraProvider().search_tickets("y = 2")
+        assert sr.results == []
+        assert sr.total == 0
+
+    def test_missing_searches_block(self, monkeypatch, tmp_path):
+        body = {"issue": {"key": "K", "fields": {"summary": "S"}}}
+        monkeypatch.setenv("DIFFGRAPH_JIRA_FIXTURE", str(self._write(tmp_path, body)))
+        from diffgraph.providers.jira import JiraProvider
+        sr = JiraProvider().search_tickets("x")
+        assert sr.results == []
+        # Backward compat: legacy issue-only fixture still loads
+        # the ticket fine via fetch_ticket.
+        tc = JiraProvider().fetch_ticket("K")
+        assert tc.key == "K"
+
+    def test_disabled_returns_sentinel(self, monkeypatch):
+        monkeypatch.setenv("DIFFGRAPH_JIRA_DISABLED", "1")
+        from diffgraph.providers.jira import JiraProvider
+        sr = JiraProvider().search_tickets("project = X")
+        assert sr.configured is False
+        assert "disabled" in sr.note
