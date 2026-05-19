@@ -54,7 +54,7 @@ budget:
   # walks the diff via many short tool calls); wall is the third
   # (caps deadlocks from slow LLM providers). Framework's default
   # pushers escalate each axis at 50/75/{100,90} independently.
-  tokens: 80000
+  tokens: 800000
   steps: 127
   wall: 20m
 reflect:
