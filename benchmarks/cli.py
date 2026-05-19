@@ -26,12 +26,18 @@ app = typer.Typer(help="Code Review Agent Benchmark", add_completion=False)
 console = Console()
 
 BASE_DIR = Path(__file__).parent
+REPO_ROOT = BASE_DIR.parent
 SCENARIOS_DIR = BASE_DIR / "scenarios"
 RESULTS_DIR = BASE_DIR / "results"
 CONFIG_FILE = BASE_DIR / "config.yaml"
 
-# Make benchmarks package importable
+# Make benchmarks package importable AND make orchestra/diffgraph
+# (which live at the repo root) reachable when this script is launched
+# directly — Python sets sys.path[0] to the script's dir, not the cwd,
+# so `from orchestra.X import Y` (e.g. judge.py loading raw.user.md
+# via orchestra.prompts.frontmatter) would otherwise miss the repo root.
 sys.path.insert(0, str(BASE_DIR))
+sys.path.insert(0, str(REPO_ROOT))
 
 # When this CLI is spawned by the QA worker as part of a task, opt
 # into the per-task system log so every `logging.*` call in bench
