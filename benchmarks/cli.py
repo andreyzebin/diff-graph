@@ -36,8 +36,16 @@ CONFIG_FILE = BASE_DIR / "config.yaml"
 # directly — Python sets sys.path[0] to the script's dir, not the cwd,
 # so `from orchestra.X import Y` (e.g. judge.py loading raw.user.md
 # via orchestra.prompts.frontmatter) would otherwise miss the repo root.
-sys.path.insert(0, str(BASE_DIR))
+#
+# Order matters: BASE_DIR must come BEFORE REPO_ROOT in sys.path so
+# unqualified imports like `from cli import _make_llm_client` (used
+# by runner/run_unit.py) resolve to *this* cli.py — which returns
+# the LLMClient wrapper with .complete_json — and NOT to diff-graph's
+# top-level cli.py, which returns a raw openai.OpenAI client for the
+# agent loop's direct chat.completions.create calls. Last insert wins
+# index 0, so insert REPO_ROOT first, then BASE_DIR.
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(BASE_DIR))
 
 # When this CLI is spawned by the QA worker as part of a task, opt
 # into the per-task system log so every `logging.*` call in bench
