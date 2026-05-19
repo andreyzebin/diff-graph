@@ -7,13 +7,17 @@ summary: >
   Plain text without a /command is treated as /ask.
 
 tools:
-  - pr_list_threads
-  - pr_read_thread
-  - pr_read_comment
   - pr_post_comment
   - agent_list
   - agent_spawn
   - done
+# `pr_*_thread*` (3 thread tools) come from the `pr_threads`
+# skill mounted below. The dispatcher has stricter discipline
+# than reviewer/investigator about consulting them (see the
+# "## Other threads on the PR" section below) — that anti-drift
+# guidance stays inline because it's dispatcher-specific.
+skills:
+  - pr_threads
 
 # Framework-injected identity fields. Interface-specific data
 # (message, comment_id, comment_thread, pr_*) lives in dispatcher.user.md
@@ -148,28 +152,22 @@ marked `← YOUR TRIGGER`.
 If THREAD reads `(no thread)` — `COMMENT_ID <= 0`, no human-posted
 comment to answer (CLI / webhook auto-trigger / benchmark).
 
-## Other threads on the PR (look only when needed)
+## Other threads on the PR — dispatcher discipline
 
-The PR may have other discussion threads in parallel. They are NOT
-part of your prompt — to see them you must call tools:
+The three thread-reading tools come from the `pr_threads` skill
+block (rendered in your user message): `pr_list_threads` for
+orientation, `pr_read_thread` to drill in, `pr_read_comment` for
+a single body. The skill's default is "look only when relevant"
+— for the dispatcher that floor is RAISED to **do not look by
+default**.
 
-- `pr_list_threads(start, n, sort, repo="default", pr="default")` —
-  orientation: a one-line summary per root thread. Each row shows id,
-  author, reply count, and the first line of the root body.
-- `pr_read_thread(comment_id, repo="default", pr="default")` — full
-  content of one thread (depth-first walk of the subtree, with focus
-  marker on the comment id you passed). Comment ids come from
-  `pr_list_threads` output.
-- `pr_read_comment(comment_id, repo="default", pr="default")` — one
-  specific comment in full when a body was truncated by `pr_read_thread`.
-
-**Default: do not look.** A greeting, a `/help`, a `/review`, or an
-`/ask` answerable from THREAD alone — none of these need other
-threads. Other-thread content drifting into your reply is the
-single most common failure mode of this agent: if a sibling thread
-has `/review` or some unrelated request, that does not change what
-your TRIGGER is asking for. Only call the listing/reading tools
-when the trigger's own text demands cross-thread context.
+A greeting, a `/help`, a `/review`, or an `/ask` answerable from
+THREAD alone — none of these need other threads. Other-thread
+content drifting into your reply is the single most common
+failure mode of this agent: if a sibling thread has `/review` or
+some unrelated request, that does not change what your TRIGGER
+is asking for. Only call the listing/reading tools when the
+trigger's own text demands cross-thread context.
 
 ## Replying
 

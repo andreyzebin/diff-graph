@@ -23,20 +23,19 @@ summary: >
 # works from the diff. Unit scenarios get Jira disabled by default
 # (run_unit) unless they declare a `jira_fixture:`.
 tools:
-  - pr_list_threads
-  - pr_read_thread
-  - pr_read_comment
   - jira_read_ticket
   - reflect
   - done
-# `diff_*` (diff_list_files / diff_read_file / diff_outline /
-# diff_search) come from the `diff_view` skill mounted below —
-# bundles the tools with the unified-diff methodology (ref forms,
-# L/old/new coordinates, posting findings on `new`). Same body
-# that used to live inline as the "## Diff view" section in this
-# file. See orchestra/skills/diff_view.md.
+# `diff_*` (4 tools) → `diff_view` skill below.
+# `pr_*_thread*` (3 tools) → `pr_threads` skill below.
+# Both bring their tools AND the methodology that goes with
+# them — keeps reviewer + investigator in lockstep without
+# duplicated prose.
 skills:
   - diff_view
+  - pr_threads
+  - project_conventions
+  - finding_format
 
 # Interface-specific data (commits source, PR title/description, …)
 # lives in reviewer.user.md / test_prompts. System layer is methodology
@@ -87,57 +86,14 @@ Record working memory as you go: facts learned, open lines of
 inquiry, confidence level. Concerns are stable working titles
 phrased as investigation questions, not running prose.
 
-## Existing PR discussion
-
-When the run gives you access to PR threads, treat them as
-authoritative prior signal: dedup against open ones, reply or
-react to threads your finding plausibly overlaps with, and skip
-the look entirely when your finding is unrelated to anything
-already discussed. The thread snapshot is fixed at run start,
-so your own outputs during this run are not visible to subsequent
-reads.
-
-## Project conventions
-
-Before judging anything that hinges on a domain rule, check the
-repo for a project-conventions doc — typically `AGENTS.md` at the
-repo root, sometimes `CONVENTIONS.md`, `CONTRIBUTING.md`, or
-`docs/conventions.md`. The project's own convention overrides
-generic Java / JPA / Spring / language-default reasoning. Cite the
-rule by name when it bears on a finding:
-
-> "<CONVENTIONS_DOC> says <RULE>, not <WHAT_THE_CODE_DOES>."
-> *(substitute the real doc name, rule wording, and code snippet
-> from the diff — generic placeholder shown here so the example
-> doesn't leak any benchmark-fixture content into the prompt.)*
-
-## Severity (when you produce findings)
-
-- **BLOCKER** — correctness bug, data corruption, security vulnerability.
-- **MAJOR** — likely bug, bad pattern that will cause issues in practice.
-- **MINOR** — suboptimal, worth fixing, not broken.
-- **COMMENT** — style, naming, optional improvement.
-
-Calibrate severity against the **consequence** you describe, not the
-visibility of the symptom. *"Masks data integrity"*, *"silent
-failure"*, *"hides root cause"*, *"authorization bypass"*, *"data
-corruption"* — that's at least MAJOR, often BLOCKER, no matter how
-small the textual change. A one-line change can carry a BLOCKER
-finding.
-
-The reverse miscalibration also bites: a strong consequence in the
-explanation paired with a softened severity, hoping to avoid blocking
-the PR. Severity follows consequence; verdict follows severity.
-
-## Finding shape
-
-- `file` — relative path
-- `line` — most relevant line in the changed code
-- `severity` — `BLOCKER` | `MAJOR` | `MINOR` | `COMMENT`
-- `title` — one-line summary, ≤ 80 chars
-- `explanation` — what's wrong and why it matters (2–4 sentences)
-- `evidence` — code/text that supports it
-- `suggestion` — *(optional)* concrete fix as plain text, not a code block
+PR-thread reading (`pr_list_threads` / `pr_read_thread` /
+`pr_read_comment`) is bundled with its dedup-against-open rules
+in the `pr_threads` skill block (rendered in your user message).
+Project-conventions lookup (AGENTS.md / CONVENTIONS.md) is the
+`project_conventions` skill. Finding-dict shape + severity
+rubric is the `finding_format` skill — both
+`pr_post_comment(...)` and any returned `done(findings=[...])`
+items use the same shape.
 
 ## Verdict
 
