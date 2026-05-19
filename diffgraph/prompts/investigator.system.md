@@ -15,11 +15,11 @@ summary: >
 # able to read it for the acceptance criteria.
 tools:
   - jira_read_ticket
-  # `search_tickets` is the discovery channel for tickets BEYOND
-  # the ones the PR already links to — prior similar fixes, epic
-  # siblings, the assignee's queue. Investigators get it;
+  # `jira_search_tickets` is the discovery channel for tickets
+  # BEYOND the ones the PR already links to — prior similar fixes,
+  # epic siblings, the assignee's queue. Investigators get it;
   # reviewer stays at `jira_read_ticket` (per TODO §5b Phase 2).
-  - search_tickets
+  - jira_search_tickets
   # ── §10 cross-source investigation toolset ───────────────────────
   # `jira_dev_info` is the bridge: it returns the branches, commits,
   # and PRs Jira has linked to a ticket, with each PR pre-formatted

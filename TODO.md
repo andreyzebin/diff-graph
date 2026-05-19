@@ -41,6 +41,37 @@
 - ~~Leak detection~~ — tests/test_prompts_no_fixture_leak.py + benchmark/tests/test_unit_fixture_leak_check.py auto-derive forbidden keyword lists from fixtures; caught 7 real leaks in the May-2026 cleanup
 - ~~Trend chart on /qa/scoring uses equal-spaced ordinal mutations~~ — was temporal, score "waves" got smeared by attempt-count density
 
+### 2026-05 — §5b Jira Phase 2 + §10 cross-source surface
+
+- ~~§5b Phase 1: `jira_read_ticket(ref)` + JiraRegistry + fake-provider~~ — handle/namespace/key refs, distill_ticket + format_ticket, multi-server registry from `jira_servers:`, DIFFGRAPH_JIRA_FIXTURE fake mode, graceful 4-level degradation
+- ~~§5b Phase 2: `jira_dev_info(ref)`~~ — bridge from Jira ticket to its linked branches / commits / PRs in Bitbucket. dev-status API call (`/rest/dev-status/1.0/issue/detail`), fake-fed via extended fixture (`{issue, dev_info}`), pre-renders the `pr_get(repo=..., pr=...)` call for each linked PR so the agent can copy-paste straight into the §10 surface
+- ~~§5b Phase 2: `jira_search_tickets(jql)`~~ — JQL discovery channel for tickets beyond what the PR already links to (prior similar fixes, epic siblings, assignee queue). Fake fixture maps `<jql_pattern> → <raw response>` with `*` catch-all. Investigator-only; reviewer stays at `jira_read_ticket`
+- ~~§10 Phase A: URI standard + RepoRegistry foundation~~ — `bitbucket://<handle>/<project>/<repo>` (1-3 segments), `parse_repo_uri()` parser, `is_default_literal()` helper, ctx_repo_uri_from_pr_url derivation
+- ~~§10 Phase B: soft-introduction across all relevant tools~~ — `diff_*` gain `repo=`, `pr_*_thread*` gain `repo=`+`pr=`, `pr_get`/`pr_list`/`repo_list` registered as new tools. `"default"` literal resolves to ctx; explicit-matching-current URI silently tolerated per §10.6
+- ~~§10 Phase C: cross-source actually works via fake-fed providers~~ — `pr_get(repo=<other>, pr=)` consults FakeBitbucket.cross_source_pr_meta; `pr_list`/`repo_list` consult cross_source_pr_list/repo_list with prefix matching (server/project/leaf URI levels); thread tools consult cross_source_threads; `diff_*(repo=)` materializes a separate VFS at the cross-source (repo_path, base/source) triple. Each missing fixture entry returns a clear "cross-source not available for `<uri>`" message naming the missing key
+- ~~Three-dot ref convention~~ — `materialize_vfs` was already three-dot internally (`git diff -U99999 base...source`, anchored at merge-base — matches Bitbucket PR UI); switched prompt examples + tool descriptions + defaults to `base...source`. `_resolve_ref` accepts both `..` and `...` as aliases for backward compat
+- ~~`answer(text=...)` builtin terminal tool~~ — single-call closer for abstract reasoning fixtures and text-deliverable flows. Registered alongside `done`; special-cased in agent.py's dispatch loop to capture text as `[{"text": text}]` and set `_done_called=True`. Removes the fragile text_answer+done coordination problem (models routinely dropped one of them)
+
+### 2026-05 — Skills (composable bundles of tools + methodology)
+
+- ~~Skill mount mechanism~~ — `skills:` frontmatter (user-message level, since extended to system level too); `mount_skills` merges skill tools into `_fm_meta["tools"]` (additive, deduped), skill `reflect`/`extra_tools` blocks into config per-area, skill body rendered into the user message via `{{ skills }}` placeholder
+- ~~System-level `skills:`~~ — AgentConfig gains `skills: list[str]` field; compiler parses it from system.md frontmatter; Agent.__init__ unions system + user-level skill lists with dedup (system first, user appends). Lets agents declare always-on skills once (e.g. investigator always wants reflect) instead of repeating in every user prompt
+- ~~Fix: SGR tracker wiring missed skill-mounted reflect~~ — `Agent.__init__` was gating SGR creation on `reflect in config.tools` (base only), missing the post-skill-merge effective set. Fixed to check union; ReflectCadencePusher / ReflectCadenceCounter now fire correctly for agents that get reflect via skill. Regression test pinned
+- ~~Skill: `prefer_delegation`~~ — bundles `agent_spawn` + `agent_list` with depth-as-upgrade rationale + `reflect: { with_state: true }`. Mounted on production reviewer
+- ~~Skill: `reflect`~~ — convergence-aid for investigative multi-step problems. Bundles `reflect` tool + per-field contract (`learned` / `questions_remaining` / `resolved_questions` / `confidence` / `next_action`, each defending against a specific failure mode) + cadence default `interval: 5`. Mounted on production investigator
+- ~~Skill: `diff_view`~~ — bundles the four `diff_*` tools with the unified-diff methodology (ref forms, L/old/new coordinates, posting findings on `new`, cross-source reads via `repo=`). Mounted on reviewer + investigator
+- ~~Skill: `pr_threads`~~ — bundles `pr_list_threads` + `pr_read_thread` + `pr_read_comment` with the look-only-when-relevant dedup rules and the snapshot-at-run-start semantic. Mounted on reviewer + investigator + dispatcher (dispatcher keeps its stricter anti-drift discipline inline on top)
+- ~~Skill: `project_conventions`~~ — pure-prose skill (no bundled tools). The AGENTS.md / CONVENTIONS.md lookup pattern, lifted word-for-word from where it was duplicated in reviewer + investigator system prompts. Mounted on reviewer + investigator
+- ~~Skill: `finding_format`~~ — pure-prose. Finding-dict shape (file/line/severity/title/explanation/evidence/suggestion) + severity rubric (BLOCKER/MAJOR/MINOR/COMMENT, "calibrate against consequence not symptom"). Used by `done(findings=[...])` and `pr_post_comment(...)` — same shape everywhere
+
+### 2026-05 — Bench infra
+
+- ~~`assert_invocations` structural check~~ — deterministic complement to the LLM judge for SKILL-tier scenarios. Reads agent's `invocations.json`, validates per-agent `must_call` / `must_not_call` rules; violations override the LLM verdict (`judge_score=0.0`, `verdict="fail"`) and append to `judge_summary` + `stderr_tail`. Catches "did agent ACTUALLY delegate" vs "did agent SAY the right answer" — the structural distinction the semantic grade can't see
+- ~~SKILL-001 / 002 / 003 / 004 isolated bench scenarios~~ — abstract A/B pairs for `prefer_delegation` (boss+worker delegation), `reflect` (progressive search / detective / Cluedo deduction). Each pair tests the skill's structural effect (does mounting it change the call trace?) and semantic effect (does the agent still arrive at the right answer?). SKILL-004 cluedo adapted from arXiv 2603.17169 — proof-of-value for reflect on academically-validated multi-step deductive reasoning. Layout: `benchmarks/scenarios/unit/skills/{delegation,reflect}/`
+- ~~`bench run-unit` PR-free fixtures~~ — `repo:` block is now optional; SKILL-* scenarios with no PR context run without fake-bitbucket setup. Initial bug fixed where `payload` was unbound on the PR-free path → silent UnboundLocalError that masked the judge crash; the runner now initializes `payload = {}` and surfaces stderr_tail even on agent-success path
+- ~~Judge prompt: live template lives in `diffgraph/prompts/judges/raw.user.md`~~ — earlier the bench loaded `benchmarks/prompts/judge.txt`, and edits to `diffgraph/prompts/judges/default.system.md` were silently ineffective. Consolidated: ported the legacy `.txt` template to orchestra Jinja format in `raw.user.md`, dropped the dead `default.*` trio, judge.py renders the same file the agent uses standalone. Plus rubric/FP fixes that prompted the consolidation (clearer `false_positives` semantics, explicit `overall_score` band tying it to coverage)
+- ~~Judge semantic asserts (rationale prose, no description_keywords)~~ — migrated all 14 unit-tier scenarios from keyword AND-of-OR matching to semantic rationale strings (`reply.must_mention` / `forbidden_topics` / `concern_focuses.rationale`). Judge prompt + judge.py updated to grade by intent, not literal word presence. Leak guard test (`test_prompts_no_fixture_leak`) rebuilt to tokenize prose fields instead of reading the dropped arrays
+
 ---
 
 ## 1. Budget Awareness & Cost Control
@@ -2332,6 +2363,14 @@ new fixtures + judge changes.
 
 ## 5b. Jira context — agent reads the ticket and follows links
 
+**Status:** Phase 1 + Phase 2 both shipped (2026-05). `jira_read_ticket`
+(Phase 1), `jira_dev_info` and `jira_search_tickets` (Phase 2) are all
+registered and fakeable via the extended `DIFFGRAPH_JIRA_FIXTURE`
+shape (`{issue, dev_info, searches}`). See the Done section for
+the per-tool breakdown. Phase 3 (broader bench `setup.jira_tickets:`
+infra) still pending — currently only one test-prompt variant
+exercises ticket-backed fixtures.
+
 **Why.** Today the reviewer only sees the PR description. A real
 reviewer reads the Jira ticket the PR claims to fix, follows links
 ("relates to", "blocks", "duplicates", "child of") to peer tickets,
@@ -2486,7 +2525,7 @@ tools cap at 30k chars). `distill_ticket` (already implemented):
   the agent moves on. No need to pre-filter the `jira_tickets` list.
 
 **Phase 2 — investigators, deeper:**
-- `search_tickets(jql)` — JQL search ("all open tickets with label
+- `jira_search_tickets(jql)` — JQL search ("all open tickets with label
   X"). Returns key + summary + status refs.
 - `jira_dev_info(ref)` — commits / branches / PRs Jira links to the
   issue (dev-status API `/rest/dev-status/1.0/issue/detail`;
@@ -2587,7 +2626,7 @@ A new unit-tier reviewer scenario, **A/B against REV-U-001**
   `disable-jira.yaml` prod toggle → update this section's status.
   (`diffgraph/providers/jira.py` + its fixture + tests are already
   built — the registry wraps them.)
-- **Phase 2** — `search_tickets(jql)` + `jira_dev_info(ref)` for
+- **Phase 2** — `jira_search_tickets(jql)` + `jira_dev_info(ref)` for
   investigators. `jira_dev_info` is the bridge into §10 (cross-source
   investigation toolset): it emits PR-refs that §10's `pr_get`
   consumes. See §10.8 Phase A.
@@ -3615,11 +3654,36 @@ medium (2-3 days), 9-D each medium, 9-E small per tool.
 
 ## 10. Cross-source investigation toolset — investigator over the project graph
 
-**Status:** design only (originally recorded 2026-05-14; Phase B
-refined 2026-05-15 — see §10.2/§10.4/§10.8 for URI standard, `"default"`
-literal, soft-introduction, full-API discovery). No code. Supersedes
-nothing — it's the *tool-traversal* counterpart to §9's
-*file-materialisation* approach; the two must be reconciled (see §10.7).
+**Status:** Phase A/B/C all shipped (2026-05-18 → 2026-05-19;
+see the Done section above for the per-tool breakdown). What's
+LIVE today:
+  - URI standard `bitbucket://<handle>/<project>/<repo>` + parser.
+  - `pr_get` / `pr_list` / `repo_list` registered.
+  - `repo=`/`pr=` params on `diff_*` / `pr_*_thread*`.
+  - Phase C cross-source actually works against fake-fed
+    providers (`cross_source_prs` / `cross_source_pr_list` /
+    `cross_source_repo_list` / `cross_source_threads` /
+    `cross_source_repos` payloads on FakeBitbucket).
+  - `jira_dev_info` → `pr_get(repo=..., pr=...)` bridge end-to-
+    end on fake data.
+
+What's still deferred:
+  - **Real BitbucketRegistry** (production Phase C) — the fake-
+    fed pattern proves the surface; a real registry mirroring
+    JiraRegistry's shape (handle → server config from
+    `bitbucket_servers:`) needs to land before cross-source
+    works on a non-fixture deployment.
+  - **Cross-PR `pr_post_comment`** — surface ships with `repo=`/
+    `pr=` for shape symmetry but cross-PR writes stay Phase B-
+    rejected. Policy decision deferred per §10.6 tension #2.
+  - **§10.7 reconciliation with §9** (file-materialisation vs
+    tool-traversal) — both can coexist (sibling mounts AND
+    `diff_*(repo=)`), but the canonical answer for "PR as a
+    document vs as a tool" is still open.
+
+The original design notes follow — kept for historical context
+on the choices that shaped the implementation. Tool-traversal
+counterpart to §9's file-materialisation approach.
 
 ### 10.1 The frame — a project knowledge graph
 
@@ -3630,13 +3694,13 @@ one type of edge", agent-driven, budget-bounded, strictly read-only:
 | Edge | Tool | State |
 |---|---|---|
 | ticket → linked tickets | `jira_read_ticket` (links inline) | done (§5b Phase 1) |
-| ticket → PRs/branches/commits | `jira_dev_info(ref)` | §5b Phase 2 |
-| ticket discovery | `jira_search_tickets(jql)` | §5b Phase 2 |
-| PR → its coordinates (meta + base/source/state/author) | `pr_get(repo, pr)` | **new** |
-| repo → its PRs (discovery, Bitbucket API) | `pr_list(repo, …)` | **new** |
-| server/project/repo → repos (discovery, Bitbucket API) | `repo_list(repo, …)` | **new** |
-| PR/repo → code | `diff_*` gains `repo=` param | **new (param)** |
-| PR → discussion | `pr_list_threads/pr_read_thread/pr_read_comment/pr_post_comment` gain `repo=`+`pr=` | **new (param)** |
+| ticket → PRs/branches/commits | `jira_dev_info(ref)` | **done** (§5b Phase 2) |
+| ticket discovery | `jira_search_tickets(jql)` | **done** (§5b Phase 2) |
+| PR → its coordinates (meta + base/source/state/author) | `pr_get(repo, pr)` | **done** (Phase C entry via fake) |
+| repo → its PRs (discovery, Bitbucket API) | `pr_list(repo, …)` | **done** (Phase C entry via fake) |
+| server/project/repo → repos (discovery, Bitbucket API) | `repo_list(repo, …)` | **done** (Phase C entry via fake) |
+| PR/repo → code | `diff_*` gains `repo=` param | **done** (Phase C — VFS materialization against cross-source repo) |
+| PR → discussion | `pr_list_threads/pr_read_thread/pr_read_comment/pr_post_comment` gain `repo=`+`pr=` | **done** for the three READ tools (Phase C via fake); `pr_post_comment` cross-PR write stays Phase B-rejected (policy) |
 | repo → repo (project guidance) | AGENTS.md `## Related repositories` — regular file, read via `diff_read_file` | §9.2, informational |
 
 This is **§5b (Jira) and §9 (workspace) converging** into one

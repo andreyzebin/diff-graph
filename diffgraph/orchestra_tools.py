@@ -1337,7 +1337,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             )
 
     @registry.register(
-        name="search_tickets",
+        name="jira_search_tickets",
         description=(
             "Run a JQL search against the issue tracker — the "
             "discovery channel for finding tickets BEYOND the ones a "
@@ -1398,7 +1398,7 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
             ))
         except Exception as exc:
             return (
-                f"(search_tickets failed for jql={jql!r}: "
+                f"(jira_search_tickets failed for jql={jql!r}: "
                 f"{type(exc).__name__}: {exc} — proceed without the "
                 f"search results)"
             )
