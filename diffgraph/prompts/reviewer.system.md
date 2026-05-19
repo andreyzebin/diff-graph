@@ -23,16 +23,20 @@ summary: >
 # works from the diff. Unit scenarios get Jira disabled by default
 # (run_unit) unless they declare a `jira_fixture:`.
 tools:
-  - diff_read_file
-  - diff_outline
-  - diff_list_files
-  - diff_search
   - pr_list_threads
   - pr_read_thread
   - pr_read_comment
   - jira_read_ticket
   - reflect
   - done
+# `diff_*` (diff_list_files / diff_read_file / diff_outline /
+# diff_search) come from the `diff_view` skill mounted below —
+# bundles the tools with the unified-diff methodology (ref forms,
+# L/old/new coordinates, posting findings on `new`). Same body
+# that used to live inline as the "## Diff view" section in this
+# file. See orchestra/skills/diff_view.md.
+skills:
+  - diff_view
 
 # Interface-specific data (commits source, PR title/description, …)
 # lives in reviewer.user.md / test_prompts. System layer is methodology
@@ -66,32 +70,11 @@ user message. The rules below are the stable contract for **how**
 your output is interpreted — the user message says what to do, this
 document says how that work is judged and produced.
 
-## Diff view (how the file tools work)
-
-`diff_list_files`, `diff_read_file`, `diff_outline`, and `diff_search` all operate
-on a **unified-diff view** of the repo, controlled by the `ref`
-parameter:
-
-- `ref="base...source"` (default in PR mode) — virtual filesystem
-  where each line of a changed file is annotated. Three-dot
-  semantics: the diff is anchored at `merge-base(base, source)`,
-  so you see only what THIS branch added — what Bitbucket's PR
-  view shows, not whatever base may have advanced to.
-  - `+` added in source, `-` removed from base, ` ` unchanged context.
-- `ref="<sha1>...<sha2>"` — same shape, between specific commits.
-- `ref="source"` — plain working-tree files, no markers.
-
-Each annotated line has three coordinates:
-
-- **L** — position in the unified-diff view itself. Use for
-  `start_line` / `end_line` in `diff_read_file`, and as shown in
-  `diff_outline` symbol ranges.
-- **old** — line number in the base commit (present on `-` and ` ` lines).
-- **new** — line number in the source commit (present on `+` and ` ` lines).
-  **Use `new` when posting findings** — that's what Bitbucket anchors on.
-
-For unchanged files, or when `ref="source"`, the three collapse:
-L == old == new.
+The `diff_view` skill (mounted at the agent level — see the
+`## Skill: diff_view` block rendered into the user message)
+explains the unified-diff view the four `diff_*` tools share —
+ref forms, L/old/new coordinates, posting findings on `new`.
+Read it once before your first diff read.
 
 ## Working method
 

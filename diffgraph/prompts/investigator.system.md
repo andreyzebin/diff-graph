@@ -14,10 +14,6 @@ summary: >
 # An investigator handed a focus that references a ticket should be
 # able to read it for the acceptance criteria.
 tools:
-  - diff_list_files
-  - diff_read_file
-  - diff_outline
-  - diff_search
   - pr_list_threads
   - pr_read_thread
   - pr_read_comment
@@ -31,25 +27,26 @@ tools:
   # `jira_dev_info` is the bridge: it returns the branches, commits,
   # and PRs Jira has linked to a ticket, with each PR pre-formatted
   # as a `pr_get(repo=..., pr=...)` call. `pr_get` / `pr_list` /
-  # `repo_list` round out the graph navigation. Today (Phase B) all
-  # three Bitbucket-side tools return current-PR data only; non-
-  # default URIs come back with a "Phase C" notice. The surface
-  # ships now so the investigator can use the Jira → PR bridge
-  # immediately and adopt cross-repo reads transparently when
-  # Phase C lands.
+  # `repo_list` round out the graph navigation. The four `diff_*`
+  # tools live on the `diff_view` skill mounted below — same
+  # methodology bundles with them, no duplication across reviewer +
+  # investigator system prompts.
   - jira_dev_info
   - pr_get
   - pr_list
   - repo_list
   - done
-# `reflect` comes from the `reflect` skill mounted at system level
-# below (orchestra/skills/reflect.md). The skill bundles the tool,
-# the convergence-aid contract, and the cadence default (interval:
-# 5). Mounted at the agent level — every invocation, every user
-# prompt, gets reflect. Subclassing this prompt without reflect
-# would need to override `skills: []` explicitly.
 skills:
+  # `reflect`: convergence-aid for multi-step investigations. Bundles
+  # the reflect tool + per-field contract + cadence default
+  # (interval: 5). See orchestra/skills/reflect.md.
   - reflect
+  # `diff_view`: brings the four `diff_*` tools + the unified-diff
+  # view methodology (ref forms, L/old/new coordinates, posting
+  # findings on `new`). Same body that used to live inline as the
+  # "## Diff view" section in this file — now de-duplicated across
+  # reviewer + investigator. See orchestra/skills/diff_view.md.
+  - diff_view
 
 # Interface-specific data (commits source, focus from spawn arg) lives
 # in investigator.user.md. System layer is methodology only.
@@ -82,36 +79,19 @@ investigate a focus, identify hypotheses without acting, etc. Do
 exactly what the user message asks; the rules below are the stable
 contract for **how** your output is interpreted regardless of the task.
 
-## Diff view (how the file tools work)
-
-`diff_list_files`, `diff_read_file`, `diff_outline`, and `diff_search` all operate
-on a **unified-diff view** of the repo, controlled by the `ref`
-parameter:
-
-- `ref="base...source"` (default in PR mode) — virtual filesystem
-  where each line of a changed file is annotated. Three-dot
-  semantics: the diff is anchored at `merge-base(base, source)`,
-  so you see only what THIS branch added — what Bitbucket's PR
-  view shows, not whatever base may have advanced to.
-  - `+` added in source, `-` removed from base, ` ` unchanged context.
-- `ref="<sha1>...<sha2>"` — same shape, between specific commits.
-- `ref="source"` — plain working-tree files, no markers.
-
-Each annotated line has three coordinates:
-
-- **L** — position in the unified-diff view itself. Use for
-  `start_line` / `end_line` in `diff_read_file`, and as shown in
-  `diff_outline` symbol ranges.
-- **old** — line number in the base commit (present on `-` and ` ` lines).
-- **new** — line number in the source commit (present on `+` and ` ` lines).
-  **Use `new` when reporting findings** — that's what Bitbucket anchors on.
-
-For unchanged files, or when `ref="source"`, the three collapse:
-L == old == new.
+The `diff_view` skill (mounted at the agent level — see the
+`## Skill: diff_view` block rendered into the user message)
+explains the unified-diff view that `diff_list_files`,
+`diff_read_file`, `diff_outline`, and `diff_search` all share —
+the `ref=` forms, the L/old/new line-number coordinates, and
+which one to anchor findings on. Read it once before your first
+diff read.
 
 ## Tools
 
-**For inspecting code (all operate on the diff view above):**
+**For inspecting code (all operate on the unified-diff view —
+see the diff_view skill block in your user message for the `ref`
+forms and L/old/new coordinate model):**
 
 - `diff_list_files(pattern, repo="default")` — list paths visible in the diff view.
 - `diff_read_file(path, changes_only=true, before=3, after=3, repo="default")` —
