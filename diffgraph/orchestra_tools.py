@@ -970,14 +970,39 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         },
     )
     def pr_list_tool(repo: str = "default") -> list:
-        err = _phase_b_gate(repo=repo)
-        if err:
-            return [{"error": err}]
-        uri = _ctx_repo_uri()
-        pr = _ctx_pr_id()
-        if not uri or not pr:
-            return []
-        return [{"uri": str(uri), "pr": pr}]
+        from .repo_uri import is_default_literal, parse_repo_uri
+        ctx_uri = _ctx_repo_uri()
+        ctx_pr = _ctx_pr_id()
+        # Default path — current PR only (same as before).
+        if is_default_literal(repo):
+            if not ctx_uri or not ctx_pr:
+                return []
+            return [{"uri": str(ctx_uri), "pr": ctx_pr}]
+        # Non-default — parse the URI and consult the fake's cross-
+        # source map. Empty result is rendered as a clear Phase C
+        # message so the agent stops retrying.
+        try:
+            parsed = parse_repo_uri(repo)
+        except ValueError as exc:
+            return [{"error": f"(invalid repo URI: {exc})"}]
+        # Same-as-current → just return ctx (tolerated per §10.6).
+        if ctx_uri and str(parsed) == str(ctx_uri):
+            return [{"uri": str(ctx_uri), "pr": ctx_pr}] if ctx_pr else []
+        try:
+            from . import bitbucket_fake as _fb
+            entries = _fb._instance().cross_source_pr_list(str(parsed))
+        except Exception:
+            entries = []
+        if entries:
+            return entries
+        return [{
+            "error": (
+                f"(cross-source pr_list not available for {parsed} — "
+                "Phase C scenarios need entries under "
+                "`cross_source_pr_list` in the fake fixture, or a "
+                "real BitbucketRegistry must be configured)"
+            )
+        }]
 
     @registry.register(
         name="repo_list",
@@ -997,13 +1022,34 @@ def register_diffgraph_tools(registry: ToolRegistry, ctx: "_Ctx") -> None:
         },
     )
     def repo_list_tool(repo: str = "default") -> list:
-        err = _phase_b_gate(repo=repo)
-        if err:
-            return [{"error": err}]
-        uri = _ctx_repo_uri()
-        if not uri:
-            return []
-        return [{"uri": str(uri)}]
+        from .repo_uri import is_default_literal, parse_repo_uri
+        ctx_uri = _ctx_repo_uri()
+        # Default path — current repo only (same as before).
+        if is_default_literal(repo):
+            if not ctx_uri:
+                return []
+            return [{"uri": str(ctx_uri)}]
+        try:
+            parsed = parse_repo_uri(repo)
+        except ValueError as exc:
+            return [{"error": f"(invalid repo URI: {exc})"}]
+        if ctx_uri and str(parsed) == str(ctx_uri):
+            return [{"uri": str(ctx_uri)}]
+        try:
+            from . import bitbucket_fake as _fb
+            entries = _fb._instance().cross_source_repo_list(str(parsed))
+        except Exception:
+            entries = []
+        if entries:
+            return entries
+        return [{
+            "error": (
+                f"(cross-source repo_list not available for {parsed} — "
+                "Phase C scenarios need entries under "
+                "`cross_source_repo_list` in the fake fixture, or a "
+                "real BitbucketRegistry must be configured)"
+            )
+        }]
 
     # One JiraRegistry per tool-registration — loads jira_servers:
     # from config.local.yaml once; per-handle JiraProvider instances

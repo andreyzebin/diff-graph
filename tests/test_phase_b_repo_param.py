@@ -215,7 +215,10 @@ class TestNewTools:
         assert isinstance(out, list)
         assert len(out) == 1
         assert "error" in out[0]
-        assert "Phase B" in out[0]["error"]
+        # Phase C entry-point now consults FakeBitbucket — without
+        # a fixture entry it returns the not-configured message.
+        assert "cross-source" in out[0]["error"]
+        assert "shared-lib" in out[0]["error"]
 
     def test_repo_list_default_returns_current_repo(self, ctx_and_registry):
         _, reg = ctx_and_registry
@@ -224,11 +227,11 @@ class TestNewTools:
         assert len(out) == 1
         assert out[0]["uri"] == REAL_PR_URI
 
-    def test_repo_list_non_default_rejected(self, ctx_and_registry):
+    def test_repo_list_non_default_returns_phase_c_msg(self, ctx_and_registry):
         _, reg = ctx_and_registry
         out = reg.dispatch(
             "repo_list", {"repo": "bitbucket://internal/SOME/thing"})
-        assert "Phase B" in out[0]["error"]
+        assert "cross-source" in out[0]["error"]
 
 
 # ── Default-omission stays unchanged ───────────────────────────────
@@ -335,3 +338,80 @@ class TestPrGetCrossSourceFake:
         })
         assert "error" in out
         assert "invalid repo URI" in out["error"]
+
+
+# ── §10 Phase C: pr_list / repo_list cross-source fakes ───────────
+
+
+class TestPrListRepoListCrossSourceFake:
+    """`pr_list(repo=<uri>)` and `repo_list(repo=<uri>)` consult
+    FakeBitbucket's cross-source maps with prefix matching: a
+    project-level URI sees all leaf entries under it; a server-
+    level URI sees everything. Production Phase C swaps in a real
+    BitbucketRegistry behind the same method shape."""
+
+    def _install_fake(self, monkeypatch, pr_list_map=None, repo_list_map=None):
+        from diffgraph import bitbucket_fake as fb
+        fake = fb.FakeBitbucket(payload={
+            "pr_url": REAL_PR_URL,
+            "repo_path": "/tmp/_x", "base_sha": "a", "source_sha": "b",
+            "metadata": {}, "comments": [], "self_user": "bot",
+            "cross_source_pr_list": pr_list_map or {},
+            "cross_source_repo_list": repo_list_map or {},
+        })
+        fb.install(fake)
+        monkeypatch.setattr("diffgraph.bitbucket_fake._instance",
+                            lambda: fake)
+        return fake
+
+    def test_pr_list_leaf_exact_hit(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake(monkeypatch, pr_list_map={
+            "bitbucket://default/SHARED/lib": [
+                {"uri": "bitbucket://default/SHARED/lib", "pr": "42",
+                 "title": "Bump lib", "state": "OPEN"},
+                {"uri": "bitbucket://default/SHARED/lib", "pr": "43",
+                 "title": "Refactor", "state": "MERGED"},
+            ],
+        })
+        out = reg.dispatch("pr_list", {"repo": "bitbucket://default/SHARED/lib"})
+        assert len(out) == 2
+        assert out[0]["pr"] == "42"
+        assert out[1]["title"] == "Refactor"
+
+    def test_pr_list_project_level_aggregates(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake(monkeypatch, pr_list_map={
+            "bitbucket://default/SHARED/lib":   [{"pr": "1"}],
+            "bitbucket://default/SHARED/utils": [{"pr": "2"}, {"pr": "3"}],
+            "bitbucket://default/OTHER/thing":  [{"pr": "99"}],  # OUTSIDE the project
+        })
+        out = reg.dispatch("pr_list", {"repo": "bitbucket://default/SHARED"})
+        prs = sorted(d.get("pr", "") for d in out if "pr" in d)
+        assert prs == ["1", "2", "3"]   # OTHER/thing's "99" excluded
+
+    def test_pr_list_missing_returns_phase_c_msg(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake(monkeypatch, pr_list_map={})
+        out = reg.dispatch("pr_list", {"repo": "bitbucket://default/SHARED/lib"})
+        assert "error" in out[0]
+        assert "cross-source" in out[0]["error"]
+
+    def test_repo_list_server_level_aggregates(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake(monkeypatch, repo_list_map={
+            "bitbucket://default/A/r1": [
+                {"uri": "bitbucket://default/A/r1", "name": "r1"}],
+            "bitbucket://default/B/r2": [
+                {"uri": "bitbucket://default/B/r2", "name": "r2"}],
+        })
+        out = reg.dispatch("repo_list", {"repo": "bitbucket://default"})
+        names = sorted(d.get("name", "") for d in out if "name" in d)
+        assert names == ["r1", "r2"]
+
+    def test_invalid_uri_returns_parse_error(self, monkeypatch, ctx_and_registry):
+        _, reg = ctx_and_registry
+        self._install_fake(monkeypatch)
+        out = reg.dispatch("pr_list", {"repo": "not-a-uri"})
+        assert "error" in out[0]
+        assert "invalid repo URI" in out[0]["error"]

@@ -65,6 +65,35 @@ def parse_pr_url(pr_url: str) -> tuple[str, str, str, int]:
 # ── FakeBitbucket — per-instance state, no module globals ────────────────
 
 
+def _flatten_cross_source_lookup(
+    mapping: dict, query_uri: str,
+) -> list[dict]:
+    """Shared prefix-match for `cross_source_pr_list` /
+    `cross_source_repo_list`. URIs are slash-delimited paths under
+    `bitbucket://`; a "project-level" query (`bitbucket://h/p`)
+    matches every leaf entry whose key starts with `bitbucket://h/p/`.
+
+    `query_uri="default"` (the literal) is not handled here — the
+    caller resolves that to the current PR's URI before reaching
+    this helper. An empty query returns []."""
+    if not query_uri or not isinstance(mapping, dict):
+        return []
+    out: list[dict] = []
+    # Exact match first (leaf URI hit).
+    exact = mapping.get(query_uri)
+    if isinstance(exact, list):
+        out.extend(e for e in exact if isinstance(e, dict))
+    # Prefix match — pick up everything one level deeper. Skip the
+    # exact-key entry (already added) to avoid duplicates.
+    prefix = query_uri.rstrip("/") + "/"
+    for key, val in mapping.items():
+        if key == query_uri or not isinstance(val, list):
+            continue
+        if key.startswith(prefix):
+            out.extend(e for e in val if isinstance(e, dict))
+    return out
+
+
 _EMPTY_PAYLOAD: dict[str, Any] = {
     "pr_url": "", "repo_path": "", "base_sha": "", "source_sha": "",
     "metadata": {}, "comments": [], "self_user": "",
@@ -77,6 +106,19 @@ _EMPTY_PAYLOAD: dict[str, Any] = {
     # additional fields surface through unchanged. Empty mapping
     # (default) keeps Phase B behaviour for cross-source calls.
     "cross_source_prs": {},
+    # `pr_list(repo=<uri>)` consults this when the URI isn't the
+    # current PR's. Keys are URIs at any level (server / project /
+    # leaf) — the tool matches by prefix:
+    #   - leaf URI exact match → that repo's PR list.
+    #   - project URI → union of all entries whose key starts with
+    #     `<project_uri>/`.
+    #   - server URI → union of all entries whose key starts with
+    #     `<server_uri>/`.
+    # Values: lists of {uri, pr, title, state, author, ...}.
+    "cross_source_pr_list": {},
+    # `repo_list(repo=<uri>)` consults this. Same prefix-matching
+    # rules. Values: lists of {uri, name, ...}.
+    "cross_source_repo_list": {},
 }
 
 
@@ -215,6 +257,27 @@ class FakeBitbucket:
         if not isinstance(entry, dict):
             return None
         return entry
+
+    def cross_source_pr_list(self, query_uri: str) -> list[dict]:
+        """Look up fake-fed PR enumeration for any URI level (server
+        / project / leaf). Returns a flat list of dicts the
+        `pr_list` tool returns to the agent. Prefix-matching:
+          - leaf URI → exact-match entry's list.
+          - project URI → union of entries keyed under
+            `<project_uri>/...`.
+          - server URI → union of entries keyed under
+            `<server_uri>/...`.
+        Missing/empty → empty list (the fake says "no data" so
+        the tool can surface a clear "not configured" message)."""
+        m = self.payload.get("cross_source_pr_list") or {}
+        return _flatten_cross_source_lookup(m, query_uri)
+
+    def cross_source_repo_list(self, query_uri: str) -> list[dict]:
+        """Same shape as `cross_source_pr_list`, but for repos:
+        used by `repo_list` to enumerate repos at the given URI
+        level. Each entry is `{uri, name, ...}`."""
+        m = self.payload.get("cross_source_repo_list") or {}
+        return _flatten_cross_source_lookup(m, query_uri)
 
     # ── write-side ───────────────────────────────────────────────────────
 
