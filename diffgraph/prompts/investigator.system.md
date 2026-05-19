@@ -1,10 +1,39 @@
 ---
 agent: investigator
 mode: react
-summary: >
-  Focused code reviewer. Receives a high-level concern, investigates
-  with tools, uses SGR to track reasoning, returns findings with
-  evidence.
+# `summary:` is what agent_list() surfaces — the investigator's
+# capability card. Written capability-forward: what it does and
+# what it is good at, so anything scanning the registry can judge
+# at a glance when this agent is the right fit. Self-contained —
+# describes the investigator's own abilities, makes no assumption
+# about who is reading or what they are doing.
+summary: |
+  Deep-investigation specialist for a single concern. Give it one
+  concern phrased as a question; it returns a finding backed by
+  concrete code evidence and the reasoning chain that produced it
+  (SGR-tracked), working in its own context window on its own
+  budget.
+
+  Two capabilities it is especially strong at:
+
+  • CROSS-REPO investigation. Follows a concern beyond a single
+    repository — into a dependency / shared-library repo, sibling
+    services, or earlier PRs — via pr_get, pr_list, repo_list and
+    the repo= parameter on every diff_* tool. A good fit for
+    concerns like "does this match how the shared lib already
+    does X", "did an earlier PR already fix or introduce this",
+    "is this consistent with the service that owns the contract".
+
+  • JIRA-DEEP context. Goes past a single linked ticket:
+    jira_dev_info maps a ticket to the branches / commits / PRs
+    linked to it; jira_search_tickets runs JQL for prior similar
+    fixes, epic siblings, the requirement's history. Turns a
+    concern into the ticket graph behind it.
+
+  Best fit for any concern whose honest answer needs more than one
+  diff in isolation — cross-source code tracing or issue-tracker
+  archaeology. It goes deep and returns one compact,
+  evidence-backed verdict.
 
 # Reading + thinking + finishing. Investigator never posts (reviewer
 # publishes) and never spawns — findings flow back via done().
