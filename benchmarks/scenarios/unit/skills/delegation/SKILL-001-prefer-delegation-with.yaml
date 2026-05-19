@@ -11,23 +11,34 @@ bench_cmd: >
 
 # Abstract delegation test — half of an A/B pair with SKILL-001-without.
 #
-# Boss receives a fan-out compute task (5 integer inputs, each
-# needs do_task to produce its result, then merged). Without the
-# skill the boss can reasonably do them sequentially itself; WITH
-# the prefer_delegation skill mounted, the skill body's "Multiple
-# agent_spawn calls in one step fan out in parallel" guidance is
-# the obvious fit and the boss should spawn one worker per input.
-# The do_task tool is deterministic (doubles the input) so the
-# judge can verify each output.
+# The task is shaped to match MULTIPLE rational delegation criteria
+# from the prefer_delegation skill body, so a model that reads
+# the body and applies its trade-off logic should clearly route
+# to fan-out:
+#
+#   • 10 independent inputs        →  reason #1: parallel independent
+#                                      subtasks (the fan-out form)
+#   • each input needs a tool call →  doesn't fit "1-2 deterministic
+#                                      calls" direct-handling exception
+#   • 10× do_task results inline   →  reason #2: context-window pressure
+#   • workers spend their own steps →  reason #6: budget separation
+#   • per-input audit via worker
+#     done() summaries             →  reason #7: auditability
+#
+# Without the skill the boss can still complete the task by
+# running do_task ten times in a row — the budget fits, the math
+# is the same. The A/B difference is purely about whether the
+# skill body changes the model's route.
 #
 # Pass criteria — assert via judge:
-#   - intended_text == "42, 14, 200, 10, 66" (doubled inputs, in order).
+#   - intended_text == "42, 14, 200, 10, 66, 32, 98, 16, 120, 22"
+#     (doubled inputs, in order).
 #   - boss agent invocations contain agent_spawn (delegated).
 #   - boss invocations do NOT contain do_task (workers called it).
 #   - worker invocations contain do_task.
 #
 # Pair: SKILL-001-prefer-delegation-without.yaml — same task,
-# no skill. Expected: boss runs 5 sequential do_task calls.
+# no skill. Expected: boss runs 10 sequential do_task calls.
 
 # No `repo:` block — PR-free scenario. bench/cli skip fake_bitbucket
 # setup since boss has no diff_* or PR-aware tools.
@@ -37,7 +48,7 @@ prompt_resource: diffgraph:diffgraph/test_prompts/skills/delegation
 user_message_from: diffgraph:diffgraph/test_prompts/skills/delegation/boss-with-skill.user.md
 
 agent_data:
-  task_input: "21, 7, 100, 5, 33"
+  task_input: "21, 7, 100, 5, 33, 16, 49, 8, 60, 11"
 
 expected_output:
   assert_via: [intended_text]
@@ -45,8 +56,10 @@ expected_output:
     - id: doubled-answer
       rationale: |
         The boss's text_answer (intended_text) must contain the
-        five doubled values "42, 14, 200, 10, 66" in the SAME
-        ORDER as the inputs "21, 7, 100, 5, 33". With the
+        ten doubled values
+        "42, 14, 200, 10, 66, 32, 98, 16, 120, 22" in the SAME
+        ORDER as the inputs
+        "21, 7, 100, 5, 33, 16, 49, 8, 60, 11". With the
         prefer_delegation skill mounted, the boss should fan out
         across workers (one agent_spawn per input — possibly all
         in one step) and synthesize their results into the final

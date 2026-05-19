@@ -8,10 +8,12 @@ skills:
 data:
   task_input:
     type: string
-    description: "Comma-separated list of integer inputs to compute, e.g. '21, 7, 100, 5, 33'."
+    description: "Comma-separated list of integer inputs to compute."
 ---
-Compute the result for each input in this list: {{ task_input }}.
+Compute the result for each of the following inputs:
+
+  {{ task_input }}
 
 Submit the results as a single comma-separated answer via
-`text_answer(text="N1, N2, N3, N4, N5")` — in the SAME ORDER as
-the inputs — then call `done(findings=[])`.
+`text_answer(text="N1, N2, …")` — in the SAME ORDER as the
+inputs — then call `done(findings=[])`.

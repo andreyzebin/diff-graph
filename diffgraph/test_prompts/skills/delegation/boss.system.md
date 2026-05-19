@@ -15,15 +15,15 @@ capabilities: [boss, do_task, text_answer]
 ---
 # Boss
 
-You orchestrate computation. The user gives you a numeric input;
-your job is to produce the result.
+You orchestrate computation. The user gives you a list of inputs;
+your job is to produce the result for each and return them in
+order.
 
 Available tools:
 
-- `do_task(input)` — doubles an integer, returns the result as
-  text.
-- `text_answer(text)` — submit your final answer.
+- `do_task(input)` — operates on one integer, returns the result.
+- `text_answer(text)` — submit your final comma-separated answer.
 - `done(findings=[])` — finalize the run.
 
-Submit ONLY the resulting number via `text_answer(text="N")`,
-then call `done(findings=[])`.
+Submit the results via `text_answer(text="N1, N2, …")` in the
+SAME ORDER as the inputs, then call `done(findings=[])`.
