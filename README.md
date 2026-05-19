@@ -498,10 +498,10 @@ Two switches — one for one-off runs, one for the webhook router.
 ```bash
 python cli.py run --pr-url ... --record-fixture ~/eden/diffgraph-recordings
 # Or via env:
-DIFFGRAPH_RECORD_DIR=~/eden/diffgraph-recordings python cli.py run --pr-url ...
+DIFFGRAPH_RECORDINGS_DIR=~/eden/diffgraph-recordings python cli.py run --pr-url ...
 ```
 
-**Webhook router** — per-agent opt-in in `webhook.toml`. **Do not add `--record-fixture` to the `command =` template** — the router transparently forwards `DIFFGRAPH_RECORD_DIR` + `DIFFGRAPH_RECORD_SCOPE` on the subprocess env, and `cli.py` picks them up automatically. Just declare the recording block:
+**Webhook router** — per-agent opt-in in `webhook.toml`. **Do not add `--record-fixture` to the `command =` template** — the router transparently forwards `DIFFGRAPH_RECORDINGS_DIR` + `DIFFGRAPH_RECORDINGS_SCOPE` on the subprocess env, and `cli.py` picks them up automatically. Just declare the recording block:
 
 ```toml
 [agents.dg]

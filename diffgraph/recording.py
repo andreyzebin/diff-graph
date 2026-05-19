@@ -629,4 +629,4 @@ class RecordingWriter:
 def is_enabled() -> Optional[str]:
     """Return the configured recording root if the feature is on,
     or None. Env-driven so cli.py + webhook both share one switch."""
-    return os.environ.get("DIFFGRAPH_RECORD_DIR") or None
+    return os.environ.get("DIFFGRAPH_RECORDINGS_DIR") or None

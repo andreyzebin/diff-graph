@@ -94,8 +94,8 @@ async def _trigger_cli(agent: AgentConfig, pr: PRMeta, cmd: CommandRequest) -> s
     sub_env = None
     if agent.recording_dir:
         sub_env = {**os.environ}
-        sub_env["DIFFGRAPH_RECORD_DIR"] = os.path.expanduser(agent.recording_dir)
-        sub_env["DIFFGRAPH_RECORD_SCOPE"] = agent.recording_scope or "range"
+        sub_env["DIFFGRAPH_RECORDINGS_DIR"] = os.path.expanduser(agent.recording_dir)
+        sub_env["DIFFGRAPH_RECORDINGS_SCOPE"] = agent.recording_scope or "range"
 
     proc = await asyncio.create_subprocess_shell(
         command,

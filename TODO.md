@@ -5319,7 +5319,7 @@ running on the webhook router, the corpus accumulates passively.
 **Acceptance criteria:**
 
 - `cli.py run` gains `--record-fixture <dir>` flag (and env
-  `DIFFGRAPH_RECORD_DIR`).
+  `DIFFGRAPH_RECORDINGS_DIR`).
 - When set, the run writes:
   - `pr.json` on first invocation per PR (idempotent — re-runs
     don't overwrite if PR already has the file).

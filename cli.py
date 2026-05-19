@@ -170,11 +170,11 @@ def _run_with_dispatcher(
     bot_user = review_cfg.get("bot_user", "")
 
     # ── Recording (TODO §19) — best-effort capture of this invocation ─────
-    # Disabled when DIFFGRAPH_RECORD_DIR is unset or pr_url is empty
+    # Disabled when DIFFGRAPH_RECORDINGS_DIR is unset or pr_url is empty
     # (no PR identity to anchor recording on). Failures inside the
     # writer are swallowed; the agent run is unaffected.
     _recording = None  # type: Optional[Any]
-    _record_root = os.environ.get("DIFFGRAPH_RECORD_DIR", "").strip()
+    _record_root = os.environ.get("DIFFGRAPH_RECORDINGS_DIR", "").strip()
     if _record_root and pr_url:
         try:
             from diffgraph.recording import RecordingWriter as _RecWriter
@@ -559,7 +559,7 @@ def _run_with_dispatcher(
                         base_sha=ctx.base_ref,
                         source_sha=ctx.source_ref,
                         rev_id=rev_id,
-                        scope=os.environ.get("DIFFGRAPH_RECORD_SCOPE", "range"),
+                        scope=os.environ.get("DIFFGRAPH_RECORDINGS_SCOPE", "range"),
                     )
             except Exception as exc:  # pragma: no cover — defensive
                 console.print(f"[yellow]  recording: bundle update failed: {exc}[/yellow]")
@@ -764,7 +764,7 @@ def run(
     invocations_out: Optional[str] = typer.Option(None, "--invocations-out",   help="Write a JSON list of every tool invocation made during the run (tool name, args, mocked, mock_when, step, agent) to this path on exit. Used by the bench judge for Mockito-style verify on agent unit tests."),
     user_message:  Optional[str] = typer.Option(None,  "--user-message",       help="Override the agent's default user-message template. Useful for unit tests where you want to keep the system prompt (methodology) intact but change the task framing — e.g. give the reviewer pre-investigated findings and ask only for consolidation."),
     user_message_from: Optional[str] = typer.Option(None, "--user-message-from", help="Same as --user-message but reads the override text from a file. Convenient for multi-line message templates."),
-    record_fixture: Optional[str] = typer.Option(None, "--record-fixture",     help="Capture this run as a replay fixture under <dir>/<host>/<project>/<repo>/PR-<id>/. See TODO §19 for the layout. Falls back to $DIFFGRAPH_RECORD_DIR. Best-effort — capture failures do not abort the agent."),
+    record_fixture: Optional[str] = typer.Option(None, "--record-fixture",     help="Capture this run as a replay fixture under <dir>/<host>/<project>/<repo>/PR-<id>/. See TODO §19 for the layout. Falls back to $DIFFGRAPH_RECORDINGS_DIR. Best-effort — capture failures do not abort the agent."),
 ):
     """
     Run an agent. Default: dispatcher (with --message) or reviewer (without).
@@ -877,7 +877,7 @@ def run(
     # Plumbed into the process via env so _run_with_dispatcher (and any
     # subprocess we might spawn later) sees the same setting.
     if record_fixture:
-        os.environ["DIFFGRAPH_RECORD_DIR"] = str(Path(record_fixture).expanduser().resolve())
+        os.environ["DIFFGRAPH_RECORDINGS_DIR"] = str(Path(record_fixture).expanduser().resolve())
 
     # Disable SSL verification globally
     if no_verify_ssl:

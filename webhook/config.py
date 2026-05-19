@@ -21,7 +21,7 @@ class AgentConfig:
     # Recording (TODO §19) — when set, the spawned cli.py captures
     # the full PR state + diff + agent output under
     # <recording_dir>/<host>/<project>/<repo>/PR-<id>/. Forwarded as
-    # DIFFGRAPH_RECORD_DIR / DIFFGRAPH_RECORD_SCOPE on the subprocess
+    # DIFFGRAPH_RECORDINGS_DIR / DIFFGRAPH_RECORDINGS_SCOPE on the subprocess
     # env. Empty string disables capture for this agent.
     recording_dir: str = ""
     recording_scope: str = "range"  # "range" or "full" — see recording.py
