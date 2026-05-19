@@ -451,6 +451,34 @@ The five fields each defend against a specific failure mode of long LLM chains:
 
 Reflect lives in the skill layer (`orchestra/skills/reflect.md`), not the default builtins, so single-step responders and mechanical pipelines don't carry the cognitive overhead. Production reviewer / investigator / dispatcher mount it via `skills: [reflect]`. The cadence pusher (`ReflectCadencePusher`) only nudges when reflect is in the agent's tool surface — non-reflective agents see no pressure. See `docs/orchestra-architecture.md` for the full conceptual fix.
 
+### Skills — composable bundles of tools + methodology
+
+A skill is a single `.md` file that bundles a set of tools with the rationale / contract / cadence configuration for using them. The framework injects the skill body as a SEPARATE system-role message between the agent's own system prompt and the user task — no per-prompt placeholder needed. The skill's tools are unioned into the agent's tool surface; its `reflect: {…}` / `extra_tools` blocks merge into the agent config. Skills are mounted at either the system level (`skills:` in `<agent>.system.md` frontmatter — every invocation of that agent gets the skill) or the user level (`skills:` in the per-call user message). Both layers union, deduped.
+
+Current skills (`orchestra/skills/`):
+
+| Skill | Bundles | Mounted on |
+|---|---|---|
+| `reflect` | the `reflect` tool + per-field contract + cadence default `interval: 5` | investigator |
+| `prefer_delegation` | `agent_spawn` + `agent_list` + depth-as-upgrade rationale + `reflect.with_state: true` | reviewer |
+| `diff_view` | `diff_list_files` + `diff_read_file` + `diff_outline` + `diff_search` + unified-diff methodology (ref forms, L/old/new coordinates, posting on `new`) | reviewer + investigator |
+| `pr_threads` | `pr_list_threads` + `pr_read_thread` + `pr_read_comment` + look-only-when-relevant dedup rules | reviewer + investigator + dispatcher |
+| `project_conventions` | pure-prose: the AGENTS.md / CONVENTIONS.md lookup pattern | reviewer + investigator |
+| `finding_format` | pure-prose: finding-dict shape + severity rubric (BLOCKER/MAJOR/MINOR/COMMENT, calibrated against consequence) | reviewer + investigator |
+
+Why split rather than inline: each skill is a single source of truth that BOTH reviewer and investigator (and dispatcher where applicable) consume. Updating the diff-view methodology happens in one file, not three.
+
+### Cross-source surface (§10)
+
+Tools that read PR / repo / discussion data accept an optional `repo=<uri>` parameter (and `pr=<id>` where applicable) to read from a repo OTHER than the current PR's. The URI standard is `bitbucket://<handle>/<project>/<repo>` (1-3 segments — server / project / leaf):
+
+- `pr_get(repo, pr)`, `pr_list(repo)`, `repo_list(repo)` — three net-new tools for discovery + PR coordinates.
+- `diff_*` and `pr_*_thread*` (the three read tools) get the `repo=`/`pr=` params.
+- `jira_dev_info(ref)` is the bridge: returns the branches / commits / PRs Jira links to a ticket, with each PR pre-formatted as a ready `pr_get(repo=..., pr=...)` call.
+- `jira_search_tickets(jql)` is the JQL discovery channel — find tickets beyond what the PR already links to.
+
+In production these route through a real Bitbucket Registry (TBD); for tests they route through `FakeBitbucket.cross_source_*` payload maps. `"default"` resolves to the current PR's URI/id (existing behaviour, unchanged).
+
 ### CLI output
 
 ```

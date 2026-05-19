@@ -45,5 +45,3 @@ Workflow:
 
 4. Call `done(findings)` when all questions are answered or
    budget is running low.
-
-{{ skills }}

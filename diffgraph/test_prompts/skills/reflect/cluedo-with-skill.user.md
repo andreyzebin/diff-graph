@@ -18,5 +18,3 @@ about the responses. Apply the constraint-propagation rules from
 the methodology. When you've uniquely pinned all three, report
 via `text_answer(text="<suspect>, <weapon>, <room>")` and then
 call `done(findings=[])`.
-
-{{ skills }}

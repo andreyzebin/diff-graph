@@ -11,5 +11,3 @@ Find the hidden integer target in the inclusive range [1, 100].
 You may call `probe(guess)` up to 10 times. Submit the integer
 you've identified via `answer(text="N")` — single call, run
 terminates with your answer recorded.
-
-{{ skills }}

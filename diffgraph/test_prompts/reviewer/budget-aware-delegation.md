@@ -81,9 +81,6 @@ time you reflect — your situation has changed.
 **Read the ticket** via `jira_read_ticket(ref)` (copy each ref
 verbatim from the list above), then **orient on the diff** with
 `diff_list_files`.
-
-{{ skills }}
-
 **Synthesize.** When all spawns have returned, compile the final
 concerns list. Submit via `text_answer(text=...)`, one concern per
 line as `- <short title>: <one-sentence question>`. Cite the ticket

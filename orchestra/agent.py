@@ -1301,19 +1301,45 @@ class Agent:
         system_text = load_prompt(self.config.system_prompt)
         from .runcontext import RunContext
         from .template_engine import render as _render_template
+        # `skills_body` left EMPTY in the RunContext — the framework
+        # now injects the rendered skill block as a separate system
+        # message between the agent's main system prompt and the
+        # user task (see below), so any per-prompt `{{ skills }}`
+        # placeholder would double-render. Existing user.md files
+        # that still carry the placeholder render it as empty, which
+        # is harmless (a blank line). New prompts should NOT include
+        # the placeholder — framework handles injection.
         _ctx = RunContext(
             data={**(self.data_scope or {}), **(self.prompt_vars or {})},
             agent_name=self.config.name,
             agent_id=self.agent_id,
             depth=self.depth,
             budget_state=self.budget_state,
-            skills_body=getattr(self, "_mounted_skills_body", "") or "",
+            skills_body="",
             reflect=dict(self.config.reflect or {}),
             registry=self.registry,
         )
         if system_text:
             system_text = _render_template(system_text, _ctx)
         messages = [{"role": "system", "content": system_text}]
+
+        # Skills — framework-level injection. The rendered skill body
+        # (combined `## Skill: <name>` blocks built by `mount_skills`
+        # in __init__) goes in as a SEPARATE system-role message
+        # between the agent's own system prompt and the conversation
+        # / user task. Modern OpenAI-compatible providers (DeepSeek,
+        # OpenAI, Anthropic-via-proxy, …) all accept multiple system
+        # messages at the head of the conversation; the explicit
+        # separation makes it obvious where each surface comes from
+        # in traces. Empty mount → no skill message (every agent
+        # with no `skills:` declared keeps the same shape as before).
+        _skills_body = getattr(self, "_mounted_skills_body", "") or ""
+        if _skills_body.strip():
+            messages.append({
+                "role": "system",
+                "content": _skills_body,
+            })
+
         messages.extend(self.context_messages)
 
         # User message — the body of whichever source we parsed in

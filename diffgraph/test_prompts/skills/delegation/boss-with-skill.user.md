@@ -12,5 +12,3 @@ data:
 Compute the result for input = {{ task_input }}. Report ONLY the
 resulting number via `text_answer(text="N")`, then call
 `done(findings=[])`.
-
-{{ skills }}

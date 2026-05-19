@@ -324,6 +324,43 @@ Loader: `runner/run_unit.py:load_fixture` (returns `UnitFixture`).
 Conversion to `Scenario` for the judge:
 `runner/run_unit.py:_build_scenario_from_unit_fixture`.
 
+`expected_output.assert_invocations` (added 2026-05) — deterministic
+structural check that complements the LLM judge. Reads the agent's
+`invocations.json` and validates per-agent `must_call: [tool_a, …]`
+/ `must_not_call: [tool_b, …]` rules. Used by SKILL-tier scenarios
+where the call PATTERN is the test (did the boss delegate vs. do
+the work himself? did the searcher reflect vs. brute-force?). Any
+violation hard-overrides the LLM verdict (`judge_score=0.0`,
+`verdict="fail"`) so the structural failure surfaces clearly
+instead of being smoothed over by the semantic grade. Lives in
+`runner/invocations_check.py`.
+
+`repo:` is OPTIONAL — fixtures without a repo block run PR-free
+(no clone, no fake_bitbucket setup, no diff_* tools). Used by
+abstract SKILL-tier scenarios that test skill mechanics
+(`scenarios/unit/skills/{delegation,reflect}/`) — boss + worker
+agents that exchange a deterministic computation, no PR involved.
+
+### SKILL-tier scenarios (`scenarios/unit/skills/`)
+
+Sub-tier of unit fixtures that A/B-test the **effect of a single
+skill** on agent behaviour. Each pair (SKILL-N-*-with vs
+SKILL-N-*-without) uses the same task; the WITH variant mounts
+the skill under test, the WITHOUT variant runs the baseline.
+`assert_invocations` then verifies the structural delta — e.g.
+WITH-variant boss called `agent_spawn` (delegated) while
+WITHOUT-variant boss called `do_task` directly.
+
+Current SKILL scenarios (grouped by skill under test):
+
+- **`delegation/`** — SKILL-001 (boss + worker abstract delegation
+  via `prefer_delegation` skill).
+- **`reflect/`** — SKILL-002 (progressive search), SKILL-003
+  (hypothesis-driven detective), SKILL-004 (Cluedo deduction —
+  adapted from arXiv 2603.17169 where multi-agent LLMs win only
+  4/18 simulated games — proof-of-value for `reflect` on
+  academically-validated multi-step deductive reasoning).
+
 Two static guards keep this shape leak-free:
 
 - `tests/test_unit_fixture_leak_check.py` — no expected_output

@@ -308,6 +308,93 @@ when `reflect` is in the agent's tool surface, so non-reflective
 agents see no cadence pressure. Same for `FailedReflectGuard`
 (soft-opt): nothing to guard if reflect isn't there.
 
+### `orchestra/skills.py` + `orchestra/skills/` — composable bundles
+
+Skills are the framework's mechanism for grouping a set of tools
+with the rationale / contract / cadence configuration for using
+them, and shipping that bundle as a single unit across multiple
+agents. A skill is one `.md` file with YAML frontmatter and a
+body:
+
+```yaml
+---
+description: >-
+  Short one-paragraph summary — what this skill exists to provide.
+tools:
+  - diff_list_files          # tools the skill brings into the
+  - diff_read_file           # agent's effective tool surface.
+extra_tools: [...]           # capture-style tools (less common).
+reflect:                     # optional per-area overrides; merged
+  with_state: true           # into config.reflect via setdefault.
+---
+Body markdown — the methodology / contract / when-to-call
+guidance. Renders into the agent's user message via the
+`{{ skills }}` placeholder.
+```
+
+**Mount mechanism.** Both `<agent>.system.md` and the per-call
+user message can carry a `skills:` list. `Agent.__init__` unions
+the two lists with dedup (system level first, user level
+appended), then calls `mount_skills()` which:
+
+1. Loads each skill via `load_skill(name)`.
+2. Extends `_fm_meta["tools"]` with the skill's tools.
+3. Merges `_fm_meta["reflect"]` (and other per-area dicts) via
+   `setdefault` — prompt-declared keys win over skill defaults.
+4. Concatenates each skill body with a `## Skill: <name>`
+   header and stashes the combined string on
+   `self._mounted_skills_body`.
+
+**Render — framework-level injection.** The combined skill body
+is injected as a SEPARATE system-role message between the
+agent's own system prompt and the conversation / user task —
+done by `_build_messages()` in `orchestra/agent.py`. No
+per-prompt placeholder is required; user.md files stay clean.
+Modern OpenAI-compatible providers (DeepSeek, OpenAI,
+Anthropic-via-proxy, …) accept multiple system messages at the
+head of the conversation, and the explicit separation makes it
+obvious in traces where each surface comes from. An agent with
+no `skills:` declared keeps the same single-system-message
+shape as before.
+
+Backward-compat: legacy `{{ skills }}` placeholders in existing
+user.md files render as empty (`RunContext.skills_body` is now
+empty by design) — no double-render. New prompts should NOT
+include the placeholder.
+
+`AgentConfig.skills: list[str]` (added 2026-05) carries the
+system-level list; `_fm_meta["skills"]` carries the user-level
+list. The two lists union at mount time. System-level skills
+declare "this agent always wants this" (e.g. investigator always
+wants `reflect`); user-level skills are per-task additions.
+
+**Why split into skills rather than inline in system.md.** A
+skill is a single source of truth for the tools+methodology
+pair. Updating the diff-view methodology happens in
+`orchestra/skills/diff_view.md` once, not in three system.md
+files. Skills are also discoverable as a unit (an `agent_list_
+skills()` discovery tool can enumerate them; agents can pick
+which to mount dynamically).
+
+**Current skills.** See `orchestra/skills/`:
+
+| Skill | Tools | Body content |
+|---|---|---|
+| `reflect` | `reflect` | Per-field contract + cadence default `interval: 5` |
+| `prefer_delegation` | `agent_spawn`, `agent_list` | Depth-as-upgrade rationale + `reflect.with_state: true` |
+| `diff_view` | `diff_*` (4 tools) | Unified-diff view methodology — ref forms, L/old/new coordinates, posting on `new` |
+| `pr_threads` | `pr_list_threads`, `pr_read_thread`, `pr_read_comment` | Look-only-when-relevant dedup rules, snapshot-at-run-start semantic |
+| `project_conventions` | — (pure prose) | AGENTS.md / CONVENTIONS.md lookup pattern |
+| `finding_format` | — (pure prose) | Finding-dict shape + severity rubric |
+
+**Wiring gotcha.** `Agent.__init__` initially gated SGR-tracker
+creation on `reflect in config.tools` (base list only). Skill-
+mounted reflect lives in `_fm_meta["tools"]` instead — the gate
+missed it, leaving `self.sgr = None` and silently neutering
+`ReflectCadencePusher`. Fix: gate on the post-skill-merge
+EFFECTIVE tool set (the union). Tests/test_skills.py pins this
+to prevent regression.
+
 ### `orchestra/budget.py` — pushers + cadence
 
 Pushers are **step-level controllers** (not "LLM handlers" — the

@@ -49,8 +49,6 @@ the diff + PR description; don't retry it in a loop.
 
 Then read the diff and identify concerns.
 
-{{ skills }}
-
 **Continuation review — scope to only the unseen commits.** If
 `pr_list_threads(repo="default", pr="default")` shows at least one `[SELF in subtree]` thread,
 you've reviewed this PR before. Treat the prior review as the

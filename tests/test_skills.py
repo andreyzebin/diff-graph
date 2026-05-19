@@ -288,33 +288,47 @@ class TestAgentIntegration:
         assert "agent_spawn" in tools
         assert "agent_list" in tools
 
-    def test_placeholder_resolves_to_skill_body(self):
+    def test_skills_inject_as_separate_system_message(self):
+        """Framework injects the rendered skill body as a SEPARATE
+        system-role message between the agent's own system prompt
+        and the conversation/user task. No per-prompt placeholder
+        needed — the user.md body stays clean."""
         override = (
             "---\n"
             "skills: [prefer_delegation]\n"
             "---\n"
-            "Task body.\n\n{{ skills }}\n\nSynthesis line.\n"
+            "Task body.\n"
         )
         a = self._agent(override)
         msgs = a._build_messages()
+        system_msgs = [m for m in msgs if m.get("role") == "system"]
+        # First system message is the agent's own; the injected
+        # skill block follows as a second system message.
+        assert len(system_msgs) == 2
+        skill_msg = system_msgs[1]
+        assert "## Skill: prefer_delegation" in skill_msg["content"]
+        assert "Delegation" in skill_msg["content"]
+        # User message stays clean — no skill content bleeding in.
         user = next(m for m in msgs if m.get("role") == "user")
-        # Placeholder literal gone, skill content + header inlined.
-        assert "{{ skills }}" not in user["content"]
-        assert "## Skill: prefer_delegation" in user["content"]
-        assert "Delegation" in user["content"]
+        assert "## Skill:" not in user["content"]
+        assert user["content"].strip() == "Task body."
 
-    def test_no_skills_no_placeholder_unchanged(self):
-        a = self._agent("Plain body, no skills, no placeholder.")
+    def test_no_skills_no_extra_system_message(self):
+        """Agent with no `skills:` declared gets the same single-
+        system-message shape as before (no skill injection)."""
+        a = self._agent("Plain body, no skills.")
         msgs = a._build_messages()
+        system_msgs = [m for m in msgs if m.get("role") == "system"]
+        assert len(system_msgs) == 1
         user = next(m for m in msgs if m.get("role") == "user")
-        assert user["content"].strip() == "Plain body, no skills, no placeholder."
+        assert user["content"].strip() == "Plain body, no skills."
 
-    def test_skill_with_placeholder_but_no_declaration_renders_empty(self):
-        """If a prompt references `{{ skills }}` but declares no
-        `skills:` block, the placeholder collapses to empty —
-        no crash, no literal leak. Defensive: prompts can carry
-        the placeholder even when no skills are mounted for a
-        particular scenario."""
+    def test_stale_placeholder_in_user_md_renders_empty(self):
+        """Backward-compat: a user.md still carrying a stale
+        `{{ skills }}` placeholder renders it as empty (the
+        framework no longer feeds skill body to the template) —
+        no double-render, no literal leak. New prompts should
+        DROP the placeholder; the framework handles injection."""
         override = (
             "---\n"
             "tools: [done]\n"

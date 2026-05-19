@@ -162,14 +162,27 @@ YAML files under `benchmarks/scenarios/`:
   gate. `setup.mocks` short-circuits subagent calls;
   `user_message_from` swaps the agent's task framing without touching
   its system prompt. REV-U-*, INV-U-*, DISP-U-*.
+- **`tier:unit/skills/`** — abstract A/B fixtures testing the effect
+  of a single skill on agent behaviour (delegation/, reflect/). Each
+  WITH/WITHOUT pair uses the same task; `assert_invocations`
+  verifies the structural delta (did the boss `agent_spawn` vs.
+  `do_task` itself?). PR-free — no clone, no fake_bitbucket setup
+  needed when the agents under test don't touch a PR. SKILL-001
+  through SKILL-004.
 - **`tier:integration`** (`scenarios/java/`, `scenarios/interaction/`)
   — full-stack, no mocks, scored against real PR comments. Drives the
   pre-merge gate.
 - **`scenarios/drafts/`** — loader-skipped specs for not-yet-runnable
   scenarios.
 
-`expected_output.assert_via` declares which channel the judge matches;
-`concern_focuses` adds keyword groups for reflect-based tests.
+`expected_output.assert_via` declares which channel the judge matches
+(`pr_comments` / `intended_findings` / `intended_concerns` /
+`intended_spawns` / `intended_text`); `concern_focuses` carries
+the semantic rationale the judge grades against (prose, not
+keyword groups — that migration landed 2026-05).
+`assert_invocations` is the deterministic structural complement
+for SKILL-tier scenarios; violations hard-override the LLM
+verdict.
 
 ### Adding a scenario
 

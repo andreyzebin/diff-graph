@@ -160,11 +160,19 @@ Two modes:
 - **single** -- one LLM call, no tools
 - **react** -- non-deterministic tool loop with SGR
 
-All 9 meta-tools built in: `agent_spawn`, `spawn_many`, `plan`, `fork`, `adjust_agent`, `observe_agents`, `agent_list`, `reflect`, `done`.
+Meta-tools built in (registered when listed in the agent's effective tool surface, NOT all auto-registered): `agent_spawn`, `spawn_many`, `plan`, `fork`, `adjust_agent`, `observe_agents`, `agent_list`, `reflect`, `done`, `answer`. `answer(text=...)` is a terminal capture tool — captures text as the run's deliverable AND ends the agent loop in a single call (the single-step closer for abstract-reasoning fixtures and text-deliverable flows; investigator / reviewer use `done(findings=[...])`, fixtures use `answer`).
+
+### Skills — composable bundles of tools + methodology (`orchestra/skills/`)
+
+A skill is a `.md` file with YAML frontmatter (`tools:` it brings, optional `reflect: {…}` / `extra_tools` config) + a body that the framework injects as a separate system-role message between the agent's own system prompt and the user task. Mounted via `skills:` in the system.md frontmatter (always-on for that agent) or the per-call user prompt (per-task addition). The two lists union with dedup at `Agent.__init__`.
+
+Current set: `reflect`, `prefer_delegation`, `diff_view`, `pr_threads`, `project_conventions`, `finding_format`. See README §"Skills" for the table of what each bundles and where it's mounted.
+
+Why split rather than inline in system.md: a skill is a single source of truth shared across agents. Updating the diff-view methodology happens in one file, not in every system prompt that documents the four `diff_*` tools.
 
 ### SGR with question IDs (`orchestra/sgr.py`)
 
-Structured self-reflection. Each question gets a stable ID. Fuzzy matching links questions across reflect() calls even when wording drifts. Fields: `learned`, `questions_remaining`, `resolved_questions`, `confidence`, `next_action`.
+Structured self-reflection. Each question gets a stable ID. Fuzzy matching links questions across reflect() calls even when wording drifts. Fields: `learned`, `questions_remaining`, `resolved_questions`, `confidence`, `next_action`. The `reflect` tool itself lives on the `reflect` skill — agents opt in by mounting it.
 
 ### Budget (`orchestra/budget.py`)
 
