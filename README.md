@@ -815,6 +815,62 @@ sudo ./scripts/install-services.sh
 
 ---
 
+## Kubernetes — pod sizing & deployment notes
+
+No GPU needed — all LLM inference is external (OpenAI / DeepSeek / Cloud.ru / etc). Locally the pod runs the FastAPI webhook router (`:8000`), the QA / trace server (`:8080`), and spawns per-PR `cli.py run` subprocesses on demand.
+
+### Pod resources (recommendations)
+
+| Tier | Use case | requests | limits | Storage |
+|---|---|---|---|---|
+| **Minimum** | dev / staging, 1 PR at a time | `cpu: 200m, memory: 768Mi` | `cpu: 1000m, memory: 1500Mi` | 5–10 Gi |
+| **Standard** | production, ~5–10 concurrent agents | `cpu: 500m, memory: 2Gi` | `cpu: 2000m, memory: 4Gi` | 20–50 Gi |
+| **Heavy / bench** | parallel scenarios, QA + production combined | `cpu: 1000m, memory: 4Gi` | `cpu: 4000m, memory: 8Gi` | 50–100 Gi |
+
+Memory split: FastAPI servers idle at ~250-400 MB RSS (both processes combined); tree-sitter parsers add ~20-40 MB once warmed (17 languages, lazy-loaded — see [`diffgraph/lang.py`](diffgraph/lang.py)); each per-PR agent subprocess uses ~120-200 MB RSS while running.
+
+### Storage
+
+- **`/data` — persistent volume (required)**. Houses `~/.diffgraph/traces.db` (SQLite trace DB + WAL), QA plans, scoring history. Don't use `emptyDir` — losing it nukes all run history and QA state.
+- **`/tmp/diffgraph-*` — ephemeral clones**. Per-PR git clone for the diff view, cleaned after each run. `emptyDir { sizeLimit: 5Gi }` is fine for small repos; bump to 20+ Gi for codebases > 500 MB.
+- **`/app/.env` + `/app/config.local.yaml`** — Secret + ConfigMap mounts. Same files you'd `source` locally.
+- **`/app/certs/`** — corporate CA bundles + client certs. Mount from a Secret.
+
+### Networking
+
+**Egress** must reach: LLM API endpoint (OpenAI / DeepSeek / Cloud.ru / etc), Bitbucket Server (PR/diff API + webhook callbacks), Jira (if integration enabled).
+
+**Ingress**:
+- `:8000` (webhook router) — public URL for Bitbucket webhooks (`/webhooks/bitbucket`).
+- `:8080` (QA UI + trace viewer) — internal-only for developers.
+
+### Replicas
+
+**1 replica.** SQLite is a single-writer DB; the trace + QA state is owned by this pod. Higher load → scale UP (more CPU/RAM) rather than out. If you genuinely need horizontal scaling, split the QA server into a separate Deployment with a shared PVC and put a queue between webhook and workers (`quality_api/` already supports the worker-pool shape) — but the single-pod default is enough for hundreds of PRs/day on the Standard tier.
+
+### Probes
+
+```yaml
+readinessProbe:
+  httpGet: { path: /, port: 8080 }
+  periodSeconds: 10
+livenessProbe:
+  httpGet: { path: /, port: 8080 }
+  periodSeconds: 30
+  failureThreshold: 3
+```
+
+Liveness on `:8080` because that's the always-on QA server; `:8000` only fires on webhook events. If `:8080` stops responding, restart.
+
+### What dominates pod resource use
+
+- **Active agent subprocesses** — each adds ~150 MB RSS for the duration of one PR review (5-30s typically; up to a few minutes on big diffs or slow LLM endpoints). Plan capacity around peak concurrent agents, not average.
+- **SQLite trace WAL** — grows with usage; checkpoints run periodically. `/data` PV needs the headroom listed above.
+- **Lazy git clones** — `/tmp/diffgraph-*` holds one per-PR clone at a time per active agent. Auto-cleaned. Big monorepos can spike `/tmp` use.
+- **LLM call latency** — the pod is mostly waiting on network I/O during agent runs. CPU spikes are short (tree-sitter parsing + git diff). Network bandwidth + provider latency matters more than CPU.
+
+---
+
 ## Tests
 
 ```bash
