@@ -501,12 +501,12 @@ python cli.py run --pr-url ... --record-fixture ~/eden/diffgraph-recordings
 DIFFGRAPH_RECORD_DIR=~/eden/diffgraph-recordings python cli.py run --pr-url ...
 ```
 
-**Webhook router** — per-agent opt-in in `webhook.toml`:
+**Webhook router** — per-agent opt-in in `webhook.toml`. **Do not add `--record-fixture` to the `command =` template** — the router transparently forwards `DIFFGRAPH_RECORD_DIR` + `DIFFGRAPH_RECORD_SCOPE` on the subprocess env, and `cli.py` picks them up automatically. Just declare the recording block:
 
 ```toml
 [agents.dg]
 trigger = "cli"
-command = '...'
+command = '...'   # ← unchanged; no --record-fixture flag
 
 [agents.dg.recording]
 dir = "~/eden/diffgraph-recordings"
@@ -514,7 +514,21 @@ scope = "range"   # "range" (default — base..source + ancestry, ~10-50 MB / PR
                   # "full"  (--all, ~100 MB-1 GB on big monorepos)
 ```
 
-The router forwards `DIFFGRAPH_RECORD_DIR` + `DIFFGRAPH_RECORD_SCOPE` on the subprocess env, no template change to `command =` needed. Capture is best-effort: free space below 5 GB or an unwritable target disables capture for that run without aborting the agent. Pick a path on a partition with headroom — recordings can grow to tens of GB at scale (one bundle per PR, lots of PRs).
+Capture is best-effort: free space below 5 GB or an unwritable target disables capture for that run without aborting the agent. Pick a path on a partition with headroom — recordings can grow to tens of GB at scale (one bundle per PR, lots of PRs).
+
+#### One PR = one recording (cumulative across events)
+
+The path of a recording is derived from the PR URL alone — same PR URL → same directory. Every cli.py invocation triggered by **any** webhook event on that PR (reviewer on `/review`, replies to comments, push-triggered auto-reviews, …) appends to the **same** recording:
+
+| Artifact | Behaviour across invocations |
+|---|---|
+| `pr.json` | Written once; `last_recorded_at` updated each invocation, create-fields immutable |
+| `invocations/NNN-<ts>-<rand>/` | One new directory per cli.py invocation (`NNN` = max-existing-index + 1, atomically allocated) |
+| `repo.bundle` | Incrementally rebuilt — each invocation fetches the prior bundle's `refs/diffgraph/PR-<id>/rev-NN` refs and stamps its own new rev. All historical revisions survive even after upstream force-push |
+| `manifest.json` | `bundle_revs[]` grows with one entry per new rev |
+| `jira/<KEY>.json` | Per-invocation; the captured raw response is whatever Jira returned at that moment |
+
+So a PR that lived for a month with three review rounds and a force-push between rounds two and three ends up as one directory with three `invocations/` subdirs and a bundle holding all three source-branch SHAs. **This cumulative property is what makes lifecycle replay meaningful** — `bench replay <dir>` walks the timeline across every event the PR went through, in chronological order.
 
 #### Replay modes
 
