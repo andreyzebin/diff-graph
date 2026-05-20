@@ -1012,6 +1012,25 @@ class PlanStore:
             plan_id = int(cur.lastrowid)
             c.commit()
 
+        # Per-scenario bench_cmd from the fixture yaml — unit fixtures
+        # carry `bench_cmd:` (a `bench run-unit <path>` invocation) and
+        # MUST use it; without the override the worker falls back to the
+        # pool default `bench run -s …` (integration runner), which
+        # rejects every unit fixture ("'name' is a required property" →
+        # "No scenarios found"). discovery.py (auto-planner) and
+        # create_anonymous already resolve this; create() must too.
+        from .scenarios_index import find_scenario, build_bench_cmd
+        bench_cmd_by_scen: dict[str, str] = {}
+        for sid in spec.scenarios:
+            try:
+                entry = find_scenario(sid)
+            except ValueError:
+                entry = None
+            if entry is not None:
+                cmd = build_bench_cmd(entry, scenario_id=sid)
+                if cmd:
+                    bench_cmd_by_scen[sid] = cmd
+
         # Fan-out via the existing enqueue (each acquires the queue lock
         # individually, but at the speed of bulk inserts it's fine).
         # Stage B: scenario/lineage/mutation flow as resource URIs in
@@ -1025,13 +1044,19 @@ class PlanStore:
                         resources: list[str] = []
                         if scenario:  resources.append(f"scenario://{scenario}")
                         if lineage:   resources.append(f"lineage://{lineage}")
+                        payload: dict = {}
+                        if spec.name:
+                            payload["plan_name"] = spec.name
+                        bench_cmd_override = bench_cmd_by_scen.get(scenario, "")
+                        if bench_cmd_override:
+                            payload["bench_cmd"] = bench_cmd_override
                         # Agent task — leased + run by a worker.
                         agent_tid = self.queue.enqueue(TaskSpec(
                             queue=queue_name,
                             attempt_n=attempt_n,
                             plan_id=plan_id,
                             priority=spec.priority,
-                            payload={"plan_name": spec.name} if spec.name else {},
+                            payload=dict(payload),
                             resources=list(resources),
                         ))
                         task_ids.append(agent_tid)
@@ -1044,7 +1069,7 @@ class PlanStore:
                             kind="judge",
                             parent_task_id=agent_tid,
                             initial_state="blocked",
-                            payload={"plan_name": spec.name} if spec.name else {},
+                            payload=dict(payload),
                             resources=list(resources),
                         ))
                         task_ids.append(judge_tid)
