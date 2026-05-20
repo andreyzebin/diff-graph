@@ -190,6 +190,7 @@ class AgentDescriptor:
     mode: str = ""
     tools: list[str] = field(default_factory=list)
     capabilities: list[str] = field(default_factory=list)
+    input_schema: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -198,6 +199,7 @@ class AgentDescriptor:
             "mode":         self.mode,
             "tools":        self.tools,
             "capabilities": self.capabilities,
+            "input_schema": self.input_schema,
         }
 
 

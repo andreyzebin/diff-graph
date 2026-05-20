@@ -267,6 +267,13 @@ class Agent:
         self._children_results: dict[str, AgentResult] = {}
         self._children_lock = threading.Lock()
 
+        # Agents-runtime provider (orchestra/agents_runtime.py). The
+        # agent_spawn / agent_list tools route through this — an
+        # InProcessRuntime whose spawn_fn IS this agent's existing
+        # in-process spawn path. Lazily built on first access so a
+        # bare Agent (tests) costs nothing.
+        self._agents_runtime = None
+
         # Done state
         self._done_output: Any = None
         self._done_called = False
@@ -1142,105 +1149,175 @@ class Agent:
             resolved[key] = str(val)
         return resolved
 
-    def _meta_agent_spawn(self, args: dict) -> str:
-        """agent_spawn: create and run a child agent with data injection.
+    @property
+    def agents_runtime(self):
+        """The AgentsRuntime this agent spawns/observes through. Lazy
+        InProcessRuntime whose spawn_fn IS this agent's own in-process
+        spawn path — so behaviour is identical to the pre-runtime
+        code, only now behind the provider interface (fakeable,
+        observable). See orchestra/agents_runtime.py."""
+        if self._agents_runtime is None:
+            from .agents_runtime import InProcessRuntime
+            self._agents_runtime = InProcessRuntime(
+                spawn_fn=self._run_spawn,
+                list_agents_fn=self._list_agent_descriptors,
+            )
+        return self._agents_runtime
 
-        Mock interception happens earlier (in `_handle_tool_call`) since
-        agent_spawn is a normal tool from the registry's perspective.
-        By the time this method runs the call is real.
-        """
-        agent_name = args.get("agent", "")
-        focus_arg = args.get("focus", "")
+    def _list_agent_descriptors(self):
+        """Registry → list[AgentDescriptor] for the runtime's
+        list_agents(). Mirrors the shape agent_registry.to_listing()
+        produced, so agent_list's tool output is unchanged."""
+        from .agents_runtime import AgentDescriptor
+        out = []
+        if self.agent_registry:
+            for entry in self.agent_registry.to_listing():
+                out.append(AgentDescriptor(
+                    name=entry.get("name", ""),
+                    summary=entry.get("summary", ""),
+                    mode=entry.get("mode", ""),
+                    tools=list(entry.get("tools") or []),
+                    capabilities=list(entry.get("capabilities") or []),
+                    input_schema=entry.get("input_schema") or {},
+                ))
+            return out
+        # Fallback: list from agent_configs dict (no compiled registry).
+        for name, cfg in self.agent_configs.items():
+            out.append(AgentDescriptor(
+                name=name,
+                summary=cfg.system_prompt[:200] if cfg.system_prompt else "",
+                mode=cfg.mode.value if hasattr(cfg.mode, "value") else str(cfg.mode),
+                tools=list(cfg.tools or []),
+            ))
+        return out
 
-        agent_config = self._resolve_agent_config(agent_name)
-        if not agent_config:
-            return json.dumps({"error": f"unknown agent: {agent_name}"})
-        if self.depth >= self.config.max_depth:
-            return json.dumps({"error": "max depth reached"})
+    def _run_spawn(self, spec):
+        """In-process spawn body — the runtime's spawn_fn. Builds the
+        child agent, runs it (sync) or backgrounds it (async), debits
+        the shared budget, returns a RunResult. This is the exact
+        pre-runtime spawn logic; only the return shape changed
+        (RunResult instead of a JSON string)."""
+        from .agents_runtime import RunResult
+        from .tools.builtin import register_builtins
+
+        agent_config = self._resolve_agent_config(spec.agent_name)
+        # Validation is done by the caller (_meta_agent_spawn) before
+        # we reach here; agent_config is guaranteed resolvable.
 
         # Data: inherit parent scope, merge explicit, auto-resolve from:tool.field
-        data = args.get("data", {})
         resolved_data = dict(self.data_scope)
-        if data:
-            resolved_data.update(self._resolve_data_inheritance(data))
-        if focus_arg and "focus" not in resolved_data:
-            resolved_data["focus"] = focus_arg
-
-        # Templates pull lazy data via the `{{ pr.* }}` proxy on
-        # RunContext.registry (see orchestra/runcontext.py
-        # _HiddenToolProxy). No pre-resolution step needed.
+        if spec.data:
+            resolved_data.update(self._resolve_data_inheritance(spec.data))
+        if spec.focus and "focus" not in resolved_data:
+            resolved_data["focus"] = spec.focus
         resolved_data = dict(resolved_data)
 
-        # Pass handoff context if explicitly requested by LLM
+        # Pass handoff context if explicitly requested.
         context: list[dict] = []
-        handoff_mode = args.get("context_handoff", "")
-        if handoff_mode:
+        if spec.context_handoff:
             from .handoff import get_handoff
-            handoff = get_handoff(handoff_mode)
+            handoff = get_handoff(spec.context_handoff)
             context = handoff.apply(
                 [], self.sgr.history if self.sgr else [], None, self.llm, self.model
             )
 
-        # Child uses its own budget from .prompt config — not overridden by parent
-        child_config = agent_config
-
-        # Child gets own registry (inherits domain tools, fresh builtins)
-        from .tools.builtin import register_builtins
+        # Child uses its own budget from .prompt config.
         child_registry = self.registry.clone()
         child = Agent(
-            config=child_config, tool_registry=child_registry,
+            config=agent_config, tool_registry=child_registry,
             llm=self.llm, model=self.model, event_bus=self.event_bus,
             parent_id=self.agent_id, parent=self, depth=self.depth + 1,
-            context_messages=context, agent_configs=self.agent_configs, agent_registry=self.agent_registry,
+            context_messages=context, agent_configs=self.agent_configs,
+            agent_registry=self.agent_registry,
         )
-        register_builtins(child_registry, child_config, sgr_tracker=child.sgr, agent=child)
-        child.data_scope = resolved_data  # for further inheritance
+        register_builtins(child_registry, agent_config,
+                          sgr_tracker=child.sgr, agent=child)
+        child.data_scope = resolved_data
 
         with self._children_lock:
             self._children[child.agent_id] = child
 
-        # Log spawn details
-        spawn_focus = args.get("focus", "")
         data_keys = list(resolved_data.keys()) if resolved_data else []
         self.event_bus.emit(EventType.AGENT_SPAWNED,
                            parent_id=self.agent_id, child_id=child.agent_id,
-                           agent_name=agent_name, focus=spawn_focus,
+                           agent_name=spec.agent_name, focus=spec.focus,
                            data_keys=data_keys)
 
-        wait = args.get("wait", True)
-        if wait:
-            # No span here — Agent.run() emits its own. Same path
-            # for root and spawned children, no duplication.
+        if spec.sched != "async":
+            # Sync — run to completion (Agent.run() emits its own span).
             result = child.run()
             with self._children_lock:
                 self._children_results[child.agent_id] = result
             if child.budget_state:
                 self.budget_tracker.debit_child(self.budget_state, child.budget_state)
-            # Return output + SGR summary for parent to consolidate
             sgr_summary = ""
             if result.sgr_history:
                 last = result.sgr_history[-1]
                 sgr_summary = f"confidence={last.confidence}, learned: {last.learned[:300]}"
-            return json.dumps({
-                "status": "completed",
-                "agent_id": child.agent_id,
-                "agent_name": agent_name,
-                "output": result.output,
-                "sgr_summary": sgr_summary,
-                "steps": child.budget_state.steps_used if child.budget_state else 0,
-                "tokens": child.budget_state.tokens_used if child.budget_state else 0,
-            }, ensure_ascii=False, indent=2, default=str)
-        else:
-            # Async — run in background thread
-            def _run():
-                result = child.run()
-                with self._children_lock:
-                    self._children_results[child.agent_id] = result
-                if child.budget_state:
-                    self.budget_tracker.debit_child(self.budget_state, child.budget_state)
+            return RunResult(
+                agent_id=child.agent_id,
+                agent_name=spec.agent_name,
+                status="completed",
+                output=result.output,
+                sgr_summary=sgr_summary,
+                steps=child.budget_state.steps_used if child.budget_state else 0,
+                tokens=child.budget_state.tokens_used if child.budget_state else 0,
+            )
+        # Async — run in a background thread; result resolved later.
+        def _run():
+            result = child.run()
+            with self._children_lock:
+                self._children_results[child.agent_id] = result
+            if child.budget_state:
+                self.budget_tracker.debit_child(self.budget_state, child.budget_state)
+        threading.Thread(target=_run, daemon=True).start()
+        return RunResult(
+            agent_id=child.agent_id,
+            agent_name=spec.agent_name,
+            status="spawned",
+        )
 
-            threading.Thread(target=_run, daemon=True).start()
-            return json.dumps({"status": "spawned", "agent_id": child.agent_id})
+    def _meta_agent_spawn(self, args: dict) -> str:
+        """agent_spawn: create and run a child agent with data injection.
+
+        Routes through the AgentsRuntime provider — validation here,
+        the spawn body in `_run_spawn` (the runtime's spawn_fn).
+
+        Mock interception happens earlier (in `_handle_tool_call`) since
+        agent_spawn is a normal tool from the registry's perspective.
+        By the time this method runs the call is real.
+        """
+        from .agents_runtime import SpawnSpec
+
+        agent_name = args.get("agent", "")
+        if not self._resolve_agent_config(agent_name):
+            return json.dumps({"error": f"unknown agent: {agent_name}"})
+        if self.depth >= self.config.max_depth:
+            return json.dumps({"error": "max depth reached"})
+
+        spec = SpawnSpec(
+            agent_name=agent_name,
+            focus=args.get("focus", ""),
+            data=args.get("data", {}) or {},
+            context_handoff=args.get("context_handoff", ""),
+            sched="async" if args.get("wait") is False else "sync",
+            parent_agent_id=self.agent_id,
+        )
+        handle = self.agents_runtime.spawn(spec)
+        result = self.agents_runtime.await_result(handle)
+
+        if result.status == "spawned":
+            return json.dumps({"status": "spawned",
+                               "agent_id": result.agent_id})
+        return json.dumps({
+            "status":      "completed",
+            "agent_id":    result.agent_id,
+            "agent_name":  result.agent_name,
+            "output":      result.output,
+            "sgr_summary": result.sgr_summary,
+            "steps":       result.steps,
+            "tokens":      result.tokens,
+        }, ensure_ascii=False, indent=2, default=str)
 
     def _meta_budget_stats(self, args: dict) -> str:
         """budget_stats: surface this agent's current consumption +
@@ -1278,18 +1355,12 @@ class Agent:
         return format_budget_stats(self.budget_state, children=children_snapshot)
 
     def _meta_agent_list(self, args: dict) -> str:
-        """agent_list: return the agent registry for discovery."""
-        if self.agent_registry:
-            return json.dumps(self.agent_registry.to_listing(), indent=2, ensure_ascii=False)
-        # Fallback: list from agent_configs dict
-        listing = []
-        for name, cfg in self.agent_configs.items():
-            listing.append({
-                "name": name,
-                "summary": cfg.system_prompt[:200] if cfg.system_prompt else "",
-                "mode": cfg.mode.value if hasattr(cfg.mode, 'value') else str(cfg.mode),
-                "tools": cfg.tools,
-            })
+        """agent_list: return the agent registry for discovery.
+
+        Routes through the AgentsRuntime — `list_agents()` yields
+        AgentDescriptors which serialise to the same dict shape the
+        registry listing always had."""
+        listing = [d.to_dict() for d in self.agents_runtime.list_agents()]
         return json.dumps(listing, indent=2, ensure_ascii=False)
 
     # ── Message building ──────────────────────────────────────────────────────
