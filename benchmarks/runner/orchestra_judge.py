@@ -44,13 +44,19 @@ def _extract_verdict(data) -> dict:
     """Normalise the cli.py `--output` payload into the verdict dict.
 
     The judge.raw agent is a react-mode orchestra agent that finishes
-    with `answer(text=<json verdict>)`; cli.py writes that deliverable
-    as `[{"text": "<json string>"}]`. A legacy single-shot judge wrote
-    the verdict dict straight out. Accept both shapes.
+    with `answer(text=<json verdict>)`. cli.py writes that deliverable
+    as `{"text": "<json string>"}` (run_agent surfaces an answer
+    payload as a text deliverable; the legacy `[{"text": …}]` list
+    shape is also accepted). A legacy single-shot judge wrote the
+    verdict dict straight out. Accept all three.
     """
-    if (isinstance(data, list) and len(data) == 1
+    text = None
+    if isinstance(data, dict) and set(data) == {"text"}:
+        text = data.get("text") or ""
+    elif (isinstance(data, list) and len(data) == 1
             and isinstance(data[0], dict) and "text" in data[0]):
         text = data[0].get("text") or ""
+    if text is not None:
         try:
             from runner.judge import _parse_raw
             return _parse_raw(text)
@@ -64,7 +70,7 @@ def _extract_verdict(data) -> dict:
     raise RuntimeError(
         f"orchestra judge returned an unexpected shape: "
         f"{type(data).__name__} — expected a verdict dict or an "
-        f"answer()-style [{{'text': …}}] payload"
+        f"answer()-style {{'text': …}} payload"
     )
 
 

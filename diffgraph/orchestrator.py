@@ -259,27 +259,7 @@ def run_agent(
 
     result = agent.run()
 
-    # Parse output
-    output = result.output
-    if output is None:
-        return {}
-    if isinstance(output, dict):
-        return output
-    # Agent.done(findings=[...]) — agent.py unwraps the list out of {"findings": ...},
-    # so a bare list back here means "this is the findings array".
-    if isinstance(output, list):
-        return {"findings": output}
-    if isinstance(output, str):
-        try:
-            parsed = json.loads(output)
-        except (json.JSONDecodeError, ValueError):
-            return {"text": output}
-        if isinstance(parsed, list):
-            return {"findings": parsed}
-        if isinstance(parsed, dict):
-            return parsed
-        return {"text": output}
-    return {"output": output}
+    return _normalize_run_output(result.output)
 
 
 # ── Event adapter ─────────────────────────────────────────────────────────────
@@ -306,6 +286,44 @@ def _adapt_events(on_event: Callable) -> Callable:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _normalize_run_output(output: Any) -> dict:
+    """Normalise an Agent's terminal output into the dict `run_agent`
+    returns to its callers.
+
+    Terminal-tool shapes:
+      - `done(findings=[...])` → agent.py unwraps the list, so a bare
+        list of finding dicts arrives here → `{"findings": [...]}`.
+      - `answer(text=...)` → a single TEXT deliverable, carried
+        internally as `[{"text": ...}]` (Agent._done_output). It is
+        surfaced as `{"text": ...}` — NOT a findings array — so callers
+        that write the run output (cli.py `--output`) don't push it
+        through `_parse_findings`, which requires a `file` key and
+        would silently drop the text payload.
+      - a single-shot agent's response is a dict / JSON string and
+        passes through.
+    """
+    if output is None:
+        return {}
+    if isinstance(output, dict):
+        return output
+    if isinstance(output, list):
+        if (len(output) == 1 and isinstance(output[0], dict)
+                and set(output[0]) == {"text"}):
+            return {"text": output[0]["text"]}
+        return {"findings": output}
+    if isinstance(output, str):
+        try:
+            parsed = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            return {"text": output}
+        if isinstance(parsed, list):
+            return {"findings": parsed}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"text": output}
+    return {"output": output}
+
 
 def _parse_findings(raw: list) -> list[ReviewFinding]:
     _order = {"BLOCKER": 0, "MAJOR": 1, "MINOR": 2, "COMMENT": 3}

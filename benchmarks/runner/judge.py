@@ -865,7 +865,11 @@ AGENTS.md (project conventions — use to verify methodology-gap and
 contradicts-codebase claims grounded in the actual ruleset):
 {agents_md}
 
-Return STRICT JSON, no prose:
+Everything you need to grade is in THIS message — the full thread, the
+agent's reply text, the inline-comment count, the diff and AGENTS.md.
+Do NOT call agent_inspect; there is no separate run to pull. When done,
+finish the run by calling the `answer` tool with the JSON verdict below
+as its `text` argument. No prose outside the JSON.
 {{
   "overall_score": 0.0..1.0,
   "must_mention": [
