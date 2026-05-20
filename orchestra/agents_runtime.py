@@ -4,13 +4,14 @@ sub-agents, behind one fakeable interface.
 Mirrors the provider pattern the domain layer already uses
 (BitbucketPRProvider / JiraProvider / git_repo): a clean protocol
 with a real implementation and a fixture-driven fake, so callers —
-the `agent_spawn` / `agent_list` tools, the budget layer, the judge —
+the agent_spawn / agent_inspect tools, the budget layer, the judge —
 depend on the interface, not on `Agent` internals.
 
 What a runtime owns:
 
   lifecycle    spawn() a sub-agent, await_result()
-  observation  status() / trace() / tokens() of any run by id —
+  observation  list_spawned() — the runs this runtime started;
+               status() / trace() / tokens() of any run by id —
                "look at the trace, watch it, price the tokens"
   discovery    list_agents() — the registry as descriptors
 
@@ -35,17 +36,29 @@ callers touch, a test or a replay harness swaps in FakeAgentsRuntime
 and the whole spawn graph becomes deterministic with no real LLM
 calls — same move FakeBitbucket makes for PR data.
 
-Compact tool surface. The runtime API below is broad (spawn,
-await_result, status, trace, tokens, observe, list_agents), but the
-TOOL surface the LLM sees stays small — 4 tools, not 7:
+Compact tool surface. The runtime API below is broad, but the TOOL
+surface the LLM sees stays small — 3 tools:
 
     agent_spawn(agent, focus, sched="sync"|"async", …)  lifecycle
-    agent_await(child_id="", timeout=…)                  lifecycle
-    agent_list()                                         discovery
-    agent_inspect(run_id)                                observation
+    agent_await(run_id="", timeout=…)                    lifecycle
+    agent_inspect(run_id="", view="summary")             discovery + observation
 
-`agent_inspect` folds status + tokens + (optional) trace into ONE
-tool — the LLM doesn't need three separate observation calls.
+`agent_inspect` is ONE broad tool covering what an agent needs to
+SEE about delegation:
+  - no arg  → list the runs this runtime started (each: name,
+              state, step, tokens) + the registry of agent types
+              that can be spawned.
+  - run_id  → detail of one run; `view` ∈ summary | trace | tokens
+              picks the depth.
+
+WHICH runs an agent may see is an RBAC decision, made by a layer
+ABOVE the runtime — not baked in here. The runtime stays neutral:
+`list_spawned()` reports what this runtime instance started;
+`status` / `trace` / `tokens` resolve any run by id. The RBAC
+layer decides which of those a given caller is allowed to read
+(e.g. only its own sub-tree, or — for the judge — the one run it
+was handed to grade).
+
 `observe()` (live event stream) is a runtime-API method, not a
 tool: a streaming iterator doesn't fit the tool-call model.
 
@@ -204,7 +217,10 @@ class AgentsRuntime(Protocol):
     def spawn(self, spec: SpawnSpec) -> RunHandle: ...
     def await_result(self, handle: RunHandle,
                      timeout: Optional[float] = None) -> RunResult: ...
-    # observation
+    # observation — list_spawned() reports this runtime's own runs;
+    # status/trace/tokens/observe resolve any run by id. An RBAC
+    # layer above decides which a caller may actually read.
+    def list_spawned(self) -> list[RunStatus]: ...
     def status(self, run_id: str) -> RunStatus: ...
     def trace(self, run_id: str) -> dict: ...
     def tokens(self, run_id: str) -> TokenAccounting: ...
@@ -376,16 +392,42 @@ class InProcessRuntime:
         self._list_agents_fn = list_agents_fn
         self._observer = TraceDBObserver(db_path)
         # spawn() stashes the RunResult so a later await_result() on a
-        # wait=True handle is a free lookup; wait=False handles resolve
-        # via the trace store.
+        # sync handle is a free lookup; async handles resolve via the
+        # trace store. `_handles` keeps spawn order for list_spawned().
         self._results: dict[str, RunResult] = {}
+        self._handles: list[RunHandle] = []
 
     def spawn(self, spec: SpawnSpec) -> RunHandle:
         result = self._spawn_fn(spec)
         self._results[result.agent_id] = result
-        return RunHandle(agent_id=result.agent_id,
-                         run_id=result.run_id,
-                         agent_name=result.agent_name)
+        handle = RunHandle(agent_id=result.agent_id,
+                           run_id=result.run_id,
+                           agent_name=result.agent_name)
+        self._handles.append(handle)
+        return handle
+
+    def list_spawned(self) -> list[RunStatus]:
+        """Statuses of the runs this runtime instance started. Live
+        data from the trace store when a run_id is known; otherwise
+        synthesised from the cached RunResult. (Access policy — who
+        may read which run — is an RBAC concern handled above.)"""
+        out: list[RunStatus] = []
+        for h in self._handles:
+            if h.run_id:
+                st = self._observer.status(h.run_id)
+                if st.state != "unknown":
+                    out.append(st)
+                    continue
+            res = self._results.get(h.agent_id)
+            if res is not None:
+                out.append(RunStatus(
+                    run_id=h.run_id or h.agent_id,
+                    state=res.status,
+                    agent_name=res.agent_name,
+                    steps=res.steps,
+                    tokens=TokenAccounting(tokens_paid=res.tokens),
+                ))
+        return out
 
     def await_result(self, handle: RunHandle,
                      timeout: Optional[float] = None) -> RunResult:
@@ -455,6 +497,8 @@ class FakeAgentsRuntime:
     def __init__(self, fixture: dict):
         self._fixture = fixture or {}
         self._spawn_counter = 0
+        self._results: dict[str, RunResult] = {}
+        self._handles: list[RunHandle] = []
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "FakeAgentsRuntime":
@@ -485,19 +529,36 @@ class FakeAgentsRuntime:
                    f"focus={spec.focus[:80]!r}"),
             run_id=run_id,
         )
-        self._results = getattr(self, "_results", {})
         self._results[agent_id] = self._last
-        return RunHandle(agent_id=agent_id, run_id=run_id,
-                         agent_name=spec.agent_name)
+        handle = RunHandle(agent_id=agent_id, run_id=run_id,
+                           agent_name=spec.agent_name)
+        self._handles.append(handle)
+        return handle
 
     def await_result(self, handle: RunHandle,
                      timeout: Optional[float] = None) -> RunResult:
-        return getattr(self, "_results", {}).get(
+        return self._results.get(
             handle.agent_id,
             RunResult(agent_id=handle.agent_id,
                       agent_name=handle.agent_name, status="failed",
                       error="unknown handle"),
         )
+
+    def list_spawned(self) -> list[RunStatus]:
+        """Statuses of the runs started through this fake runtime."""
+        out: list[RunStatus] = []
+        for h in self._handles:
+            res = self._results.get(h.agent_id)
+            if res is None:
+                continue
+            out.append(RunStatus(
+                run_id=h.run_id,
+                state=res.status,
+                agent_name=res.agent_name,
+                steps=res.steps,
+                tokens=TokenAccounting(tokens_paid=res.tokens),
+            ))
+        return out
 
     def _match_spawn(self, spec: SpawnSpec) -> Optional[dict]:
         for entry in (self._fixture.get("spawns") or []):

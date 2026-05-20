@@ -120,6 +120,20 @@ def test_spawn_spec_async_defaults() -> None:
     assert a.sched == "async" and a.callback is False
 
 
+def test_fake_list_spawned() -> None:
+    """list_spawned() reports the runs this runtime instance started
+    — neutral on access policy (RBAC is a layer above)."""
+    rt = FakeAgentsRuntime(FIXTURE)
+    assert rt.list_spawned() == []          # nothing spawned yet
+    rt.spawn(SpawnSpec(agent_name="investigator", focus="cheapest item"))
+    rt.spawn(SpawnSpec(agent_name="investigator", focus="other"))
+    spawned = rt.list_spawned()
+    assert len(spawned) == 2
+    assert spawned[0].steps == 7 and spawned[0].tokens.tokens_paid == 4200
+    assert spawned[1].steps == 3
+    assert all(s.agent_name == "investigator" for s in spawned)
+
+
 def test_fake_list_agents() -> None:
     rt = FakeAgentsRuntime(FIXTURE)
     agents = rt.list_agents()
@@ -225,6 +239,12 @@ def test_inprocess_spawn_delegates_to_callback() -> None:
     assert result.output == "done" and result.steps == 5
 
     assert rt.list_agents()[0].name == "investigator"
+
+    # list_spawned() — the runs this runtime instance started.
+    spawned = rt.list_spawned()
+    assert len(spawned) == 1
+    assert spawned[0].agent_name == "investigator"
+    assert spawned[0].steps == 5
 
 
 def test_inprocess_is_protocol_conformant() -> None:
