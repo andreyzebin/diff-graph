@@ -18,9 +18,9 @@ data:
   intended_text:
     type: string
     description: "The agent's text_answer / text capture-tool output — the intended_text channel."
-  agent_run_id:
+  tool_trace:
     type: string
-    description: "Run id of the agent under review. The judge calls agent_inspect(run_id=..., view='trace') to pull its full tool-call trace itself — the tool_trace channel."
+    description: "The agent's full tool-call trace — every call by every agent (reviewer + any spawned sub-agents), in order, with arguments. The behavioural-evidence channel. Built by the bench from the trace store via the AgentsRuntime provider."
   acknowledgement_required:
     type: string
     description: "yes if the agent was invoked via a PR comment and is expected to ack quickly; no otherwise."
@@ -100,21 +100,14 @@ assert_via: {{ assert_via }}
 вместе они покрывают "что делегировал" + "что прокомментировал сам".
 
 ## Трейс вызовов инструментов агента (канал: tool_trace)
+{{ tool_trace }}
 
-Агент, чьё ревью ты оцениваешь, выполнился как запуск с
-**run_id: `{{ agent_run_id }}`**.
-
-Готовым текстом трейс тебе не передаётся — ты достаёшь его сам.
-Вызови инструмент:
-
-    agent_inspect(run_id="{{ agent_run_id }}", view="trace")
-
-Он вернёт скан-лог всех вызовов инструментов — каждый вызов, каждым
-агентом, по порядку, с аргументами. Формат строки:
-`[<агент>] #<шаг> <инструмент>(<аргументы>)`. Под-агенты, спавненные
-через `agent_spawn`, появляются под своими именами. `view="summary"`
-даёт состояние/шаги/токены запуска, `view="tokens"` — разбивку по
-токенам.
+Это полная хронология того, что агент РЕАЛЬНО делал — каждый вызов
+инструмента, **каждым агентом**, по порядку, с аргументами. Формат строки: `[<агент>] #<шаг> <инструмент>(<аргументы>)`.
+Под-агенты, спавненные через `agent_spawn`, появляются здесь под
+своими именами — так что делегацию видно с двух сторон: и сам вызов
+`agent_spawn` у reviewer'а, и последующие шаги под-агента под его
+именем.
 
 Это твой канал поведенческих доказательств. Сценарий описывает
 ожидаемое поведение прозой (`concern_focuses[].rationale`,
@@ -279,9 +272,7 @@ JSON-схему ниже): **семантический** match `rationale` ож
 имена методов вместо общих категорий — всё OK. Если concern_focuses
 пустой — этот блок в JSON-ответе должен быть пустым массивом.
 
-Когда оценка готова — заверши запуск, вызвав инструмент `answer` и
-передав JSON-вердикт **строго по схеме ниже** в аргументе `text`.
-Сам JSON — без текста вокруг. Схема:
+Отвечай строго в JSON по следующей схеме. Без текста вне JSON.
 
 {% raw %}
 {

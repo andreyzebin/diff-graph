@@ -1,28 +1,22 @@
 ---
 agent: judge.raw
-mode: react
-tools:
-  - agent_inspect
-  - answer
+mode: single
 budget:
   tokens: 60000
-  steps: 8
+  steps: 1
 llm:
   temperature: 0.0
 summary: >
-  Code-review judge. Runs on the orchestra engine like any other
-  agent: a minimal system prompt (raw.system.md — "grade per the
-  instructions, finish with answer()") plus all the grading logic
-  in raw.user.md (rendered as Jinja against the bench-supplied data
-  channels). The judge does NOT receive a pre-flattened tool trace —
-  it is handed the run_id of the agent under review and pulls the
-  behavioural evidence itself via agent_inspect(run_id=…,
-  view="trace"), which routes through the AgentsRuntime provider
-  (TraceDBObserver over the shared trace store in prod,
-  FakeAgentsRuntime in unit tests). It submits the JSON verdict with
-  answer(text=…). The bench (`benchmarks.runner.judge.LLMJudge`)
-  reads the SAME raw.user.md, renders it in-process with the data it
-  collected (PR diff, intended_findings, concern_focuses, the agent
-  run_id…), and passes the rendered text via `--user-message` — one
+  Code-review judge. A single-shot orchestra agent: one LLM call, no
+  tools. The system prompt is minimal (raw.system.md — "grade per the
+  instructions, JSON only"); all the grading logic lives in
+  raw.user.md, rendered as Jinja against the bench-supplied data
+  channels. One of those channels is `tool_trace` — the agent's
+  behavioural evidence, the compact tool-call log built by the bench
+  from the canonical trace store via the AgentsRuntime provider
+  (TraceDBObserver.observe + compact_tool_trace) and injected into
+  the prompt like any other rendered channel. The bench
+  (`benchmarks.runner.judge.LLMJudge`) renders the SAME raw.user.md
+  in-process and passes the result via `--user-message` — one
   template file across both call sites, no drift.
 ---

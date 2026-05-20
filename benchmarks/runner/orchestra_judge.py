@@ -41,36 +41,17 @@ _DIFFGRAPH_REPO_DEFAULT = str(Path(__file__).resolve().parents[2])
 
 
 def _extract_verdict(data) -> dict:
-    """Normalise the cli.py `--output` payload into the verdict dict.
+    """Validate the cli.py `--output` payload of a judge.raw run.
 
-    The judge.raw agent is a react-mode orchestra agent that finishes
-    with `answer(text=<json verdict>)`. cli.py writes that deliverable
-    as `{"text": "<json string>"}` (run_agent surfaces an answer
-    payload as a text deliverable; the legacy `[{"text": …}]` list
-    shape is also accepted). A legacy single-shot judge wrote the
-    verdict dict straight out. Accept all three.
-    """
-    text = None
-    if isinstance(data, dict) and set(data) == {"text"}:
-        text = data.get("text") or ""
-    elif (isinstance(data, list) and len(data) == 1
-            and isinstance(data[0], dict) and "text" in data[0]):
-        text = data[0].get("text") or ""
-    if text is not None:
-        try:
-            from runner.judge import _parse_raw
-            return _parse_raw(text)
-        except Exception as exc:
-            raise RuntimeError(
-                f"orchestra judge answer() text was not valid JSON: {exc}\n"
-                f"text[:500]: {text[:500]!r}"
-            )
+    judge.raw is a single-shot orchestra agent: its deliverable is the
+    verdict JSON, which cli.py writes straight out as a dict. Anything
+    else (a list, a scalar) means the judge produced something other
+    than a verdict — fail loud."""
     if isinstance(data, dict):
         return data
     raise RuntimeError(
         f"orchestra judge returned an unexpected shape: "
-        f"{type(data).__name__} — expected a verdict dict or an "
-        f"answer()-style {{'text': …}} payload"
+        f"{type(data).__name__} — expected the verdict dict"
     )
 
 

@@ -264,7 +264,7 @@ class LLMJudge(Judge):
         intended_concerns = self._load_intended_concerns()
         intended_spawns = self._load_intended_spawns()
         intended_text = self._load_intended_text()
-        agent_run_id = self._load_agent_run_id()
+        tool_trace = self._load_tool_trace()
 
         # When the bench posts seed_comments + the trigger comment via the
         # same Bitbucket account as the agent (single-token setup), those
@@ -327,7 +327,7 @@ class LLMJudge(Judge):
                                intended_concerns=intended_concerns,
                                intended_spawns=intended_spawns,
                                intended_text=intended_text,
-                               agent_run_id=agent_run_id)
+                               tool_trace=tool_trace)
         self._trace_request(scenario.id, prompt)
         try:
             data = self._llm_client.complete_json(prompt)
@@ -370,20 +370,11 @@ class LLMJudge(Judge):
         return data.get("invocations") or []
 
     def _load_agent_run_id(self) -> str:
-        """Run id of the agent under review — the handle the judge
-        uses to pull the behavioural trace itself, via
-        agent_inspect(run_id=…, view="trace").
-
-        Replaces the old in-process `_load_tool_trace()`: the bench no
-        longer pre-flattens `invocations.json` into a string. It just
-        hands the judge a run_id; the judge (an orchestra agent)
-        reads the trace through the AgentsRuntime provider over the
-        shared trace store.
+        """Run id of the agent under review.
 
         Prefers an explicitly-supplied linked_run_id; otherwise reads
         it from the agent subprocess's run.json (cli.py writes it on
-        startup). Empty string when neither is available — the judge
-        then grades from the other channels only.
+        startup). Empty string when neither is available.
         """
         if self._linked_run_id:
             return self._linked_run_id
@@ -397,6 +388,29 @@ class LLMJudge(Judge):
         except Exception:
             return ""
         return str(meta.get("run_id") or "").strip()
+
+    def _load_tool_trace(self) -> str:
+        """The agent's tool-call trace — the behavioural-evidence
+        channel rendered into the judge prompt as `{{ tool_trace }}`.
+
+        Sourced from the canonical trace store via the AgentsRuntime
+        provider: `TraceDBObserver.observe(run_id)` yields the run's
+        event stream — every event, EVERY agent (the reviewer plus
+        any sub-agent it spawned, since children share the run_id) —
+        and `compact_tool_trace()` flattens it to a scannable
+        `[agent] #step tool(args)` log. Delegation is therefore
+        visible from both sides: the reviewer's `agent_spawn` call and
+        the spawned agent's own steps under its name.
+
+        The judge is single-shot; the bench renders this and injects
+        it into the prompt like any other channel. An uninspectable
+        run degrades to an explicit marker, never a blank.
+        """
+        run_id = self._load_agent_run_id()
+        if not run_id:
+            return "(no agent run id — tool trace unavailable)"
+        from orchestra.agents_runtime import TraceDBObserver, compact_tool_trace
+        return compact_tool_trace(TraceDBObserver().observe(run_id))
 
     def _load_intended_findings(self) -> list[dict]:
         """Findings the agent passed to its final `done()` call. Used
@@ -659,7 +673,7 @@ def _build_prompt(
     intended_concerns: list[dict] | None = None,
     intended_spawns: list[dict] | None = None,
     intended_text: str = "",
-    agent_run_id: str = "",
+    tool_trace: str = "",
 ) -> str:
     eo = scenario.expected_output
     required_str = json.dumps([
@@ -701,7 +715,7 @@ def _build_prompt(
         intended_concerns=_format_intended_concerns(intended_concerns or []),
         intended_spawns=_format_intended_concerns(intended_spawns or []),
         intended_text=_format_intended_text(intended_text),
-        agent_run_id=(agent_run_id.strip() or "(run id unavailable)"),
+        tool_trace=(tool_trace.strip() or "(no tool calls recorded)"),
         required_comments=required_str,
         forbidden_comments=forbidden_str,
         concern_focuses=concern_focuses_str,
@@ -865,11 +879,7 @@ AGENTS.md (project conventions — use to verify methodology-gap and
 contradicts-codebase claims grounded in the actual ruleset):
 {agents_md}
 
-Everything you need to grade is in THIS message — the full thread, the
-agent's reply text, the inline-comment count, the diff and AGENTS.md.
-Do NOT call agent_inspect; there is no separate run to pull. When done,
-finish the run by calling the `answer` tool with the JSON verdict below
-as its `text` argument. No prose outside the JSON.
+Return STRICT JSON, no prose:
 {{
   "overall_score": 0.0..1.0,
   "must_mention": [

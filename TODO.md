@@ -5982,9 +5982,10 @@ scoring layer is debugged.
 
 ## 21. AgentsRuntime provider — fakeable lifecycle + observation for sub-agents
 
-**Status:** Phases 1-3c SHIPPED 2026-05-20. Phase 4 core (judge
-grades from the live trace via `agent_inspect`) SHIPPED 2026-05-20
-— see §21.4 for what landed and the deferred remainder.
+**Status:** Phases 1-3c SHIPPED 2026-05-20. Phase 4 (judge grades
+the tool trace, sourced from the provider) SHIPPED 2026-05-20 —
+single-shot judge, trace rendered into the prompt via Jinja. See
+§21.4 for what landed and the deferred remainder.
 
 ### 21.1 Why this exists
 
@@ -6056,53 +6057,57 @@ Implementations:
 - 17 tests in `tests/test_agents_runtime.py` cover protocol
   conformance, fake matching, observation, and the pusher.
 
-### 21.4 Phase 4 — judge grades from the live trace (CORE SHIPPED 2026-05-20)
+### 21.4 Phase 4 — judge grades the tool trace, sourced from the provider (SHIPPED 2026-05-20)
 
-The judge no longer gets a pre-flattened `tool_trace` string. It is
-a multi-step orchestra agent that is handed the **run_id** of the
-agent under review and pulls the behavioural evidence itself.
+The judge's `tool_trace` channel is now built from the canonical
+trace store via the AgentsRuntime provider — not from
+`invocations.json`. The judge stays a **single-shot** orchestra
+agent: the trace is rendered into its prompt as a Jinja channel,
+not pulled by a tool call.
+
+Design note — a brief detour. The first cut made the judge a
+multi-step `react` agent that called `agent_inspect` itself. In
+practice that added react-loop variance, a run_id-confusion bug on
+the `/ask` `/help` path (the judge grabbed a `dg:diffgraph:` comment
+footer as a fake run_id), and an output-mangling bug (`answer`'s
+`[{"text": …}]` got run through `_parse_findings` → `[]`). It was
+reverted to single-shot: the trace is a fixed artifact, so
+pre-rendering it is simpler and deterministic.
 
 What shipped:
 
-- `judge.raw` is now `mode: react` with `tools: [agent_inspect,
-  answer]` and budget `steps: 8 / tokens: 60000` (was a
-  `mode: single`, tool-less, single LLM call). `raw.system.md` /
-  `raw.user.md` rewritten: the judge calls
-  `agent_inspect(run_id=…, view="trace")` to read the trace, then
-  submits the JSON verdict via `answer(text=…)`.
-- `agent_inspect`'s `view="trace"` now returns the **compact
-  tool-call log** — `compact_tool_trace()` in `agents_runtime.py`
-  flattens the run's `observe()` event stream into a scannable
-  `[agent] #step tool(args…)` list. The raw event tree (HTML-trace
-  shaped, too large for an LLM) is no longer dumped into a tool
-  result. This improves every `agent_inspect` caller, not just the
-  judge.
-- The bench (`judge.py`) hands the judge an `agent_run_id`
-  (`_load_agent_run_id()` reads the agent subprocess's `run.json`)
-  instead of pre-flattening `invocations.json`. `_load_tool_trace()`
-  is deleted; `_build_prompt` takes `agent_run_id`.
-- The orchestra judge backend is now the **default** in
-  `_make_llm_client` (was `legacy`). `orchestra_judge.py` unwraps
-  the `answer()`-shaped `[{"text": …}]` output into the verdict
-  dict.
-- Fakeable seam: `DIFFGRAPH_AGENTS_RUNTIME_FIXTURE` env var →
-  `agents_runtime` property builds a `FakeAgentsRuntime` (mirrors
-  `DIFFGRAPH_JIRA_FIXTURE`). A unit test of the judge points it at
-  a YAML fixture and grades a recorded run with no real LLM calls.
+- `judge.raw` stays `mode: single` (one LLM call, no tools), budget
+  `steps: 1 / tokens: 60000`.
+- `compact_tool_trace()` in `agents_runtime.py` — flattens a run's
+  `observe()` event stream into a scannable `[agent] #step
+  tool(args…)` log. Spans EVERY agent under the run (reviewer +
+  any spawned sub-agents — children share the run_id), so
+  delegation is visible from both sides: the reviewer's
+  `agent_spawn` call and the sub-agent's own steps under its name.
+- The bench (`judge.py:_load_tool_trace`) builds the `tool_trace`
+  channel as `compact_tool_trace(TraceDBObserver(db).observe(
+  run_id))` — sourced from the trace store through the provider,
+  replacing the old `invocations.json` read. `_build_prompt`
+  renders it into `{{ tool_trace }}`.
+- `agent_inspect`'s `view="trace"` also returns this compact log
+  (not the raw event tree) — improves every `agent_inspect` caller
+  (e.g. a reviewer watching its investigators).
+- The orchestra judge backend is the **default** in
+  `_make_llm_client`.
 - Semantic `tool_trace` grading (no imperative `assert_invocations`)
-  is preserved — Phase 4 changed HOW the judge gets the trace, not
-  the grading style.
+  preserved — the judge reads the trace and decides behaviourally.
 
 Still open (deferred):
 
 - The legacy in-process judge backend (`AnthropicLLMClient` /
   `OpenAILLMClient`) is still selectable as `backend: legacy` — an
-  escape hatch, not yet removed. Acceptance criterion "no bespoke
-  `complete_json` path remains" is not fully met until it is.
-- A live bench run to confirm the judge model reliably calls
-  `agent_inspect` → `answer` (prompt-quality validation).
+  escape hatch, not yet removed.
 - The `intended_findings` / `intended_concerns` / `intended_spawns`
   / `intended_text` channels still come from `invocations.json`
   (semantic pre-extraction, distinct from the behavioural
-  tool-call trace) — left as-is intentionally; migrating them to
-  trace-pull is optional follow-up.
+  tool-call trace) — left as-is intentionally.
+- A scenario whose POINT is delegation (e.g.
+  `REV-U-008-budget-aware-delegation`) does not yet *score*
+  delegation as a behavioural axis — its rubric accepts
+  "delegated OR handled inline". Tightening that is a
+  scenario-design task, deliberately not done here.

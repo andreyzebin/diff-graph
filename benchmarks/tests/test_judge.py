@@ -146,36 +146,20 @@ async def test_judge_found_comment_passes():
     assert "findById" in llm.last_prompt
 
 
-def test_extract_verdict_unwraps_answer_shapes():
-    """_extract_verdict normalises the cli.py --output payload the
-    orchestra judge.raw agent produces. The judge finishes with
-    answer(text=<json>); run_agent surfaces that as {"text": <json>}
-    (the legacy [{"text": <json>}] list shape is also accepted), and a
-    single-shot judge wrote the verdict dict straight out."""
-    from runner.orchestra_judge import _extract_verdict
-
-    # answer() → {"text": "<json>"}
-    assert _extract_verdict({"text": '{"overall_score": 0.9, "verdict": "pass"}'}) == {
-        "overall_score": 0.9, "verdict": "pass"}
-    # legacy list-wrapped answer payload
-    assert _extract_verdict([{"text": '{"verdict": "fail"}'}]) == {"verdict": "fail"}
-    # fenced JSON inside the answer text
-    assert _extract_verdict(
-        {"text": '```json\n{"verdict": "pass"}\n```'}) == {"verdict": "pass"}
-    # legacy single-shot judge: verdict dict straight through
-    assert _extract_verdict({"overall_score": 0.5}) == {"overall_score": 0.5}
-
-
-def test_extract_verdict_rejects_unexpected_shapes():
-    """A payload that is neither a verdict dict nor an answer wrapper
-    fails loud — e.g. the [] cli.py used to write when an answer
-    payload was wrongly run through _parse_findings."""
+def test_extract_verdict_passes_dict_rejects_other():
+    """judge.raw is a single-shot orchestra agent: cli.py writes its
+    verdict straight out as a dict. _extract_verdict passes a dict
+    through and fails loud on anything else."""
     import pytest
     from runner.orchestra_judge import _extract_verdict
+
+    assert _extract_verdict({"overall_score": 0.9, "verdict": "pass"}) == {
+        "overall_score": 0.9, "verdict": "pass"}
+    assert _extract_verdict({}) == {}
     with pytest.raises(RuntimeError, match="unexpected shape"):
         _extract_verdict([])
-    with pytest.raises(RuntimeError, match="not valid JSON"):
-        _extract_verdict({"text": "this is not json at all"})
+    with pytest.raises(RuntimeError, match="unexpected shape"):
+        _extract_verdict("not a dict")
 
 
 async def test_judge_missed_comment_fails():
