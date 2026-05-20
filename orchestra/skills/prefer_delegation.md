@@ -2,9 +2,10 @@
 # Skill: prefer_delegation
 #
 # Bundles the tools an orchestrator-role agent needs to delegate
-# (agent_spawn + agent_list) with the rationale for picking
-# delegation OR direct handling — both can be the right move,
-# the skill makes the trade-off explicit.
+# (agent_list to discover agent types, agent_spawn to launch one,
+# agent_inspect to observe the runs it launched) with the
+# rationale for picking delegation OR direct handling — both can
+# be the right move, the skill makes the trade-off explicit.
 #
 # Abstract over delegate names: the actual name is whatever
 # agent_list() returns at runtime — varies per deployment. The
@@ -16,12 +17,12 @@
 # rather than informed it. This version lists rational criteria
 # in both directions.
 description: >-
-  Adds agent_spawn + agent_list to the toolset and provides the
-  trade-off rationale: when delegation is rational (parallelism,
-  depth, capability mismatch, …) versus when direct handling is
-  rational (trivial / in-context / synthesis). The skill never
-  says "always delegate" — it makes both choices first-class
-  and explicit.
+  Adds agent_list + agent_spawn + agent_inspect to the toolset and
+  provides the trade-off rationale: when delegation is rational
+  (parallelism, depth, capability mismatch, …) versus when direct
+  handling is rational (trivial / in-context / synthesis). The
+  skill never says "always delegate" — it makes both choices
+  first-class and explicit.
 # Reflects under this skill carry a live budget + time +
 # subagents snapshot so the agent can price the spawn-vs-direct
 # trade-off honestly at each planning moment. Prompts that mount
@@ -31,8 +32,9 @@ description: >-
 reflect:
   with_state: true
 tools:
-  - agent_spawn
   - agent_list
+  - agent_spawn
+  - agent_inspect
 ---
 **Delegation, in one line.** `agent_spawn(agent="<name>",
 focus="<the task as a question>")` runs another agent in a fresh

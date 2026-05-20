@@ -1,5 +1,5 @@
 """
-Builtin tools: reflect, done, agent_spawn, agent_list.
+Builtin tools: reflect, done, agent_spawn, agent_list, agent_inspect.
 
 Registered automatically based on AgentConfig.tools — the same flat
 list every other tool comes from. The framework-built-in handlers
@@ -238,12 +238,43 @@ def register_builtins(
         registry.register_tool_def(ToolDef(
             name="agent_list",
             description=(
-                "Get the registry of all available agents: names, summaries, "
-                "and required input data schemas. Use this to discover which "
-                "agent to spawn for a given task."
+                "The catalog of agent TYPES you can spawn — names, "
+                "summaries, tools, and required input-data schemas. "
+                "Static registry; answers 'who can I call'. (To watch "
+                "the runs you've already spawned, use agent_inspect.)"
             ),
             parameters={"type": "object", "properties": {}},
             handler=_meta_handler("_meta_agent_list"),
+            is_builtin=True,
+        ))
+
+    if "agent_inspect" in tool_names:
+        registry.register_tool_def(ToolDef(
+            name="agent_inspect",
+            description=(
+                "Observation of the agent RUNS you have spawned — "
+                "their live state, steps, tokens. Call with no run_id "
+                "to list your spawned runs; call with a run_id to "
+                "inspect one — view='summary' for state/steps/tokens, "
+                "'trace' for the full event tree, 'tokens' for the "
+                "token breakdown. (To see which agent TYPES exist, "
+                "use agent_list.)"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "run_id": {
+                        "type": "string",
+                        "description": "Run id to inspect (from an agent_spawn result). Omit to list spawned runs + the agent registry.",
+                    },
+                    "view": {
+                        "type": "string",
+                        "enum": ["summary", "trace", "tokens"],
+                        "description": "Detail level when a run_id is given. Default 'summary'.",
+                    },
+                },
+            },
+            handler=_meta_handler("_meta_agent_inspect"),
             is_builtin=True,
         ))
 

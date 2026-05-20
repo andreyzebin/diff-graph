@@ -1355,13 +1355,47 @@ class Agent:
         return format_budget_stats(self.budget_state, children=children_snapshot)
 
     def _meta_agent_list(self, args: dict) -> str:
-        """agent_list: return the agent registry for discovery.
+        """agent_list: the catalog of agent TYPES that can be spawned.
 
-        Routes through the AgentsRuntime — `list_agents()` yields
-        AgentDescriptors which serialise to the same dict shape the
-        registry listing always had."""
+        Static registry — descriptors (name / summary / tools /
+        capabilities / input_schema) of the agent CLASSES, not
+        instances. Routes through the AgentsRuntime's list_agents().
+        For the runs you've already spawned, see agent_inspect.
+        """
         listing = [d.to_dict() for d in self.agents_runtime.list_agents()]
         return json.dumps(listing, indent=2, ensure_ascii=False)
+
+    def _meta_agent_inspect(self, args: dict) -> str:
+        """agent_inspect: observation of the agent RUNS this agent
+        has spawned — instances, not classes.
+
+        No run_id → list this agent's spawned runs (state / steps /
+        tokens). With run_id → detail of one run; `view` ∈ summary |
+        trace | tokens. Routes through the AgentsRuntime provider.
+        (For the catalog of agent TYPES, use agent_list.)
+        """
+        rt = self.agents_runtime
+        run_id = str(args.get("run_id", "") or "").strip()
+
+        if not run_id:
+            return json.dumps(
+                [s.to_dict() for s in rt.list_spawned()],
+                indent=2, ensure_ascii=False, default=str,
+            )
+
+        view = str(args.get("view", "summary") or "summary").strip().lower()
+        if view == "tokens":
+            return json.dumps(rt.tokens(run_id).to_dict(),
+                              indent=2, ensure_ascii=False)
+        # summary / trace both start from status. Resolve own spawned
+        # runs from list_spawned() first — for in-process children that
+        # carries synthesised live state even without a trace-DB row.
+        spawned = {s.run_id: s for s in rt.list_spawned()}
+        st = spawned.get(run_id) or rt.status(run_id)
+        out = st.to_dict()
+        if view == "trace":
+            out["trace"] = rt.trace(run_id)
+        return json.dumps(out, indent=2, ensure_ascii=False, default=str)
 
     # ── Message building ──────────────────────────────────────────────────────
 
