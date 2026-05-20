@@ -1,5 +1,6 @@
 """
-Builtin tools: reflect, done, agent_spawn, agent_list, agent_inspect.
+Builtin tools: reflect, done, agent_spawn, agent_await, agent_list,
+agent_inspect.
 
 Registered automatically based on AgentConfig.tools — the same flat
 list every other tool comes from. The framework-built-in handlers
@@ -212,9 +213,12 @@ def register_builtins(
         registry.register_tool_def(ToolDef(
             name="agent_spawn",
             description=(
-                "Spawn a sub-agent on a focused task. The sub-agent runs to "
-                "completion and its result is returned. Multiple agent_spawn "
-                "calls in the same step run in parallel."
+                "Spawn a sub-agent on a focused task. sched='sync' "
+                "(default) runs it to completion and returns the "
+                "result. sched='async' returns a run_id immediately — "
+                "retrieve the result later with agent_await, or watch "
+                "it with agent_inspect. Multiple agent_spawn calls in "
+                "the same step run in parallel."
             ),
             parameters={
                 "type": "object",
@@ -227,10 +231,44 @@ def register_builtins(
                         "type": "string",
                         "description": "What this sub-agent should investigate / do.",
                     },
+                    "sched": {
+                        "type": "string",
+                        "enum": ["sync", "async"],
+                        "description": "'sync' (default) blocks for the result; 'async' returns a run_id immediately.",
+                    },
                 },
                 "required": ["agent", "focus"],
             },
             handler=_meta_handler("_meta_agent_spawn"),
+            is_builtin=True,
+        ))
+
+    if "agent_await" in tool_names:
+        registry.register_tool_def(ToolDef(
+            name="agent_await",
+            description=(
+                "Wait for async-spawned sub-agents to finish. Omit "
+                "run_id to wait for ALL of your uncollected async "
+                "runs; pass a run_id to wait for one. Returns a "
+                "result discriminated by status: 'completed' (all "
+                "done), 'partial' (timeout — some still running), "
+                "'interrupted' (a budget threshold is about to fire — "
+                "handle that first)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "run_id": {
+                        "type": "string",
+                        "description": "Run id from an async agent_spawn. Omit to wait for all your async runs.",
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Max seconds to wait. Default 60.",
+                    },
+                },
+            },
+            handler=_meta_handler("_meta_agent_await"),
             is_builtin=True,
         ))
 

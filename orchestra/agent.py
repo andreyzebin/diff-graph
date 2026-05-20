@@ -274,6 +274,16 @@ class Agent:
         # bare Agent (tests) costs nothing.
         self._agents_runtime = None
 
+        # Async spawn (TODO §13). `agent_spawn(sched="async")` runs the
+        # child in a background thread; `_async_spawned` keeps every
+        # async child's id in spawn order, `_async_collected` marks the
+        # ones an `agent_await` has already returned. `_async_done` is
+        # set by any async child on completion so a waiting agent_await
+        # wakes immediately instead of polling.
+        self._async_spawned: list[str] = []      # child agent_ids, in order
+        self._async_collected: set[str] = set()  # already returned by agent_await
+        self._async_done = threading.Event()
+
         # Done state
         self._done_output: Any = None
         self._done_called = False
@@ -1263,18 +1273,28 @@ class Agent:
                 steps=child.budget_state.steps_used if child.budget_state else 0,
                 tokens=child.budget_state.tokens_used if child.budget_state else 0,
             )
-        # Async — run in a background thread; result resolved later.
+        # Async — run in a background thread; result resolved later
+        # via agent_await. `_async_done` is set on completion so a
+        # waiting agent_await wakes immediately (TODO §13).
+        with self._children_lock:
+            self._async_spawned.append(child.agent_id)
+
         def _run():
-            result = child.run()
-            with self._children_lock:
-                self._children_results[child.agent_id] = result
-            if child.budget_state:
-                self.budget_tracker.debit_child(self.budget_state, child.budget_state)
+            try:
+                result = child.run()
+                with self._children_lock:
+                    self._children_results[child.agent_id] = result
+                if child.budget_state:
+                    self.budget_tracker.debit_child(
+                        self.budget_state, child.budget_state)
+            finally:
+                self._async_done.set()
         threading.Thread(target=_run, daemon=True).start()
         return RunResult(
             agent_id=child.agent_id,
             agent_name=spec.agent_name,
             status="spawned",
+            run_id=child.agent_id,
         )
 
     def _meta_agent_spawn(self, args: dict) -> str:
@@ -1295,29 +1315,143 @@ class Agent:
         if self.depth >= self.config.max_depth:
             return json.dumps({"error": "max depth reached"})
 
+        # `sched` ∈ sync | async (TODO §13). Legacy `wait=False` is
+        # still honoured as an alias for sched="async".
+        sched = str(args.get("sched", "") or "").strip().lower()
+        if not sched:
+            sched = "async" if args.get("wait") is False else "sync"
+
         spec = SpawnSpec(
             agent_name=agent_name,
             focus=args.get("focus", ""),
             data=args.get("data", {}) or {},
             context_handoff=args.get("context_handoff", ""),
-            sched="async" if args.get("wait") is False else "sync",
+            sched=sched,
             parent_agent_id=self.agent_id,
         )
         handle = self.agents_runtime.spawn(spec)
         result = self.agents_runtime.await_result(handle)
 
         if result.status == "spawned":
+            # Async — return the run_id so the agent can agent_await /
+            # agent_inspect it later.
             return json.dumps({"status": "spawned",
-                               "agent_id": result.agent_id})
+                               "run_id": result.run_id or result.agent_id})
         return json.dumps({
             "status":      "completed",
-            "agent_id":    result.agent_id,
+            "run_id":      result.run_id or result.agent_id,
             "agent_name":  result.agent_name,
             "output":      result.output,
             "sgr_summary": result.sgr_summary,
             "steps":       result.steps,
             "tokens":      result.tokens,
         }, ensure_ascii=False, indent=2, default=str)
+
+    def _any_pusher_pending(self) -> bool:
+        """True iff some budget pusher would fire a NEW action on the
+        next step — a ratio level whose latch isn't yet set. The
+        agent_await wake-up criterion (TODO §13.4): await bails with
+        `interrupted` ONLY when something new is about to happen, not
+        merely because a ratio is high (a latched level fires nothing
+        further)."""
+        from .budget import RatioEscalationPusher
+        if self.budget_state is None or self.budget_tracker is None:
+            return False
+        for pusher in getattr(self.budget_tracker, "_producers", []):
+            if not isinstance(pusher, RatioEscalationPusher):
+                continue
+            ratio = getattr(self.budget_state, pusher.ratio_attr, None)
+            if ratio is None:
+                continue
+            for idx, level in enumerate(pusher._levels):
+                at = level[0]
+                if idx < len(pusher._fired) and not pusher._fired[idx] \
+                        and ratio >= at:
+                    return True
+        return False
+
+    def _await_child_result(self, agent_id: str) -> dict:
+        """Format one async child's AgentResult as the per-run dict
+        agent_await returns. Mirrors the sync agent_spawn shape."""
+        res = self._children_results.get(agent_id)
+        child = self._children.get(agent_id)
+        sgr_summary = ""
+        if res is not None and getattr(res, "sgr_history", None):
+            last = res.sgr_history[-1]
+            sgr_summary = f"confidence={last.confidence}, learned: {last.learned[:300]}"
+        bs = child.budget_state if child else None
+        return {
+            "run_id":      agent_id,
+            "agent_name":  child.config.name if child else "",
+            "output":      res.output if res is not None else None,
+            "sgr_summary": sgr_summary,
+            "steps":       bs.steps_used if bs else 0,
+            "tokens":      bs.tokens_used if bs else 0,
+        }
+
+    def _meta_agent_await(self, args: dict) -> str:
+        """agent_await: block for async-spawned runs (TODO §13.3).
+
+        run_id="" → wait for ALL uncollected async runs; run_id=X →
+        that one. Returns a dict discriminated by `status`:
+          completed   — every target finished
+          partial     — `timeout` elapsed, some still running
+          interrupted — a budget pusher will fire on the next step;
+                        bail so the agent sees the pressure promptly
+        """
+        import time as _time
+        run_id = str(args.get("run_id", "") or "").strip()
+        try:
+            timeout = float(args.get("timeout", 60) or 60)
+        except (TypeError, ValueError):
+            timeout = 60.0
+
+        with self._children_lock:
+            if run_id:
+                targets = [run_id] if run_id in self._async_spawned else []
+            else:
+                targets = [c for c in self._async_spawned
+                           if c not in self._async_collected]
+        if not targets:
+            return json.dumps({"status": "completed", "results": []},
+                              ensure_ascii=False, indent=2, default=str)
+
+        deadline = _time.time() + timeout
+        interrupted = False
+        while True:
+            with self._children_lock:
+                pending = [t for t in targets if t not in self._children_results]
+            if not pending:
+                break
+            if self._any_pusher_pending():
+                interrupted = True
+                break
+            remaining = deadline - _time.time()
+            if remaining <= 0:
+                break
+            self._async_done.wait(min(remaining, 1.0))
+            self._async_done.clear()
+
+        results: list[dict] = []
+        still: list[str] = []
+        with self._children_lock:
+            for t in targets:
+                if t in self._children_results:
+                    results.append(self._await_child_result(t))
+                    self._async_collected.add(t)
+                else:
+                    still.append(t)
+
+        if not still:
+            status = "completed"
+        elif interrupted or self._any_pusher_pending():
+            status = "interrupted"
+        else:
+            status = "partial"
+        out: dict = {"status": status, "results": results}
+        if still:
+            out["still_running"] = still
+        return json.dumps(out, ensure_ascii=False, indent=2, default=str)
 
     def _meta_budget_stats(self, args: dict) -> str:
         """budget_stats: surface this agent's current consumption +
