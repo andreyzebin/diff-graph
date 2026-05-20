@@ -41,6 +41,16 @@
 - ~~Leak detection~~ — tests/test_prompts_no_fixture_leak.py + benchmark/tests/test_unit_fixture_leak_check.py auto-derive forbidden keyword lists from fixtures; caught 7 real leaks in the May-2026 cleanup
 - ~~Trend chart on /qa/scoring uses equal-spaced ordinal mutations~~ — was temporal, score "waves" got smeared by attempt-count density
 
+### 2026-05-20 — §21 AgentsRuntime + §19 Replay tier + §13 async + Revvy rename
+
+- ~~§21 AgentsRuntime provider (Phases 1-3c)~~ — `orchestra/agents_runtime.py`: `AgentsRuntime` protocol + `SpawnSpec`/`RunHandle`/`RunResult`/`RunStatus`/`TokenAccounting`/`AgentDescriptor`; `InProcessRuntime` (wraps Agent's spawn path, caches RunResult), `TraceDBObserver` (reads traces.db, graceful on missing DB), `FakeAgentsRuntime` (fixture-fed, fails loud on unmatched spawn, `from_yaml`). All spawn/status/list paths in `agent.py` rewired through it. 17 tests in `tests/test_agents_runtime.py`
+- ~~§13 Async spawn + `agent_await` + callback pusher~~ — `SpawnSpec` carries `sched`/`callback`; `agent_spawn(sched="async")` returns a run_id; `agent_await` discriminated (completed|partial|interrupted); `AsyncChildCallbackPusher` (budget.py, kind `async-child-callback`, registered `first=True`) drains ready child results into NUDGE actions
+- ~~Compact agent tool surface~~ — `agent_spawn` / `agent_await` / `agent_list` (agent TYPES catalog) / `agent_inspect` (run INSTANCES — `list_spawned` or summary|trace|tokens). `prefer_delegation` skill bundles list+spawn+inspect
+- ~~§19 Replay tier (Phases 1-3)~~ — capture (`RecordingWriter`, webhook `--record-fixture <dir>`, per-rev git bundle), single + lifecycle replay (`RecordingReader`, `materialize_repo`, `build_timeline`, `LifecycleReplayDriver`), outcomes/metrics (`Outcomes`, `auto_infer`, `score_lifecycle` → miss_rate / noise_rate), QA UI (`tracing/server/recordings.py` + qa_recordings list/detail templates with replay button)
+- ~~Remove imperative `assert_invocations`~~ — deleted `invocations_check.py` + its test; the judge now grades delegation semantically from a `tool_trace` channel in the judge prompt (rationale-based, no `must_call`/`must_not_call` overrides)
+- ~~Brand rename DiffGraph → Revvy~~ — product name updated across README + prompts + docs; GitHub repo renamed (`andreyzebin/revvy`). Python package stays `diffgraph` (package ≠ product is normal)
+- ~~README: data-to-LLM security section + MIT license~~ — documents what data the agent sends to the LLM and that agent visibility is scoped to its account's RBAC permissions; License section surfaces the MIT license
+
 ### 2026-05 — §5b Jira Phase 2 + §10 cross-source surface
 
 - ~~§5b Phase 1: `jira_read_ticket(ref)` + JiraRegistry + fake-provider~~ — handle/namespace/key refs, distill_ticket + format_ticket, multi-server registry from `jira_servers:`, DIFFGRAPH_JIRA_FIXTURE fake mode, graceful 4-level degradation
@@ -4147,7 +4157,15 @@ entries updated by a curator step after each successful run —
 
 ## 13. Async spawn + `agent_await` + callback pusher
 
-**Status:** design only (recorded 2026-05-16). No code yet.
+**Status:** SHIPPED 2026-05-20 (designed 2026-05-16). Async
+`agent_spawn(sched="async")`, `agent_await` (discriminated
+completed|partial|interrupted), and the `AsyncChildCallbackPusher`
+delivery channel all landed alongside the §21 AgentsRuntime
+provider — `SpawnSpec` carries `sched`/`callback`, the runtime
+runs the spawn, and ready child results drain into NUDGE actions
+on the parent's next step. The design subsections below are kept
+for the rationale; the surface that shipped is the compact one
+(`agent_spawn` + `agent_await` + `agent_inspect`, see §21).
 Builds on §12 (`budget_stats` already shows children block). The
 minimum useful addition for production async patterns AND for
 clean unit-test isolation of delegation.
@@ -5056,8 +5074,16 @@ reader is the only spot that addresses all three.
 
 ## 19. Replay tier — lifecycle recordings as ground-truth bench corpus
 
-**Status:** design phase. No code yet. The captured corpus is the
-prerequisite for "real" business metrics (miss_rate /
+**Status:** Phases 1-3 SHIPPED 2026-05-20 (designed 2026-05-19).
+Capture (`RecordingWriter`, webhook `--record-fixture <dir>`),
+single-invocation + lifecycle replay (`RecordingReader`,
+`materialize_repo` from a per-rev git bundle, `build_timeline`,
+`LifecycleReplayDriver`), outcomes/metrics (`Outcomes`,
+`auto_infer`, `score_lifecycle` → miss_rate / noise_rate), and
+the QA UI (`tracing/server/recordings.py` + qa_recordings list /
+detail templates with a replay button) all landed. Blind-mode
+replay against post-merge corpora is §20. The captured corpus is
+the prerequisite for "real" business metrics (miss_rate /
 noise_rate / lifecycle stability) measured against scenarios that
 mirror production behaviour byte-for-byte instead of synthetic
 unit fixtures. Sits between unit-tier (synthesised, deterministic,
@@ -5951,3 +5977,104 @@ gets validated on existing Bitbucket recordings (A+B) BEFORE
 the GitHub firehose makes correcting course expensive. By the
 time GH recordings start flowing in volume (Phase C), the
 scoring layer is debugged.
+
+---
+
+## 21. AgentsRuntime provider — fakeable lifecycle + observation for sub-agents
+
+**Status:** Phases 1-3c SHIPPED 2026-05-20. Phase 4 (judge fully
+on the orchestra engine) is the open spec at the bottom.
+
+### 21.1 Why this exists
+
+Before this work, spawning a sub-agent, asking for its status,
+reading its trace, and counting its tokens were four ad-hoc code
+paths scattered across `agent.py`, `builtin.py`, and the budget
+layer. None of them were fakeable, so a unit test that wanted to
+exercise delegation had to either run real child agents or
+monkey-patch internals.
+
+The fix mirrors the provider pattern already used for
+`BitbucketPRProvider` and `JiraProvider`: one **protocol** with a
+real implementation and a fake. Spawning, observing, and listing
+agents all go through it. The judge, the budget layer, and the
+`agent_*` tools become plain consumers of a stable interface that
+a test can swap for a fixture-fed fake.
+
+### 21.2 The interface — `orchestra/agents_runtime.py`
+
+`AgentsRuntime` protocol:
+
+- `spawn(spec: SpawnSpec) → RunHandle` — launches an agent. The
+  `SpawnSpec` carries `sched` (`sync`|`async`) and `callback`
+  (§13), so async delegation is expressed here, not bolted on.
+- `await_result(handle, timeout) → RunResult` — collects.
+- `list_spawned() → [RunStatus]` — the runs THIS runtime
+  instance started. Deliberately RBAC-neutral: it reports what
+  was spawned; deciding who may see a run is a layer above
+  (see [[project_reviewer_two_phase]] — visibility is RBAC).
+- `status / trace / tokens (run_id)` — point observation.
+- `observe(run_id)` — replays the run's event stream.
+- `list_agents() → [AgentDescriptor]` — the catalog of agent
+  TYPES (name, summary, tools, `input_schema`), distinct from
+  `list_spawned()` which is run INSTANCES.
+
+Value objects: `SpawnSpec`, `RunHandle`, `RunResult`,
+`RunStatus`, `TokenAccounting`, `AgentDescriptor`.
+
+Implementations:
+
+- `InProcessRuntime(spawn_fn, list_agents_fn)` — production. Wraps
+  Agent's existing spawn path; caches each `RunResult` so a
+  follow-up `await_result()` is free.
+- `TraceDBObserver(db_path)` — reads `traces.db` for
+  status/trace/tokens/observe. Degrades to `unknown` / `{}` /
+  zero on a missing DB — never raises (callers include tools and
+  the budget layer).
+- `FakeAgentsRuntime(fixture)` — fixture-driven. `spawns` entries
+  match on `agent_name` + optional `focus_contains` (catch-all
+  when omitted); unmatched spawns return a **failed** RunResult
+  naming the miss (tests fail loud). `from_yaml()` loader.
+
+### 21.3 What got rewired
+
+- Every spawn and status path in `agent.py` now routes through
+  the runtime: `_run_spawn`, `_meta_agent_spawn`,
+  `_meta_agent_list`, `_meta_agent_inspect`, `_meta_agent_await`.
+- The tool surface collapsed to a compact set in `builtin.py`:
+  `agent_spawn` (with `sched`/`callback`), `agent_await`,
+  `agent_list` (agent TYPES — the static catalog), `agent_inspect`
+  (run INSTANCES — `list_spawned` with no arg, or
+  summary|trace|tokens for one run).
+- `AsyncChildCallbackPusher` (in `budget.py`, kind
+  `async-child-callback`) drains ready child results into NUDGE
+  actions — the async-delivery transport for §13. It is an async
+  channel, not a budget producer; registered `first=True`.
+- `prefer_delegation` skill bundles `agent_list` + `agent_spawn`
+  + `agent_inspect`.
+- 17 tests in `tests/test_agents_runtime.py` cover protocol
+  conformance, fake matching, observation, and the pusher.
+
+### 21.4 Phase 4 — judge fully on the orchestra engine (OPEN)
+
+The judge is still a bespoke LLM call. The spec: rebuild it as a
+first-class orchestra agent (prompt-defined `.system.md` /
+`.user.md`, provider injection) so it can use the AgentsRuntime
+provider to inspect the runs it grades — read traces, replay
+events, count tokens — instead of being handed a pre-flattened
+`tool_trace` string.
+
+Acceptance criteria:
+
+- Judge is a prompt-defined agent compiled by `compiler.py`; no
+  bespoke `complete_json` call path remains.
+- It receives an `AgentsRuntime` (real in prod, `FakeAgentsRuntime`
+  in unit tests) and grades by calling `agent_inspect` /
+  `observe` on the run under test.
+- The semantic `tool_trace` grading from the May-2026 cleanup
+  (no imperative `assert_invocations`) is preserved — Phase 4
+  changes HOW the judge gets the trace, not the grading style.
+- Bench tiers (unit / integration / replay) all drive the judge
+  through the same provider seam; a unit fixture supplies a fake
+  runtime, replay supplies a `TraceDBObserver` over the recorded
+  run.
