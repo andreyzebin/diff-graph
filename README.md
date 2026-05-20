@@ -23,6 +23,7 @@ Multi-agent PR code reviewer powered by the **Orchestra** framework. All agents 
 - [Webhook router & health checks](webhook/README.md)
 - [Benchmark — scenarios & judge](benchmarks/README.md) — the in-repo `benchmarks/` subtree (was `code-review-benchmarks`)
 - [Quality management architecture](docs/qa-architecture.md) — how bench (unit + integration tiers) and pr-analytics (merge_acceptance_rate) form a closed improvement loop
+- [License](#license) — MIT
 
 ### Three commands, three roles
 
@@ -993,3 +994,11 @@ Liveness on `:8080` because that's the always-on QA server; `:8000` only fires o
 source .venv/bin/activate
 pytest
 ```
+
+---
+
+## License
+
+DiffGraph is released under the [MIT License](LICENSE) — free to use,
+modify, and distribute, including commercially, with attribution.
+See [`LICENSE`](LICENSE) for the full text.
