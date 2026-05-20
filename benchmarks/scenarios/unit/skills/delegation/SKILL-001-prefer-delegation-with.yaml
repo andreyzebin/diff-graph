@@ -73,14 +73,5 @@ expected_output:
         in one step) and synthesize their results into the final
         comma-separated answer. Any ordering OR any wrong number
         means the fan-out / synthesis chain broke.
-  # Structural assertion (deterministic, complements the LLM judge).
-  # Forces an A/B distinction the semantic answer-check can't see on
-  # its own: did the boss ACTUALLY delegate, or just answer "42" itself?
-  assert_invocations:
-    boss:
-      must_call: [agent_spawn]
-      must_not_call: [do_task]
-    worker:
-      must_call: [do_task]
   thresholds:
     min_score: 0.7

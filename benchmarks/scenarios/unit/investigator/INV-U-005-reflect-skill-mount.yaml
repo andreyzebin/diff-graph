@@ -68,19 +68,6 @@ expected_output:
         reflect moved from base tools to the skill layer; the
         rich rubric is INV-U-001's job.
 
-  # Structural assertion — THE point of this fixture. If the
-  # reflect skill is properly mounted on the investigator, then
-  # `reflect` MUST appear in the agent's invocations.json. If it
-  # doesn't, the skill mount silently broke (the schema would be
-  # absent → model can't call it).
-  #
-  # `diff_read_file` and `done` are also required as baseline
-  # sanity — investigator that doesn't read any file or never
-  # closes the loop is broken in a different way, not skill-
-  # related, but worth catching here too.
-  assert_invocations:
-    investigator:
-      must_call: [diff_read_file, reflect, done]
 
   thresholds:
     min_score: 0.5

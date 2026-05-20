@@ -44,13 +44,5 @@ expected_output:
         "21, 7, 100, 5, 33, 16". The baseline (no
         skill) variant expects the boss to do the work itself
         by calling do_task six times sequentially.
-  # Structural assertion — the mirror image of SKILL-001-with.
-  # Without the prefer_delegation skill, the boss must call do_task
-  # itself and must NOT spawn a worker. If this fails, either the
-  # skill is leaking somehow or the boss is over-delegating.
-  assert_invocations:
-    boss:
-      must_call: [do_task]
-      must_not_call: [agent_spawn]
   thresholds:
     min_score: 0.7

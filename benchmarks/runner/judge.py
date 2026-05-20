@@ -214,18 +214,10 @@ class LLMJudge(Judge):
                  verdict_source: str = "api",
                  scenario_id: str = "",
                  scenario_tags: list[str] | None = None,
-                 linked_run_id: str = "",
-                 invocation_check: str = ""):
+                 linked_run_id: str = ""):
         self._llm_client = llm_client
         self._view = view
         self._template = _load_template()
-        # Deterministic structural assert_invocations report (Stage 4a
-        # in run_unit.py) — per-rule pass/fail of the agent's tool
-        # calls, e.g. "must_call agent_spawn — PASS (called 3×)".
-        # Rendered into the judge prompt's `invocation_check` channel
-        # so the judge reasons WITH the delegation verdict. Empty when
-        # the fixture has no assert_invocations block.
-        self._invocation_check = invocation_check or ""
         # When set, dump request/response of every judge LLM call under
         # this directory using the unified trace layout (TODO §5e.10a):
         # judge_dir/run.json, events.jsonl, agents/judge-0/step-NN-{request,response}.json
@@ -272,6 +264,7 @@ class LLMJudge(Judge):
         intended_concerns = self._load_intended_concerns()
         intended_spawns = self._load_intended_spawns()
         intended_text = self._load_intended_text()
+        tool_trace = self._load_tool_trace()
 
         # When the bench posts seed_comments + the trigger comment via the
         # same Bitbucket account as the agent (single-token setup), those
@@ -334,7 +327,7 @@ class LLMJudge(Judge):
                                intended_concerns=intended_concerns,
                                intended_spawns=intended_spawns,
                                intended_text=intended_text,
-                               invocation_check=self._invocation_check)
+                               tool_trace=tool_trace)
         self._trace_request(scenario.id, prompt)
         try:
             data = self._llm_client.complete_json(prompt)
@@ -375,6 +368,46 @@ class LLMJudge(Judge):
         except Exception:
             return []
         return data.get("invocations") or []
+
+    def _load_tool_trace(self, max_calls: int = 200) -> str:
+        """Format the agent's full tool-call trace — every invocation,
+        every agent, in order, WITH arguments — as a readable block
+        for the judge.
+
+        This is the judge's behavioural evidence channel. Instead of a
+        deterministic assert ("agent MUST call agent_spawn"), the judge
+        reads the actual trace and decides high-level, per scenario
+        expectation, whether the agent behaved as the rationale
+        describes (delegated a cross-source concern, reflected to
+        track state, handled something directly, …).
+
+        Args are rendered compactly; long values (reflect bodies,
+        file contents) are truncated per-arg so the trace stays
+        scannable.
+        """
+        invs = self._load_invocations()
+        if not invs:
+            return "(no tool calls recorded)"
+        lines: list[str] = []
+        for inv in invs[:max_calls]:
+            agent = str(inv.get("agent") or "?")
+            step = inv.get("step")
+            tool = str(inv.get("tool") or "?")
+            mocked = " [mocked]" if inv.get("mocked") else ""
+            args = inv.get("args") or {}
+            parts: list[str] = []
+            if isinstance(args, dict):
+                for k, v in args.items():
+                    sv = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+                    if len(sv) > 220:
+                        sv = sv[:220] + "…"
+                    parts.append(f"{k}={sv}")
+            arg_str = ", ".join(parts)
+            step_str = f"#{step}" if step is not None else "#?"
+            lines.append(f"[{agent}] {step_str} {tool}({arg_str}){mocked}")
+        if len(invs) > max_calls:
+            lines.append(f"… ({len(invs) - max_calls} more calls truncated)")
+        return "\n".join(lines)
 
     def _load_intended_findings(self) -> list[dict]:
         """Findings the agent passed to its final `done()` call. Used
@@ -637,7 +670,7 @@ def _build_prompt(
     intended_concerns: list[dict] | None = None,
     intended_spawns: list[dict] | None = None,
     intended_text: str = "",
-    invocation_check: str = "",
+    tool_trace: str = "",
 ) -> str:
     eo = scenario.expected_output
     required_str = json.dumps([
@@ -679,8 +712,7 @@ def _build_prompt(
         intended_concerns=_format_intended_concerns(intended_concerns or []),
         intended_spawns=_format_intended_concerns(intended_spawns or []),
         intended_text=_format_intended_text(intended_text),
-        invocation_check=(invocation_check.strip()
-                          or "(no structural assert_invocations for this scenario)"),
+        tool_trace=(tool_trace.strip() or "(no tool calls recorded)"),
         required_comments=required_str,
         forbidden_comments=forbidden_str,
         concern_focuses=concern_focuses_str,

@@ -42,20 +42,6 @@ expected_output:
         searcher to converge by binary search using only working
         memory; the final answer still has to be 73 regardless of
         whether reflect was available.
-  # Structural assertion — the mirror image of SKILL-002-with.
-  # Without the reflect skill, the searcher must call probe (the
-  # whole point) and must NOT call reflect (the tool isn't even
-  # in its registry). If reflect appears here, either the skill
-  # is leaking somehow or reflect crept back into the base tools
-  # list.
-  assert_invocations:
-    searcher:
-      # answer is in must_call so the "model went straight to
-      # done() without surfacing the answer" failure mode is caught
-      # deterministically (faster + clearer signal than waiting for
-      # the LLM judge to grade intended_text=empty).
-      must_call: [probe, answer]
-      must_not_call: [reflect]
   thresholds:
     min_score: 0.7
 

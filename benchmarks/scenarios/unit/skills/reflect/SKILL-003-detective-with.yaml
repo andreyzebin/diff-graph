@@ -63,15 +63,6 @@ expected_output:
         the briefing, evolve hypotheses via probes, and arrive at
         the correct unique match; the final answer reported has
         to be bob.
-  # Structural assertion (deterministic, complements the LLM judge).
-  # The detective is free to probe any subset of the axis tools
-  # (hypothesis-driven, not exhaustive — reflect-banking should
-  # let it solve in fewer probes than the WITHOUT variant), but
-  # MUST call reflect at least once and reach answer. The
-  # reflect call is what proves the skill is actually being used.
-  assert_invocations:
-    detective:
-      must_call: [reflect, answer]
   thresholds:
     min_score: 0.7
   metadata:

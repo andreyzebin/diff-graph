@@ -58,18 +58,6 @@ expected_output:
         evidence at scene + known motive). Any other name (alice,
         carol, dave) is a wrong accusation; an empty answer means
         the detective failed to complete the investigation.
-  # Structural assertion — the mirror image of SKILL-003-with.
-  # Without the reflect skill, detective is free to probe any
-  # subset of the axis tools (hypothesis-driven, not exhaustive),
-  # but must reach a answer and must NOT call reflect (the
-  # tool isn't in its registry). Whether it gets bob right is the
-  # semantic-judge axis above; THIS assertion only enforces the
-  # absence of reflect — proof that the WITHOUT-variant agent
-  # actually ran without the skill.
-  assert_invocations:
-    detective:
-      must_call: [answer]
-      must_not_call: [reflect]
   thresholds:
     min_score: 0.7
 

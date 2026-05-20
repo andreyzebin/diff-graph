@@ -66,15 +66,6 @@ expected_output:
         skill mounted, the player is expected to bank constraints
         across the multi-suggestion chain and arrive at the
         correct unique envelope.
-  # Structural assertion (deterministic, complements the LLM judge).
-  # The player is free to issue any number of suggest() calls
-  # (reflect-banking should let it converge in fewer suggestions
-  # than the WITHOUT variant), but MUST call reflect at least
-  # once and reach answer. The reflect call is what proves
-  # the skill is actually being used.
-  assert_invocations:
-    cluedo_player:
-      must_call: [suggest, reflect, answer]
   thresholds:
     min_score: 0.7
   metadata:
