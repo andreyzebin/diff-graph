@@ -264,7 +264,7 @@ class LLMJudge(Judge):
         intended_concerns = self._load_intended_concerns()
         intended_spawns = self._load_intended_spawns()
         intended_text = self._load_intended_text()
-        tool_trace = self._load_tool_trace()
+        agent_run_id = self._load_agent_run_id()
 
         # When the bench posts seed_comments + the trigger comment via the
         # same Bitbucket account as the agent (single-token setup), those
@@ -327,7 +327,7 @@ class LLMJudge(Judge):
                                intended_concerns=intended_concerns,
                                intended_spawns=intended_spawns,
                                intended_text=intended_text,
-                               tool_trace=tool_trace)
+                               agent_run_id=agent_run_id)
         self._trace_request(scenario.id, prompt)
         try:
             data = self._llm_client.complete_json(prompt)
@@ -369,45 +369,34 @@ class LLMJudge(Judge):
             return []
         return data.get("invocations") or []
 
-    def _load_tool_trace(self, max_calls: int = 200) -> str:
-        """Format the agent's full tool-call trace — every invocation,
-        every agent, in order, WITH arguments — as a readable block
-        for the judge.
+    def _load_agent_run_id(self) -> str:
+        """Run id of the agent under review — the handle the judge
+        uses to pull the behavioural trace itself, via
+        agent_inspect(run_id=…, view="trace").
 
-        This is the judge's behavioural evidence channel. Instead of a
-        deterministic assert ("agent MUST call agent_spawn"), the judge
-        reads the actual trace and decides high-level, per scenario
-        expectation, whether the agent behaved as the rationale
-        describes (delegated a cross-source concern, reflected to
-        track state, handled something directly, …).
+        Replaces the old in-process `_load_tool_trace()`: the bench no
+        longer pre-flattens `invocations.json` into a string. It just
+        hands the judge a run_id; the judge (an orchestra agent)
+        reads the trace through the AgentsRuntime provider over the
+        shared trace store.
 
-        Args are rendered compactly; long values (reflect bodies,
-        file contents) are truncated per-arg so the trace stays
-        scannable.
+        Prefers an explicitly-supplied linked_run_id; otherwise reads
+        it from the agent subprocess's run.json (cli.py writes it on
+        startup). Empty string when neither is available — the judge
+        then grades from the other channels only.
         """
-        invs = self._load_invocations()
-        if not invs:
-            return "(no tool calls recorded)"
-        lines: list[str] = []
-        for inv in invs[:max_calls]:
-            agent = str(inv.get("agent") or "?")
-            step = inv.get("step")
-            tool = str(inv.get("tool") or "?")
-            mocked = " [mocked]" if inv.get("mocked") else ""
-            args = inv.get("args") or {}
-            parts: list[str] = []
-            if isinstance(args, dict):
-                for k, v in args.items():
-                    sv = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
-                    if len(sv) > 220:
-                        sv = sv[:220] + "…"
-                    parts.append(f"{k}={sv}")
-            arg_str = ", ".join(parts)
-            step_str = f"#{step}" if step is not None else "#?"
-            lines.append(f"[{agent}] {step_str} {tool}({arg_str}){mocked}")
-        if len(invs) > max_calls:
-            lines.append(f"… ({len(invs) - max_calls} more calls truncated)")
-        return "\n".join(lines)
+        if self._linked_run_id:
+            return self._linked_run_id
+        if self._agent_dir_path is None:
+            return ""
+        run_json = self._agent_dir_path / "run.json"
+        if not run_json.exists():
+            return ""
+        try:
+            meta = json.loads(run_json.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+        return str(meta.get("run_id") or "").strip()
 
     def _load_intended_findings(self) -> list[dict]:
         """Findings the agent passed to its final `done()` call. Used
@@ -670,7 +659,7 @@ def _build_prompt(
     intended_concerns: list[dict] | None = None,
     intended_spawns: list[dict] | None = None,
     intended_text: str = "",
-    tool_trace: str = "",
+    agent_run_id: str = "",
 ) -> str:
     eo = scenario.expected_output
     required_str = json.dumps([
@@ -712,7 +701,7 @@ def _build_prompt(
         intended_concerns=_format_intended_concerns(intended_concerns or []),
         intended_spawns=_format_intended_concerns(intended_spawns or []),
         intended_text=_format_intended_text(intended_text),
-        tool_trace=(tool_trace.strip() or "(no tool calls recorded)"),
+        agent_run_id=(agent_run_id.strip() or "(run id unavailable)"),
         required_comments=required_str,
         forbidden_comments=forbidden_str,
         concern_focuses=concern_focuses_str,

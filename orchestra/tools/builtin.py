@@ -294,13 +294,15 @@ def register_builtins(
         registry.register_tool_def(ToolDef(
             name="agent_inspect",
             description=(
-                "Observation of the agent RUNS you have spawned — "
-                "their live state, steps, tokens. Call with no run_id "
-                "to list your spawned runs; call with a run_id to "
-                "inspect one — view='summary' for state/steps/tokens, "
-                "'trace' for the full event tree, 'tokens' for the "
-                "token breakdown. (To see which agent TYPES exist, "
-                "use agent_list.)"
+                "Observe an agent RUN by its run_id — its state, "
+                "steps, tokens, and tool-call trace. Call with no "
+                "run_id to list the runs you spawned; call with a "
+                "run_id to inspect one — view='summary' for "
+                "state/steps/tokens, 'trace' for the scannable "
+                "tool-call log (every call, every agent, in order), "
+                "'tokens' for the token breakdown. Resolves any run "
+                "by id, including one you were handed to review. (To "
+                "see which agent TYPES exist, use agent_list.)"
             ),
             parameters={
                 "type": "object",

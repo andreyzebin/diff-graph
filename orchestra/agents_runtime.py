@@ -203,6 +203,52 @@ class AgentDescriptor:
         }
 
 
+# ── Behavioural-evidence view ────────────────────────────────────────────
+
+
+def compact_tool_trace(events, max_calls: int = 200) -> str:
+    """Flatten an `observe()` event stream into a scannable tool-call
+    log — one line per tool request, across every agent in the run,
+    in call order.
+
+    This is the *behavioural-evidence* view an observer reads to grade
+    WHAT an agent did: the judge inspecting a run it was handed, or a
+    parent watching a child it spawned. It is deliberately NOT the raw
+    `trace()` event tree — that is HTML-trace shaped (full request /
+    response / context per step) and far too large to drop into an
+    LLM context.
+
+    Line format: `[<agent>] #<step> <tool>(<args>)`. Sub-agents
+    spawned mid-run appear under their own names. Long arg values are
+    truncated per-arg so the log stays scannable.
+    """
+    lines: list[str] = []
+    count = 0
+    for ev in events:
+        if (ev.get("event_type") or "") != "agent_tool_request":
+            continue
+        count += 1
+        if count > max_calls:
+            continue
+        data = ev.get("data") or {}
+        agent = str(ev.get("agent_name") or "?")
+        step = ev.get("step")
+        tool = str(data.get("tool") or "?")
+        args = data.get("args") or {}
+        parts: list[str] = []
+        if isinstance(args, dict):
+            for k, v in args.items():
+                sv = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+                if len(sv) > 220:
+                    sv = sv[:220] + "…"
+                parts.append(f"{k}={sv}")
+        step_str = f"#{step}" if step is not None else "#?"
+        lines.append(f"[{agent}] {step_str} {tool}({', '.join(parts)})")
+    if count > max_calls:
+        lines.append(f"… ({count - max_calls} more calls truncated)")
+    return "\n".join(lines) if lines else "(no tool calls recorded)"
+
+
 # ── Protocol ─────────────────────────────────────────────────────────────
 
 

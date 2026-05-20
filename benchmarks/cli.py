@@ -115,12 +115,14 @@ def _print_trigger_summary(agent_cfg: dict, console) -> None:
 
 
 def _make_llm_client(judge_cfg: dict):
-    # Phase 2.C: judge.backend = 'orchestra' delegates the LLM call
-    # to diff-graph's CLI, so judge runs share the same OTel/SQLite
-    # observability stack as the agents they grade — no separate
-    # judge tracing code path. backend='legacy' keeps the in-process
-    # LLM client (default).
-    backend = (judge_cfg.get("backend") or "legacy").lower()
+    # The judge runs on the orchestra engine (judge.raw agent): it
+    # shares the OTel/SQLite observability stack of the agents it
+    # grades, and pulls their behavioural trace itself via
+    # agent_inspect through the AgentsRuntime provider. This is the
+    # default. backend='legacy' keeps the in-process LLM client — a
+    # bare complete_json call with the trace pre-flattened by the
+    # bench; kept only as an escape hatch.
+    backend = (judge_cfg.get("backend") or "orchestra").lower()
     if backend == "orchestra":
         from runner.orchestra_judge import SubprocessLLMClient
         return SubprocessLLMClient(

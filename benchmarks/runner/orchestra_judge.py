@@ -40,6 +40,34 @@ log = logging.getLogger(__name__)
 _DIFFGRAPH_REPO_DEFAULT = str(Path(__file__).resolve().parents[2])
 
 
+def _extract_verdict(data) -> dict:
+    """Normalise the cli.py `--output` payload into the verdict dict.
+
+    The judge.raw agent is a react-mode orchestra agent that finishes
+    with `answer(text=<json verdict>)`; cli.py writes that deliverable
+    as `[{"text": "<json string>"}]`. A legacy single-shot judge wrote
+    the verdict dict straight out. Accept both shapes.
+    """
+    if (isinstance(data, list) and len(data) == 1
+            and isinstance(data[0], dict) and "text" in data[0]):
+        text = data[0].get("text") or ""
+        try:
+            from runner.judge import _parse_raw
+            return _parse_raw(text)
+        except Exception as exc:
+            raise RuntimeError(
+                f"orchestra judge answer() text was not valid JSON: {exc}\n"
+                f"text[:500]: {text[:500]!r}"
+            )
+    if isinstance(data, dict):
+        return data
+    raise RuntimeError(
+        f"orchestra judge returned an unexpected shape: "
+        f"{type(data).__name__} — expected a verdict dict or an "
+        f"answer()-style [{{'text': …}}] payload"
+    )
+
+
 class SubprocessLLMClient:
     """LLMClient stand-in: shells out to `diffgraph cli.py run --agent=judge.raw`.
 
@@ -112,11 +140,7 @@ class SubprocessLLMClient:
                     f"orchestra judge produced invalid JSON: {exc}\n"
                     f"raw[:500]: {data_text[:500]!r}"
                 )
-            if not isinstance(data, dict):
-                raise RuntimeError(
-                    f"orchestra judge returned non-dict: {type(data).__name__}"
-                )
-            return data
+            return _extract_verdict(data)
         finally:
             try:
                 Path(out_path).unlink()

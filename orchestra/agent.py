@@ -1178,11 +1178,23 @@ class Agent:
         code, only now behind the provider interface (fakeable,
         observable). See orchestra/agents_runtime.py."""
         if self._agents_runtime is None:
-            from .agents_runtime import InProcessRuntime
-            self._agents_runtime = InProcessRuntime(
-                spawn_fn=self._run_spawn,
-                list_agents_fn=self._list_agent_descriptors,
-            )
+            import os
+            fixture = os.environ.get(
+                "DIFFGRAPH_AGENTS_RUNTIME_FIXTURE", "").strip()
+            if fixture:
+                # Fakeable seam — mirrors DIFFGRAPH_JIRA_FIXTURE /
+                # DIFFGRAPH_BITBUCKET_FIXTURE. A unit test (e.g. the
+                # judge graded against a recorded run) points this at
+                # a YAML fixture and the whole spawn + observation
+                # graph becomes deterministic with no real LLM calls.
+                from .agents_runtime import FakeAgentsRuntime
+                self._agents_runtime = FakeAgentsRuntime.from_yaml(fixture)
+            else:
+                from .agents_runtime import InProcessRuntime
+                self._agents_runtime = InProcessRuntime(
+                    spawn_fn=self._run_spawn,
+                    list_agents_fn=self._list_agent_descriptors,
+                )
         return self._agents_runtime
 
     def _list_agent_descriptors(self):
@@ -1603,7 +1615,11 @@ class Agent:
         st = spawned.get(run_id) or rt.status(run_id)
         out = st.to_dict()
         if view == "trace":
-            out["trace"] = rt.trace(run_id)
+            # The behavioural-evidence view: a scannable tool-call log
+            # built from the run's event stream — NOT the raw event
+            # tree (HTML-trace shaped, too large for an LLM context).
+            from .agents_runtime import compact_tool_trace
+            out["trace"] = compact_tool_trace(rt.observe(run_id))
         return json.dumps(out, indent=2, ensure_ascii=False, default=str)
 
     # ── Message building ──────────────────────────────────────────────────────

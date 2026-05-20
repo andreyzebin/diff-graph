@@ -5982,8 +5982,9 @@ scoring layer is debugged.
 
 ## 21. AgentsRuntime provider — fakeable lifecycle + observation for sub-agents
 
-**Status:** Phases 1-3c SHIPPED 2026-05-20. Phase 4 (judge fully
-on the orchestra engine) is the open spec at the bottom.
+**Status:** Phases 1-3c SHIPPED 2026-05-20. Phase 4 core (judge
+grades from the live trace via `agent_inspect`) SHIPPED 2026-05-20
+— see §21.4 for what landed and the deferred remainder.
 
 ### 21.1 Why this exists
 
@@ -6055,26 +6056,53 @@ Implementations:
 - 17 tests in `tests/test_agents_runtime.py` cover protocol
   conformance, fake matching, observation, and the pusher.
 
-### 21.4 Phase 4 — judge fully on the orchestra engine (OPEN)
+### 21.4 Phase 4 — judge grades from the live trace (CORE SHIPPED 2026-05-20)
 
-The judge is still a bespoke LLM call. The spec: rebuild it as a
-first-class orchestra agent (prompt-defined `.system.md` /
-`.user.md`, provider injection) so it can use the AgentsRuntime
-provider to inspect the runs it grades — read traces, replay
-events, count tokens — instead of being handed a pre-flattened
-`tool_trace` string.
+The judge no longer gets a pre-flattened `tool_trace` string. It is
+a multi-step orchestra agent that is handed the **run_id** of the
+agent under review and pulls the behavioural evidence itself.
 
-Acceptance criteria:
+What shipped:
 
-- Judge is a prompt-defined agent compiled by `compiler.py`; no
-  bespoke `complete_json` call path remains.
-- It receives an `AgentsRuntime` (real in prod, `FakeAgentsRuntime`
-  in unit tests) and grades by calling `agent_inspect` /
-  `observe` on the run under test.
-- The semantic `tool_trace` grading from the May-2026 cleanup
-  (no imperative `assert_invocations`) is preserved — Phase 4
-  changes HOW the judge gets the trace, not the grading style.
-- Bench tiers (unit / integration / replay) all drive the judge
-  through the same provider seam; a unit fixture supplies a fake
-  runtime, replay supplies a `TraceDBObserver` over the recorded
-  run.
+- `judge.raw` is now `mode: react` with `tools: [agent_inspect,
+  answer]` and budget `steps: 8 / tokens: 60000` (was a
+  `mode: single`, tool-less, single LLM call). `raw.system.md` /
+  `raw.user.md` rewritten: the judge calls
+  `agent_inspect(run_id=…, view="trace")` to read the trace, then
+  submits the JSON verdict via `answer(text=…)`.
+- `agent_inspect`'s `view="trace"` now returns the **compact
+  tool-call log** — `compact_tool_trace()` in `agents_runtime.py`
+  flattens the run's `observe()` event stream into a scannable
+  `[agent] #step tool(args…)` list. The raw event tree (HTML-trace
+  shaped, too large for an LLM) is no longer dumped into a tool
+  result. This improves every `agent_inspect` caller, not just the
+  judge.
+- The bench (`judge.py`) hands the judge an `agent_run_id`
+  (`_load_agent_run_id()` reads the agent subprocess's `run.json`)
+  instead of pre-flattening `invocations.json`. `_load_tool_trace()`
+  is deleted; `_build_prompt` takes `agent_run_id`.
+- The orchestra judge backend is now the **default** in
+  `_make_llm_client` (was `legacy`). `orchestra_judge.py` unwraps
+  the `answer()`-shaped `[{"text": …}]` output into the verdict
+  dict.
+- Fakeable seam: `DIFFGRAPH_AGENTS_RUNTIME_FIXTURE` env var →
+  `agents_runtime` property builds a `FakeAgentsRuntime` (mirrors
+  `DIFFGRAPH_JIRA_FIXTURE`). A unit test of the judge points it at
+  a YAML fixture and grades a recorded run with no real LLM calls.
+- Semantic `tool_trace` grading (no imperative `assert_invocations`)
+  is preserved — Phase 4 changed HOW the judge gets the trace, not
+  the grading style.
+
+Still open (deferred):
+
+- The legacy in-process judge backend (`AnthropicLLMClient` /
+  `OpenAILLMClient`) is still selectable as `backend: legacy` — an
+  escape hatch, not yet removed. Acceptance criterion "no bespoke
+  `complete_json` path remains" is not fully met until it is.
+- A live bench run to confirm the judge model reliably calls
+  `agent_inspect` → `answer` (prompt-quality validation).
+- The `intended_findings` / `intended_concerns` / `intended_spawns`
+  / `intended_text` channels still come from `invocations.json`
+  (semantic pre-extraction, distinct from the behavioural
+  tool-call trace) — left as-is intentionally; migrating them to
+  trace-pull is optional follow-up.

@@ -151,6 +151,86 @@ def test_fake_from_yaml(tmp_path: Path) -> None:
     assert rt.list_agents()[0].name == "investigator"
 
 
+# ── compact_tool_trace ────────────────────────────────────────────────────
+
+
+def test_compact_tool_trace_formats_requests() -> None:
+    """compact_tool_trace flattens an observe() event stream into a
+    scannable per-tool-call log — one line per agent_tool_request,
+    across every agent, in order. This is the view the judge reads
+    via agent_inspect(view='trace')."""
+    from orchestra.agents_runtime import compact_tool_trace
+    events = [
+        {"event_type": "agent_started", "agent_name": "reviewer",
+         "step": 0, "data": {}},
+        {"event_type": "agent_tool_request", "agent_name": "reviewer",
+         "step": 1, "data": {"tool": "diff_read_file",
+                             "args": {"path": "a.py"}}},
+        {"event_type": "agent_tool_result", "agent_name": "reviewer",
+         "step": 1, "data": {}},
+        {"event_type": "agent_tool_request", "agent_name": "investigator",
+         "step": 2, "data": {"tool": "agent_spawn",
+                             "args": {"agent": "worker", "focus": "x"}}},
+    ]
+    assert compact_tool_trace(events).splitlines() == [
+        "[reviewer] #1 diff_read_file(path=a.py)",
+        "[investigator] #2 agent_spawn(agent=worker, focus=x)",
+    ]
+
+
+def test_compact_tool_trace_empty() -> None:
+    """No tool requests in the stream → an explicit empty marker,
+    never a bare empty string."""
+    from orchestra.agents_runtime import compact_tool_trace
+    assert compact_tool_trace([]) == "(no tool calls recorded)"
+    assert compact_tool_trace(
+        [{"event_type": "agent_started", "step": 0}]
+    ) == "(no tool calls recorded)"
+
+
+def test_compact_tool_trace_truncates_args_and_caps_calls() -> None:
+    """Long arg values are truncated per-arg; the call count is
+    capped so a runaway run can't blow the observer's context."""
+    from orchestra.agents_runtime import compact_tool_trace
+    one = [{"event_type": "agent_tool_request", "agent_name": "a",
+            "step": 1, "data": {"tool": "t", "args": {"k": "z" * 500}}}]
+    rendered = compact_tool_trace(one)
+    assert "…" in rendered and "z" * 500 not in rendered
+    many = [{"event_type": "agent_tool_request", "agent_name": "a",
+             "step": i, "data": {"tool": "t", "args": {}}}
+            for i in range(250)]
+    assert "50 more calls truncated" in compact_tool_trace(many, max_calls=200)
+
+
+def test_meta_agent_inspect_trace_view_is_compact() -> None:
+    """agent_inspect(run_id, view='trace') routes observe() through
+    compact_tool_trace — the judge gets the scannable tool-call log,
+    not the raw event tree. Exercised via the Agent meta-handler on a
+    duck-typed stub (the handler only touches self.agents_runtime)."""
+    import json as _json
+    from orchestra.agent import Agent
+
+    rt = FakeAgentsRuntime({"runs": {"r1": {
+        "state": "completed", "steps": 2,
+        "events": [
+            {"event_type": "agent_started", "agent_name": "rev",
+             "step": 0, "data": {}},
+            {"event_type": "agent_tool_request", "agent_name": "rev",
+             "step": 1, "data": {"tool": "diff_read_file",
+                                 "args": {"path": "x.py"}}},
+        ],
+    }}})
+
+    class _Stub:
+        agents_runtime = rt
+
+    out = _json.loads(
+        Agent._meta_agent_inspect(_Stub(), {"run_id": "r1", "view": "trace"})
+    )
+    assert out["state"] == "completed"
+    assert out["trace"] == "[rev] #1 diff_read_file(path=x.py)"
+
+
 # ── TraceDBObserver ───────────────────────────────────────────────────────
 
 

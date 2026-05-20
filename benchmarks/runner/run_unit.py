@@ -530,11 +530,11 @@ def run_unit_fixture(
         # missing or truncated.
         #
         # There is no separate deterministic invocation assert: the
-        # judge reads the agent's full tool-call trace (the
-        # `tool_trace` channel — see judge._load_tool_trace) and
-        # decides high-level, against each scenario expectation
-        # phrased as prose `rationale`, whether the agent behaved as
-        # required (delegated, reflected, handled directly, …).
+        # judge is handed the agent's run_id and pulls the full
+        # tool-call trace itself via agent_inspect (the `tool_trace`
+        # channel), then decides high-level, against each scenario
+        # expectation phrased as prose `rationale`, whether the agent
+        # behaved as required (delegated, reflected, handled directly, …).
         if (
             fixture.expected_output
             and judge_cfg
@@ -809,11 +809,12 @@ def _run_judge_for_unit_fixture(
     agent_dir: Optional[Path],
     judge_cfg: dict,
 ) -> dict:
-    """Drive LLMJudge against the agent's invocations + fake-PR view.
+    """Drive LLMJudge against the agent's run + fake-PR view.
 
-    The judge reads the agent's full tool-call trace from
-    invocations.json (the `tool_trace` channel) and grades behaviour
-    semantically — no deterministic assert layer.
+    The judge is an orchestra agent: it is handed the agent's run_id
+    and pulls the behavioural trace itself via agent_inspect, grading
+    semantically — no deterministic assert layer, no pre-flattened
+    trace string.
 
     Returns a flat dict with score / verdict / summary / run_id so the
     caller can stash them on UnitRunResult without depending on the
