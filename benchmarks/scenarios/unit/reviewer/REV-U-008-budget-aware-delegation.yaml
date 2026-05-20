@@ -103,6 +103,21 @@ expected_output:
   side_effects:
     inline_comments: 0
     review_status_change: false
+  # Deterministic delegation check — complements the semantic
+  # concern_focuses grading above. The whole point of this
+  # scenario is "did the reviewer DELEGATE", and that's a
+  # structural fact the LLM judge shouldn't have to infer:
+  #   - reviewer MUST call agent_spawn at least once — three
+  #     cross-source concerns are teed up to be delegated.
+  #   - reviewer MUST NOT post inline comments or set a verdict —
+  #     this is text + delegate mode (see side_effects above).
+  # Every rule's pass/fail is rendered into the judge prompt
+  # (the `invocation_check` channel) so the judge reasons WITH
+  # the deterministic delegation verdict, not around it.
+  assert_invocations:
+    reviewer:
+      must_call: [agent_spawn]
+      must_not_call: [pr_post_comment, set_review_status]
   thresholds:
     min_score: 0.5
     min_required_found: 0

@@ -528,6 +528,28 @@ def run_unit_fixture(
             attempt_dir=attempt_dir,
         )
 
+        # ── Stage 4a: structural invocation check ──────────────────────────
+        # Runs BEFORE the LLM judge so its per-rule pass/fail report can
+        # be fed into the judge prompt — the judge then reasons WITH the
+        # deterministic delegation verdict instead of having a structural
+        # override slapped on silently afterward. Reads invocations.json
+        # directly; asserts the agent (or sub-agents) called / didn't
+        # call specific tools.
+        spec = (fixture.expected_output or {}).get("assert_invocations") or {}
+        structural_violations: list = []
+        invocation_check_report = ""
+        if spec and proc.returncode == 0 and invocations_path is not None:
+            from .invocations_check import (
+                load_invocations as _load_invs,
+                check as _check_invs,
+                report as _report_invs,
+                format_report as _fmt_report,
+            )
+            invs = _load_invs(invocations_path)
+            structural_violations = _check_invs(invs, spec)
+            result.structural_violations = [str(v) for v in structural_violations]
+            invocation_check_report = _fmt_report(_report_invs(invs, spec))
+
         # ── Stage 4: LLM judge invocation ────────────────────────────────
         # Runs only when (a) the fixture declared expected_output, (b)
         # the caller supplied a judge_cfg, and (c) the agent subprocess
@@ -551,6 +573,7 @@ def run_unit_fixture(
                     judge_dir=judge_dir,
                     agent_dir=agent_dir,
                     judge_cfg=judge_cfg,
+                    invocation_check=invocation_check_report,
                 )
                 result.judge_score   = _judge_summary.get("score")
                 result.judge_verdict = _judge_summary.get("verdict")
@@ -566,36 +589,25 @@ def run_unit_fixture(
                     + f"\n[judge error: {type(exc).__name__}: {exc}]"
                 )
 
-        # ── Stage 4b: structural invocation check ──────────────────────────
-        # Independent of the LLM judge — reads invocations.json directly
-        # and asserts the agent (or its sub-agents) called / didn't call
-        # specific tools. Used by SKILL fixtures where the whole point is
-        # the call pattern; complements the judge's semantic grading.
-        # Violations override the LLM verdict: structural failure is hard,
-        # not a confidence dimension.
-        spec = (fixture.expected_output or {}).get("assert_invocations") or {}
-        if spec and proc.returncode == 0 and invocations_path is not None:
-            from .invocations_check import (
-                load_invocations as _load_invs,
-                check as _check_invs,
-                format_violations as _fmt_invs,
+        # ── Stage 4b: structural-violation hard-override ────────────────────
+        # The judge has SEEN the invocation_check report (Stage 4a fed it
+        # into the prompt) and ideally already failed the run. The
+        # override stays as a safety net: a structural failure is hard,
+        # not a confidence dimension — if the judge nonetheless passed it,
+        # force the verdict down.
+        if structural_violations:
+            from .invocations_check import format_violations as _fmt_invs
+            msg = _fmt_invs(structural_violations)
+            result.judge_score = 0.0
+            result.judge_verdict = "fail"
+            existing_summary = (result.judge_summary or "").strip()
+            result.judge_summary = (
+                (existing_summary + "\n\n" if existing_summary else "")
+                + msg
             )
-            invs = _load_invs(invocations_path)
-            violations = _check_invs(invs, spec)
-            result.structural_violations = [str(v) for v in violations]
-            if violations:
-                msg = _fmt_invs(violations)
-                # Override any LLM verdict — structural failure is hard.
-                result.judge_score = 0.0
-                result.judge_verdict = "fail"
-                existing_summary = (result.judge_summary or "").strip()
-                result.judge_summary = (
-                    (existing_summary + "\n\n" if existing_summary else "")
-                    + msg
-                )
-                result.stderr_tail = (
-                    (result.stderr_tail or "") + "\n" + msg
-                )
+            result.stderr_tail = (
+                (result.stderr_tail or "") + "\n" + msg
+            )
 
         if proc.returncode == 0 and not keep_tmp_on_success:
             # PR-free scenarios never cloned — nothing to remove.
@@ -838,8 +850,13 @@ def _run_judge_for_unit_fixture(
     judge_dir: Path,
     agent_dir: Optional[Path],
     judge_cfg: dict,
+    invocation_check: str = "",
 ) -> dict:
     """Drive LLMJudge against the agent's invocations + fake-PR view.
+
+    `invocation_check` is the deterministic per-rule report from the
+    structural assert_invocations check (Stage 4a). Passed through to
+    the judge prompt so the judge sees the delegation-call verdict.
 
     Returns a flat dict with score / verdict / summary / run_id so the
     caller can stash them on UnitRunResult without depending on the
@@ -876,6 +893,7 @@ def _run_judge_for_unit_fixture(
         verdict_source=judge_cfg.get("verdict_source", "api"),
         scenario_id=scenario.id,
         scenario_tags=list(scenario.tags or []),
+        invocation_check=invocation_check,
     )
 
     # Mirror runner/run.py:218-228 — wrap the judge call so its trace

@@ -214,10 +214,18 @@ class LLMJudge(Judge):
                  verdict_source: str = "api",
                  scenario_id: str = "",
                  scenario_tags: list[str] | None = None,
-                 linked_run_id: str = ""):
+                 linked_run_id: str = "",
+                 invocation_check: str = ""):
         self._llm_client = llm_client
         self._view = view
         self._template = _load_template()
+        # Deterministic structural assert_invocations report (Stage 4a
+        # in run_unit.py) — per-rule pass/fail of the agent's tool
+        # calls, e.g. "must_call agent_spawn — PASS (called 3×)".
+        # Rendered into the judge prompt's `invocation_check` channel
+        # so the judge reasons WITH the delegation verdict. Empty when
+        # the fixture has no assert_invocations block.
+        self._invocation_check = invocation_check or ""
         # When set, dump request/response of every judge LLM call under
         # this directory using the unified trace layout (TODO §5e.10a):
         # judge_dir/run.json, events.jsonl, agents/judge-0/step-NN-{request,response}.json
@@ -325,7 +333,8 @@ class LLMJudge(Judge):
                                intended_findings=intended_findings,
                                intended_concerns=intended_concerns,
                                intended_spawns=intended_spawns,
-                               intended_text=intended_text)
+                               intended_text=intended_text,
+                               invocation_check=self._invocation_check)
         self._trace_request(scenario.id, prompt)
         try:
             data = self._llm_client.complete_json(prompt)
@@ -628,6 +637,7 @@ def _build_prompt(
     intended_concerns: list[dict] | None = None,
     intended_spawns: list[dict] | None = None,
     intended_text: str = "",
+    invocation_check: str = "",
 ) -> str:
     eo = scenario.expected_output
     required_str = json.dumps([
@@ -669,6 +679,8 @@ def _build_prompt(
         intended_concerns=_format_intended_concerns(intended_concerns or []),
         intended_spawns=_format_intended_concerns(intended_spawns or []),
         intended_text=_format_intended_text(intended_text),
+        invocation_check=(invocation_check.strip()
+                          or "(no structural assert_invocations for this scenario)"),
         required_comments=required_str,
         forbidden_comments=forbidden_str,
         concern_focuses=concern_focuses_str,

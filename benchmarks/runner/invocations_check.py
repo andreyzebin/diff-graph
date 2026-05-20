@@ -110,3 +110,76 @@ def format_violations(violations: list[Violation]) -> str:
     lines = ["assert_invocations violations:"]
     lines.extend(f"  - {v}" for v in violations)
     return "\n".join(lines)
+
+
+@dataclass
+class RuleOutcome:
+    agent: str
+    rule: str             # "must_call" | "must_not_call"
+    tool: str
+    passed: bool
+    detail: str           # what actually happened (call count, etc)
+
+    def __str__(self) -> str:
+        mark = "PASS" if self.passed else "FAIL"
+        return f"[{self.agent}] {self.rule} {self.tool} — {mark}: {self.detail}"
+
+
+def report(
+    invocations: list[dict],
+    spec: dict[str, dict],
+) -> list[RuleOutcome]:
+    """Full per-rule outcome list — passing rules included, not just
+    violations. `check()` answers "did anything break"; this answers
+    "what did every rule resolve to", so the LLM judge can SEE the
+    deterministic delegation verdict (which tool was required, how
+    many times the agent actually called it) and reason with it
+    instead of having a structural override applied silently after
+    the fact."""
+    if not spec:
+        return []
+    calls_by_agent: dict[str, list[str]] = {}
+    for inv in invocations:
+        agent = str(inv.get("agent") or "")
+        tool = str(inv.get("tool") or "")
+        if not agent or not tool:
+            continue
+        calls_by_agent.setdefault(agent, []).append(tool)
+
+    outcomes: list[RuleOutcome] = []
+    for agent_name, rules in (spec or {}).items():
+        if not isinstance(rules, dict):
+            continue
+        called = calls_by_agent.get(agent_name, [])
+        called_set = set(called)
+        for tool in (rules.get("must_call") or []):
+            n = called.count(tool)
+            outcomes.append(RuleOutcome(
+                agent=agent_name, rule="must_call", tool=tool,
+                passed=tool in called_set,
+                detail=(f"called {n}×" if n else
+                        f"never called (agent called "
+                        f"{sorted(called_set) or '(nothing)'})"),
+            ))
+        for tool in (rules.get("must_not_call") or []):
+            n = called.count(tool)
+            outcomes.append(RuleOutcome(
+                agent=agent_name, rule="must_not_call", tool=tool,
+                passed=n == 0,
+                detail=(f"not called" if n == 0 else f"called {n}× (forbidden)"),
+            ))
+    return outcomes
+
+
+def format_report(outcomes: list[RuleOutcome]) -> str:
+    """Human-readable full report — one line per rule, pass and fail
+    alike. Fed to the LLM judge so it sees the deterministic
+    delegation-call verdict. Empty string when the spec was empty."""
+    if not outcomes:
+        return ""
+    n_fail = sum(1 for o in outcomes if not o.passed)
+    header = (
+        f"Deterministic invocation check — {len(outcomes)} rule(s), "
+        f"{n_fail} failed:"
+    )
+    return "\n".join([header] + [f"  - {o}" for o in outcomes])
