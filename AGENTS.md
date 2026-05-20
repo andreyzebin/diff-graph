@@ -4,7 +4,7 @@ This document describes the codebase for AI agents and coding assistants.
 
 ## What this project does
 
-DiffGraph is a multi-agent PR code reviewer built on the Orchestra framework. It takes a raw `git diff` (or fetches one from Bitbucket Server), runs a three-phase review pipeline via prompt-defined agents, and produces structured `ReviewFinding` objects -- optionally posted as inline PR comments.
+Revvy is a multi-agent PR code reviewer built on the Orchestra framework. It takes a raw `git diff` (or fetches one from Bitbucket Server), runs a three-phase review pipeline via prompt-defined agents, and produces structured `ReviewFinding` objects -- optionally posted as inline PR comments.
 
 **Agents (defined by `<name>.system.md` + `<name>.user.md` file pairs — see [README → Prompt architecture](README.md#prompt-architecture--layered-extension-friendly)):**
 - **Dispatcher** (react) — entry point for comment-triggered interactions (`/review`, `/ask`, `/help`, unknown commands). Routes to the right downstream agent or replies inline. Sees existing PR comments and the trigger comment thread.
@@ -43,7 +43,7 @@ tracing/                         Trace CLI + web server
     +-- shared.py                AppendLog, MutexMap, Blackboard
 
 diffgraph/                       Code review domain
-+-- api.py                       DiffGraph public API class
++-- api.py                       Revvy public API class
 +-- orchestrator.py              One agent entry point (~35 lines of logic)
 +-- orchestra_tools.py           Domain tools as closures
 +-- diff_parser.py               git diff -> DiffResult

@@ -254,9 +254,9 @@ Agent workflow:
 
 **Unchanged file outline:** plain line numbers, no Lold/Lnew, no old/new mapping.
 
-## Integration with DiffGraph agent
+## Integration with Revvy agent
 
-DiffSearch is wired into DiffGraph's agent tools via `orchestra_tools.py`. When the orchestrator has `base_ref` and `source_ref` (PR mode), tools default to `ref="base..source"`. The agent can override per-call:
+DiffSearch is wired into Revvy's agent tools via `orchestra_tools.py`. When the orchestrator has `base_ref` and `source_ref` (PR mode), tools default to `ref="base..source"`. The agent can override per-call:
 
 ```python
 # Agent sees changes in a file (default ref="base..source")

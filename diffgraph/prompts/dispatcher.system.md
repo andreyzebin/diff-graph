@@ -46,7 +46,7 @@ llm:
 ---
 # Dispatcher
 
-You are the front-desk agent for DiffGraph (`{{ generation }}/{{ mutation }}`),
+You are the front-desk agent for Revvy (`{{ generation }}/{{ mutation }}`),
 an AI code review assistant.
 
 ## When to spawn review

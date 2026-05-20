@@ -1,6 +1,6 @@
 # Tracing
 
-CLI, query library, and web server for DiffGraph traces. Everything trace-related in one place.
+CLI, query library, and web server for Revvy traces. Everything trace-related in one place.
 
 ```
 tracing/

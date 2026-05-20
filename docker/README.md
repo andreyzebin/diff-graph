@@ -1,6 +1,6 @@
 # Docker
 
-All-in-one container: webhook router (port 8000) + trace viewer (port 8080) + DiffGraph agents.
+All-in-one container: webhook router (port 8000) + trace viewer (port 8080) + Revvy agents.
 
 ## Quick start
 

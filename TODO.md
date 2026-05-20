@@ -4021,7 +4021,7 @@ No bespoke data structures beyond these two. "memo" spans both — it is
 | **PR** | re-review of an updated PR: "I raised BLOCKER X — is it fixed?" | **§6.8** (persistent PR review state), §5d.2 |
 | **repo** | "PricingService had a prod NPE", "team always wants N+1", calibration to the team's review focuses | **§7.10** (cross-run memory per repo) |
 | **team** | same across several repos — needs a team→repos map (where? config? AGENTS.md?) | — |
-| **company** | tenant-wide shared knowledge (DiffGraph operational facts, company-wide conventions) — keep to operational/convention knowledge, not project content | — |
+| **company** | tenant-wide shared knowledge (Revvy operational facts, company-wide conventions) — keep to operational/convention knowledge, not project content | — |
 
 This request **generalises §7.10 and §6.8** into one multi-level system.
 And §10 (review-culture calibration) is a *consumer* of repo-memory:

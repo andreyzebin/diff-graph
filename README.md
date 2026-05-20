@@ -1,4 +1,4 @@
-# DiffGraph
+# Revvy
 
 Multi-agent PR code reviewer powered by the **Orchestra** framework. All agents defined by Markdown files with YAML frontmatter (`<name>.md` + sibling `<name>.system.md` / `<name>.user.md`) — hierarchy, behavior, and data flow controlled entirely by prompts.
 
@@ -171,13 +171,13 @@ Some LiteLLM-proxied models (e.g. `Qwen3-Coder-480B`) don't support `tool_choice
 
 ### Corporate TLS
 
-DiffGraph uses [truststore](https://pypi.org/project/truststore/) to automatically pick up OS-level CA certificates (corporate VPN, proxy CAs). No manual CA bundle needed in most cases.
+Revvy uses [truststore](https://pypi.org/project/truststore/) to automatically pick up OS-level CA certificates (corporate VPN, proxy CAs). No manual CA bundle needed in most cases.
 
 If still failing — `--no-verify-ssl` as a quick workaround.
 
 ### Mutual TLS (client certificate)
 
-Some corporate Bitbucket instances require a client certificate (mTLS). DiffGraph needs a PEM file.
+Some corporate Bitbucket instances require a client certificate (mTLS). Revvy needs a PEM file.
 
 **Convert P12 to PEM:**
 
@@ -781,7 +781,7 @@ orchestra/                   Prompt-defined agent framework
 diffgraph/                   Code review domain
 +-- orchestrator.py          run_agent() + run_review()
 +-- orchestra_tools.py       Domain tools + pr_context data provider
-+-- api.py                   DiffGraph public API
++-- api.py                   Revvy public API
 +-- diff_parser.py           git diff → DiffResult
 +-- bitbucket.py             Bitbucket Server integration
 +-- providers/
@@ -822,7 +822,7 @@ for the full quality loop.
 
 ## Running as systemd services on RHEL
 
-Two daemons ship with DiffGraph:
+Two daemons ship with Revvy:
 
 - **Webhook router** — `python -m webhook --config webhook.toml` (default port `8000`)
 - **QA server** (`diffgraph-qa.service`, was `diffgraph-trace`) — the FastAPI app in `tracing/server`, default port `8080`. One process serving three things: the per-run **trace viewer** (`/`, `/runs/{id}`), the **Quality API + UI** (`/qa/*`, `/api/qa/*`) for scheduled cross-mutation evaluation — configurable schedules with tag-filtered scenarios, plan/queue, per-mutation scoring (hard skill / soft skill / methodology), on-demand fire, plan cancel — and the **WorkerSupervisor** that spawns bench-task workers on demand. The trace viewer is just a subset of what it serves, hence the name.
@@ -999,6 +999,6 @@ pytest
 
 ## License
 
-DiffGraph is released under the [MIT License](LICENSE) — free to use,
+Revvy is released under the [MIT License](LICENSE) — free to use,
 modify, and distribute, including commercially, with attribution.
 See [`LICENSE`](LICENSE) for the full text.

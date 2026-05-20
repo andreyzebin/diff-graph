@@ -23,7 +23,7 @@ Layer 1: Event → Commands
   ▼
 Layer 2: Routes (first match wins, cascade via sample)
   ┌─ forward = "pra"   → forward raw event to external agent
-  └─ agent = "dg"      → route to DiffGraph CLI
+  └─ agent = "dg"      → route to Revvy CLI
        ├─ /review  → dispatcher → spawns reviewer
        ├─ /help    → dispatcher → replies directly
        └─ default  → dispatcher → answers from context
@@ -41,13 +41,13 @@ Layer 3: Agent trigger
 [server]
 port = 8000
 
-# DiffGraph — dispatcher handles all interactions
+# Revvy — dispatcher handles all interactions
 [agents.dg]
 trigger = "cli"
 command = '... cli.py run --pr-url="{pr_url}" --message="{message}" --comment-id={comment_id}'
 timeout = 600
 
-# DiffGraph — direct reviewer (skip dispatcher)
+# Revvy — direct reviewer (skip dispatcher)
 [agents.dg-review]
 trigger = "cli"
 command = '... cli.py run --pr-url="{pr_url}" --agent=reviewer'
@@ -128,7 +128,7 @@ Each route is **either `forward` or `agent`**, never both:
 `sample` controls what percentage of PRs a route matches (deterministic by `hash(pr_url)`). Unmatched PRs fall through to the next route.
 
 ```toml
-# A/B test: 50% pr-agent, 50% DiffGraph
+# A/B test: 50% pr-agent, 50% Revvy
 [[routes]]
 name = "platform-pra"
 when = "project == 'PLATFORM'"
