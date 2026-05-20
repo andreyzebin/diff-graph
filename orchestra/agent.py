@@ -248,6 +248,13 @@ class Agent:
                 int(config.reflect.get("interval", 3)) if self.sgr else 0
             ),
         )
+        # Async-child callback delivery (TODO §13.5). First in the
+        # producer chain so a completed child's NUDGE lands ahead of
+        # any budget-pressure NUDGE on the same step.
+        from .budget import AsyncChildCallbackPusher
+        self.budget_tracker.add_producer(
+            AsyncChildCallbackPusher(self), first=True,
+        )
         self.budget_state: Optional[BudgetState] = None
 
         # Latest in-flight step number. Set at the top of every loop
@@ -277,12 +284,16 @@ class Agent:
         # Async spawn (TODO §13). `agent_spawn(sched="async")` runs the
         # child in a background thread; `_async_spawned` keeps every
         # async child's id in spawn order, `_async_collected` marks the
-        # ones an `agent_await` has already returned. `_async_done` is
-        # set by any async child on completion so a waiting agent_await
-        # wakes immediately instead of polling.
+        # ones already delivered (by agent_await OR the callback
+        # pusher). `_async_done` is set by any async child on
+        # completion so a waiting agent_await wakes immediately.
+        # `_async_results_queue` holds finished callback=True children
+        # not yet drained into a parent-step NUDGE.
         self._async_spawned: list[str] = []      # child agent_ids, in order
-        self._async_collected: set[str] = set()  # already returned by agent_await
+        self._async_collected: set[str] = set()  # already delivered
         self._async_done = threading.Event()
+        self._async_results_queue: list[tuple[str, Any]] = []
+        self._async_lock = threading.Lock()
 
         # Done state
         self._done_output: Any = None
@@ -1274,10 +1285,13 @@ class Agent:
                 tokens=child.budget_state.tokens_used if child.budget_state else 0,
             )
         # Async — run in a background thread; result resolved later
-        # via agent_await. `_async_done` is set on completion so a
-        # waiting agent_await wakes immediately (TODO §13).
+        # via agent_await OR auto-delivered by the callback pusher.
+        # `_async_done` is set on completion so a waiting agent_await
+        # wakes immediately (TODO §13).
         with self._children_lock:
             self._async_spawned.append(child.agent_id)
+
+        callback = spec.callback
 
         def _run():
             try:
@@ -1287,6 +1301,13 @@ class Agent:
                 if child.budget_state:
                     self.budget_tracker.debit_child(
                         self.budget_state, child.budget_state)
+                # callback=True → queue for the AsyncChildCallbackPusher
+                # to inject into the parent's next step. callback=False
+                # → the parent must agent_await explicitly.
+                if callback:
+                    with self._async_lock:
+                        self._async_results_queue.append(
+                            (child.agent_id, result))
             finally:
                 self._async_done.set()
         threading.Thread(target=_run, daemon=True).start()
@@ -1321,12 +1342,16 @@ class Agent:
         if not sched:
             sched = "async" if args.get("wait") is False else "sync"
 
+        # callback: async-only. Default True (auto-deliver via the
+        # callback pusher). Ignored for sync spawns.
+        callback = args.get("callback")
         spec = SpawnSpec(
             agent_name=agent_name,
             focus=args.get("focus", ""),
             data=args.get("data", {}) or {},
             context_handoff=args.get("context_handoff", ""),
             sched=sched,
+            callback=True if callback is None else bool(callback),
             parent_agent_id=self.agent_id,
         )
         handle = self.agents_runtime.spawn(spec)
@@ -1347,14 +1372,52 @@ class Agent:
             "tokens":      result.tokens,
         }, ensure_ascii=False, indent=2, default=str)
 
+    def _drain_async_callbacks(self) -> list[str]:
+        """Drain finished callback=True children into ready-to-inject
+        NUDGE messages. Called by AsyncChildCallbackPusher each step.
+        Marks each drained child `_async_collected` so a concurrent
+        agent_await won't re-report it (TODO §13.5 drain coordination)."""
+        with self._async_lock:
+            drained = self._async_results_queue
+            self._async_results_queue = []
+        msgs: list[str] = []
+        for cid, result in drained:
+            with self._children_lock:
+                self._async_collected.add(cid)
+            msgs.append(self._format_child_callback(cid, result))
+        return msgs
+
+    def _format_child_callback(self, cid: str, result: Any) -> str:
+        """Compact completion summary for an async child — pure state,
+        no instruction (the prompt decides how to react)."""
+        child = self._children.get(cid)
+        name = child.config.name if child else "?"
+        bs = child.budget_state if child else None
+        steps = bs.steps_used if bs else 0
+        paid = bs.cumulative_paid if bs else 0
+        focus = (child.data_scope or {}).get("focus", "") if child else ""
+        output = result.output if result is not None else None
+        out_str = output if isinstance(output, str) else json.dumps(
+            output, ensure_ascii=False, default=str)
+        if len(out_str) > 600:
+            out_str = out_str[:600] + "…"
+        head = (f"[async-child] {name} [{cid[:8]}] completed · "
+                f"{steps} steps · paid ~{int(paid)}")
+        if focus:
+            head += f' · focus="{focus[:80]}"'
+        return f"{head}\noutput: {out_str}"
+
     def _any_pusher_pending(self) -> bool:
-        """True iff some budget pusher would fire a NEW action on the
-        next step — a ratio level whose latch isn't yet set. The
-        agent_await wake-up criterion (TODO §13.4): await bails with
-        `interrupted` ONLY when something new is about to happen, not
-        merely because a ratio is high (a latched level fires nothing
-        further)."""
+        """True iff some pusher would fire a NEW action on the next
+        step. The agent_await wake-up criterion (TODO §13.4): await
+        bails with `interrupted` only when something new is about to
+        happen — a ratio level whose latch isn't set yet, OR a
+        callback queue with a finished child waiting to be injected.
+        A merely-high (already-latched) ratio fires nothing."""
         from .budget import RatioEscalationPusher
+        with self._async_lock:
+            if self._async_results_queue:
+                return True
         if self.budget_state is None or self.budget_tracker is None:
             return False
         for pusher in getattr(self.budget_tracker, "_producers", []):
@@ -1434,13 +1497,25 @@ class Agent:
 
         results: list[dict] = []
         still: list[str] = []
+        collected_now: list[str] = []
         with self._children_lock:
             for t in targets:
                 if t in self._children_results:
                     results.append(self._await_child_result(t))
                     self._async_collected.add(t)
+                    collected_now.append(t)
                 else:
                     still.append(t)
+        # Drain coordination (TODO §13.5): drop what we just returned
+        # from the callback queue so AsyncChildCallbackPusher won't
+        # re-inject it as a NUDGE on the next step.
+        if collected_now:
+            done = set(collected_now)
+            with self._async_lock:
+                self._async_results_queue = [
+                    (cid, r) for (cid, r) in self._async_results_queue
+                    if cid not in done
+                ]
 
         if not still:
             status = "completed"

@@ -737,6 +737,41 @@ class ReflectCadencePusher:
             ))
 
 
+class AsyncChildCallbackPusher:
+    """Delivers async-spawned children's results back to the parent.
+
+    NOT a budget concern — this is the async-callback channel
+    (TODO §13.5). It reuses the pusher pipeline purely as a
+    transport: a producer is just "something that can inject a
+    message on the next step", and that is exactly what an async
+    callback needs. Each `agent_spawn(sched="async", callback=True)`
+    child, on completion, lands as a NUDGE on the parent's next
+    step carrying a compact completion summary — no explicit
+    `agent_await` required.
+
+    The agent owns the queue; this handler only drains it. The
+    agent's `_drain_async_callbacks()` returns ready-to-inject
+    message strings (it has the child registry for name / budget /
+    focus); this class stays a dumb transport. Duck-typed on the
+    agent ref — no import of Agent, so no cycle.
+    """
+    kind = "async-child-callback"
+
+    def __init__(self, agent) -> None:
+        self._agent = agent
+
+    def apply(self, ctx: "StepContext") -> None:
+        drain = getattr(self._agent, "_drain_async_callbacks", None)
+        if drain is None:
+            return
+        for message in drain():
+            ctx.actions.append(PusherAction(
+                type=PusherType.NUDGE,
+                message=message,
+                kind=self.kind,
+            ))
+
+
 # ── Consumers ────────────────────────────────────────────────────────────────
 
 
@@ -897,9 +932,15 @@ class BudgetTracker:
         """Full chain in execution order: producers then consumers."""
         return list(self._producers) + list(self._consumers)
 
-    def add_producer(self, handler: PusherHandler) -> None:
-        """Slot a new producer before the consumers."""
-        self._producers.append(handler)
+    def add_producer(self, handler: PusherHandler, *, first: bool = False) -> None:
+        """Slot a new producer before the consumers. `first=True`
+        puts it ahead of the budget pushers — used by the async-child
+        callback so a completed child's NUDGE lands before any
+        budget-pressure NUDGE on the same step (TODO §13.8)."""
+        if first:
+            self._producers.insert(0, handler)
+        else:
+            self._producers.append(handler)
 
     def configure_reflect_pushers(self, reflect_interval: int = 0) -> None:
         """Append the step-cadence reflect producer to the chain.

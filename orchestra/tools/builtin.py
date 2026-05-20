@@ -236,6 +236,10 @@ def register_builtins(
                         "enum": ["sync", "async"],
                         "description": "'sync' (default) blocks for the result; 'async' returns a run_id immediately.",
                     },
+                    "callback": {
+                        "type": "boolean",
+                        "description": "async only. true (default): the child's result is auto-delivered into your next step when it finishes — no agent_await needed. false: you must agent_await to collect it.",
+                    },
                 },
                 "required": ["agent", "focus"],
             },

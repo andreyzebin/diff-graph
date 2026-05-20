@@ -247,6 +247,31 @@ def test_inprocess_spawn_delegates_to_callback() -> None:
     assert spawned[0].steps == 5
 
 
+def test_async_child_callback_pusher_drains_to_nudges() -> None:
+    """AsyncChildCallbackPusher is a dumb transport (TODO §13.5): it
+    drains the agent's ready callback messages and turns each into a
+    NUDGE action. Async-delivery channel — not a budget concern."""
+    from types import SimpleNamespace
+    from orchestra.budget import AsyncChildCallbackPusher, PusherType
+
+    class _StubAgent:
+        def _drain_async_callbacks(self):
+            return ["[async-child] foo completed", "[async-child] bar completed"]
+
+    pusher = AsyncChildCallbackPusher(_StubAgent())
+    ctx = SimpleNamespace(actions=[])
+    pusher.apply(ctx)
+    assert len(ctx.actions) == 2
+    assert all(a.type == PusherType.NUDGE for a in ctx.actions)
+    assert ctx.actions[0].message.startswith("[async-child] foo")
+    assert ctx.actions[0].kind == "async-child-callback"
+
+    # Empty drain → no actions; missing drain method → graceful no-op.
+    ctx2 = SimpleNamespace(actions=[])
+    AsyncChildCallbackPusher(SimpleNamespace()).apply(ctx2)
+    assert ctx2.actions == []
+
+
 def test_inprocess_is_protocol_conformant() -> None:
     rt = InProcessRuntime(
         lambda spec: RunResult(agent_id="x", agent_name="y"),
